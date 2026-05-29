@@ -24,7 +24,7 @@ With iOS you can save it to the Home Screen and it acts like a full screen app.
 Linux
 
 # 1. Install Node + git
-
+```
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt-get install -y nodejs git
 node --version        # must be v18+
@@ -42,7 +42,7 @@ cd /opt/roon-random-albums && npm install
 
 node index.js         # should print "listening on http://0.0.0.0:3399", Ctrl-C
 Add as a service
-
+```
 sudo nano /etc/systemd/system/roon-random-albums.service
 
 [Unit]
