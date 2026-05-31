@@ -3,6 +3,9 @@
 <img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/fc1dd26e-db7f-4e27-8f66-b0ab74db89e3" />
 
 # Random Albums - A Roon extension
+
+Latest version - https://github.com/meltface-80/Roon-Random-Albums-Extension/releases/latest
+
 A web UI that shows a screenful of random albums from your Roon library, with
 Play Now, Add to Queue, Play Next, Shuffle, and Start Radio
 actions targeting any of your zones. Refresh button reshuffles the wall.
