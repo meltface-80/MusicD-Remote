@@ -4,7 +4,7 @@
 
 # Random Albums - A Roon extension
 
-Latest version - https://raw.githubusercontent.com/meltface-80/Roon-Random-Albums-Extension/releases/latest
+Latest version - https://github.com/meltface-80/Roon-Random-Albums-Extension/releases/latest
 
 A web UI that shows a screenful of random albums from your Roon library, with
 Play Now, Add to Queue, Play Next, Shuffle, and Start Radio
