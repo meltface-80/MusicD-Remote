@@ -32,20 +32,37 @@ Linux
 # 1. Install Node + git
 ```
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt-get install -y nodejs git
+sudo apt-get install -y nodejs git curl
 node --version        # must be v18+
 which node            # NOTE this path for the service file
+```
 
-# 2. Unpack
+# 2. Download the latest version
+Grab the newest release tarball straight from GitHub (no need to look up the
+version number — this always fetches the latest):
+```
+cd ~
+curl -s https://api.github.com/repos/meltface-80/Roon-Random-Albums-Extension/releases/latest \
+  | grep "browser_download_url.*tar.gz" \
+  | cut -d '"' -f 4 \
+  | xargs curl -L -O   # → ~/roon-random-albums-vX.Y.Z.tar.gz
+```
+Or download it manually from
+https://github.com/meltface-80/Roon-Random-Albums-Extension/releases/latest
+and move it into your home directory.
 
+# 3. Unpack
+```
 cd /opt && sudo tar -xzf ~/roon-random-albums-v*.tar.gz   # → /opt/roon-random-albums
+```
 
-# 3. Dependencies
-
+# 4. Dependencies
+```
 cd /opt/roon-random-albums && npm install
+```
 
-# 4. Test by hand FIRST
-
+# 5. Test by hand FIRST
+```
 node index.js         # should print "listening on http://0.0.0.0:3399", Ctrl-C
 ```
 
