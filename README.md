@@ -38,7 +38,7 @@ which node            # NOTE this path for the service file
 
 # 2. Unpack
 
-cd /opt && sudo tar -xzf ~/roon-random-albums.tar.gz   # → /opt/roon-random-albums
+cd /opt && sudo tar -xzf ~/roon-random-albums-v*.tar.gz   # → /opt/roon-random-albums
 
 # 3. Dependencies
 
