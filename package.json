@@ -1,0 +1,27 @@
+{
+  "name": "roon-random-albums",
+  "version": "1.5.13",
+  "description": "Display a screenful of random albums from your Roon library, with instant whole-library search, Play / Queue actions, and in-app self-update from GitHub.",
+  "license": "MIT",
+  "author": "Lewis Menzies (Music Duck / MusicD)",
+  "homepage": "https://github.com/meltface-80/Roon-Random-Albums-Extension",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/meltface-80/Roon-Random-Albums-Extension.git"
+  },
+  "main": "index.js",
+  "scripts": {
+    "start": "node launcher.js",
+    "start:direct": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-roon-api": "github:RoonLabs/node-roon-api",
+    "node-roon-api-browse": "github:RoonLabs/node-roon-api-browse",
+    "node-roon-api-image": "github:RoonLabs/node-roon-api-image",
+    "node-roon-api-settings": "github:RoonLabs/node-roon-api-settings",
+    "node-roon-api-status": "github:RoonLabs/node-roon-api-status",
+    "node-roon-api-audioinput": "github:RoonLabs/node-roon-api-audioinput",
+    "node-roon-api-transport": "github:RoonLabs/node-roon-api-transport"
+  }
+}

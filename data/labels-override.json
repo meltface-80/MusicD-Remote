@@ -1,0 +1,5 @@
+{
+  "_comment": "Manual label overrides. Add entries here to fix any album the scanner got wrong.",
+  "_format":  "title and artist are case-insensitive. label is stored exactly as written.",
+  "albums": []
+}

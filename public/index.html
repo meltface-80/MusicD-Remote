@@ -1,0 +1,641 @@
+<!doctype html>
+<!--
+  Roon Random Albums — Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
+  Released under the MIT License. See the LICENSE file for details.
+-->
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <meta name="theme-color" content="#0e1012">
+  <title>MusicD</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- Phone landscape blocker: hidden on portrait / tablet / desktop via CSS -->
+  <div id="landscape-block" class="landscape-block" aria-hidden="true">
+    <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <!-- Phone rotated to portrait -->
+      <rect x="7" y="2" width="10" height="20" rx="2" ry="2"/>
+      <line x1="12" y1="18" x2="12" y2="18.01"/>
+      <!-- Rotation arrow -->
+      <path d="M3 12a9 9 0 0 1 9-9" opacity=".5"/>
+      <polyline points="1 12 3 10 5 12" opacity=".5"/>
+    </svg>
+    <p>Please rotate your device<br>to portrait mode</p>
+  </div>
+  <div class="app">
+  <header class="topbar">
+    <div class="topbar-row">
+      <div class="brand">
+        <div class="brand-mark">
+          <img src="logo.jpg" class="brand-logo" alt="MusicD">
+        </div>
+        <span class="album-count hidden" id="album-count"></span>
+      </div>
+
+      <div class="topbar-controls">
+        <button id="filter-toggle" class="icon-btn" aria-label="Filter albums" title="Filter">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
+          </svg>
+        </button>
+
+        <button id="labels-toggle" class="icon-btn" aria-label="Browse by record label" title="Labels">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/>
+            <line x1="7" y1="7" x2="7.01" y2="7"/>
+          </svg>
+        </button>
+
+        <button id="search-toggle" class="icon-btn" aria-label="Search"
+                title="Search" aria-expanded="false" aria-controls="search-row">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7"/>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+        </button>
+
+        <button id="refresh-btn" class="primary-btn" aria-label="Refresh">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/>
+            <path d="M21 3v5h-5"/>
+            <path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/>
+            <path d="M3 21v-5h5"/>
+          </svg>
+          <span>Refresh</span>
+        </button>
+
+        <button id="relay-toggle" class="icon-btn" aria-label="Spotify Connect relay" title="Spotify Connect">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
+          </svg>
+        </button>
+
+        <button id="settings-toggle" class="icon-btn" aria-label="Settings" title="Settings">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="search-row" id="search-row">
+      <div class="search-box">
+        <svg class="search-ico" width="18" height="18" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true">
+          <circle cx="11" cy="11" r="7"/>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <input id="search-input" type="search" inputmode="search" autocomplete="off"
+               autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="search"
+               placeholder="Search your whole library…" aria-label="Search your whole library">
+        <button id="search-clear" class="search-clear" type="button" aria-label="Clear search">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 6 6 18M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+      <span class="search-status" id="search-status" aria-live="polite"></span>
+    </div>
+  </header>
+
+  <div id="update-toast" class="update-toast" role="status" aria-live="polite">
+    <svg class="update-ico" width="18" height="18" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+         aria-hidden="true">
+      <path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/>
+      <path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><path d="M21 3v5h-5"/>
+    </svg>
+    <span class="update-text" id="update-text"></span>
+    <div class="update-actions" id="update-actions">
+      <button id="update-now" class="primary-btn" type="button"><span>Update</span></button>
+      <button id="update-later" class="icon-btn update-later" type="button" aria-label="Dismiss">Later</button>
+    </div>
+  </div>
+
+  <main>
+    <div id="labels-bar" class="labels-bar hidden">
+      <button id="labels-back" class="labels-back" type="button" aria-label="Back to all labels">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="15 18 9 12 15 6"/>
+        </svg>
+        <span>All labels</span>
+      </button>
+      <span id="labels-title" class="labels-title"></span>
+    </div>
+    <div id="status-banner" class="status-banner hidden"></div>
+    <div id="album-grid" class="album-grid" aria-live="polite"></div>
+  </main>
+  </div><!-- /.app -->
+
+  <!-- Album detail modal -->
+  <div id="album-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-backdrop" data-close></div>
+    <div class="modal-panel">
+      <button class="modal-close icon-btn" data-close aria-label="Close">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M18 6 6 18M6 6l12 12"/>
+        </svg>
+      </button>
+      <button class="modal-share icon-btn" id="modal-share-btn" aria-label="Share card">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="16 6 12 2 8 6"/>
+          <line x1="12" y1="2" x2="12" y2="15"/>
+          <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/>
+        </svg>
+      </button>
+
+      <div class="modal-body">
+        <div class="modal-tabs hidden" id="modal-tabs">
+          <button class="modal-tab is-active" type="button" data-tab="album">Now playing</button>
+          <button class="modal-tab"           type="button" data-tab="queue">Queue</button>
+        </div>
+        <div class="modal-art">
+          <img id="modal-img" alt="">
+        </div>
+        <div class="modal-info">
+          <h2 id="modal-title">—</h2>
+          <p id="modal-subtitle" class="modal-subtitle">—</p>
+
+          <div class="modal-tab-pane" id="tab-album">
+
+          <div id="np-screen" class="np-screen hidden">
+            <div class="np-track" id="np-track">—</div>
+            <div class="np-artist" id="np-artist">—</div>
+            <div class="np-album" id="np-album"></div>
+
+            <div class="np-progress">
+              <input type="range" id="np-seek" class="np-seek" min="0" max="100" step="1" value="0"
+                     aria-label="Seek" disabled>
+              <div class="np-times">
+                <span id="np-cur" class="np-time">0:00</span>
+                <span id="np-tot" class="np-time">0:00</span>
+              </div>
+            </div>
+
+            <div class="np-transport">
+              <button class="np-btn" id="np-prev" aria-label="Previous track" disabled>
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M6 6h2v12H6zM9.5 12l10-6v12z"/>
+                </svg>
+              </button>
+              <button class="np-btn np-playpause" id="np-playpause" aria-label="Play/pause">
+                <svg id="np-icon-play"  viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M8 5v14l11-7z"/>
+                </svg>
+                <svg id="np-icon-pause" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" class="hidden">
+                  <path d="M6 5h4v14H6zM14 5h4v14h-4z"/>
+                </svg>
+              </button>
+              <button class="np-btn" id="np-next" aria-label="Next track" disabled>
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M16 6h2v12h-2zM4.5 6l10 6-10 6z"/>
+                </svg>
+              </button>
+            </div>
+
+            <div class="np-secondary">
+              <!-- Device / zone picker -->
+              <button class="np-mini-btn" id="np-device" aria-label="Choose device" aria-expanded="false">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="5" y="2.5" width="14" height="19" rx="2.5"/>
+                  <circle cx="12" cy="14" r="3.4"/>
+                  <circle cx="12" cy="6.4" r="1.1"/>
+                </svg>
+              </button>
+              <div class="np-popover np-device-popover hidden" id="np-device-popover">
+                <div class="np-popover-title">Play on</div>
+                <div class="np-device-list" id="np-device-list"></div>
+              </div>
+
+              <!-- Volume: tap the speaker to reveal the slider (hidden when fixed) -->
+              <div class="np-vol">
+                <button class="np-mini-btn" id="np-volbtn" aria-label="Volume" aria-expanded="false">
+                  <svg id="np-icon-vol" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/>
+                  </svg>
+                  <svg id="np-icon-mute" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" class="hidden">
+                    <path d="M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.5 2.5V12zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.17v2.06a8.99 8.99 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z"/>
+                  </svg>
+                </button>
+                <div class="np-popover np-vol-popover hidden" id="np-vol-popover">
+                  <input type="range" id="np-vol-slider" class="np-vol-slider" min="0" max="100" step="1" value="50"
+                         aria-label="Volume">
+                  <div class="np-vol-fixed hidden" id="np-vol-fixed">
+                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                      <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/>
+                    </svg>
+                    <span>Volume control is fixed</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Streaming service links for now-playing track (populated via /api/track/external-links) -->
+            <div id="np-stream-links" class="np-stream-links hidden">
+              <a id="np-listen-spotify" class="listen-btn listen-spotify" href="#" target="_blank" rel="noopener noreferrer">
+                <svg class="listen-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
+                <span id="np-spotify-label">Spotify</span>
+              </a>
+              <a id="np-listen-apple" class="listen-btn listen-apple hidden" href="#" target="_blank" rel="noopener noreferrer">
+                <svg class="listen-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M23.994 6.124a9.23 9.23 0 00-.24-2.19c-.317-1.31-1.048-2.31-2.008-2.837-.41-.23-.86-.41-1.34-.51-.51-.106-1.01-.16-1.54-.18-.94-.04-1.19-.05-3.65-.05h-1.9c-2.464 0-2.714.01-3.654.05-.53.02-1.03.074-1.54.18-.48.1-.93.28-1.34.51-.96.527-1.69 1.527-2.008 2.837a9.23 9.23 0 00-.24 2.19C.004 7.058 0 7.32 0 9.818v4.364c0 2.498.004 2.76.054 3.694a9.23 9.23 0 00.24 2.19c.317 1.31 1.048 2.31 2.008 2.837.41.23.86.41 1.34.51.51.106 1.01.16 1.54.18.94.04 1.19.05 3.654.05h1.9c2.46 0 2.71-.01 3.65-.05.53-.02 1.03-.074 1.54-.18.48-.1.93-.28 1.34-.51.96-.527 1.69-1.527 2.008-2.837a9.23 9.23 0 00.24-2.19c.05-.934.054-1.196.054-3.694V9.818c0-2.498-.004-2.76-.054-3.694zm-6.027 7.56l-4.127-2.38-4.127 2.38V7.13l4.127-2.38 4.127 2.38v6.554z"/></svg>
+                Apple Music
+              </a>
+              <a id="np-listen-lastfm" class="listen-btn listen-lastfm" href="#" target="_blank" rel="noopener noreferrer">
+                <svg class="listen-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10.584 17.21l-.88-2.392s-1.43 1.595-3.573 1.595c-1.897 0-3.244-1.648-3.244-4.288 0-3.38 1.704-4.59 3.381-4.59 2.42 0 3.19 1.566 3.85 3.573l.88 2.365c.88 2.667 2.53 4.81 7.289 4.81 3.41 0 5.724-1.044 5.724-3.794 0-2.226-1.264-3.38-3.629-3.931l-1.757-.385c-1.209-.275-1.567-.77-1.567-1.594 0-.934.742-1.484 1.952-1.484 1.319 0 2.034.494 2.144 1.677l2.749-.33C23.654 6.31 22.17 5 19.2 5c-3.025 0-4.895 1.605-4.895 3.794 0 1.815.879 2.97 3.08 3.518l1.869.44c1.373.33 1.978.88 1.978 1.787 0 1.07-.99 1.51-2.886 1.51-2.804 0-3.964-1.484-4.647-3.463L12.81 10.2C11.72 6.97 9.954 5.65 6.02 5.65 2.199 5.65 0 8.014 0 12.15c0 4.04 2.2 6.27 6.02 6.27 3.134 0 4.564-1.21 4.564-1.21z"/></svg>
+                Last.fm
+              </a>
+            </div>
+
+            <!-- Last.fm genre tags + listener count (requires LASTFM_API_KEY env var) -->
+            <div id="np-lastfm-tags"  class="np-lastfm-tags  hidden"></div>
+            <div id="np-lastfm-stats" class="np-lastfm-stats hidden"></div>
+
+            <!-- Shown when playing via audio-input (roon-entrypoints / Spotify / AirPlay) -->
+            <div id="np-source-badge" class="np-source-badge hidden">
+              <span class="np-source-dot" aria-hidden="true"></span>Live stream
+            </div>
+          </div>
+
+          <div class="modal-actions" id="modal-actions">
+            <!-- buttons injected -->
+          </div>
+
+          <div class="track-list-wrap">
+            <h3 class="section-label">Tracks</h3>
+            <ol id="modal-tracks" class="track-list"></ol>
+          </div>
+
+          <div class="bio-section hidden" id="album-bio-section">
+            <h3 class="section-label">About this album</h3>
+            <div class="bio-meta" id="album-meta"></div>
+            <div class="bio-text" id="album-bio-text" data-clipped="true"></div>
+            <div class="bio-footer">
+              <button class="bio-toggle hidden" type="button" id="album-bio-toggle">Show more</button>
+              <a class="bio-source hidden" id="album-bio-source" target="_blank" rel="noopener noreferrer"></a>
+            </div>
+          </div>
+
+          <div class="listen-on-section hidden" id="listen-on-section">
+            <h3 class="section-label">Also available on</h3>
+            <div class="listen-on-btns">
+              <a id="listen-spotify" class="listen-btn listen-spotify" href="#" target="_blank" rel="noopener noreferrer">
+                <svg class="listen-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
+                Spotify
+              </a>
+              <a id="listen-apple-music" class="listen-btn listen-apple hidden" href="#" target="_blank" rel="noopener noreferrer">
+                <svg class="listen-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M23.994 6.124a9.23 9.23 0 00-.24-2.19c-.317-1.31-1.048-2.31-2.008-2.837-.41-.23-.86-.41-1.34-.51-.51-.106-1.01-.16-1.54-.18-.94-.04-1.19-.05-3.65-.05h-1.9c-2.464 0-2.714.01-3.654.05-.53.02-1.03.074-1.54.18-.48.1-.93.28-1.34.51-.96.527-1.69 1.527-2.008 2.837a9.23 9.23 0 00-.24 2.19C.004 7.058 0 7.32 0 9.818v4.364c0 2.498.004 2.76.054 3.694a9.23 9.23 0 00.24 2.19c.317 1.31 1.048 2.31 2.008 2.837.41.23.86.41 1.34.51.51.106 1.01.16 1.54.18.94.04 1.19.05 3.654.05h1.9c2.46 0 2.71-.01 3.65-.05.53-.02 1.03-.074 1.54-.18.48-.1.93-.28 1.34-.51.96-.527 1.69-1.527 2.008-2.837a9.23 9.23 0 00.24-2.19c.05-.934.054-1.196.054-3.694V9.818c0-2.498-.004-2.76-.054-3.694zm-6.027 7.56l-4.127-2.38-4.127 2.38V7.13l4.127-2.38 4.127 2.38v6.554z"/></svg>
+                Apple Music
+              </a>
+              <a id="listen-lastfm" class="listen-btn listen-lastfm" href="#" target="_blank" rel="noopener noreferrer">
+                <svg class="listen-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10.584 17.21l-.88-2.392s-1.43 1.595-3.573 1.595c-1.897 0-3.244-1.648-3.244-4.288 0-3.38 1.704-4.59 3.381-4.59 2.42 0 3.19 1.566 3.85 3.573l.88 2.365c.88 2.667 2.53 4.81 7.289 4.81 3.41 0 5.724-1.044 5.724-3.794 0-2.226-1.264-3.38-3.629-3.931l-1.757-.385c-1.209-.275-1.567-.77-1.567-1.594 0-.934.742-1.484 1.952-1.484 1.319 0 2.034.494 2.144 1.677l2.749-.33C23.654 6.31 22.17 5 19.2 5c-3.025 0-4.895 1.605-4.895 3.794 0 1.815.879 2.97 3.08 3.518l1.869.44c1.373.33 1.978.88 1.978 1.787 0 1.07-.99 1.51-2.886 1.51-2.804 0-3.964-1.484-4.647-3.463L12.81 10.2C11.72 6.97 9.954 5.65 6.02 5.65 2.199 5.65 0 8.014 0 12.15c0 4.04 2.2 6.27 6.02 6.27 3.134 0 4.564-1.21 4.564-1.21z"/></svg>
+                Last.fm
+              </a>
+            </div>
+          </div>
+
+          </div><!-- /#tab-album -->
+
+          <div class="modal-tab-pane hidden" id="tab-queue">
+            <div id="queue-summary" class="queue-summary"></div>
+            <ol id="queue-list" class="queue-list"></ol>
+            <div id="queue-empty" class="queue-empty hidden">Queue is empty.</div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <!-- Mini transport (now-playing bar) — Roon-style layout -->
+  <div id="mini-transport" class="mini-transport hidden" aria-label="Now playing">
+    <div class="mt-progress" aria-hidden="true">
+      <div class="mt-progress-fill" id="mt-progress-fill"></div>
+    </div>
+
+    <button class="mt-btn mt-playpause" id="mt-playpause" aria-label="Play/pause">
+      <svg id="mt-icon-play"  viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M8 5v14l11-7z"/>
+      </svg>
+      <svg id="mt-icon-pause" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" class="hidden">
+        <path d="M6 5h4v14H6zM14 5h4v14h-4z"/>
+      </svg>
+    </button>
+
+    <div class="mt-info">
+      <div class="mt-text">
+        <div id="mt-title"  class="mt-title">—</div>
+        <div id="mt-artist" class="mt-artist">—<span class="mt-live-badge hidden" id="mt-live-badge" aria-label="Playing via live stream"><span class="mt-live-dot" aria-hidden="true"></span>Live</span></div>
+      </div>
+    </div>
+
+    <div class="mt-controls">
+      <button class="mt-btn" id="mt-zone" aria-label="Choose zone" aria-expanded="false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="5" y="2.5" width="14" height="19" rx="2.5"/>
+          <circle cx="12" cy="14" r="3.4"/>
+          <circle cx="12" cy="6.4" r="1.1"/>
+        </svg>
+      </button>
+      <button class="mt-btn mt-vol-btn" id="mt-vol-btn" aria-label="Volume" aria-expanded="false">
+        <svg id="mt-icon-vol" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/>
+        </svg>
+        <svg id="mt-icon-mute" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" class="hidden">
+          <path d="M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.5 2.5V12zM19 12c0 .9-.18 1.76-.5 2.55l1.51 1.51A8.96 8.96 0 0 0 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.17v2.06a8.99 8.99 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="mt-zone-popover hidden" id="mt-zone-popover" role="dialog" aria-label="Play on">
+      <div class="np-popover-title">Play on</div>
+      <div class="np-device-list" id="mt-zone-list"></div>
+    </div>
+
+    <div class="mt-vol-popover hidden" id="mt-vol-popover" role="dialog" aria-label="Volume">
+      <span class="mt-vol-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/>
+        </svg>
+      </span>
+      <span class="mt-vol-value" id="mt-vol-value">50</span>
+      <div class="vol-row">
+        <button class="mt-vol-step" id="mt-vol-minus" aria-label="Volume down">−</button>
+        <input type="range" id="mt-vol-slider" min="0" max="100" step="1" value="50" aria-label="Volume level">
+        <button class="mt-vol-step" id="mt-vol-plus" aria-label="Volume up">+</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Share card overlay -->
+  <div id="share-overlay" class="share-overlay hidden" role="dialog" aria-modal="true" aria-label="Share card">
+    <div class="share-backdrop" data-share-close></div>
+    <div class="share-panel">
+      <button class="share-close icon-btn" data-share-close aria-label="Close">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M18 6 6 18M6 6l12 12"/>
+        </svg>
+      </button>
+      <div class="share-frame" id="share-frame">
+        <div class="share-placeholder">
+          <div class="share-spinner"></div>
+          <div>Generating card…</div>
+        </div>
+      </div>
+      <div class="share-actions" id="share-actions"></div>
+      <p class="share-hint" id="share-hint"></p>
+      <p class="share-err"  id="share-err"></p>
+    </div>
+  </div>
+
+  <!-- Settings bottom sheet -->
+  <div id="settings-overlay" class="settings-overlay hidden" role="dialog" aria-modal="true" aria-label="Settings">
+    <div class="settings-backdrop" data-settings-close></div>
+    <div class="settings-sheet">
+      <div class="settings-grip"></div>
+      <div class="settings-head">
+        <h2>Settings</h2>
+      </div>
+
+      <div class="settings-block">
+        <div class="settings-row">
+          <span class="settings-label">Zone / output</span>
+          <div class="settings-select-wrap">
+            <select id="zone-select" class="settings-select" aria-label="Output zone"></select>
+            <svg class="settings-caret" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+        </div>
+        <p class="settings-help">
+          Choose which Roon zone the Play, Queue and transport controls target.
+        </p>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-block">
+        <div class="settings-row">
+          <span class="settings-label">Random album radio</span>
+          <label class="switch">
+            <input type="checkbox" id="radio-toggle" aria-label="Random album radio">
+            <span class="switch-track"><span class="switch-thumb"></span></span>
+          </label>
+        </div>
+        <p class="settings-help">
+          When this zone's queue ends and Roon Radio is off, keep playing whole
+          random albums — a never-ending random album radio.
+        </p>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-block">
+        <div class="settings-row">
+          <span class="settings-label">Label album order</span>
+          <div class="settings-select-wrap">
+            <select id="label-order-select" class="settings-select" aria-label="Label album order">
+              <option value="alpha">Alphabetical</option>
+              <option value="random">Random</option>
+            </select>
+            <svg class="settings-caret" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+        </div>
+        <p class="settings-help">
+          When you open a record label, list its albums alphabetically or shuffle them.
+        </p>
+      </div>
+
+      <div class="settings-block">
+        <div class="settings-row">
+          <span class="settings-label">Minimum albums per label</span>
+          <div class="settings-select-wrap">
+            <select id="label-min-select" class="settings-select" aria-label="Minimum albums per label">
+              <option value="1">Show all</option>
+              <option value="2">2 or more</option>
+              <option value="5">5 or more</option>
+              <option value="10">10 or more</option>
+            </select>
+            <svg class="settings-caret" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+        </div>
+        <p class="settings-help">
+          Hide labels that have fewer albums than this threshold. Useful if the scanner picks up one-off compilations from unexpected labels.
+        </p>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-block">
+        <div class="settings-row">
+          <span class="settings-label">Appearance — dark / light</span>
+          <button id="theme-toggle" class="icon-btn" aria-label="Toggle theme" title="Toggle theme">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="settings-foot">
+        <span class="settings-version" id="settings-version">Roon Random Albums</span>
+        <a class="settings-repo" id="settings-repo"
+           href="https://github.com/meltface-80/Roon-Random-Albums-Extension"
+           target="_blank" rel="noopener noreferrer">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49 0-.24-.01-.88-.01-1.73-2.78.62-3.37-1.37-3.37-1.37-.46-1.18-1.11-1.49-1.11-1.49-.91-.64.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.55-1.14-4.55-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.27 2.75 1.05a9.36 9.36 0 0 1 2.5-.35c.85 0 1.71.12 2.5.35 1.91-1.32 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68 1.9 0 1.37-.01 2.48-.01 2.82 0 .27.18.6.69.49A10.02 10.02 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"/>
+          </svg>
+          <span>View on GitHub</span>
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Filter bottom sheet (All / Genre / Tag) -->
+  <div id="filter-overlay" class="settings-overlay hidden" role="dialog" aria-modal="true" aria-label="Filter">
+    <div class="settings-backdrop" data-filter-close></div>
+    <div class="settings-sheet filter-sheet">
+      <div class="settings-grip"></div>
+      <div class="settings-head">
+        <h2>Filter</h2>
+      </div>
+
+      <button class="filter-row" id="filter-all" type="button">
+        <span>All albums</span>
+        <span class="filter-check" data-for="all">✓</span>
+      </button>
+
+      <div class="settings-divider"></div>
+
+      <button class="filter-section-toggle" id="filter-genres-toggle" type="button" aria-expanded="false">
+        <span>Genre</span>
+        <svg class="filter-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+      <div class="filter-list hidden" id="filter-genres-list"></div>
+
+      <div class="settings-divider"></div>
+
+      <button class="filter-section-toggle" id="filter-tags-toggle" type="button" aria-expanded="false">
+        <span>Tag</span>
+        <svg class="filter-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+      <div class="filter-list hidden" id="filter-tags-list"></div>
+
+      <p class="settings-help filter-hint">
+        Tip: in Roon, use Focus (e.g. hi-res only), select all, and add the
+        results to a Tag — then filter by that Tag here.
+      </p>
+    </div>
+  </div>
+
+  <!-- Confirm dialog (e.g. move queue on zone change) -->
+  <div id="confirm-overlay" class="confirm-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-msg">
+    <div class="confirm-backdrop"></div>
+    <div class="confirm-box">
+      <p class="confirm-msg" id="confirm-msg"></p>
+      <div class="confirm-actions">
+        <button class="confirm-btn" id="confirm-no" type="button">No</button>
+        <button class="confirm-btn confirm-primary" id="confirm-yes" type="button">Yes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Same font MusicD uses, so the rendered card matches exactly. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700&display=swap">
+
+  <!-- Spotify Connect Relay modal -->
+  <div id="relay-modal" class="relay-modal hidden" role="dialog" aria-label="Spotify Connect Relay" aria-modal="true">
+    <div class="relay-modal-box">
+      <div class="relay-modal-head">
+        <svg class="relay-spotify-logo" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
+        </svg>
+        <div class="relay-modal-title">
+          <h2>Spotify Connect Relay</h2>
+          <p>Make Roon zones appear as Spotify Connect speakers</p>
+        </div>
+        <button class="relay-modal-close icon-btn" id="relay-modal-close" aria-label="Close">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 6 6 18M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      <div id="relay-librespot-status" class="relay-librespot-status"></div>
+
+      <div id="relay-zone-list" class="relay-zone-list">
+        <p class="relay-loading">Loading…</p>
+      </div>
+
+      <details class="relay-setup-details">
+        <summary>How to install librespot</summary>
+        <div class="relay-setup-body">
+          <p>librespot is the open-source Spotify Connect receiver. Install it on the same machine as this extension, then restart the extension.</p>
+
+          <p><strong>Option 1 — Debian / Ubuntu / DietPi / Raspberry Pi OS (easiest)</strong></p>
+          <pre class="relay-code">apt-get install librespot</pre>
+          <p>If the package is not found or your Raspberry Pi needs a newer build, install via raspotify instead:</p>
+          <pre class="relay-code">curl -sSL https://dtcooper.github.io/raspotify/install.sh | sh
+# Then stop the raspotify service — we only need the binary:
+systemctl stop raspotify
+systemctl disable raspotify</pre>
+          <p>The librespot binary will be at <code>/usr/bin/librespot</code>.</p>
+
+          <p><strong>Option 2 — macOS (Homebrew)</strong></p>
+          <pre class="relay-code">brew install librespot</pre>
+
+          <p><strong>Option 3 — Build from source (any platform)</strong></p>
+          <p>First install or update Rust via <a href="https://rustup.rs" target="_blank" rel="noopener noreferrer">rustup.rs</a> — the system Rust on Debian/DietPi is too old:</p>
+          <pre class="relay-code">curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source ~/.cargo/env
+cargo install librespot</pre>
+          <p>⚠️ Compiling takes 20–40 minutes on Raspberry Pi hardware.</p>
+
+          <p><strong>Custom path</strong></p>
+          <p>If librespot is installed somewhere non-standard, set the environment variable before starting the extension:</p>
+          <pre class="relay-code">LIBRESPOT_PATH=/path/to/librespot node index.js</pre>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <script src="/sharecard.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
