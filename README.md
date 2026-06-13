@@ -63,7 +63,7 @@ cd /opt/roon-random-albums && npm install
 
 # 5. Test by hand FIRST
 ```
-node index.js         # should print "listening on http://0.0.0.0:3399", Ctrl-C
+cd /opt/roon-random-albums && node index.js   # should print "listening on http://0.0.0.0:3399", Ctrl-C
 ```
 
 # Add as a service
