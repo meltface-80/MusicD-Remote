@@ -21,19 +21,21 @@ Includes **instant whole-library search** (see below). Roon-style dark theme
 Each release ships a `*-docker.tar.gz`. Download it, build the image, and run:
 
 ```bash
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.9-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.9-docker.tar.gz
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.10-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.10-docker.tar.gz
 cd roon-random-albums
-docker build -t roon-random-albums:1.5.9 .
+docker build -t roon-random-albums:1.5.10 .
 docker run -d \
   --name roon-random-albums \
   --restart unless-stopped \
   --network host \
-  roon-random-albums:1.5.9
+  -v roon-random-albums-data:/app/data \
+  roon-random-albums:1.5.10
 ```
 
 `--network host` is required so the extension can discover your Roon Core on
-the local network.
+the local network. The `-v` flag mounts a named Docker volume so your Roon
+pairing and accumulated label/logo cache survive container rebuilds.
 
 You should see the extension appear in **Roon → Settings → Extensions**. Click
 **Enable**, then browse to `http://<your-server-ip>:3399`.
@@ -50,26 +52,40 @@ sudo dietpi-software install 162
 curl -sSL https://get.docker.com | sh
 ```
 
-## Updating from v1.5.8 (Docker)
-
-If you're already running the v1.5.8 Docker container, upgrade in place:
+## Updating from v1.5.9
 
 ```bash
-# Stop and remove the old container
 docker stop roon-random-albums && docker rm roon-random-albums
-
-# Download and build the new image
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.9-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.9-docker.tar.gz
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.10-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.10-docker.tar.gz
 cd roon-random-albums
-docker build -t roon-random-albums:1.5.9 .
-
-# Run the new container
+docker build -t roon-random-albums:1.5.10 .
 docker run -d \
   --name roon-random-albums \
   --restart unless-stopped \
   --network host \
-  roon-random-albums:1.5.9
+  -v roon-random-albums-data:/app/data \
+  roon-random-albums:1.5.10
+```
+
+The `-v roon-random-albums-data:/app/data` flag is new in v1.5.10 — add it
+even if you didn't use it before. It creates a named volume that keeps your
+label cache and Roon pairing safe across future rebuilds.
+
+## Updating from v1.5.8
+
+```bash
+docker stop roon-random-albums && docker rm roon-random-albums
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.10-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.10-docker.tar.gz
+cd roon-random-albums
+docker build -t roon-random-albums:1.5.10 .
+docker run -d \
+  --name roon-random-albums \
+  --restart unless-stopped \
+  --network host \
+  -v roon-random-albums-data:/app/data \
+  roon-random-albums:1.5.10
 ```
 
 Your Roon pairing carries over automatically — no need to re-enable in Roon settings.
@@ -81,27 +97,27 @@ migration banner automatically with copy-ready commands. Or follow these steps:
 
 ```bash
 # 1. Download and build the Docker image
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.9-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.9-docker.tar.gz
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.10-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.10-docker.tar.gz
 cd roon-random-albums
-docker build -t roon-random-albums:1.5.9 .
+docker build -t roon-random-albums:1.5.10 .
 
 # 2. Run the Docker container
 docker run -d \
   --name roon-random-albums \
   --restart unless-stopped \
   --network host \
-  roon-random-albums:1.5.9
+  -v roon-random-albums-data:/app/data \
+  roon-random-albums:1.5.10
 
 # 3. Stop and disable the native service
 sudo systemctl stop roon-random-albums
 sudo systemctl disable roon-random-albums
 ```
 
-Your Roon pairing is stored in the container's `/app/config.json` — it
-persists across container restarts because Docker keeps the container
-filesystem between restarts. If you ever remove and recreate the container,
-re-enable the extension in Roon → Settings → Extensions.
+Your Roon pairing and label cache are stored in the named Docker volume
+`roon-random-albums-data` and persist even if the container is removed and
+recreated.
 
 ## Updating
 
@@ -124,7 +140,7 @@ wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-r
 tar -xzf roon-random-albums-v{NEW_VERSION}-docker.tar.gz
 cd roon-random-albums
 docker build -t roon-random-albums:{NEW_VERSION} .
-docker run -d --name roon-random-albums --restart unless-stopped --network host roon-random-albums:{NEW_VERSION}
+docker run -d --name roon-random-albums --restart unless-stopped --network host -v roon-random-albums-data:/app/data roon-random-albums:{NEW_VERSION}
 ```
 
 ## Search
@@ -167,7 +183,7 @@ stays out of the way. The choice is remembered per zone across restarts.
 Pass extra env vars with `-e` in the `docker run` command:
 
 ```bash
-docker run -d ... -e RRA_DEBUG=1 roon-random-albums:1.5.9
+docker run -d ... -e RRA_DEBUG=1 roon-random-albums:1.5.10
 ```
 
 ### Album metadata sources
@@ -207,17 +223,23 @@ roon-random-albums/
 ├── Dockerfile
 ├── package.json
 ├── LICENSE                 # MIT
+├── CHANGELOG.md
 ├── launcher.js             # supervises index.js; applies updates on restart
 ├── index.js                # Roon API + Express server
 ├── lib/
 │   ├── updater.js          # GitHub release check + download/apply
 │   └── radio.js            # random album radio decision logic
-├── public/
-│   ├── index.html
-│   ├── style.css
-│   ├── app.js
-│   └── sharecard.js
-└── README.md
+├── data/
+│   ├── labels-override.json  # shipped label name corrections
+│   └── cache/                # runtime-generated; preserved across updates
+│       ├── labels-cache.json
+│       ├── labels-mbid.json
+│       └── labels-logo.json
+└── public/
+    ├── index.html
+    ├── style.css
+    ├── app.js
+    └── sharecard.js
 ```
 
 ## License

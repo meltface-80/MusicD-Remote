@@ -2,6 +2,23 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.10] — 2026-06-17
+
+### Added
+- **Label cache persistence** — label name, MusicBrainz MBID, and Fan Art TV
+  logo caches are now written to `data/cache/` and excluded from the update
+  overlay. Once built, the label database survives in-app updates without
+  rescanning.
+- **Docker volume for `data/`** — the Dockerfile now declares `VOLUME /app/data`
+  and the docker run command mounts a named volume (`roon-random-albums-data`),
+  so the cache and Roon pairing persist even when the container is removed and
+  rebuilt.
+
+### Changed
+- **Fan Art TV logo fetches run 5 at a time** instead of sequentially with a
+  500 ms delay. A library with 200 unique labels that all have MBIDs now
+  finishes logo fetching in ~8 seconds instead of ~100 seconds.
+
 ## [1.5.9] — 2026-06-17
 
 ### Added
