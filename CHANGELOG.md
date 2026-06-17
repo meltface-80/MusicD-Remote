@@ -2,6 +2,14 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.13] — 2026-06-17
+
+### Changed
+- **Share card** — redesigned to 1200×600. Album art now fills the entire left
+  half (600×600, full bleed, no padding). Year, title and artist are vertically
+  centred in the right half with even breathing room. A subtle dark gradient
+  feathers the art-to-text boundary. Wordmark pinned to the bottom-right corner.
+
 ## [1.5.12] — 2026-06-17
 
 ### Added
