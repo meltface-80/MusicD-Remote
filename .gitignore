@@ -1,6 +1,0 @@
-node_modules/
-data/labels-cache.json
-data/labels-mbid.json
-data/labels-logo.json
-*.tar.gz
-!*-docker.tar.gz
