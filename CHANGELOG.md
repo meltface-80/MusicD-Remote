@@ -2,6 +2,24 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.14] — 2026-06-17
+
+### Added
+- **Artist album links** — artist names in the album detail modal are now
+  clickable. Tapping opens a filtered grid showing all albums by that artist:
+  primary releases at the top, albums they appear on below.
+- **Roon extension settings: per-zone radio toggle** — the random-album-radio
+  switch for each zone is now also available inside Roon's own extension
+  settings panel, so you can toggle it without opening the web UI.
+- **Roon extension settings: Check for updates** — a *Check for updates* action
+  in Roon's extension settings triggers an immediate update check.
+
+### Changed
+- **Label scan speed** — iTunes Search API is now the primary label source
+  (free, no API key, returns `recordLabel` directly). MusicBrainz is used as
+  a fallback. Scans now run 6 albums concurrently, reducing scan time from
+  ~17 minutes to ~2–3 minutes for a 1 000-album library.
+
 ## [1.5.13] — 2026-06-17
 
 ### Changed

@@ -112,7 +112,33 @@ async function updateCheckTick() {
 function makeSettingsLayout() {
   const st = updater.getStatus();
   const layout = [];
+  const values  = { do_update: "no", do_check: "no" };
+
   layout.push({ type: "label", title: "Roon Random Albums v" + pkg.version });
+
+  // --- Random Album Radio per zone ---
+  layout.push({ type: "label", title: "\u2500\u2500\u2500 Random Album Radio \u2500\u2500\u2500" });
+  const knownZones = Object.values(zones || {}).sort((a, b) =>
+    (a.display_name || "").localeCompare(b.display_name || ""));
+  if (knownZones.length === 0) {
+    layout.push({ type: "label", title: "No zones visible yet \u2014 open the Roon app first." });
+  } else {
+    for (const z of knownZones) {
+      const settingKey = "radio_" + z.zone_id;
+      values[settingKey] = radioZones.has(z.zone_id) ? "yes" : "no";
+      layout.push({
+        type: "dropdown", title: z.display_name,
+        setting: settingKey,
+        values: [
+          { title: "Off", value: "no" },
+          { title: "On \u2014 random album radio", value: "yes" }
+        ]
+      });
+    }
+  }
+
+  // --- Updates ---
+  layout.push({ type: "label", title: "\u2500\u2500\u2500 Updates \u2500\u2500\u2500" });
   if (st.apply.phase === "downloading" || st.apply.phase === "extracting" || st.apply.phase === "restarting") {
     layout.push({ type: "label", title: "Installing update\u2026 the extension will restart shortly." });
   } else if (st.checking) {
@@ -131,21 +157,47 @@ function makeSettingsLayout() {
     });
   } else {
     layout.push({ type: "label", title: "You're on the latest version." });
+    layout.push({
+      type: "dropdown", title: "Check for updates", setting: "do_check",
+      values: [
+        { title: "\u2014", value: "no" },
+        { title: "Check now", value: "yes" }
+      ]
+    });
   }
-  return { values: { do_update: "no" }, layout, has_error: false };
+
+  return { values, layout, has_error: false };
 }
 
 const svc_status = new RoonApiStatus(roon);
 const svc_settings = new RoonApiSettings(roon, {
   get_settings: function (cb) { cb(makeSettingsLayout()); },
   save_settings: function (req, isdryrun, settings) {
+    const vals = settings.values || {};
     const l = makeSettingsLayout();
-    l.values.do_update = (settings.values && settings.values.do_update) || "no";
+
+    // Apply radio zone toggles immediately (even on dry run for live preview).
+    for (const [k, v] of Object.entries(vals)) {
+      if (!k.startsWith("radio_")) continue;
+      const zoneId = k.slice(6);
+      if (v === "yes") radioZones.add(zoneId);
+      else radioZones.delete(zoneId);
+    }
+    if (!isdryrun) persistRadio();
+
+    l.values.do_update = vals.do_update || "no";
+    l.values.do_check  = vals.do_check  || "no";
     req.send_complete(l.has_error ? "NotValid" : "Success", { settings: l });
-    if (!isdryrun && !l.has_error && l.values.do_update === "yes") {
-      svc_settings.update_settings(makeSettingsLayout());   // reset the control
-      updater.apply().then(() => { pushStatus(); refreshSettings(); }).catch(() => {});
-      refreshSettings();
+
+    if (!isdryrun) {
+      if (l.values.do_update === "yes") {
+        svc_settings.update_settings(makeSettingsLayout());
+        updater.apply().then(() => { pushStatus(); refreshSettings(); }).catch(() => {});
+      }
+      if (l.values.do_check === "yes") {
+        svc_settings.update_settings(makeSettingsLayout());
+        updater.checkNow().then(() => { pushStatus(); refreshSettings(); }).catch(() => {});
+      }
     }
   }
 });
@@ -804,6 +856,37 @@ function seedLabelsFromCache() {
 }
 
 // ---------------------------------------------------------------------------
+// iTunes Search API — primary label source. Free, no key, returns recordLabel
+// directly. Parallelisable (no strict rate limit at moderate concurrency).
+// ---------------------------------------------------------------------------
+async function fetchLabelFromiTunes(title, artist) {
+  if (!title) return null;
+  const term = [title, artist].filter(Boolean).join(" ");
+  const url = `https://itunes.apple.com/search?term=${encodeURIComponent(term)}&entity=album&media=music&limit=5`;
+  try {
+    const json = await httpJson(url, { "User-Agent": MB_USER_AGENT }, 10000);
+    const results = json && json.results;
+    if (!Array.isArray(results) || !results.length) return null;
+    const normTitle = normalize(title);
+    let match = results.find(r => normalize(r.collectionName || "") === normTitle);
+    if (!match && artist) {
+      const normArtist = normalize(artist);
+      match = results.find(r =>
+        normalize(r.collectionName || "") === normTitle ||
+        normalize(r.artistName || "") === normArtist
+      );
+    }
+    if (!match) match = results[0];
+    const label = match && match.recordLabel;
+    if (!label || /self.released|independent|self-released/i.test(label)) return null;
+    return label;
+  } catch (e) {
+    if (DEBUG) console.error("[labels:itunes]", e.message);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Discogs label lookup — primary source.  60 req/min authenticated.
 // Returns the label name string, or null if not found / self-released.
 // ---------------------------------------------------------------------------
@@ -910,18 +993,18 @@ async function runLabelsIndexScan() {
   const total = albumIndex.albums.length;
   let done = 0;
 
-  if (DEBUG) console.log("[labels] Discogs+MusicBrainz scan:", toScan.length, "albums to look up");
+  if (DEBUG) console.log("[labels] iTunes+MusicBrainz scan:", toScan.length, "albums to look up");
 
-  for (const al of toScan) {
+  const processAlbum = async (al) => {
     const key = normalize(al.title) + "||" + normalize(al.subtitle);
     try {
       let label = null, mbid = null;
 
-      // Primary: Discogs — better coverage, 60 req/min authenticated
-      label = await fetchLabelFromDiscogs(al.title, al.subtitle);
+      // Primary: iTunes — fast, no rate limit, returns recordLabel directly.
+      label = await fetchLabelFromiTunes(al.title, al.subtitle);
 
       if (!label) {
-        // Fallback: MusicBrainz release lookup — also returns the label MBID
+        // Fallback: MusicBrainz — also gives us the MBID directly.
         const mbResult = await fetchLabelFromMusicBrainz(al.title, al.subtitle);
         if (mbResult) { label = mbResult.label; mbid = mbResult.mbid; }
       }
@@ -933,7 +1016,6 @@ async function runLabelsIndexScan() {
         // Resolve MBID for Fan Art TV — once per unique label, not per album.
         const gk = labelGroupKey(label);
         if (gk && !labelMbidCache.has(gk)) {
-          // MB release lookup already gave us the MBID; otherwise do a label lookup.
           const resolvedMbid = mbid || await fetchLabelMbidFromMusicBrainz(label);
           if (resolvedMbid) {
             setLabelMbid(gk, resolvedMbid);
@@ -942,10 +1024,16 @@ async function runLabelsIndexScan() {
           }
         }
       }
-      // Don't cache failures — retry on next scan.
     } catch (e) { /* keep scanning */ }
     done++;
     labelsIndex.progress = (alreadyDone + done) / total;
+  };
+
+  // Run 6 albums concurrently — iTunes handles this fine.
+  // MusicBrainz fallback serialises itself via mbWait(), so no overload risk.
+  const SCAN_BATCH = 6;
+  for (let i = 0; i < toScan.length; i += SCAN_BATCH) {
+    await Promise.allSettled(toScan.slice(i, i + SCAN_BATCH).map(processAlbum));
   }
 
   labelsIndex.building = false;
@@ -1723,6 +1811,23 @@ function parseFilter(src) {
   if (type !== "genre" && type !== "tag" && type !== "label") return null;
   return { type, value };
 }
+
+app.get("/api/artist-albums", (req, res) => {
+  const artist = (req.query.artist || "").trim();
+  if (!artist) return res.status(400).json({ error: "artist required" });
+  if (!albumIndex.count) return res.json({ artist, primary: [], featured: [] });
+  const norm = normalize(artist);
+  const primary = [], featured = [];
+  for (const al of albumIndex.albums) {
+    const sub = normalize(al.subtitle || "");
+    if (!sub) continue;
+    if (sub === norm) primary.push(al);
+    else if (sub.includes(norm)) featured.push(al);
+  }
+  primary.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
+  featured.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
+  res.json({ artist, primary, featured });
+});
 
 app.get("/api/random-albums", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });

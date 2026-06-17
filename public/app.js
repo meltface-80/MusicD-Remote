@@ -434,7 +434,17 @@
     showTab("album");
 
     modalTitle.textContent = album.title || "Untitled";
-    modalSub.textContent   = album.subtitle || "";
+    modalSub.innerHTML = "";
+    if (album.subtitle) {
+      const artistBtn = document.createElement("button");
+      artistBtn.className = "modal-artist-link";
+      artistBtn.textContent = album.subtitle;
+      artistBtn.addEventListener("click", () => {
+        closeModal();
+        window.__showArtistAlbums && window.__showArtistAlbums(album.subtitle);
+      });
+      modalSub.appendChild(artistBtn);
+    }
     modalActs.innerHTML    = isNP ? "" : `<div class="modal-loading">Loading…</div>`;
     modalTracks.innerHTML  = "";
 
@@ -711,12 +721,12 @@
   }
 
   function renderExtras(extras, album) {
-    // 1. Append year to subtitle
+    // 1. Append year to subtitle (keep the artist link button intact)
     if (extras.year) {
-      const parts = [];
-      if (album.subtitle) parts.push(album.subtitle);
-      parts.push(extras.year);
-      modalSub.textContent = parts.join(" · ");
+      const yearSpan = document.createElement("span");
+      yearSpan.className = "modal-subtitle-year";
+      yearSpan.textContent = " · " + extras.year;
+      modalSub.appendChild(yearSpan);
     }
 
     // 2. Album bio section (label, year, description, source link)
@@ -1263,6 +1273,8 @@
   })();
 
   window.__openAlbum = openAlbum;
+  window.__buildAlbumTile = (a) => buildAlbumTile(a);
+  window.__loadRandom = loadRandom;
 
   async function bootstrap() {
     setBanner("Connecting to Roon…");
@@ -2285,6 +2297,134 @@
       setTimeout(() => { btn.disabled = false; btn.textContent = "Check for updates"; }, 3000);
     }
   });
+})();
+
+/* ------------------------------------------------------------------ */
+/*  Artist albums view                                                 */
+/* ------------------------------------------------------------------ */
+(() => {
+  const grid       = document.getElementById("album-grid");
+  const countBar   = document.getElementById("content-count");
+
+  let artistViewActive = false;
+  let savedGridHtml    = "";
+  let savedCountHtml   = "";
+
+  function exitArtistView() {
+    if (!artistViewActive) return;
+    artistViewActive = false;
+    grid.innerHTML    = savedGridHtml;
+    if (countBar) { countBar.innerHTML = savedCountHtml; countBar.classList.add("hidden"); }
+    // Re-trigger a fresh random load
+    if (window.__loadRandom) window.__loadRandom();
+  }
+
+  async function showArtistAlbums(artistName) {
+    if (!artistName) return;
+    artistViewActive = true;
+    savedGridHtml    = grid.innerHTML;
+    savedCountHtml   = countBar ? countBar.innerHTML : "";
+
+    // Show loading state
+    if (countBar) {
+      countBar.classList.remove("hidden");
+      countBar.innerHTML = `
+        <button class="artist-view-back" id="artist-back-btn">← Back</button>
+        <span class="count-text">Loading…</span>`;
+      document.getElementById("artist-back-btn").addEventListener("click", exitArtistView);
+    }
+    grid.innerHTML = "";
+
+    try {
+      const r = await fetch("/api/artist-albums?artist=" + encodeURIComponent(artistName));
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const j = await r.json();
+      const total = j.primary.length + j.featured.length;
+
+      if (countBar) {
+        countBar.innerHTML = `
+          <button class="artist-view-back" id="artist-back-btn">← Back</button>
+          <span class="count-text">${total} album${total !== 1 ? "s" : ""} · ${artistName}</span>`;
+        document.getElementById("artist-back-btn").addEventListener("click", exitArtistView);
+      }
+
+      if (!total) {
+        grid.innerHTML = `<div class="artist-view-empty">No albums found for "${artistName}"</div>`;
+        return;
+      }
+
+      const frag = document.createDocumentFragment();
+
+      if (j.primary.length) {
+        if (j.featured.length) {
+          const hdr = document.createElement("div");
+          hdr.className = "artist-section-header";
+          hdr.textContent = "Albums";
+          frag.appendChild(hdr);
+        }
+        for (const a of j.primary) {
+          frag.appendChild(window.__buildAlbumTile
+            ? window.__buildAlbumTile(a)
+            : buildSimpleTile(a));
+        }
+      }
+
+      if (j.featured.length) {
+        const hdr = document.createElement("div");
+        hdr.className = "artist-section-header";
+        hdr.textContent = "Also appears on";
+        frag.appendChild(hdr);
+        for (const a of j.featured) {
+          frag.appendChild(window.__buildAlbumTile
+            ? window.__buildAlbumTile(a)
+            : buildSimpleTile(a));
+        }
+      }
+
+      grid.appendChild(frag);
+    } catch (e) {
+      if (countBar) {
+        countBar.innerHTML = `
+          <button class="artist-view-back" id="artist-back-btn">← Back</button>
+          <span class="count-text" style="color:var(--danger)">Error: ${e.message}</span>`;
+        document.getElementById("artist-back-btn").addEventListener("click", exitArtistView);
+      }
+    }
+  }
+
+  function buildSimpleTile(a) {
+    const btn = document.createElement("button");
+    btn.className = "album-btn";
+    btn.type = "button";
+    const artWrap = document.createElement("div");
+    artWrap.className = "album-art-wrap";
+    if (a.image_key) {
+      const img = document.createElement("img");
+      img.src = "/api/image/" + encodeURIComponent(a.image_key) + "?size=500";
+      img.alt = a.title || "";
+      img.className = "album-art";
+      artWrap.appendChild(img);
+    }
+    const meta = document.createElement("div");
+    meta.className = "album-meta";
+    const titleEl = document.createElement("div");
+    titleEl.className = "album-title";
+    titleEl.textContent = a.title || "Untitled";
+    const artistEl = document.createElement("div");
+    artistEl.className = "album-artist";
+    artistEl.textContent = a.subtitle || "";
+    meta.appendChild(titleEl);
+    meta.appendChild(artistEl);
+    btn.appendChild(artWrap);
+    btn.appendChild(meta);
+    btn.addEventListener("click", () => {
+      if (window.__openAlbum) window.__openAlbum(a);
+    });
+    return btn;
+  }
+
+  window.__showArtistAlbums = showArtistAlbums;
+  window.__exitArtistView   = exitArtistView;
 })();
 
 /* ------------------------------------------------------------------ */

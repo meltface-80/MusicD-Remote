@@ -1,7 +1,3 @@
-<div align="center"> 
-
-<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/fc1dd26e-db7f-4e27-8f66-b0ab74db89e3" />
-
 # Random Albums — a Roon extension
 
 A web UI that shows a screenful of random albums from your Roon library, with
@@ -14,26 +10,26 @@ Includes **instant whole-library search** (see below). Roon-style dark theme
 > the album detail view (art, tracks, action buttons) is rendered inside this
 > UI. Tapping **Play Now** still plays through Roon on the zone you select.
 
-</div>
-
 ## Install (Docker)
 
+Each release ships a `*-docker.tar.gz`. Download it, build the image, and run:
+
 ```bash
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.13-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.13-docker.tar.gz
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.14-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.14-docker.tar.gz
 cd roon-random-albums
-docker build -t roon-random-albums:1.5.13 .
+docker build -t roon-random-albums:1.5.14 .
 docker run -d \
   --name roon-random-albums \
   --restart unless-stopped \
   --network host \
-  -v roon-data:/app/data \
-  roon-random-albums:1.5.13
+  -v roon-random-albums-data:/app/data \
+  roon-random-albums:1.5.14
 ```
 
-- `--network host` — required so the extension can discover your Roon Core.
-- `-v roon-data:/app/data` — creates a named Docker volume that persists your
-  Roon pairing and label database across every future upgrade.
+`--network host` is required so the extension can discover your Roon Core on
+the local network. The `-v` flag mounts a named Docker volume so that your
+Roon pairing and accumulated label/logo cache survive container rebuilds.
 
 You should see the extension appear in **Roon → Settings → Extensions**. Click
 **Enable**, then browse to `http://<your-server-ip>:3399`.
@@ -50,74 +46,58 @@ sudo dietpi-software install 162
 curl -sSL https://get.docker.com | sh
 ```
 
-## Upgrading from any previous version
-
-```bash
-docker stop roon-random-albums && docker rm roon-random-albums
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.13-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.13-docker.tar.gz
-cd roon-random-albums
-docker build -t roon-random-albums:1.5.13 .
-docker run -d \
-  --name roon-random-albums \
-  --restart unless-stopped \
-  --network host \
-  -v roon-data:/app/data \
-  roon-random-albums:1.5.13
-```
-
-Docker reuses the existing `roon-data` volume automatically — your label
-database and Roon pairing carry over with no extra steps.
-
 ## Migrating from a native install
 
-The app shows a migration banner automatically with copy-ready commands.
-Or follow these steps manually:
+If you're running an older native (non-Docker) install, the app will show a
+migration banner automatically with copy-ready commands. Or follow these steps:
 
 ```bash
-# 1. Download and build
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.13-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.13-docker.tar.gz
+# 1. Download and build the Docker image
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.14-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.14-docker.tar.gz
 cd roon-random-albums
-docker build -t roon-random-albums:1.5.13 .
+docker build -t roon-random-albums:1.5.14 .
 
-# 2. Run
+# 2. Run the Docker container
 docker run -d \
   --name roon-random-albums \
   --restart unless-stopped \
   --network host \
-  -v roon-data:/app/data \
-  roon-random-albums:1.5.13
+  -v roon-random-albums-data:/app/data \
+  roon-random-albums:1.5.14
 
-# 3. Stop the native service
+# 3. Stop and disable the native service
 sudo systemctl stop roon-random-albums
 sudo systemctl disable roon-random-albums
 ```
 
-## Updating (in-app)
+Your Roon pairing and label cache are stored under `/app/data` inside the
+named Docker volume `roon-random-albums-data`, so they persist even if the
+container is removed and recreated.
+
+## Updating
 
 Updates are detected automatically on startup and every 6 hours. Install with
 one tap from the **settings cog → Updates → Check for updates** in the web UI,
 or wait for the update toast to appear. The container restarts itself to apply
-the update. The label database is preserved — it lives in the Docker volume,
-outside the update path.
+the update.
 
-To force an immediate check:
+To force an immediate check (e.g. right after a new release):
 
 ```bash
 docker restart roon-random-albums
 ```
 
-## Label database
+To upgrade to a new version manually:
 
-Record label names, MusicBrainz IDs, and Fan Art TV logo URLs are stored in a
-SQLite database at `data/cache/labels.db` inside the `roon-data` Docker volume.
-This file is **never touched by the updater** — it accumulates permanently.
-
-Scanning is triggered the first time you open the Labels view and runs in the
-background (~1 req/sec against Discogs and MusicBrainz, rate-limited). Logo
-fetches happen after scanning in batches of 5 concurrent requests. On restart,
-everything loads from the database instantly with no network calls.
+```bash
+docker stop roon-random-albums && docker rm roon-random-albums
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v{NEW_VERSION}-docker.tar.gz
+tar -xzf roon-random-albums-v{NEW_VERSION}-docker.tar.gz
+cd roon-random-albums
+docker build -t roon-random-albums:{NEW_VERSION} .
+docker run -d --name roon-random-albums --restart unless-stopped --network host -v roon-random-albums-data:/app/data roon-random-albums:{NEW_VERSION}
+```
 
 ## Search
 
@@ -159,7 +139,7 @@ stays out of the way. The choice is remembered per zone across restarts.
 Pass extra env vars with `-e` in the `docker run` command:
 
 ```bash
-docker run -d ... -e RRA_DEBUG=1 roon-random-albums:1.5.13
+docker run -d ... -e RRA_DEBUG=1 roon-random-albums:1.5.14
 ```
 
 ### Album metadata sources
@@ -189,36 +169,27 @@ No keys required. The extension pulls in three pieces of external metadata:
   → No active outputs visible to Roon yet. Wake a device or pick one in
   Roon's own remote first.
 - **Update fails with "extraction failed"**
-  → Rebuild the container from the latest tarball using the Upgrading steps
-  above.
+  → The container image may be old; rebuild using the steps in the Updating
+  section above. From v1.5.9 onward this is fixed automatically.
 
 ## File layout
 
 ```
 roon-random-albums/
-├── docker-compose.yml
 ├── Dockerfile
 ├── package.json
 ├── LICENSE                 # MIT
-├── CHANGELOG.md
 ├── launcher.js             # supervises index.js; applies updates on restart
 ├── index.js                # Roon API + Express server
 ├── lib/
 │   ├── updater.js          # GitHub release check + download/apply
 │   └── radio.js            # random album radio decision logic
-├── data/
-│   └── labels-override.json  # shipped label corrections (updated with releases)
-└── public/
-    ├── index.html
-    ├── style.css
-    ├── app.js
-    └── sharecard.js
-
-# Runtime data (inside the roon-data Docker volume — never wiped on update):
-/app/data/
-├── config.json             # Roon pairing
-└── cache/
-    └── labels.db           # SQLite: label names, MBIDs, logo URLs
+├── public/
+│   ├── index.html
+│   ├── style.css
+│   ├── app.js
+│   └── sharecard.js
+└── README.md
 ```
 
 ## License
