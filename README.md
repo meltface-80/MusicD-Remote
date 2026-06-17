@@ -223,7 +223,8 @@ restarts.
 
 ## Docker
 
-Pull the release tarball, build the image, and run:
+Each release ships a `*-docker.tar.gz` that contains the source and a
+`Dockerfile`. Download it, build the image, and run:
 
 ```bash
 wget https://raw.githubusercontent.com/meltface-80/Roon-Random-Albums-Extension/main/roon-random-albums-v1.5.10-docker.tar.gz
@@ -237,22 +238,28 @@ docker run -d \
   roon-random-albums:1.5.10
 ```
 
-`--network host` is required so the extension can discover your Roon Core on the local network.
+`--network host` is required so the extension can discover your Roon Core on
+the local network.
 
 ### Upgrading to a new version
 
-Stop and remove the old container, then repeat the steps above with the new version number:
+Stop and remove the old container, then repeat the steps above with the new
+version number:
 
 ```bash
 docker stop roon-random-albums
 docker rm roon-random-albums
 ```
 
-### Force an update scan
+### Updates via the web UI
 
-Updates are detected automatically on startup and every 6 hours, and can be installed with one tap from the **settings cog → Check for updates** inside the web UI — exactly the same as a native install.
+Updates are detected automatically on startup and every 6 hours, and can be
+installed with one tap from the **settings cog → Check for updates** inside
+the web UI — exactly the same as a native install. The container restarts
+itself to apply the update.
 
-To force the extension to check immediately (e.g. right after a new release), restart the container:
+To force the extension to check for an update immediately (e.g. right after
+a new release), restart the container:
 
 ```bash
 docker restart roon-random-albums
