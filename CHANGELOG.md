@@ -2,6 +2,13 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.15] — 2026-06-17
+
+### Fixed
+- **Roon extension settings** — removed duplicate version label (version is
+  already shown in the Roon panel header). Changed the "Check for updates"
+  dropdown placeholder from "—" to "No action" for clarity.
+
 ## [1.5.14] — 2026-06-17
 
 ### Added

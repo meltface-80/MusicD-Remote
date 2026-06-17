@@ -114,8 +114,6 @@ function makeSettingsLayout() {
   const layout = [];
   const values  = { do_update: "no", do_check: "no" };
 
-  layout.push({ type: "label", title: "Roon Random Albums v" + pkg.version });
-
   // --- Random Album Radio per zone ---
   layout.push({ type: "label", title: "\u2500\u2500\u2500 Random Album Radio \u2500\u2500\u2500" });
   const knownZones = Object.values(zones || {}).sort((a, b) =>
@@ -160,7 +158,7 @@ function makeSettingsLayout() {
     layout.push({
       type: "dropdown", title: "Check for updates", setting: "do_check",
       values: [
-        { title: "\u2014", value: "no" },
+        { title: "No action", value: "no" },
         { title: "Check now", value: "yes" }
       ]
     });
