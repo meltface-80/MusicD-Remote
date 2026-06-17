@@ -1,39 +1,36 @@
 /*
- * sharecard.js — render a "now playing / album" share card as a PNG, in the browser.
+ * sharecard.js — render an album share card as a PNG, in the browser.
  *
  * Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
  * Released under the MIT License. See the LICENSE file for details.
  *
- * This is a client-side reimplementation of the original server-side card
- * (which used Node + sharp + SVG). We can't run sharp in a browser PWA, so we
- * draw the identical layout onto an HTML5 <canvas> and export a PNG blob.
+ * Layout (1200 × 592 fixed):
  *
- * Layout (1200 x 600), matching the original:
+ *   +----------------------+-----------------------------+
+ *   |                      |  RELEASED DD Mon YYYY       |
+ *   |    cover 480×480     |  Album Title (bold, ≤3 ln)  |
+ *   |                      |  by Artist (≤3 lines)       |
+ *   |                      |             [MusicD wordmark]|
+ *   +----------------------+-----------------------------+
  *
- *   +--------------------+-----------------------------+
- *   |                    |  [MusicD wordmark, top-right]|
- *   |                    |  Released DD Mon YYYY        |
- *   |    cover 600x600   |  <Album Title> (wraps x3)    |
- *   |                    |  by <Artist>                 |
- *   |                    |  [GENRE] [GENRE] [GENRE]     |
- *   +--------------------+-----------------------------+
- *
- * Note vs the original: the grey "review" paragraph is omitted, because that
- * text came from the old project's enrichment database and isn't available
- * over the LMS JSON-RPC API.
+ * The three text sections are distributed with space-evenly within the cover
+ * height (480 px) so they neither exceed the top nor the bottom of the artwork.
  */
 
 const ShareCard = (() => {
-  const CARD_W      = 1200;
-  const PAD         = 56;
-  const COVER       = 480;
-  const COVER_X     = PAD;
-  const COVER_Y     = PAD;
-  const RIGHT_X     = PAD + COVER + 44;          // info column start
-  const RIGHT_W     = CARD_W - RIGHT_X - PAD;    // info column width
-  const REVIEW_W    = CARD_W - PAD * 2;          // full-width review
-  const WORDMARK_W  = 168;
-  const MAX_REVIEW_LINES = 20;
+  const CARD_W     = 1200;
+  const PAD        = 56;
+  const COVER      = 480;
+  const COVER_X    = PAD;
+  const COVER_Y    = PAD;
+  const CARD_H     = PAD * 2 + COVER;           // 592 — fixed, no review
+  const RIGHT_X    = PAD + COVER + 44;           // info column start  (580)
+  const RIGHT_W    = CARD_W - RIGHT_X - PAD;     // info column width  (564)
+  const WORDMARK_W = 168;
+
+  const RELEASE_LH = 28;   // line-height for the 22 px date line
+  const TITLE_LH   = 56;   // line-height for 46 px title
+  const ARTIST_LH  = 40;   // line-height for 30 px artist
 
   const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
@@ -57,7 +54,7 @@ const ShareCard = (() => {
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.crossOrigin = 'anonymous';
-      img.onload = () => resolve(img);
+      img.onload  = () => resolve(img);
       img.onerror = () => reject(new Error('image load failed: ' + src));
       img.src = src;
     });
@@ -92,78 +89,57 @@ const ShareCard = (() => {
 
   /*
    * Render the card. `data` shape:
-   *   { coverUrl, title, artist, releaseRaw, label, review, wordmarkUrl }
+   *   { coverUrl, title, artist, releaseRaw, wordmarkUrl }
    * Returns a Promise<Blob> (PNG).
-   *
-   * Layout (1200 wide, height grows to fit the review):
-   *   +----------------------------------------------------+
-   *   | [cover 480]   RELEASED date · label                |
-   *   | [        ]    Album Title (bold, wraps)            |
-   *   | [        ]    by Artist                             |
-   *   |----------------------------------------------------|
-   *   | Full-width review text, as many lines as needed …   |
-   *   |                                       [MusicD logo] |
-   *   +----------------------------------------------------+
    */
   async function render(data) {
-    // Pre-load images so we know the wordmark ratio before sizing the canvas.
     const cover = await loadImage(data.coverUrl).catch(() => null);
     const wm    = await loadImage(data.wordmarkUrl).catch(() => null);
 
-    // Measuring pass — a throwaway context just for text metrics.
+    // Measuring pass — throwaway context just for text metrics.
     const canvas = document.createElement('canvas');
-    canvas.width = CARD_W;
+    canvas.width  = CARD_W;
     canvas.height = 10;
     let ctx = canvas.getContext('2d');
     ctx.textBaseline = 'top';
-    ctx.textAlign = 'left';
+    ctx.textAlign    = 'left';
+
+    const releaseStr = formatReleaseDate(data.releaseRaw);
 
     ctx.font = '700 46px "Manrope", sans-serif';
     const titleLines = wrapText(ctx, data.title || '', RIGHT_W, 3);
 
     ctx.font = '400 30px "Manrope", sans-serif';
-    const artistLines = wrapText(ctx, 'by ' + (data.artist || ''), RIGHT_W, 2);
+    const artistLines = wrapText(ctx, 'by ' + (data.artist || ''), RIGHT_W, 3);
 
-    ctx.font = '400 28px "Manrope", sans-serif';
-    const reviewLines = wrapText(ctx, data.review || '', REVIEW_W, MAX_REVIEW_LINES);
-
-    // --- Layout maths (textBaseline 'top', so y is the top of each line) ---
-    const releaseStr = formatReleaseDate(data.releaseRaw);
-    const label = (data.label || '').trim();
-    const metaLine = [releaseStr ? 'Released ' + releaseStr : null, label]
-      .filter(Boolean).join('   ·   ');
-
-    const TITLE_LH = 56, ARTIST_LH = 40, REVIEW_LH = 40;
-    let ry = COVER_Y + 6;                       // info column cursor
-    const metaH    = metaLine ? 40 : 0;
+    // Section heights
+    const releaseH = releaseStr ? RELEASE_LH : 0;
     const titleH   = titleLines.length * TITLE_LH;
     const artistH  = artistLines.length * ARTIST_LH;
-    const infoBottom = ry + metaH + titleH + 14 + artistH;
 
-    const topBottom  = Math.max(COVER_Y + COVER, infoBottom);
-    const reviewTop  = topBottom + 50;
-    const reviewH    = reviewLines.length * REVIEW_LH;
-    const wmH        = wm ? Math.round(WORDMARK_W * (wm.height / wm.width)) : 0;
-
-    const CARD_H = Math.round(reviewTop + reviewH + 36 + wmH + PAD);
+    // space-evenly: equal gaps before first section, between sections, and after last.
+    // nGaps = number of sections + 1
+    const nSections = (releaseStr ? 1 : 0) + 1 + 1;
+    const contentH  = releaseH + titleH + artistH;
+    const gap       = Math.max(6, (COVER - contentH) / (nSections + 1));
 
     // --- Real drawing pass ---
-    canvas.height = CARD_H;        // resizing resets the context
+    canvas.height = CARD_H;
     ctx = canvas.getContext('2d');
     ctx.textBaseline = 'top';
-    ctx.textAlign = 'left';
+    ctx.textAlign    = 'left';
 
-    // Background gradient
+    // Background
     const bg = ctx.createLinearGradient(0, 0, 0, CARD_H);
     bg.addColorStop(0, '#121417');
     bg.addColorStop(1, '#0a0a0b');
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, CARD_W, CARD_H);
 
-    // Cover (rounded + shadow)
+    // Cover — shadow then rounded clip
     ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.5)';
-    ctx.shadowBlur = 36;
+    ctx.shadowColor   = 'rgba(0,0,0,0.5)';
+    ctx.shadowBlur    = 36;
     ctx.shadowOffsetY = 14;
     roundRect(ctx, COVER_X, COVER_Y, COVER, COVER, 18);
     ctx.fillStyle = '#1a1a1a';
@@ -176,40 +152,30 @@ const ShareCard = (() => {
     else { ctx.fillStyle = '#1a1a1a'; ctx.fillRect(COVER_X, COVER_Y, COVER, COVER); }
     ctx.restore();
 
-    // Info column
-    ry = COVER_Y + 6;
-    if (metaLine) {
+    // Info column — space-evenly within COVER height
+    let ry = COVER_Y + gap;
+
+    if (releaseStr) {
       ctx.fillStyle = '#7f868d';
       ctx.font = '600 22px "Manrope", sans-serif';
-      ctx.fillText(metaLine.toUpperCase(), RIGHT_X, ry);
-      ry += metaH;
+      ctx.fillText(('Released ' + releaseStr).toUpperCase(), RIGHT_X, ry);
+      ry += releaseH + gap;
     }
+
     ctx.fillStyle = '#ffffff';
     ctx.font = '700 46px "Manrope", sans-serif';
     titleLines.forEach((line, i) => ctx.fillText(line, RIGHT_X, ry + i * TITLE_LH));
-    ry += titleH + 14;
+    ry += titleH + gap;
+
     ctx.fillStyle = '#cdd2d8';
     ctx.font = '400 30px "Manrope", sans-serif';
     artistLines.forEach((line, i) => ctx.fillText(line, RIGHT_X, ry + i * ARTIST_LH));
 
-    // Divider above the review
-    ctx.strokeStyle = 'rgba(255,255,255,0.10)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(PAD, topBottom + 24);
-    ctx.lineTo(CARD_W - PAD, topBottom + 24);
-    ctx.stroke();
-
-    // Review (full width)
-    ctx.fillStyle = '#aeb4bb';
-    ctx.font = '400 28px "Manrope", sans-serif';
-    reviewLines.forEach((line, i) => ctx.fillText(line, PAD, reviewTop + i * REVIEW_LH));
-
-    // Wordmark, bottom-right
+    // Wordmark — bottom-right of card
     if (wm) {
-      const wwidth = WORDMARK_W;
+      const wmH = Math.round(WORDMARK_W * (wm.height / wm.width));
       ctx.globalAlpha = 0.9;
-      ctx.drawImage(wm, CARD_W - PAD - wwidth, CARD_H - PAD - wmH + 8, wwidth, wmH);
+      ctx.drawImage(wm, CARD_W - PAD - WORDMARK_W, CARD_H - PAD - wmH + 8, WORDMARK_W, wmH);
       ctx.globalAlpha = 1;
     }
 
