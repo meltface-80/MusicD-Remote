@@ -2282,6 +2282,64 @@
     } catch (e) {}
   }
 
+  // Update button in the settings footer
+  const updateBtn = document.getElementById("settings-update-btn");
+  if (updateBtn) {
+    let updateState = "idle"; // idle | checking | ready | applying
+    let pendingVersion = null;
+
+    function resetUpdateBtn() {
+      updateState = "idle"; pendingVersion = null;
+      updateBtn.disabled = false;
+      updateBtn.textContent = "Check for updates";
+      updateBtn.classList.remove("has-update");
+    }
+
+    updateBtn.addEventListener("click", async () => {
+      if (updateState === "checking" || updateState === "applying") return;
+
+      if (updateState === "ready" && pendingVersion) {
+        // Second click — apply the update
+        updateState = "applying";
+        updateBtn.disabled = true;
+        updateBtn.textContent = "Installing…";
+        try {
+          await fetch("/api/update/apply", { method: "POST" });
+          updateBtn.textContent = "Restarting…";
+          // The update toast takes over polling/progress from here
+        } catch (e) {
+          resetUpdateBtn();
+        }
+        return;
+      }
+
+      // First click — check for updates
+      updateState = "checking";
+      updateBtn.disabled = true;
+      updateBtn.textContent = "Checking…";
+      try {
+        const r = await fetch("/api/update/status", { cache: "no-store" });
+        if (!r.ok) throw new Error("bad status");
+        const s = await r.json();
+        if (s.available && s.latest) {
+          updateState = "ready";
+          pendingVersion = s.latest;
+          updateBtn.textContent = "Install v" + s.latest;
+          updateBtn.classList.add("has-update");
+          updateBtn.disabled = false;
+          // Also refresh the version label in case it was stale
+          if (versionEl && s.current) versionEl.textContent = "Roon Random Albums v" + s.current;
+        } else {
+          updateBtn.textContent = "Up to date ✓";
+          setTimeout(resetUpdateBtn, 2500);
+        }
+      } catch (e) {
+        updateBtn.textContent = "Check failed";
+        setTimeout(resetUpdateBtn, 2500);
+      }
+    });
+  }
+
   const open = () => { loadRadio(); loadVersion(); overlay.classList.remove("hidden"); };
   const close = () => overlay.classList.add("hidden");
 

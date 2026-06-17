@@ -221,6 +221,43 @@ queue runs out it starts a fresh one. Turn it off, or turn Roon Radio back on,
 and the extension stays out of the way. The choice is remembered per zone across
 restarts.
 
+## Docker
+
+Pull the release tarball, build the image, and run:
+
+```bash
+wget https://raw.githubusercontent.com/meltface-80/Roon-Random-Albums-Extension/main/roon-random-albums-v1.5.10-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.10-docker.tar.gz
+cd roon-random-albums
+docker build -t roon-random-albums:1.5.10 .
+docker run -d \
+  --name roon-random-albums \
+  --restart unless-stopped \
+  --network host \
+  roon-random-albums:1.5.10
+```
+
+`--network host` is required so the extension can discover your Roon Core on the local network.
+
+### Upgrading to a new version
+
+Stop and remove the old container, then repeat the steps above with the new version number:
+
+```bash
+docker stop roon-random-albums
+docker rm roon-random-albums
+```
+
+### Force an update scan
+
+Updates are detected automatically on startup and every 6 hours, and can be installed with one tap from the **settings cog → Check for updates** inside the web UI — exactly the same as a native install.
+
+To force the extension to check immediately (e.g. right after a new release), restart the container:
+
+```bash
+docker restart roon-random-albums
+```
+
 ## Updating
 
 The extension checks your GitHub repo for a newer release and can install it

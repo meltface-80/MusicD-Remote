@@ -1604,7 +1604,8 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 .settings-select option { background: var(--bg-elev-2); color: var(--text); }
 .settings-caret { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: var(--text-dim); pointer-events: none; }
 .settings-divider { height: 1px; background: var(--border); margin: 18px 0; }
-.settings-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 22px; }
+.settings-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 22px; flex-wrap: wrap; }
+.settings-foot-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .settings-version { font-size: 13px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .settings-repo {
   display: inline-flex; align-items: center; gap: 8px;
@@ -1614,6 +1615,18 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
   transition: color .15s ease, background .15s ease;
 }
 .settings-repo:hover { color: var(--text); background: var(--bg-elev); }
+.settings-update-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--bg-elev-2);
+  color: var(--text-dim); font-size: 13px; font-family: inherit;
+  cursor: pointer; transition: color .15s ease, background .15s ease, border-color .15s ease;
+  white-space: nowrap;
+}
+.settings-update-btn:hover:not(:disabled) { color: var(--text); background: var(--bg-elev); }
+.settings-update-btn:disabled { opacity: 0.55; cursor: default; }
+.settings-update-btn.has-update { color: var(--accent); border-color: var(--accent); }
+.settings-update-btn.has-update:hover:not(:disabled) { background: var(--bg-elev); }
 
 /* ------------------------------------------------------------------ */
 /*  Confirm dialog                                                     */
