@@ -1801,3 +1801,18 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 .stats-sparkline { display: flex; align-items: flex-end; gap: 2px; height: 40px; }
 .stats-spark-bar { flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; opacity: .75; min-height: 2px; }
 .stats-spark-labels { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-dim); margin-top: 4px; }
+
+/* Recently played metadata column */
+.stat-recent-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex-shrink: 0; }
+.stat-recent-zone { font-size: 11px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 80px; }
+.stat-recent-time { font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+
+/* Play count badge on album tiles */
+.play-count-badge {
+  position: absolute; bottom: 6px; right: 6px;
+  background: rgba(0,0,0,.65); color: #fff;
+  font-size: 11px; font-weight: 700;
+  padding: 2px 6px; border-radius: 10px;
+  pointer-events: none; line-height: 1.4;
+  backdrop-filter: blur(4px);
+}

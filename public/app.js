@@ -140,6 +140,7 @@
     btn.type = "button";
     btn.setAttribute("aria-label",
       `${a.title || "Untitled"}${a.subtitle ? " by " + a.subtitle : ""}`);
+    btn.dataset.albumKey = (a.title || "").toLowerCase().trim();
 
     const artWrap = document.createElement("div");
     artWrap.className = "album-art-wrap";
@@ -170,6 +171,29 @@
     const frag = document.createDocumentFragment();
     for (const a of albums) frag.appendChild(buildAlbumTile(a));
     grid.appendChild(frag);
+    annotatePlayCounts();
+  }
+
+  // Fetch play counts and overlay a badge on tiles that have been played.
+  function annotatePlayCounts() {
+    fetch("/api/play-counts")
+      .then(r => r.json())
+      .then(counts => {
+        if (!counts || typeof counts !== "object") return;
+        grid.querySelectorAll(".album[data-album-key]").forEach(tile => {
+          const k = tile.dataset.albumKey;
+          const n = counts[k];
+          if (!n) return;
+          let badge = tile.querySelector(".play-count-badge");
+          if (!badge) {
+            badge = document.createElement("span");
+            badge.className = "play-count-badge";
+            tile.querySelector(".album-art-wrap").appendChild(badge);
+          }
+          badge.textContent = n + "×";
+        });
+      })
+      .catch(() => {});
   }
 
   function renderAlbums(albums) {
@@ -1283,6 +1307,7 @@
   window.__openAlbum = openAlbum;
   window.__buildAlbumTile = (a) => buildAlbumTile(a);
   window.__loadRandom = loadRandom;
+  window.__showToast = (msg, kind) => showToast(msg, kind);
 
   async function bootstrap() {
     setBanner("Connecting to Roon…");
@@ -2308,6 +2333,42 @@
 })();
 
 /* ------------------------------------------------------------------ */
+/*  Play Unheard button in settings                                   */
+/* ------------------------------------------------------------------ */
+(function initPlayUnheard() {
+  const btn        = document.getElementById("play-unheard-btn");
+  const overlay    = document.getElementById("settings-overlay");
+  const zoneSelect = document.getElementById("zone-select");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    const zone = zoneSelect && zoneSelect.value;
+    if (!zone) { if (window.__showToast) window.__showToast("Select a zone first"); return; }
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = "Finding…";
+    try {
+      const r = await fetch("/api/play-unheard", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ zone })
+      });
+      const j = await r.json();
+      if (!r.ok) {
+        if (window.__showToast) window.__showToast(j.error || "Could not start playback", "error");
+      } else {
+        if (window.__showToast) window.__showToast("Playing: " + (j.album || "random album"));
+        if (overlay) overlay.classList.add("hidden");
+      }
+    } catch (e) {
+      if (window.__showToast) window.__showToast("Request failed", "error");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Play unheard";
+    }
+  });
+})();
+
+/* ------------------------------------------------------------------ */
 /*  Artist albums view                                                 */
 /* ------------------------------------------------------------------ */
 (() => {
@@ -2474,13 +2535,53 @@
     return `<div class="stats-section"><div class="stats-section-title">${esc(title)}</div>${inner}</div>`;
   }
 
+  function timeAgo(ts) {
+    const diff = Date.now() - ts;
+    const m = Math.floor(diff / 60000);
+    if (m < 2)  return "just now";
+    if (m < 60) return m + "m ago";
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + "h ago";
+    const d = Math.floor(h / 24);
+    return d + "d ago";
+  }
+
   function renderStats(d) {
-    if (!d.available || d.total === 0) {
-      body.innerHTML = `<p class="stats-empty">${esc(d.message || "No plays recorded yet. Keep listening — stats build up over time.")}</p>`;
+    if (!d.available) {
+      body.innerHTML = `<p class="stats-empty">Stats unavailable. Keep listening — they'll appear here.</p>`;
       return;
     }
 
     let html = "";
+
+    // Recently played — shown even before any completed plays
+    if (d.recent && d.recent.length) {
+      const items = d.recent.map(r => {
+        const img = r.image_key
+          ? `<img class="stat-list-art" src="/api/image/${encodeURIComponent(r.image_key)}?size=100" alt="" loading="lazy">`
+          : `<div class="stat-list-art"></div>`;
+        return `<div class="stat-list-item">
+          ${img}
+          <div class="stat-list-info">
+            <div class="stat-list-title">${esc(r.track || r.album || "Unknown")}</div>
+            <div class="stat-list-sub">${esc(r.artist)}${r.album ? " · " + esc(r.album) : ""}</div>
+          </div>
+          <div class="stat-recent-meta">
+            <span class="stat-recent-zone">${esc(r.zone || "")}</span>
+            <span class="stat-recent-time">${timeAgo(r.ts)}</span>
+          </div>
+        </div>`;
+      }).join("");
+      html += section("Recently played", `<div class="stat-list">${items}</div>`);
+    }
+
+    if (d.total === 0) {
+      if (!html) {
+        html = `<p class="stats-empty">Keep listening — completed-play stats build up over time.</p>`;
+      }
+      body.innerHTML = html;
+      return;
+    }
 
     // Summary cards
     const cards = [
@@ -2529,6 +2630,12 @@
     if (d.artists && d.artists.length) {
       const maxPlays = d.artists[0].plays;
       html += section("Top artists", d.artists.map(a => bar(a.artist, a.plays, maxPlays, a.pct + "% · " + a.plays + " plays")).join(""));
+    }
+
+    // By zone
+    if (d.byZone && d.byZone.length > 1) {
+      const maxZ = d.byZone[0].plays;
+      html += section("By zone", d.byZone.map(r => bar(r.zone, r.plays, maxZ, r.plays)).join(""));
     }
 
     // By decade

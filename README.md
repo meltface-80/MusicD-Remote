@@ -21,16 +21,16 @@ Includes **instant whole-library search** (see below). Roon-style dark theme
 Each release ships a `*-docker.tar.gz`. Download it, build the image, and run:
 
 ```bash
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.28-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.28-docker.tar.gz
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.29-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.29-docker.tar.gz
 cd roon-random-albums
-docker build -t roon-random-albums:1.5.28 .
+docker build -t roon-random-albums:1.5.29 .
 docker run -d \
   --name roon-random-albums \
   --restart unless-stopped \
   --network host \
   -v roon-random-albums-data:/app/data \
-  roon-random-albums:1.5.28
+  roon-random-albums:1.5.29
 ```
 
 `--network host` is required so the extension can discover your Roon Core on
@@ -59,10 +59,10 @@ migration banner automatically with copy-ready commands. Or follow these steps:
 
 ```bash
 # 1. Download and build the Docker image
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.28-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.28-docker.tar.gz
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.29-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.29-docker.tar.gz
 cd roon-random-albums
-docker build -t roon-random-albums:1.5.28 .
+docker build -t roon-random-albums:1.5.29 .
 
 # 2. Run the Docker container
 docker run -d \
@@ -70,7 +70,7 @@ docker run -d \
   --restart unless-stopped \
   --network host \
   -v roon-random-albums-data:/app/data \
-  roon-random-albums:1.5.28
+  roon-random-albums:1.5.29
 
 # 3. Stop and disable the native service
 sudo systemctl stop roon-random-albums
@@ -145,7 +145,7 @@ stays out of the way. The choice is remembered per zone across restarts.
 Pass extra env vars with `-e` in the `docker run` command:
 
 ```bash
-docker run -d ... -e RRA_DEBUG=1 roon-random-albums:1.5.28
+docker run -d ... -e RRA_DEBUG=1 roon-random-albums:1.5.29
 ```
 
 ### Album metadata sources

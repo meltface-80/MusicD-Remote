@@ -2,6 +2,40 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.29] — 2026-06-18
+
+### Added
+- **Smart random radio** — the random-album radio now prefers albums not played
+  in the last 30 days. It picks candidates in small batches and skips recently
+  heard titles, falling back to pure random only when nothing fresh is found.
+- **Play something unheard** — new button in Settings (and `POST /api/play-unheard`)
+  that picks an album with zero plays in the plays table and starts it immediately
+  in the selected zone. Falls back to pure random if your entire library has been
+  heard at least once.
+- **Play count badges** — album tiles now show a small "N×" badge in the
+  bottom-right corner for any album that appears in the plays table, so you can
+  see at a glance which albums you've listened to before.
+- **Recently played in stats** — the stats panel now shows a "Recently played"
+  section (last 25 tracks, regardless of whether the play was marked completed).
+  This section is visible immediately, even before any completed-play statistics
+  have accumulated, so the stats page is never blank after the first track starts.
+- **Zone breakdown in stats** — plays-per-zone bar chart shown when more than
+  one zone has play history.
+- **Apple Shortcuts / HTTP automation endpoints**:
+  - `GET /api/shortcut/zones` — returns all Roon zones with name, ID, and state.
+  - `GET /api/shortcut/play-random?zone=ZONENAME` — plays a random album in
+    the named zone. Accepts both display name and zone ID.
+  - `GET /api/shortcut/play-unheard?zone=ZONENAME` — plays an unheard album in
+    the named zone.
+
+### Fixed
+- **Stats page no longer crashes when `labelsDb` queries fail** — the `/api/stats`
+  endpoint is now wrapped in `try/catch` and returns a proper JSON error instead of
+  an unhandled exception.
+- **Stats page shown even before any completed plays** — previously the page
+  returned a plain text message and rendered nothing. Now the recently-played
+  section populates as soon as any track starts playing.
+
 ## [1.5.28] — 2026-06-18
 
 ### Fixed

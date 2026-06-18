@@ -448,6 +448,31 @@ async function pickRandomAlbums(count, filter) {
 }
 
 // ---------------------------------------------------------------------------
+// Smart-radio pick: prefer albums not played in the last 30 days.
+// Falls back to pure random if the plays table is empty or unavailable.
+// ---------------------------------------------------------------------------
+async function pickSmartAlbum() {
+  if (!labelsDb) return (await pickRandomAlbums(1)).albums[0] || null;
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  let recent;
+  try {
+    recent = new Set(
+      labelsDb.prepare("SELECT DISTINCT lower(trim(album)) as a FROM plays WHERE ts > ? AND album != ''")
+              .all(cutoff).map(r => r.a)
+    );
+  } catch (e) {
+    recent = new Set();
+  }
+  if (recent.size === 0) return (await pickRandomAlbums(1)).albums[0] || null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const candidates = (await pickRandomAlbums(5)).albums;
+    const fresh = candidates.filter(a => !recent.has((a.title || "").toLowerCase().trim()));
+    if (fresh.length) return fresh[0];
+  }
+  return (await pickRandomAlbums(1)).albums[0] || null;
+}
+
+// ---------------------------------------------------------------------------
 // Resolve an album by offset, drill in, and return action menu + tracks.
 // Optionally invokes one of the actions (kind) against a zone.
 // ---------------------------------------------------------------------------
@@ -2193,10 +2218,10 @@ async function radioTopUp(zoneId, mode) {
   if (st.active && (Date.now() - st.ts) < 30000) return; // already working; 30s safety
   st.active = true; st.ts = Date.now();
   try {
-    const picks = (await pickRandomAlbums(1)).albums;
-    if (!picks.length) { st.active = false; return; }
-    await openAlbumByOffset(picks[0].offset, zoneId, mode === "play" ? "play_now" : "queue");
-    if (DEBUG) console.log("[radio] " + mode + " '" + picks[0].title + "' -> " + zoneId);
+    const pick = await pickSmartAlbum();
+    if (!pick) { st.active = false; return; }
+    await openAlbumByOffset(pick.offset, zoneId, mode === "play" ? "play_now" : "queue");
+    if (DEBUG) console.log("[radio] " + mode + " '" + pick.title + "' -> " + zoneId);
     // st.active clears when the queue grows (handleRadioZone sees remaining > 1)
     // or via the 30s timeout above if the queue never reflects the add.
   } catch (e) {
@@ -2742,98 +2767,223 @@ app.post("/api/volume", (req, res) => {
 // ---------------------------------------------------------------------------
 app.get("/api/stats", (req, res) => {
   if (!labelsDb) return res.json({ available: false });
+  try {
+    const total    = labelsDb.prepare("SELECT COUNT(*) as n FROM plays WHERE completed=1").get().n;
+    const totalAll = labelsDb.prepare("SELECT COUNT(*) as n FROM plays").get().n;
+    const DOW      = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+    const hLabel   = h => { const a = h % 12 || 12; return a + (h < 12 ? "am" : "pm"); };
 
-  const total = labelsDb.prepare("SELECT COUNT(*) as n FROM plays WHERE completed=1").get().n;
-  if (total === 0) return res.json({ available: true, total: 0, message: "No plays recorded yet — keep listening!" });
+    // Recently played (last 25 entries regardless of completed status)
+    const recent = labelsDb.prepare(
+      "SELECT ts, zone, track, artist, album, image_key FROM plays ORDER BY ts DESC LIMIT 25"
+    ).all();
 
-  // Top 10 albums by play count
-  const topAlbums = labelsDb.prepare(`
-    SELECT album, artist, image_key, COUNT(*) as plays
-    FROM plays WHERE completed=1 AND album != ''
-    GROUP BY album, artist ORDER BY plays DESC LIMIT 10
-  `).all();
+    // Zone breakdown
+    const byZone = labelsDb.prepare(`
+      SELECT zone, COUNT(*) as plays FROM plays WHERE zone != ''
+      GROUP BY zone ORDER BY plays DESC LIMIT 10
+    `).all();
 
-  // Top 10 tracks by play count
-  const topTracks = labelsDb.prepare(`
-    SELECT track, artist, album, COUNT(*) as plays
-    FROM plays WHERE completed=1 AND track != ''
-    GROUP BY track, artist, album ORDER BY plays DESC LIMIT 10
-  `).all();
-
-  // Top artists by play count (with percentage)
-  const artistRows = labelsDb.prepare(`
-    SELECT artist, COUNT(*) as plays
-    FROM plays WHERE completed=1 AND artist != ''
-    GROUP BY artist ORDER BY plays DESC LIMIT 10
-  `).all();
-  const artists = artistRows.map(r => ({ ...r, pct: Math.round(r.plays / total * 100) }));
-
-  // Plays by decade
-  const byDecade = labelsDb.prepare(`
-    SELECT (m.year / 10 * 10) as decade, COUNT(*) as plays
-    FROM plays p
-    JOIN album_meta m ON m.album_key = (lower(trim(p.album)) || '||' || lower(trim(p.artist)))
-    WHERE p.completed=1 AND m.year IS NOT NULL
-    GROUP BY decade ORDER BY decade
-  `).all();
-
-  // Plays by genre
-  const byGenre = labelsDb.prepare(`
-    SELECT m.genre, COUNT(*) as plays
-    FROM plays p
-    JOIN album_meta m ON m.album_key = (lower(trim(p.album)) || '||' || lower(trim(p.artist)))
-    WHERE p.completed=1 AND m.genre IS NOT NULL AND m.genre != ''
-    GROUP BY m.genre ORDER BY plays DESC LIMIT 12
-  `).all();
-
-  // Listening by hour of day (UTC)
-  const byHour = labelsDb.prepare(`
-    SELECT ((ts / 3600000) % 24) as hour, COUNT(*) as plays
-    FROM plays WHERE completed=1
-    GROUP BY hour ORDER BY hour
-  `).all();
-
-  // Listening by day of week
-  const byDay = labelsDb.prepare(`
-    SELECT ((ts / 86400000 + 4) % 7) as dow, COUNT(*) as plays
-    FROM plays WHERE completed=1
-    GROUP BY dow ORDER BY dow
-  `).all();
-  const DOW = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
-
-  // Library stats from album index
-  const libTotal = albumIndex.count;
-
-  // Summary stats
-  const uniqueArtists = labelsDb.prepare("SELECT COUNT(DISTINCT artist) as n FROM plays WHERE completed=1 AND artist!=''").get().n;
-  const uniqueAlbums  = labelsDb.prepare("SELECT COUNT(DISTINCT album||artist) as n FROM plays WHERE completed=1 AND album!=''").get().n;
-  const mostActiveDay = byDay.reduce((a, b) => b.plays > a.plays ? b : a, byDay[0] || { dow: 0, plays: 0 });
-  const peakHour      = byHour.reduce((a, b) => b.plays > a.plays ? b : a, byHour[0] || { hour: 0, plays: 0 });
-  const hLabel        = h => { const a = h % 12 || 12; return a + (h < 12 ? "am" : "pm"); };
-
-  // Repeat listener ratio
-  const multiPlay = labelsDb.prepare("SELECT COUNT(*) as n FROM (SELECT album,artist FROM plays WHERE completed=1 GROUP BY album,artist HAVING COUNT(*)>1)").get().n;
-  const repeatPct = uniqueAlbums > 0 ? Math.round(multiPlay / uniqueAlbums * 100) : 0;
-
-  res.json({
-    available: true,
-    total,
-    topAlbums,
-    topTracks,
-    artists,
-    byDecade,
-    byGenre,
-    byHour: byHour.map(r => ({ hour: r.hour, label: hLabel(r.hour), plays: r.plays })),
-    byDay:  byDay.map(r => ({ dow: r.dow, label: DOW[r.dow] || "?", plays: r.plays })),
-    libTotal,
-    surprises: {
-      uniqueArtists,
-      uniqueAlbums,
-      mostActiveDay: DOW[mostActiveDay.dow] || "?",
-      peakHour: hLabel(peakHour.hour),
-      repeatPct,
+    if (total === 0) {
+      return res.json({ available: true, total: 0, totalAll, recent, byZone });
     }
-  });
+
+    const topAlbums = labelsDb.prepare(`
+      SELECT album, artist, image_key, COUNT(*) as plays
+      FROM plays WHERE completed=1 AND album != ''
+      GROUP BY album, artist ORDER BY plays DESC LIMIT 10
+    `).all();
+
+    const topTracks = labelsDb.prepare(`
+      SELECT track, artist, album, COUNT(*) as plays
+      FROM plays WHERE completed=1 AND track != ''
+      GROUP BY track, artist, album ORDER BY plays DESC LIMIT 10
+    `).all();
+
+    const artistRows = labelsDb.prepare(`
+      SELECT artist, COUNT(*) as plays
+      FROM plays WHERE completed=1 AND artist != ''
+      GROUP BY artist ORDER BY plays DESC LIMIT 10
+    `).all();
+    const artists = artistRows.map(r => ({ ...r, pct: Math.round(r.plays / total * 100) }));
+
+    const byDecade = labelsDb.prepare(`
+      SELECT (m.year / 10 * 10) as decade, COUNT(*) as plays
+      FROM plays p
+      JOIN album_meta m ON m.album_key = (lower(trim(p.album)) || '||' || lower(trim(p.artist)))
+      WHERE p.completed=1 AND m.year IS NOT NULL
+      GROUP BY decade ORDER BY decade
+    `).all();
+
+    const byGenre = labelsDb.prepare(`
+      SELECT m.genre, COUNT(*) as plays
+      FROM plays p
+      JOIN album_meta m ON m.album_key = (lower(trim(p.album)) || '||' || lower(trim(p.artist)))
+      WHERE p.completed=1 AND m.genre IS NOT NULL AND m.genre != ''
+      GROUP BY m.genre ORDER BY plays DESC LIMIT 12
+    `).all();
+
+    const byHour = labelsDb.prepare(`
+      SELECT ((ts / 3600000) % 24) as hour, COUNT(*) as plays
+      FROM plays WHERE completed=1
+      GROUP BY hour ORDER BY hour
+    `).all();
+
+    const byDay = labelsDb.prepare(`
+      SELECT ((ts / 86400000 + 4) % 7) as dow, COUNT(*) as plays
+      FROM plays WHERE completed=1
+      GROUP BY dow ORDER BY dow
+    `).all();
+
+    const libTotal      = albumIndex.count;
+    const uniqueArtists = labelsDb.prepare("SELECT COUNT(DISTINCT artist) as n FROM plays WHERE completed=1 AND artist!=''").get().n;
+    const uniqueAlbums  = labelsDb.prepare("SELECT COUNT(DISTINCT album||artist) as n FROM plays WHERE completed=1 AND album!=''").get().n;
+    const mostActiveDay = byDay.reduce((a, b) => b.plays > a.plays ? b : a, byDay[0] || { dow: 0, plays: 0 });
+    const peakHour      = byHour.reduce((a, b) => b.plays > a.plays ? b : a, byHour[0] || { hour: 0, plays: 0 });
+    const multiPlay     = labelsDb.prepare("SELECT COUNT(*) as n FROM (SELECT album,artist FROM plays WHERE completed=1 GROUP BY album,artist HAVING COUNT(*)>1)").get().n;
+    const repeatPct     = uniqueAlbums > 0 ? Math.round(multiPlay / uniqueAlbums * 100) : 0;
+
+    res.json({
+      available: true, total, totalAll, recent, byZone,
+      topAlbums, topTracks, artists, byDecade, byGenre,
+      byHour: byHour.map(r => ({ hour: r.hour, label: hLabel(r.hour), plays: r.plays })),
+      byDay:  byDay.map(r => ({ dow: r.dow, label: DOW[r.dow] || "?", plays: r.plays })),
+      libTotal,
+      surprises: {
+        uniqueArtists, uniqueAlbums,
+        mostActiveDay: DOW[mostActiveDay.dow] || "?",
+        peakHour: hLabel(peakHour.hour),
+        repeatPct,
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ available: false, error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/play-counts — per-album play count map for tile badges.
+// Returns { "lower(album)": count } for all albums with any plays.
+// ---------------------------------------------------------------------------
+app.get("/api/play-counts", (req, res) => {
+  if (!labelsDb) return res.json({});
+  try {
+    const rows = labelsDb.prepare(
+      "SELECT lower(trim(album)) as k, COUNT(*) as n FROM plays WHERE album != '' GROUP BY k"
+    ).all();
+    const out = {};
+    for (const r of rows) out[r.k] = r.n;
+    res.json(out);
+  } catch (e) { res.json({}); }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/play-unheard — play a random album not yet in the plays table.
+// Body: { zone: "<zone_id or display_name>" }
+// Falls back to pure random if everything has been heard.
+// ---------------------------------------------------------------------------
+app.post("/api/play-unheard", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Roon not connected" });
+  const zoneId = (req.body && req.body.zone) || null;
+  if (!zoneId) return res.status(400).json({ error: "zone required" });
+  try {
+    let pick = null;
+    if (labelsDb) {
+      let heard;
+      try {
+        heard = new Set(
+          labelsDb.prepare("SELECT DISTINCT lower(trim(album)) as a FROM plays WHERE album != ''").all().map(r => r.a)
+        );
+      } catch (e) { heard = new Set(); }
+      for (let attempt = 0; attempt < 10 && !pick; attempt++) {
+        const candidates = (await pickRandomAlbums(10)).albums;
+        const fresh = candidates.filter(a => !heard.has((a.title || "").toLowerCase().trim()));
+        if (fresh.length) pick = fresh[0];
+      }
+    }
+    if (!pick) {
+      const picks = (await pickRandomAlbums(1)).albums;
+      pick = picks[0] || null;
+    }
+    if (!pick) return res.status(503).json({ error: "No albums available" });
+    await openAlbumByOffset(pick.offset, zoneId, "play_now");
+    res.json({ ok: true, album: pick.title, artist: pick.subtitle });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Apple Shortcuts — simple GET endpoints for voice / automation triggers.
+// ---------------------------------------------------------------------------
+
+// List zones: GET /api/shortcut/zones
+app.get("/api/shortcut/zones", (req, res) => {
+  const list = Object.values(zones).map(z => ({
+    id:    z.zone_id,
+    name:  z.display_name,
+    state: z.state
+  }));
+  res.json({ zones: list });
+});
+
+// Play random album: GET /api/shortcut/play-random?zone=ZONENAME
+app.get("/api/shortcut/play-random", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Roon not connected" });
+  const zoneName = req.query.zone || "";
+  const zone = Object.values(zones).find(z => z.display_name === zoneName || z.zone_id === zoneName);
+  if (!zone) {
+    return res.status(404).json({
+      error: "Zone not found",
+      available: Object.values(zones).map(z => z.display_name)
+    });
+  }
+  try {
+    const picks = (await pickRandomAlbums(1)).albums;
+    if (!picks.length) return res.status(503).json({ error: "No albums available" });
+    await openAlbumByOffset(picks[0].offset, zone.zone_id, "play_now");
+    res.json({ ok: true, album: picks[0].title, artist: picks[0].subtitle, zone: zone.display_name });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Play unheard album: GET /api/shortcut/play-unheard?zone=ZONENAME
+app.get("/api/shortcut/play-unheard", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Roon not connected" });
+  const zoneName = req.query.zone || "";
+  const zone = Object.values(zones).find(z => z.display_name === zoneName || z.zone_id === zoneName);
+  if (!zone) {
+    return res.status(404).json({
+      error: "Zone not found",
+      available: Object.values(zones).map(z => z.display_name)
+    });
+  }
+  try {
+    let pick = null;
+    if (labelsDb) {
+      let heard;
+      try {
+        heard = new Set(
+          labelsDb.prepare("SELECT DISTINCT lower(trim(album)) as a FROM plays WHERE album != ''").all().map(r => r.a)
+        );
+      } catch (e) { heard = new Set(); }
+      for (let attempt = 0; attempt < 10 && !pick; attempt++) {
+        const candidates = (await pickRandomAlbums(10)).albums;
+        const fresh = candidates.filter(a => !heard.has((a.title || "").toLowerCase().trim()));
+        if (fresh.length) pick = fresh[0];
+      }
+    }
+    if (!pick) {
+      const picks = (await pickRandomAlbums(1)).albums;
+      pick = picks[0] || null;
+    }
+    if (!pick) return res.status(503).json({ error: "No albums available" });
+    await openAlbumByOffset(pick.offset, zone.zone_id, "play_now");
+    res.json({ ok: true, album: pick.title, artist: pick.subtitle, zone: zone.display_name });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.listen(PORT, () => {
