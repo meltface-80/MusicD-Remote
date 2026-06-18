@@ -2,6 +2,15 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.3] — 2026-06-18
+
+### Fixed
+- **Labels browser broken on phone portrait** — the immersive album-grid CSS (`overflow: hidden`, `height: 100%`) introduced in v1.5.31 clipped label tiles so they never appeared. A `.labels-mode` class is now added to `<main>` when the labels browser is active, overriding those constraints to restore a normal scrollable two-column tile layout.
+
+### Removed
+- **Animated splash screen** — the SVG duck + waveform loading animation has been removed entirely (HTML, CSS, and JS).
+- **Listening stats page** — the Stats panel, `/api/stats` and `/api/play-counts` endpoints, the `album_meta` SQLite table, and all associated code have been removed. Play history tracking (used by smart radio and play-unheard) is unaffected.
+
 ## [1.6.2] — 2026-06-18
 
 ### Fixed
