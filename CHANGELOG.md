@@ -2,6 +2,14 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.18] — 2026-06-18
+
+### Added
+- **Love / heart button** — a ♥ button appears in the album modal. Tapping it
+  loves or unloves the album via Roon's browse API, reflected immediately in
+  Roon's own UI and usable in Focus. The button is pink/filled when loved and
+  hidden for albums that don't support it (e.g. not in your library).
+
 ## [1.5.17] — 2026-06-18
 
 ### Fixed

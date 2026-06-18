@@ -2034,6 +2034,77 @@ app.get("/api/album", async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Album love (heart) — read or toggle via Roon browse API.
+// Roon exposes the heart as an action_list item inside the album browse level.
+// Title is "Love Album" when not loved, "Unlove Album" when currently loved.
+// ---------------------------------------------------------------------------
+async function getOrToggleAlbumLove(offset, doToggle, filter) {
+  const sessionKey = "rra_love_" + Math.random().toString(36).slice(2, 10);
+  const nav = await navigateToAlbumList(sessionKey, filter || null);
+  const hierarchy = nav.hierarchy;
+
+  const albumLoad = await load({ hierarchy, offset, count: 1, multi_session_key: sessionKey });
+  const albumItem = albumLoad.items && albumLoad.items[0];
+  if (!albumItem) throw new Error("Album not found at offset " + offset);
+
+  await browse({ hierarchy, item_key: albumItem.item_key, multi_session_key: sessionKey });
+  const inside = await load({ hierarchy, offset: 0, count: 300, multi_session_key: sessionKey });
+  const items = inside.items || [];
+
+  if (DEBUG) {
+    console.log("[love items] offset=" + offset);
+    items.forEach(i => console.log("  hint=" + (i.hint || "?") + "  title=" + JSON.stringify(i.title)));
+  }
+
+  const loveItem = items.find(i => /\blove\b|\bheart\b|\bfavouri?te\b/i.test(i.title || ""));
+  if (!loveItem) return { found: false, loved: null };
+
+  const currentlyLoved = /\bunlove\b/i.test(loveItem.title || "");
+  if (!doToggle) return { found: true, loved: currentlyLoved };
+
+  // Invoke: browsing to an action_list opens its submenu; browsing to an action invokes it directly.
+  await browse({ hierarchy, item_key: loveItem.item_key, multi_session_key: sessionKey });
+
+  // If it opened a submenu, invoke the first relevant item inside.
+  const sub = await load({ hierarchy, offset: 0, count: 10, multi_session_key: sessionKey }).catch(() => null);
+  if (sub && sub.items && sub.items.length) {
+    const subItem = sub.items.find(i => /\blove\b|\bunlove\b|\bheart\b/i.test(i.title || ""))
+                 || sub.items[0];
+    if (subItem && subItem.item_key) {
+      await browse({ hierarchy, item_key: subItem.item_key, multi_session_key: sessionKey }).catch(() => {});
+    }
+  }
+
+  return { found: true, loved: !currentlyLoved };
+}
+
+// GET /api/album/love?offset=... — check love state
+app.get("/api/album/love", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  const offset = parseInt(req.query.offset, 10);
+  if (!Number.isFinite(offset) || offset < 0) return res.status(400).json({ error: "Valid offset required" });
+  try {
+    const result = await getOrToggleAlbumLove(offset, false, parseFilter(req.query));
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/album/love?offset=... — toggle love
+app.post("/api/album/love", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  const offset = parseInt(req.query.offset, 10);
+  if (!Number.isFinite(offset) || offset < 0) return res.status(400).json({ error: "Valid offset required" });
+  try {
+    const result = await getOrToggleAlbumLove(offset, true, parseFilter(req.query));
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Library stats — currently just the total album count Roon reports for the
 // "albums" hierarchy.  Shown in the header so you know the size of the pool
 // random picks are drawn from.

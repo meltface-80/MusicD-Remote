@@ -663,6 +663,21 @@ main {
 .modal-share {
   position: absolute; top: 12px; right: 60px; z-index: 2;
 }
+.modal-love {
+  position: absolute; top: 12px; right: 108px; z-index: 2;
+  transition: color .2s, opacity .2s;
+}
+.modal-love.is-loved {
+  color: #e8437a;
+}
+.modal-love.is-loved svg {
+  fill: currentColor;
+  stroke: currentColor;
+}
+.modal-love.is-loading {
+  opacity: .35;
+  pointer-events: none;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Mini transport (sticky now-playing bar)                            */

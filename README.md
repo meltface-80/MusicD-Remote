@@ -1,7 +1,3 @@
-<div align="center"> 
-
-<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/fc1dd26e-db7f-4e27-8f66-b0ab74db89e3" />
-
 # Random Albums — a Roon extension
 
 A web UI that shows a screenful of random albums from your Roon library, with
@@ -19,16 +15,16 @@ Includes **instant whole-library search** (see below). Roon-style dark theme
 Each release ships a `*-docker.tar.gz`. Download it, build the image, and run:
 
 ```bash
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.17-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.17-docker.tar.gz
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.18-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.18-docker.tar.gz
 cd roon-random-albums
-docker build -t roon-random-albums:1.5.17 .
+docker build -t roon-random-albums:1.5.18 .
 docker run -d \
   --name roon-random-albums \
   --restart unless-stopped \
   --network host \
   -v roon-random-albums-data:/app/data \
-  roon-random-albums:1.5.17
+  roon-random-albums:1.5.18
 ```
 
 `--network host` is required so the extension can discover your Roon Core on
@@ -57,10 +53,10 @@ migration banner automatically with copy-ready commands. Or follow these steps:
 
 ```bash
 # 1. Download and build the Docker image
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.17-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.17-docker.tar.gz
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.18-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.18-docker.tar.gz
 cd roon-random-albums
-docker build -t roon-random-albums:1.5.17 .
+docker build -t roon-random-albums:1.5.18 .
 
 # 2. Run the Docker container
 docker run -d \
@@ -68,7 +64,7 @@ docker run -d \
   --restart unless-stopped \
   --network host \
   -v roon-random-albums-data:/app/data \
-  roon-random-albums:1.5.17
+  roon-random-albums:1.5.18
 
 # 3. Stop and disable the native service
 sudo systemctl stop roon-random-albums
@@ -143,7 +139,7 @@ stays out of the way. The choice is remembered per zone across restarts.
 Pass extra env vars with `-e` in the `docker run` command:
 
 ```bash
-docker run -d ... -e RRA_DEBUG=1 roon-random-albums:1.5.17
+docker run -d ... -e RRA_DEBUG=1 roon-random-albums:1.5.18
 ```
 
 ### Album metadata sources

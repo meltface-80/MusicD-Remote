@@ -469,12 +469,14 @@
     if (isNP) {
       // The now-playing screen is driven live by the transport poll loop;
       // refresh it immediately from the latest zone state.
+      if (loveBtn) loveBtn.style.display = "none";
       if (typeof window.__refreshTransport === "function") window.__refreshTransport();
     } else {
       fetchAlbumDetail(album).catch(err => {
         modalActs.innerHTML = `<div class="modal-error">${escapeHtml(err.message)}</div>`;
       });
       fetchAlbumExtras(album).catch(() => {});
+      fetchLoveState(album);
     }
   }
 
@@ -634,6 +636,8 @@
     document.body.style.overflow = "";
     currentAlbum = null;
     window.__currentAlbum = null;
+    _loveAlbum = null;
+    if (loveBtn) { loveBtn.style.display = "none"; loveBtn.classList.remove("is-loved", "is-loading"); }
     try { sessionStorage.removeItem("rra-modal"); } catch (e) {}
     if (typeof window.__refreshTransport === "function") window.__refreshTransport();
   }
@@ -643,6 +647,51 @@
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !modal.classList.contains("hidden")) closeModal();
   });
+
+  // --- Heart / Love button ---
+  const loveBtn = document.getElementById("modal-love-btn");
+  let _loveAlbum = null;
+
+  function applyLoveState(loved) {
+    if (!loveBtn) return;
+    loveBtn.classList.toggle("is-loved", !!loved);
+    loveBtn.setAttribute("aria-pressed", String(!!loved));
+    loveBtn.title = loved ? "Unlove album" : "Love album";
+    loveBtn.setAttribute("aria-label", loved ? "Unlove album" : "Love album");
+  }
+
+  function fetchLoveState(album) {
+    if (!loveBtn || !album) return;
+    _loveAlbum = album;
+    loveBtn.style.display = "";
+    loveBtn.classList.remove("is-loved");
+    loveBtn.classList.add("is-loading");
+    fetch(`/api/album/love?offset=${album.offset}`)
+      .then(r => r.json())
+      .then(j => {
+        if (album !== _loveAlbum) return;
+        loveBtn.classList.remove("is-loading");
+        if (!j.found) { loveBtn.style.display = "none"; return; }
+        applyLoveState(j.loved);
+      })
+      .catch(() => { if (album === _loveAlbum) loveBtn.classList.remove("is-loading"); });
+  }
+
+  if (loveBtn) {
+    loveBtn.addEventListener("click", () => {
+      const album = currentAlbum;
+      if (!album) return;
+      loveBtn.classList.add("is-loading");
+      fetch(`/api/album/love?offset=${album.offset}`, { method: "POST" })
+        .then(r => r.json())
+        .then(j => {
+          loveBtn.classList.remove("is-loading");
+          if (j.found) applyLoveState(j.loved);
+        })
+        .catch(() => loveBtn.classList.remove("is-loading"));
+    });
+  }
+  // --- End heart button ---
 
   async function fetchAlbumDetail(album) {
     const r = await fetch(`/api/album?offset=${album.offset}${filterQSOf(currentDetailFilter)}`);
