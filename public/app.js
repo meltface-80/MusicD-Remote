@@ -1180,8 +1180,8 @@
       return localStorage.getItem("rra-label-order") === "random" ? "random" : "alpha";
     }
     function labelMin() {
-      const v = parseInt(localStorage.getItem("rra-label-min") || "2", 10);
-      return Number.isFinite(v) && v > 0 ? v : 2;
+      const v = parseInt(localStorage.getItem("rra-label-min") || "1", 10);
+      return Number.isFinite(v) && v > 0 ? v : 1;
     }
 
     function exitLabels() {
@@ -1459,15 +1459,33 @@
   let npPos = 0;                // local seek position (s), advanced between polls
 
   // Tap the album name on the now-playing screen to open that album's detail.
+  // We must search the index first to find the album's offset — the now-playing
+  // data alone doesn't carry it, and /api/album requires a valid numeric offset.
   if (npAlbum) {
-    npAlbum.addEventListener("click", () => {
+    npAlbum.addEventListener("click", async () => {
       const np = currentZone && currentZone.now_playing;
       if (!np || typeof window.__openAlbum !== "function") return;
-      window.__openAlbum({
-        title:     np.line3 || np.line1 || "",
-        subtitle:  np.line2 || "",
-        image_key: np.image_key
-      }, { source: "search" });
+      const albumTitle = np.line3 || "";
+      const artist     = np.line2 || "";
+      const imageKey   = np.image_key;
+      if (!albumTitle) return;
+      const norm = s => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      try {
+        const r = await fetch("/api/search?q=" + encodeURIComponent(albumTitle) + "&limit=20");
+        if (r.ok) {
+          const j  = await r.json();
+          const rs = j.results || [];
+          const match =
+            rs.find(a => norm(a.title) === norm(albumTitle) &&
+                         artist && norm(a.subtitle).includes(norm(artist.split(" ")[0]))) ||
+            rs.find(a => norm(a.title) === norm(albumTitle)) ||
+            rs[0];
+          if (match) { window.__openAlbum(match, { source: "search" }); return; }
+        }
+      } catch (e) {}
+      // Fallback: open with image_key only (shows art, no track list)
+      window.__openAlbum({ title: albumTitle, subtitle: artist, image_key: imageKey },
+                          { source: "search" });
     });
   }
 

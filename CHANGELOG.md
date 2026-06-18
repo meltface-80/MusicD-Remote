@@ -2,6 +2,20 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.2] — 2026-06-18
+
+### Fixed
+- **Label browser shows no labels** — the minimum-album-per-label filter
+  defaulted to 2, silently hiding every label that only had 1 album in your
+  library. Changed default to 1 (show all labels).
+- **Now Playing album title link → "Valid offset query parameter required"**
+  — tapping the album name on the Now Playing screen passed an `undefined`
+  offset to the server. The handler now searches the library index first to
+  resolve the album's position, then opens the full detail modal.
+- **Splash duck SVG** — redesigned to 3/4 left-profile view with large
+  aviator-style sunglass frames, three-spike mohawk crest, and prominent
+  over-ear headphone cups, matching the actual MusicD brand character.
+
 ## [1.6.1] — 2026-06-18
 
 ### Fixed

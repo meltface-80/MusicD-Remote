@@ -15,32 +15,35 @@
   <!-- Splash screen: shown on every page load, fades out once albums render -->
   <div id="splash" class="splash" aria-hidden="true">
     <div class="splash-inner">
-      <!-- Duck head logo — headphones + sunglasses (SVG approximation of MusicD brand) -->
-      <svg class="splash-duck" viewBox="0 0 100 90" xmlns="http://www.w3.org/2000/svg" fill="currentColor" aria-hidden="true">
-        <!-- Headphone band arc over head -->
-        <path d="M26 46 Q52 8 87 46" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
-        <!-- Left ear cup -->
-        <circle cx="26" cy="57" r="13"/>
-        <!-- Right ear cup -->
-        <circle cx="87" cy="54" r="10"/>
-        <!-- Head mass (layers over band) -->
-        <ellipse cx="55" cy="57" rx="27" ry="22"/>
-        <!-- Crest / mohawk (two spikes) -->
-        <path d="M50 37 Q47 22 52 12 Q55 21 58 13 Q62 24 64 37Z"/>
-        <!-- Bill upper mandible (facing left) -->
-        <path d="M30 52 Q16 57 30 66 L44 62 L44 53Z"/>
-        <!-- Bill gap line (open beak) -->
-        <path d="M30 61 Q21 63 30 66" fill="none" stroke="var(--bg)" stroke-width="1.8"/>
-        <!-- Left sunglass lens -->
-        <circle cx="45" cy="54" r="10" fill="var(--bg)"/>
-        <circle cx="45" cy="54" r="10" fill="none" stroke="currentColor" stroke-width="2.5"/>
-        <!-- Right sunglass lens -->
-        <circle cx="66" cy="54" r="10" fill="var(--bg)"/>
-        <circle cx="66" cy="54" r="10" fill="none" stroke="currentColor" stroke-width="2.5"/>
-        <!-- Bridge between lenses -->
-        <rect x="54.5" y="52.5" width="2" height="3" rx="1"/>
+      <!-- Duck head — 3/4 left-profile matching MusicD brand: aviator sunglasses, headphones, mohawk -->
+      <svg class="splash-duck" viewBox="0 0 120 108" xmlns="http://www.w3.org/2000/svg" fill="currentColor" aria-hidden="true">
+        <!-- Headphone band arc (over head, left ear to right ear) -->
+        <path d="M22 60 Q56 6 97 53" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round"/>
+        <!-- Left ear cup (near side — larger) -->
+        <ellipse cx="19" cy="68" rx="17" ry="15"/>
+        <!-- Right ear cup (far side) -->
+        <ellipse cx="98" cy="61" rx="13" ry="12"/>
+        <!-- Duck head oval -->
+        <ellipse cx="62" cy="63" rx="35" ry="27"/>
+        <!-- Mohawk: 3 distinct spikes -->
+        <path d="M50 40 Q47 20 53 10 Q57 23 59 40Z"/>
+        <path d="M59 39 Q58 14 64 4  Q70 16 68 39Z"/>
+        <path d="M68 40 Q70 17 76 9  Q80 24 77 41Z"/>
+        <!-- Bill — wide duck bill facing left, slight open gap -->
+        <path d="M30 57 Q7 55 6 63 Q7 70 31 68Z"/>
+        <path d="M29 63 Q10 64 7 63" fill="none" stroke="var(--bg)" stroke-width="2.2"/>
+        <!-- Left aviator lens (large, dark interior, slight tilt) -->
+        <ellipse cx="46" cy="55" rx="15" ry="12" fill="var(--bg)" transform="rotate(-8,46,55)"/>
+        <ellipse cx="46" cy="55" rx="15" ry="12" fill="none" stroke="currentColor" stroke-width="3" transform="rotate(-8,46,55)"/>
+        <!-- Right aviator lens -->
+        <ellipse cx="72" cy="51" rx="13" ry="11" fill="var(--bg)" transform="rotate(-6,72,51)"/>
+        <ellipse cx="72" cy="51" rx="13" ry="11" fill="none" stroke="currentColor" stroke-width="3" transform="rotate(-6,72,51)"/>
+        <!-- Lens bridge -->
+        <rect x="60" y="50" width="4" height="5" rx="2"/>
+        <!-- Left temple arm -->
+        <path d="M33 52 Q25 59 19 64" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
         <!-- Right temple arm -->
-        <path d="M76 53 Q85 49 92 47" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M85 47 Q92 51 98 57" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
       </svg>
       <div class="splash-wordform">
         <div class="splash-brand-text">MusicD</div>
