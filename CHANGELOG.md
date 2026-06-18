@@ -2,6 +2,23 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.30] — 2026-06-18
+
+### Added
+- **"Play unheard" in topbar** — the compass icon button (⊙) is now in the main
+  header alongside Filter, Labels, and Search, so it's always one tap away without
+  opening Settings. Removed from the Settings sheet.
+
+### Changed
+- **Now-playing album title is tappable** — the album name shown on the Now Playing
+  screen is now a button. Tapping it opens the full album detail view (tracks and
+  actions) for the currently playing album.
+
+### Fixed
+- **Tap-to-select disabled globally** — iOS and Android no longer show the text
+  selection handles when tapping album tiles, labels, or any non-interactive text.
+  Text selection is still active in the search input and any other text fields.
+
 ## [1.5.29] — 2026-06-18
 
 ### Added

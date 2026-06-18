@@ -50,6 +50,13 @@ html, body {
   -moz-osx-font-smoothing: grayscale;
   touch-action: manipulation;        /* disable double-tap-zoom, keep scroll */
   -webkit-text-size-adjust: 100%;
+  -webkit-user-select: none;         /* disable tap-to-select on iOS/Android */
+  user-select: none;
+}
+/* Re-enable selection only where text entry is expected */
+input, textarea, [contenteditable] {
+  -webkit-user-select: text;
+  user-select: text;
 }
 button { font-family: inherit; }
 
@@ -1049,7 +1056,13 @@ main {
   word-break: break-word;
 }
 .np-artist { font-size: 18px; color: var(--text); margin-top: 8px; }
-.np-album  { font-size: 14px; color: var(--text-dim); margin-top: 3px; }
+.np-album {
+  font-size: 14px; color: var(--text-dim); margin-top: 3px;
+  background: none; border: none; padding: 0; cursor: pointer;
+  text-align: left; font-family: inherit;
+  text-decoration: none; transition: color .15s;
+}
+.np-album:hover, .np-album:focus-visible { color: var(--text); text-decoration: underline; }
 .np-album:empty { display: none; }
 
 .np-progress { width: 100%; margin-top: 24px; }

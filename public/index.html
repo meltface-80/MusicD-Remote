@@ -53,6 +53,14 @@
           </svg>
         </button>
 
+        <button id="play-unheard-topbar" class="icon-btn" aria-label="Play something unheard" title="Play unheard">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10"/>
+            <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>
+          </svg>
+        </button>
+
         <button id="search-toggle" class="icon-btn" aria-label="Search"
                 title="Search" aria-expanded="false" aria-controls="search-row">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -202,7 +210,7 @@ sudo systemctl disable roon-random-albums</pre>
           <div id="np-screen" class="np-screen hidden">
             <div class="np-track" id="np-track">—</div>
             <div class="np-artist" id="np-artist">—</div>
-            <div class="np-album" id="np-album"></div>
+            <button class="np-album" id="np-album" type="button" aria-label="Open album detail"></button>
 
             <div class="np-progress">
               <input type="range" id="np-seek" class="np-seek" min="0" max="100" step="1" value="0"
@@ -472,15 +480,6 @@ sudo systemctl disable roon-random-albums</pre>
               <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>
             </svg>
           </button>
-        </div>
-      </div>
-
-      <div class="settings-divider"></div>
-
-      <div class="settings-block">
-        <div class="settings-row">
-          <span class="settings-label">Play something unheard <button class="settings-info-btn" data-info="Picks a random album you haven't played yet and starts it immediately in the selected zone." aria-label="Info">ⓘ</button></span>
-          <button id="play-unheard-btn" class="settings-update-btn" type="button">Play unheard</button>
         </div>
       </div>
 

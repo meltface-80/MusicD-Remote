@@ -1412,6 +1412,19 @@
   let npLen = 0;                // current track length (s)
   let npPos = 0;                // local seek position (s), advanced between polls
 
+  // Tap the album name on the now-playing screen to open that album's detail.
+  if (npAlbum) {
+    npAlbum.addEventListener("click", () => {
+      const np = currentZone && currentZone.now_playing;
+      if (!np || typeof window.__openAlbum !== "function") return;
+      window.__openAlbum({
+        title:     np.line3 || np.line1 || "",
+        subtitle:  np.line2 || "",
+        image_key: np.image_key
+      }, { source: "search" });
+    });
+  }
+
   // Is the Roon-style now-playing screen currently on view?
   function onNowPlayingScreen() {
     return modalEl
@@ -1536,6 +1549,7 @@
     npTrack.textContent  = np.line1 || "—";
     npArtist.textContent = np.line2 || "";
     npAlbum.textContent  = np.line3 || "";
+    if (npAlbum) npAlbum.setAttribute("aria-label", "Open album: " + (np.line3 || ""));
 
     if (bigArt && np.image_key && np.image_key !== lastNpImgKey) {
       bigArt.src = "/api/image/" + encodeURIComponent(np.image_key) + "?size=800";
@@ -2336,7 +2350,7 @@
 /*  Play Unheard button in settings                                   */
 /* ------------------------------------------------------------------ */
 (function initPlayUnheard() {
-  const btn        = document.getElementById("play-unheard-btn");
+  const btn        = document.getElementById("play-unheard-topbar");
   const overlay    = document.getElementById("settings-overlay");
   const zoneSelect = document.getElementById("zone-select");
   if (!btn) return;
