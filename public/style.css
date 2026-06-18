@@ -88,9 +88,9 @@ button { font-family: inherit; }
 .brand-mark { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
 .brand-logo {
   display: block;
-  height: 44px;   /* scales "MusicD" text to ~19 px, waveform proportional */
+  height: 22px;
   width: auto;
-  mix-blend-mode: screen;   /* black JPEG background becomes invisible on dark bg */
+  color: var(--text);
 }
 .album-count {
   font-size: 11px;

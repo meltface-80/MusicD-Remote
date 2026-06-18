@@ -64,6 +64,7 @@ const roon = new RoonApi({
     c.services.RoonApiTransport.subscribe_zones((cmd, data) => {
       if (cmd === "Subscribed") {
         zones = {}; outputs = {};
+        lastSubscribedAt = Date.now();
         (data.zones || []).forEach(z => {
           zones[z.zone_id] = z;
           (z.outputs || []).forEach(o => { outputs[o.output_id] = o; });
@@ -2182,6 +2183,10 @@ function persistRadio() {
   savePersistedSettings({ radioZones: zones });
 }
 const radioBusy = {}; // zone_id -> { active: bool, ts: number }
+// After a Roon reconnect, zones_changed events arrive without isInitial and
+// would auto-start stopped zones. Suppress "play" decisions for this window.
+let lastSubscribedAt = 0;
+const RECONNECT_GRACE_MS = 15000;
 
 async function radioTopUp(zoneId, mode) {
   const st = radioBusy[zoneId] || (radioBusy[zoneId] = { active: false, ts: 0 });
@@ -2215,7 +2220,8 @@ function handleRadioZone(z, isInitial) {
   if (decision === "queue") radioTopUp(z.zone_id, "queue");
   // Never auto-start a stopped zone on the initial snapshot after pairing/restart —
   // only begin playback in response to real zone-change events.
-  else if (decision === "play" && !isInitial) radioTopUp(z.zone_id, "play");
+  else if (decision === "play" && !isInitial &&
+           (Date.now() - lastSubscribedAt) > RECONNECT_GRACE_MS) radioTopUp(z.zone_id, "play");
 }
 
 // ---------------------------------------------------------------------------

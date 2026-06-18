@@ -181,6 +181,16 @@ const ShareCard = (() => {
         WORDMARK_W, wmH
       );
       ctx.globalAlpha = 1;
+    } else {
+      ctx.globalAlpha = 0.75;
+      ctx.font = 'bold 20px system-ui,-apple-system,sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText('MusicD', CARD_W - WORDMARK_PAD, CARD_H - WORDMARK_PAD + 4);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.globalAlpha = 1;
     }
 
     return new Promise((resolve, reject) => {

@@ -1977,7 +1977,7 @@
 
       const blob = await ShareCard.render({
         coverUrl,
-        wordmarkUrl: "/logo.png",
+        wordmarkUrl: null,
         title,
         artist,
         releaseRaw,

@@ -2,6 +2,21 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.28] — 2026-06-18
+
+### Fixed
+- **Random album radio auto-start after Roon restart** — after the initial
+  `Subscribed` snapshot (which correctly passes `isInitial=true`), Roon fires
+  additional `zones_changed` events as it settles its state. These arrived
+  without `isInitial`, causing stopped zones with radio enabled to auto-start.
+  Added a 15-second grace window (`RECONNECT_GRACE_MS`) stamped on every
+  `Subscribed` event; "play" decisions are suppressed within this window.
+- **MusicD logo missing in header** — `logo.jpg` was never committed to the
+  repository. Replaced the broken `<img>` with an inline SVG text wordmark.
+- **MusicD wordmark missing on share cards** — `logo.png` was similarly absent.
+  The share card now renders "MusicD" as text in the bottom-right corner when
+  no image is available.
+
 ## [1.5.27] — 2026-06-18
 
 ### Fixed
