@@ -2066,6 +2066,20 @@ app.get("/api/album", async (req, res) => {
 // Roon exposes the heart as an action_list item inside the album browse level.
 // Title is "Love Album" when not loved, "Unlove Album" when currently loved.
 // ---------------------------------------------------------------------------
+const LOVE_RE = /\blove\b|\bheart\b|\bfavouri?te\b|\bliked?\b/i;
+const UNLOVE_RE = /\bunlove\b/i;
+
+async function invokeFoundLoveItem(hierarchy, loveItem, sessionKey) {
+  await browse({ hierarchy, item_key: loveItem.item_key, multi_session_key: sessionKey });
+  const sub = await load({ hierarchy, offset: 0, count: 10, multi_session_key: sessionKey }).catch(() => null);
+  if (sub && sub.items && sub.items.length) {
+    const ci = sub.items.find(i => LOVE_RE.test(i.title || "")) || sub.items[0];
+    if (ci && ci.item_key) {
+      await browse({ hierarchy, item_key: ci.item_key, multi_session_key: sessionKey }).catch(() => {});
+    }
+  }
+}
+
 async function getOrToggleAlbumLove(offset, doToggle, filter) {
   const sessionKey = "rra_love_" + Math.random().toString(36).slice(2, 10);
   const nav = await navigateToAlbumList(sessionKey, filter || null);
@@ -2079,30 +2093,43 @@ async function getOrToggleAlbumLove(offset, doToggle, filter) {
   const inside = await load({ hierarchy, offset: 0, count: 300, multi_session_key: sessionKey });
   const items = inside.items || [];
 
-  if (DEBUG) {
-    console.log("[love items] offset=" + offset);
-    items.forEach(i => console.log("  hint=" + (i.hint || "?") + "  title=" + JSON.stringify(i.title)));
+  // Always log so docker logs reveal the actual browse structure
+  console.log("[love] album offset=" + offset + " title=" + JSON.stringify(albumItem.title) + " → " + items.length + " items");
+  items.forEach(i => console.log("  hint=" + (i.hint || "none") + "  title=" + JSON.stringify(i.title)));
+
+  let loveItem = items.find(i => LOVE_RE.test(i.title || ""));
+
+  // Not found at top level — dive into each nested action_list (each gets its own session)
+  if (!loveItem) {
+    for (const candidate of items.filter(i => i.hint === "action_list" && i.item_key)) {
+      const nk = "rra_love_n_" + Math.random().toString(36).slice(2, 10);
+      const navN = await navigateToAlbumList(nk, filter || null);
+      const alN = await load({ hierarchy: navN.hierarchy, offset, count: 1, multi_session_key: nk });
+      const aN = alN.items && alN.items[0];
+      if (!aN) continue;
+      await browse({ hierarchy: navN.hierarchy, item_key: aN.item_key, multi_session_key: nk });
+      await browse({ hierarchy: navN.hierarchy, item_key: candidate.item_key, multi_session_key: nk });
+      const subLoad = await load({ hierarchy: navN.hierarchy, offset: 0, count: 100, multi_session_key: nk });
+      const subItems = subLoad.items || [];
+      console.log("[love] inside '" + (candidate.title || "") + "': " + subItems.length + " items");
+      subItems.forEach(i => console.log("  hint=" + (i.hint || "none") + "  title=" + JSON.stringify(i.title)));
+      const nested = subItems.find(i => LOVE_RE.test(i.title || ""));
+      if (nested) {
+        console.log("[love] found in nested list:", JSON.stringify(nested.title));
+        const loved = UNLOVE_RE.test(nested.title || "");
+        if (!doToggle) return { found: true, loved };
+        await invokeFoundLoveItem(navN.hierarchy, nested, nk);
+        return { found: true, loved: !loved };
+      }
+    }
+    console.log("[love] love action not found for offset=" + offset);
+    return { found: false, loved: null };
   }
 
-  const loveItem = items.find(i => /\blove\b|\bheart\b|\bfavouri?te\b/i.test(i.title || ""));
-  if (!loveItem) return { found: false, loved: null };
-
-  const currentlyLoved = /\bunlove\b/i.test(loveItem.title || "");
+  const currentlyLoved = UNLOVE_RE.test(loveItem.title || "");
   if (!doToggle) return { found: true, loved: currentlyLoved };
 
-  // Invoke: browsing to an action_list opens its submenu; browsing to an action invokes it directly.
-  await browse({ hierarchy, item_key: loveItem.item_key, multi_session_key: sessionKey });
-
-  // If it opened a submenu, invoke the first relevant item inside.
-  const sub = await load({ hierarchy, offset: 0, count: 10, multi_session_key: sessionKey }).catch(() => null);
-  if (sub && sub.items && sub.items.length) {
-    const subItem = sub.items.find(i => /\blove\b|\bunlove\b|\bheart\b/i.test(i.title || ""))
-                 || sub.items[0];
-    if (subItem && subItem.item_key) {
-      await browse({ hierarchy, item_key: subItem.item_key, multi_session_key: sessionKey }).catch(() => {});
-    }
-  }
-
+  await invokeFoundLoveItem(hierarchy, loveItem, sessionKey);
   return { found: true, loved: !currentlyLoved };
 }
 
@@ -2127,6 +2154,29 @@ app.post("/api/album/love", async (req, res) => {
   try {
     const result = await getOrToggleAlbumLove(offset, true, parseFilter(req.query));
     res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/debug/album-items?offset=N — dump raw browse items for diagnostic
+app.get("/api/debug/album-items", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  const offset = parseInt(req.query.offset, 10);
+  if (!Number.isFinite(offset) || offset < 0) return res.status(400).json({ error: "Valid offset required" });
+  try {
+    const sessionKey = "rra_dbg_" + Math.random().toString(36).slice(2, 10);
+    const nav = await navigateToAlbumList(sessionKey, null);
+    const hierarchy = nav.hierarchy;
+    const albumLoad = await load({ hierarchy, offset, count: 1, multi_session_key: sessionKey });
+    const albumItem = albumLoad.items && albumLoad.items[0];
+    if (!albumItem) return res.json({ error: "No album at offset " + offset, items: [] });
+    await browse({ hierarchy, item_key: albumItem.item_key, multi_session_key: sessionKey });
+    const inside = await load({ hierarchy, offset: 0, count: 300, multi_session_key: sessionKey });
+    const items = (inside.items || []).map(i => ({
+      hint: i.hint, title: i.title, subtitle: i.subtitle, has_key: !!i.item_key
+    }));
+    res.json({ album: albumItem.title, offset, total_items: items.length, items });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

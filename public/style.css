@@ -663,9 +663,22 @@ main {
 .modal-share {
   position: absolute; top: 12px; right: 60px; z-index: 2;
 }
+.modal-subtitle-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  margin-bottom: 20px;
+}
+.modal-subtitle-row .modal-subtitle {
+  flex: 1 1 auto;
+  margin-bottom: 0;
+}
 .modal-love {
-  position: absolute; top: 12px; right: 108px; z-index: 2;
+  flex: 0 0 auto;
+  color: var(--text-faint);
   transition: color .2s, opacity .2s;
+  padding: 2px;
 }
 .modal-love.is-loved {
   color: #e8437a;
@@ -676,6 +689,10 @@ main {
 }
 .modal-love.is-loading {
   opacity: .35;
+  pointer-events: none;
+}
+.modal-love.is-unsupported {
+  opacity: .2;
   pointer-events: none;
 }
 

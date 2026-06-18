@@ -2,6 +2,24 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.20] — 2026-06-18
+
+### Fixed
+- **Heart / love button** — relocated from the top-right corner of the modal
+  to sit inline next to the artist name, so it's always visible alongside the
+  album info rather than floating over the cover art.
+- **Heart button persistence** — button stays visible when Roon's browse API
+  hasn't returned a love state yet; it appears greyed/disabled rather than
+  disappearing, making the loading state obvious.
+- **Heart browse reliability** — the server now searches inside every nested
+  action_list returned by Roon's album browse level (not just the top-level
+  items), so the love action is found even when Roon places it inside a
+  sub-group. All browse items are now logged unconditionally (docker logs will
+  show the full structure for diagnosis if needed).
+- **Debug endpoint** — added `GET /api/debug/album-items?offset=N` which dumps
+  the raw browse items Roon returns when entering an album, making it easy to
+  diagnose browse API structure issues without code changes.
+
 ## [1.5.19] — 2026-06-18
 
 ### Added

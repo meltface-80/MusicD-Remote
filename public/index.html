@@ -191,12 +191,6 @@ sudo systemctl disable roon-random-albums</pre>
           <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/>
         </svg>
       </button>
-      <button class="modal-love icon-btn" id="modal-love-btn" aria-label="Love album" aria-pressed="false" title="Love album" style="display:none">
-        <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
-        </svg>
-      </button>
 
       <div class="modal-body">
         <div class="modal-tabs hidden" id="modal-tabs">
@@ -208,7 +202,15 @@ sudo systemctl disable roon-random-albums</pre>
         </div>
         <div class="modal-info">
           <h2 id="modal-title">—</h2>
-          <div id="modal-subtitle" class="modal-subtitle"></div>
+          <div class="modal-subtitle-row">
+            <div id="modal-subtitle" class="modal-subtitle"></div>
+            <button class="modal-love icon-btn" id="modal-love-btn" aria-label="Love album" aria-pressed="false" title="Love album" style="display:none">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+              </svg>
+            </button>
+          </div>
 
           <div class="modal-tab-pane" id="tab-album">
 

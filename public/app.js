@@ -637,7 +637,7 @@
     currentAlbum = null;
     window.__currentAlbum = null;
     _loveAlbum = null;
-    if (loveBtn) { loveBtn.style.display = "none"; loveBtn.classList.remove("is-loved", "is-loading"); }
+    if (loveBtn) { loveBtn.style.display = "none"; loveBtn.classList.remove("is-loved", "is-loading", "is-unsupported"); loveBtn.disabled = false; }
     try { sessionStorage.removeItem("rra-modal"); } catch (e) {}
     if (typeof window.__refreshTransport === "function") window.__refreshTransport();
   }
@@ -664,14 +664,20 @@
     if (!loveBtn || !album) return;
     _loveAlbum = album;
     loveBtn.style.display = "";
-    loveBtn.classList.remove("is-loved");
+    loveBtn.classList.remove("is-loved", "is-unsupported");
+    loveBtn.disabled = false;
     loveBtn.classList.add("is-loading");
     fetch(`/api/album/love?offset=${album.offset}`)
       .then(r => r.json())
       .then(j => {
         if (album !== _loveAlbum) return;
         loveBtn.classList.remove("is-loading");
-        if (!j.found) { loveBtn.style.display = "none"; return; }
+        if (!j.found) {
+          loveBtn.classList.add("is-unsupported");
+          loveBtn.disabled = true;
+          return;
+        }
+        loveBtn.disabled = false;
         applyLoveState(j.loved);
       })
       .catch(() => { if (album === _loveAlbum) loveBtn.classList.remove("is-loading"); });
