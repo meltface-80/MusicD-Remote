@@ -49,6 +49,9 @@ The GitHub Actions workflow (`.github/workflows/*.yml`) auto-creates a GitHub Re
 
 ## Lessons Learned
 
+### v1.5.22 (2026-06-18)
+- **Undefined CSS variable = transparent background**: `var(--bg-page)` was used in `.stats-panel` but never defined in `:root` or `[data-theme]` blocks. CSS silently treats undefined variables as `transparent`. Always check that any CSS variable you write is actually defined — grep the file for the variable name before using it.
+
 ### v1.5.20 (2026-06-18)
 - **Heart/love button removed in v1.5.21**: The Roon browse API didn't return a love/heart action item when navigating into albums via the `albums` hierarchy. The `getOrToggleAlbumLove()` function searched top-level items and nested `action_list` items but found nothing matching. Feature removed pending discovery of the correct browse path (check docker logs with the `/api/debug/album-items?offset=N` endpoint if re-implementing).
 - **415 errors on bare POSTs**: `fetch(url, { method: "POST" })` with no body causes Express's `express.json()` middleware to return 415 Unsupported Media Type on some clients (notably iOS Safari). Fix: always include `headers: { "Content-Type": "application/json" }, body: "{}"` on action POSTs.
