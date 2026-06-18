@@ -48,6 +48,7 @@ const updater = createUpdater({
 let core      = null;
 let zones     = {};
 let outputs   = {};
+const scrobbleState = new Map();
 
 const roon = new RoonApi({
   extension_id:        "com.local.roon.random-albums",
@@ -67,12 +68,13 @@ const roon = new RoonApi({
           zones[z.zone_id] = z;
           (z.outputs || []).forEach(o => { outputs[o.output_id] = o; });
           handleRadioZone(z);
+          scrobbleUpdate(z);
         });
       } else if (cmd === "Changed") {
         (data.zones_added   || []).forEach(z => { zones[z.zone_id] = z;
-          (z.outputs || []).forEach(o => { outputs[o.output_id] = o; }); handleRadioZone(z); });
+          (z.outputs || []).forEach(o => { outputs[o.output_id] = o; }); handleRadioZone(z); scrobbleUpdate(z); });
         (data.zones_changed || []).forEach(z => { zones[z.zone_id] = z;
-          (z.outputs || []).forEach(o => { outputs[o.output_id] = o; }); handleRadioZone(z); });
+          (z.outputs || []).forEach(o => { outputs[o.output_id] = o; }); handleRadioZone(z); scrobbleUpdate(z); });
         (data.zones_removed || []).forEach(zid => {
           const z = zones[zid];
           if (z) (z.outputs || []).forEach(o => delete outputs[o.output_id]);
@@ -638,6 +640,7 @@ const labelLogoCache = new Map();  // group key → logo URL | null (null = trie
 
 let labelsDb = null;
 let stmtInsertName, stmtInsertMbid, stmtInsertLogo;
+let stmtInsertPlay, stmtCompletePlay, stmtInsertMeta;
 
 function openLabelsDb() {
   if (!Database) {
@@ -661,10 +664,29 @@ function openLabelsDb() {
         group_key TEXT PRIMARY KEY,
         logo_url  TEXT
       );
+      CREATE TABLE IF NOT EXISTS plays (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        zone TEXT,
+        track TEXT,
+        artist TEXT,
+        album TEXT,
+        image_key TEXT,
+        duration INTEGER,
+        completed INTEGER DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS album_meta (
+        album_key TEXT PRIMARY KEY,
+        genre TEXT,
+        year INTEGER
+      );
     `);
     stmtInsertName = labelsDb.prepare("INSERT OR REPLACE INTO label_names (key, label) VALUES (?, ?)");
     stmtInsertMbid = labelsDb.prepare("INSERT OR REPLACE INTO label_mbids (group_key, mbid) VALUES (?, ?)");
     stmtInsertLogo = labelsDb.prepare("INSERT OR REPLACE INTO label_logos (group_key, logo_url) VALUES (?, ?)");
+    stmtInsertPlay  = labelsDb.prepare("INSERT INTO plays (ts, zone, track, artist, album, image_key, duration) VALUES (?,?,?,?,?,?,?)");
+    stmtCompletePlay = labelsDb.prepare("UPDATE plays SET completed=1 WHERE id=?");
+    stmtInsertMeta  = labelsDb.prepare("INSERT OR IGNORE INTO album_meta (album_key, genre, year) VALUES (?,?,?)");
     for (const r of labelsDb.prepare("SELECT key, label FROM label_names").all()) {
       if (r.label) labelDiskCache.set(r.key, r.label);
     }
@@ -876,6 +898,11 @@ async function fetchLabelFromiTunes(title, artist) {
     }
     if (!match) match = results[0];
     const label = match && match.recordLabel;
+    if (stmtInsertMeta && match && match.primaryGenreName) {
+      const metaKey = normalize(title) + "||" + normalize(artist || "");
+      const yr = match.releaseDate ? parseInt(match.releaseDate.slice(0, 4), 10) : null;
+      try { stmtInsertMeta.run(metaKey, match.primaryGenreName, yr || null); } catch (e) {}
+    }
     if (!label || /self.released|independent|self-released/i.test(label)) return null;
     return label;
   } catch (e) {
@@ -2260,6 +2287,56 @@ function handleRadioZone(z) {
   else if (decision === "play") radioTopUp(z.zone_id, "play");
 }
 
+// ---------------------------------------------------------------------------
+// Scrobble / play tracking — records plays into SQLite for stats.
+// ---------------------------------------------------------------------------
+function scrobbleUpdate(z) {
+  if (!labelsDb || !stmtInsertPlay) return;
+  const np    = z && z.now_playing;
+  const state = z && z.state;
+  const zid   = z && z.zone_id;
+  if (!zid) return;
+
+  const prev = scrobbleState.get(zid);
+
+  if (state === "playing" && np && np.line1) {
+    if (!prev || prev.track !== np.line1 || prev.album !== (np.line3 || "")) {
+      // New track — complete previous if it qualifies
+      if (prev && prev.playId && prev.elapsed >= 30 &&
+          (prev.elapsed >= (prev.duration || 0) * 0.5 || prev.elapsed >= 240)) {
+        try { stmtCompletePlay.run(prev.playId); } catch (e) {}
+      }
+      // Insert new play record
+      let playId = null;
+      try {
+        const info = stmtInsertPlay.run(
+          Date.now(), z.display_name || zid,
+          np.line1 || "", np.line2 || "", np.line3 || "",
+          np.image_key || "", np.length || 0
+        );
+        playId = info.lastInsertRowid;
+      } catch (e) {}
+      scrobbleState.set(zid, {
+        track: np.line1, artist: np.line2 || "", album: np.line3 || "",
+        image_key: np.image_key || "", duration: np.length || 0,
+        playId, elapsed: 0, lastSeekPos: np.seek_position || 0
+      });
+    } else if (prev) {
+      // Same track — accumulate elapsed via seek_position delta
+      const seekDelta = (np.seek_position || 0) - prev.lastSeekPos;
+      if (seekDelta > 0 && seekDelta < 30) prev.elapsed += seekDelta;
+      prev.lastSeekPos = np.seek_position || 0;
+    }
+  } else if (prev && prev.playId) {
+    // Not playing (paused/stopped) — finalise if eligible
+    if (prev.elapsed >= 30 &&
+        (prev.elapsed >= (prev.duration || 0) * 0.5 || prev.elapsed >= 240)) {
+      try { stmtCompletePlay.run(prev.playId); } catch (e) {}
+    }
+    scrobbleState.delete(zid);
+  }
+}
+
 app.get("/api/radio", (req, res) => {
   const zoneId = req.query.zone;
   res.json({ enabled: zoneId ? radioZones.has(zoneId) : false, zones: [...radioZones] });
@@ -2714,6 +2791,105 @@ app.post("/api/volume", (req, res) => {
     .catch(err => res.status(500).json({
       error: typeof err === "string" ? err : JSON.stringify(err)
     }));
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/stats — listening statistics from the plays table.
+// ---------------------------------------------------------------------------
+app.get("/api/stats", (req, res) => {
+  if (!labelsDb) return res.json({ available: false });
+
+  const total = labelsDb.prepare("SELECT COUNT(*) as n FROM plays WHERE completed=1").get().n;
+  if (total === 0) return res.json({ available: true, total: 0, message: "No plays recorded yet — keep listening!" });
+
+  // Top 10 albums by play count
+  const topAlbums = labelsDb.prepare(`
+    SELECT album, artist, image_key, COUNT(*) as plays
+    FROM plays WHERE completed=1 AND album != ''
+    GROUP BY album, artist ORDER BY plays DESC LIMIT 10
+  `).all();
+
+  // Top 10 tracks by play count
+  const topTracks = labelsDb.prepare(`
+    SELECT track, artist, album, COUNT(*) as plays
+    FROM plays WHERE completed=1 AND track != ''
+    GROUP BY track, artist, album ORDER BY plays DESC LIMIT 10
+  `).all();
+
+  // Top artists by play count (with percentage)
+  const artistRows = labelsDb.prepare(`
+    SELECT artist, COUNT(*) as plays
+    FROM plays WHERE completed=1 AND artist != ''
+    GROUP BY artist ORDER BY plays DESC LIMIT 10
+  `).all();
+  const artists = artistRows.map(r => ({ ...r, pct: Math.round(r.plays / total * 100) }));
+
+  // Plays by decade
+  const byDecade = labelsDb.prepare(`
+    SELECT (m.year / 10 * 10) as decade, COUNT(*) as plays
+    FROM plays p
+    JOIN album_meta m ON m.album_key = (lower(trim(p.album)) || '||' || lower(trim(p.artist)))
+    WHERE p.completed=1 AND m.year IS NOT NULL
+    GROUP BY decade ORDER BY decade
+  `).all();
+
+  // Plays by genre
+  const byGenre = labelsDb.prepare(`
+    SELECT m.genre, COUNT(*) as plays
+    FROM plays p
+    JOIN album_meta m ON m.album_key = (lower(trim(p.album)) || '||' || lower(trim(p.artist)))
+    WHERE p.completed=1 AND m.genre IS NOT NULL AND m.genre != ''
+    GROUP BY m.genre ORDER BY plays DESC LIMIT 12
+  `).all();
+
+  // Listening by hour of day (UTC)
+  const byHour = labelsDb.prepare(`
+    SELECT ((ts / 3600000) % 24) as hour, COUNT(*) as plays
+    FROM plays WHERE completed=1
+    GROUP BY hour ORDER BY hour
+  `).all();
+
+  // Listening by day of week
+  const byDay = labelsDb.prepare(`
+    SELECT ((ts / 86400000 + 4) % 7) as dow, COUNT(*) as plays
+    FROM plays WHERE completed=1
+    GROUP BY dow ORDER BY dow
+  `).all();
+  const DOW = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+  // Library stats from album index
+  const libTotal = albumIndex.count;
+
+  // Summary stats
+  const uniqueArtists = labelsDb.prepare("SELECT COUNT(DISTINCT artist) as n FROM plays WHERE completed=1 AND artist!=''").get().n;
+  const uniqueAlbums  = labelsDb.prepare("SELECT COUNT(DISTINCT album||artist) as n FROM plays WHERE completed=1 AND album!=''").get().n;
+  const mostActiveDay = byDay.reduce((a, b) => b.plays > a.plays ? b : a, byDay[0] || { dow: 0, plays: 0 });
+  const peakHour      = byHour.reduce((a, b) => b.plays > a.plays ? b : a, byHour[0] || { hour: 0, plays: 0 });
+  const hLabel        = h => { const a = h % 12 || 12; return a + (h < 12 ? "am" : "pm"); };
+
+  // Repeat listener ratio
+  const multiPlay = labelsDb.prepare("SELECT COUNT(*) as n FROM (SELECT album,artist FROM plays WHERE completed=1 GROUP BY album,artist HAVING COUNT(*)>1)").get().n;
+  const repeatPct = uniqueAlbums > 0 ? Math.round(multiPlay / uniqueAlbums * 100) : 0;
+
+  res.json({
+    available: true,
+    total,
+    topAlbums,
+    topTracks,
+    artists,
+    byDecade,
+    byGenre,
+    byHour: byHour.map(r => ({ hour: r.hour, label: hLabel(r.hour), plays: r.plays })),
+    byDay:  byDay.map(r => ({ dow: r.dow, label: DOW[r.dow] || "?", plays: r.plays })),
+    libTotal,
+    surprises: {
+      uniqueArtists,
+      uniqueAlbums,
+      mostActiveDay: DOW[mostActiveDay.dow] || "?",
+      peakHour: hLabel(peakHour.hour),
+      repeatPct,
+    }
+  });
 });
 
 app.listen(PORT, () => {

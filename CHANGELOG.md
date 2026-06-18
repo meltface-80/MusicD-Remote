@@ -2,6 +2,26 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.19] — 2026-06-18
+
+### Added
+- **Listening statistics** — tap the bar-chart icon in the topbar to open your
+  stats. Plays are captured server-side via the Roon zone subscription, so
+  every track played from any zone (extension UI or Roon app) is recorded
+  automatically, even with the browser closed.
+  - **At a glance**: total plays, unique albums/artists, replay %, busiest
+    day, peak listening hour
+  - **Top 10 albums** — with cover art and play count
+  - **Top 10 tracks** — by play count  
+  - **Top artists** — percentage bar chart of listening share
+  - **By decade** — breakdown of what era you listen to most
+  - **By genre** — populated as the label scan enriches albums (iTunes returns
+    genre alongside label data, stored in `album_meta` table)
+  - **Time of day** — 24-hour sparkline showing listening patterns
+  - **Day of week** — bar chart
+  - Stats accumulate from this version onwards; no historical Roon data is
+    imported. Genre/decade data fills in gradually as albums are label-scanned.
+
 ## [1.5.18] — 2026-06-18
 
 ### Added

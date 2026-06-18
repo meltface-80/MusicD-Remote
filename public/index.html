@@ -71,6 +71,15 @@
           <span>Refresh</span>
         </button>
 
+        <button id="stats-toggle" class="icon-btn" aria-label="Listening stats" title="Stats">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="18" y1="20" x2="18" y2="10"/>
+            <line x1="12" y1="20" x2="12" y2="4"/>
+            <line x1="6" y1="20" x2="6" y2="14"/>
+          </svg>
+        </button>
+
         <button id="settings-toggle" class="icon-btn" aria-label="Settings" title="Settings">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -147,6 +156,22 @@ sudo systemctl disable roon-random-albums</pre>
     <div id="album-grid" class="album-grid" aria-live="polite"></div>
   </main>
   </div><!-- /.app -->
+
+  <!-- Stats panel -->
+  <div id="stats-panel" class="stats-panel hidden">
+    <div class="stats-header">
+      <h2>Your Listening</h2>
+      <button class="icon-btn stats-close" id="stats-close" aria-label="Close stats">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M18 6 6 18M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+    <div id="stats-body" class="stats-body">
+      <div class="stats-loading">Loading stats…</div>
+    </div>
+  </div>
 
   <!-- Album detail modal -->
   <div id="album-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">

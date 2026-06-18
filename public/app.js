@@ -2485,6 +2485,138 @@
 })();
 
 /* ------------------------------------------------------------------ */
+/*  Stats panel                                                        */
+/* ------------------------------------------------------------------ */
+(() => {
+  const panel    = document.getElementById("stats-panel");
+  const body     = document.getElementById("stats-body");
+  const toggle   = document.getElementById("stats-toggle");
+  const closeBtn = document.getElementById("stats-close");
+  if (!panel || !toggle) return;
+
+  function open()  { panel.classList.remove("hidden"); document.body.style.overflow = "hidden"; loadStats(); }
+  function close() { panel.classList.add("hidden");   document.body.style.overflow = ""; }
+
+  toggle.addEventListener("click", open);
+  closeBtn && closeBtn.addEventListener("click", close);
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && !panel.classList.contains("hidden")) close(); });
+
+  function esc(s) {
+    return String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+
+  function bar(label, value, max, count) {
+    const pct = max > 0 ? Math.round(value / max * 100) : 0;
+    return `<div class="stat-bar-row">
+      <span class="stat-bar-label" title="${esc(label)}">${esc(label)}</span>
+      <div class="stat-bar-wrap"><div class="stat-bar-fill" style="width:${pct}%"></div></div>
+      <span class="stat-bar-count">${count !== undefined ? count : value}</span>
+    </div>`;
+  }
+
+  function section(title, inner) {
+    return `<div class="stats-section"><div class="stats-section-title">${esc(title)}</div>${inner}</div>`;
+  }
+
+  function renderStats(d) {
+    if (!d.available || d.total === 0) {
+      body.innerHTML = `<p class="stats-empty">${esc(d.message || "No plays recorded yet. Keep listening — stats build up over time.")}</p>`;
+      return;
+    }
+
+    let html = "";
+
+    // Summary cards
+    const cards = [
+      { value: d.total, label: "total plays" },
+      { value: d.surprises.uniqueAlbums, label: "albums played" },
+      { value: d.surprises.uniqueArtists, label: "artists heard" },
+      { value: d.surprises.repeatPct + "%", label: "albums replayed" },
+      { value: d.surprises.mostActiveDay, label: "most active day" },
+      { value: d.surprises.peakHour, label: "peak listening hour" },
+    ];
+    html += section("At a glance", `<div class="stats-cards">${
+      cards.map(c => `<div class="stats-card"><div class="stats-card-value">${esc(String(c.value))}</div><div class="stats-card-label">${esc(c.label)}</div></div>`).join("")
+    }</div>`);
+
+    // Top 10 albums
+    if (d.topAlbums && d.topAlbums.length) {
+      const items = d.topAlbums.map((a, i) => {
+        const imgSrc = a.image_key ? `/api/image/${encodeURIComponent(a.image_key)}?size=100` : "";
+        const img = imgSrc ? `<img class="stat-list-art" src="${esc(imgSrc)}" alt="" loading="lazy">` : `<div class="stat-list-art"></div>`;
+        return `<div class="stat-list-item">
+          <span class="stat-list-rank">${i+1}</span>${img}
+          <div class="stat-list-info">
+            <div class="stat-list-title">${esc(a.album)}</div>
+            <div class="stat-list-sub">${esc(a.artist)}</div>
+          </div>
+          <span class="stat-list-plays">${a.plays}×</span>
+        </div>`;
+      }).join("");
+      html += section("Top albums", `<div class="stat-list">${items}</div>`);
+    }
+
+    // Top 10 tracks
+    if (d.topTracks && d.topTracks.length) {
+      const items = d.topTracks.map((t, i) => `<div class="stat-list-item">
+        <span class="stat-list-rank">${i+1}</span>
+        <div class="stat-list-info">
+          <div class="stat-list-title">${esc(t.track)}</div>
+          <div class="stat-list-sub">${esc(t.artist)}${t.album ? " · " + esc(t.album) : ""}</div>
+        </div>
+        <span class="stat-list-plays">${t.plays}×</span>
+      </div>`).join("");
+      html += section("Top tracks", `<div class="stat-list">${items}</div>`);
+    }
+
+    // Top artists
+    if (d.artists && d.artists.length) {
+      const maxPlays = d.artists[0].plays;
+      html += section("Top artists", d.artists.map(a => bar(a.artist, a.plays, maxPlays, a.pct + "% · " + a.plays + " plays")).join(""));
+    }
+
+    // By decade
+    if (d.byDecade && d.byDecade.length) {
+      const maxD = Math.max(...d.byDecade.map(r => r.plays));
+      html += section("By decade", d.byDecade.map(r => bar(r.decade + "s", r.plays, maxD, r.plays)).join(""));
+    }
+
+    // By genre
+    if (d.byGenre && d.byGenre.length) {
+      const maxG = Math.max(...d.byGenre.map(r => r.plays));
+      html += section("By genre", d.byGenre.map(r => bar(r.genre, r.plays, maxG, r.plays)).join(""));
+    }
+
+    // Hour of day sparkline
+    if (d.byHour && d.byHour.length) {
+      const hours = Array.from({length: 24}, (_, h) => {
+        const row = d.byHour.find(r => r.hour === h);
+        return row ? row.plays : 0;
+      });
+      const maxH = Math.max(...hours, 1);
+      const sparks = hours.map(v => `<div class="stats-spark-bar" style="height:${Math.max(5, Math.round(v/maxH*100))}%"></div>`).join("");
+      html += section("Time of day", `<div class="stats-sparkline">${sparks}</div><div class="stats-spark-labels"><span>12am</span><span>6am</span><span>12pm</span><span>6pm</span><span>11pm</span></div>`);
+    }
+
+    // By day of week
+    if (d.byDay && d.byDay.length) {
+      const maxDow = Math.max(...d.byDay.map(r => r.plays));
+      html += section("Day of week", d.byDay.map(r => bar(r.label, r.plays, maxDow, r.plays)).join(""));
+    }
+
+    body.innerHTML = html;
+  }
+
+  function loadStats() {
+    body.innerHTML = '<div class="stats-loading">Loading…</div>';
+    fetch("/api/stats")
+      .then(r => r.json())
+      .then(renderStats)
+      .catch(() => { body.innerHTML = '<div class="stats-loading">Could not load stats.</div>'; });
+  }
+})();
+
+/* ------------------------------------------------------------------ */
 /*  Docker migration banner (shown to native installs only)           */
 /* ------------------------------------------------------------------ */
 (function initDockerMigration() {
