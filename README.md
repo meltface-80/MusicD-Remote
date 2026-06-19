@@ -6,7 +6,7 @@
 
 # Random Albums — a Roon extension
 
-> **Note:** If you are running a version newer than v1.5.34, please roll back. A bad release sequence broke several features. Stop and remove your container, then reinstall from the v1.5.34 tarball using the instructions below.
+> **Note:** If you are running a version newer than v1.5.35, please roll back. A bad release sequence broke several features. Stop and remove your container, then reinstall from the v1.5.35 tarball using the instructions below.
 
 A web UI that shows a screenful of random albums from your Roon library, with instant whole-library search, playback actions targeting any zone, and more.
 
@@ -20,7 +20,6 @@ A web UI that shows a screenful of random albums from your Roon library, with in
 - **Now Playing** — live panel showing the current track with album art and transport controls
 - **Play unheard** — one tap to find and play an album not in your listening history
 - **Random Album Radio** — automatically queues a new random album when your queue runs dry, keeping music going without repeating recent plays
-- **Listening statistics** — play history, most-played albums, and recently played
 - **Record labels** — browse your library by label, with Fan Art TV logos where available
 - **Filters** — narrow the random pool by genre, decade, tag, or label
 - **Artist view** — tap any artist name to see all their albums in your library
@@ -34,15 +33,15 @@ A web UI that shows a screenful of random albums from your Roon library, with in
 Each release ships a `*-docker.tar.gz`. Download it, build the image, and run:
 
 ```bash
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.34-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.34-docker.tar.gz
-docker build -t roon-random-albums:1.5.34 .
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.35-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.35-docker.tar.gz
+docker build -t roon-random-albums:1.5.35 .
 docker run -d \
   --name roon-random-albums \
   --restart unless-stopped \
   --network host \
   -v roon-random-albums-data:/app/data \
-  roon-random-albums:1.5.34
+  roon-random-albums:1.5.35
 ```
 
 `--network host` is required so the extension can discover your Roon Core on
@@ -71,9 +70,9 @@ migration banner automatically with copy-ready commands. Or follow these steps:
 
 ```bash
 # 1. Download and build the Docker image
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.34-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.34-docker.tar.gz
-docker build -t roon-random-albums:1.5.34 .
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.35-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.35-docker.tar.gz
+docker build -t roon-random-albums:1.5.35 .
 
 # 2. Run the Docker container
 docker run -d \
@@ -81,7 +80,7 @@ docker run -d \
   --restart unless-stopped \
   --network host \
   -v roon-random-albums-data:/app/data \
-  roon-random-albums:1.5.34
+  roon-random-albums:1.5.35
 
 # 3. Stop and disable the native service
 sudo systemctl stop roon-random-albums
@@ -120,7 +119,7 @@ docker run -d --name roon-random-albums --restart unless-stopped --network host 
 Pass extra env vars with `-e` in the `docker run` command:
 
 ```bash
-docker run -d ... -e RRA_DEBUG=1 roon-random-albums:1.5.34
+docker run -d ... -e RRA_DEBUG=1 roon-random-albums:1.5.35
 ```
 
 ### Album metadata sources
@@ -137,7 +136,7 @@ No keys required. The extension pulls in three pieces of external metadata:
 - **"Waiting for Roon Core" never goes away**
   → Roon → Settings → Extensions → click **Enable** on *Random Albums*.
 - **Extension shows "self" instead of "MusicD"**
-  → Update to v1.5.34 or later.
+  → Update to v1.5.35 or later.
 - **Play Now does nothing**
   → Confirm a real zone is selected in the Settings dropdown.
 - **"No zones available"**

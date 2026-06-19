@@ -2147,18 +2147,19 @@
 /*  Self-update: poll status, show a toast, install on tap            */
 /* ------------------------------------------------------------------ */
 (function initUpdater() {
-  const toast   = document.getElementById("update-toast");
-  const textEl  = document.getElementById("update-text");
-  const actions = document.getElementById("update-actions");
-  const btnNow  = document.getElementById("update-now");
+  const toast    = document.getElementById("update-toast");
+  const textEl   = document.getElementById("update-text");
+  const actions  = document.getElementById("update-actions");
+  const btnNow   = document.getElementById("update-now");
   const btnLater = document.getElementById("update-later");
+  const notesEl  = document.getElementById("update-notes");
   if (!toast || !btnNow) return;
 
   const PHASE = {
-    checking:   "Preparing update\u2026",
-    downloading:"Downloading update\u2026",
-    extracting: "Unpacking update\u2026",
-    restarting: "Restarting to finish update\u2026"
+    checking:   "Preparing\u2026",
+    downloading:"Downloading\u2026",
+    extracting: "Unpacking\u2026",
+    restarting: "Restarting\u2026"
   };
   const DISMISS_KEY = "rra-update-dismissed";
   let applying = false;
@@ -2167,12 +2168,19 @@
   const dismissedVer = () => { try { return sessionStorage.getItem(DISMISS_KEY) || ""; } catch (e) { return ""; } };
   const setDismissed = (v) => { try { sessionStorage.setItem(DISMISS_KEY, v); } catch (e) {} };
   const show = (msg) => { textEl.textContent = msg; toast.classList.add("open"); };
-  const hide = () => { toast.classList.remove("open"); };
+  const hide = () => { toast.classList.remove("open"); if (notesEl) notesEl.classList.add("hidden"); };
+
+  function showNotes(notes) {
+    if (!notesEl || !notes) { if (notesEl) notesEl.classList.add("hidden"); return; }
+    notesEl.textContent = notes;
+    notesEl.classList.remove("hidden");
+  }
 
   function showProgress(phase) {
     applying = true;
     actions.classList.add("busy");
     toast.classList.remove("is-error");
+    if (notesEl) notesEl.classList.add("hidden");
     show(PHASE[phase] || "Updating\u2026");
   }
 
@@ -2184,12 +2192,15 @@
       const s = await r.json();
       const ph = s.apply && s.apply.phase;
       if (ph === "downloading" || ph === "extracting" || ph === "restarting") {
-        showProgress(ph); startPoll(s.latest); return;   // started from Roon settings
+        showProgress(ph); startPoll(s.latest); return;
       }
       if (s.available && s.latest && s.latest !== dismissedVer()) {
         actions.classList.remove("busy"); btnNow.disabled = false;
         toast.classList.remove("is-error");
-        show("Version " + s.latest + " is available (you have " + s.current + ").");
+        const label = s.isDowngrade ? "Rollback to v" : "v";
+        show((label) + s.latest + " available (you have v" + s.current + ")");
+        showNotes(s.notes);
+        btnNow.querySelector("span").textContent = s.isDowngrade ? "Roll back" : "Update";
       } else if (!applying) {
         hide();
       }
@@ -2341,21 +2352,30 @@
 /*  Check for updates button in settings                               */
 /* ------------------------------------------------------------------ */
 (function initCheckUpdate() {
-  const btn = document.getElementById("check-update-btn");
+  const btn      = document.getElementById("check-update-btn");
+  const notesDiv = document.getElementById("settings-release-notes");
   if (!btn) return;
   btn.addEventListener("click", async () => {
     if (btn.disabled) return;
     btn.disabled = true;
     btn.textContent = "Checking…";
+    if (notesDiv) notesDiv.classList.add("hidden");
     try {
       await fetch("/api/update/check", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
       const r = await fetch("/api/update/status", { cache: "no-store" });
       const s = await r.json();
       if (s && s.available && s.latest) {
-        btn.textContent = "v" + s.latest + " available — tap Update below";
+        const label = s.isDowngrade
+          ? "Rollback to v" + s.latest + " available"
+          : "v" + s.latest + " available";
+        btn.textContent = label + " — tap Update below";
+        if (notesDiv && s.notes) {
+          notesDiv.textContent = s.notes;
+          notesDiv.classList.remove("hidden");
+        }
       } else {
-        btn.textContent = "Up to date";
-        setTimeout(() => { btn.disabled = false; btn.textContent = "Check for updates"; }, 3000);
+        btn.textContent = "Up to date (v" + (s && s.current || "?") + ")";
+        setTimeout(() => { btn.disabled = false; btn.textContent = "Check for updates"; }, 4000);
       }
     } catch (e) {
       btn.textContent = "Check failed";

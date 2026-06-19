@@ -218,7 +218,7 @@ button { font-family: inherit; }
 .update-toast {
   display: none;
   flex: 0 0 auto;
-  align-items: center; gap: 10px;
+  flex-direction: column;
   padding: 10px 14px;
   padding-left: max(14px, env(safe-area-inset-left));
   padding-right: max(14px, env(safe-area-inset-right));
@@ -227,9 +227,11 @@ button { font-family: inherit; }
   border-bottom: 1px solid var(--border);
   font-size: 14px;
   animation: searchReveal .2s ease;
+  gap: 8px;
 }
 .update-toast.open { display: flex; }
 .update-toast.is-error { background: color-mix(in srgb, #e5484d 16%, transparent); }
+.update-toast-top { display: flex; align-items: center; gap: 10px; }
 .update-ico { color: var(--accent); flex: 0 0 auto; }
 .update-toast.is-error .update-ico { color: #e5484d; }
 .update-text { flex: 1 1 auto; min-width: 0; line-height: 1.35; }
@@ -242,6 +244,15 @@ button { font-family: inherit; }
 }
 .update-later:hover { color: var(--text); }
 .update-actions.busy { opacity: .7; pointer-events: none; }
+.update-notes {
+  font-size: 12px; color: var(--text-dim); line-height: 1.5;
+  white-space: pre-wrap; max-height: 120px; overflow-y: auto;
+  border-top: 1px solid var(--border); padding-top: 8px;
+}
+.settings-release-notes {
+  font-size: 12px; color: var(--text-dim); line-height: 1.5;
+  white-space: pre-wrap; padding: 10px 0 4px; max-height: 200px; overflow-y: auto;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Status banner                                                      */

@@ -2,6 +2,15 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.35] — 2026-06-19
+
+### Added
+- **Downgrade / rollback via web UI** — the in-app updater now follows whatever version is marked as "latest" on GitHub, regardless of direction. If the latest release is rolled back to an older version number, the app will offer to install it. The toast and Settings button both indicate "Roll back" vs "Update" so there's no ambiguity.
+- **Release notes in update UI** — when an update or rollback is available, the GitHub release notes are shown directly in the update toast and under the "Check for updates" button in Settings, so you can read what changed before tapping.
+
+### Fixed
+- **Incorrect "Listening statistics" feature in README** — removed from the features list; the stats UI was removed in a previous build (play history still exists in the backend and is used by Play Unheard and Random Album Radio).
+
 ## [1.5.34] — 2026-06-19
 
 ### Changed
