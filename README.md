@@ -33,6 +33,8 @@ A web UI that shows a screenful of random albums from your Roon library, with in
 Each release ships a `*-docker.tar.gz`. Download it, build the image, and run:
 
 ```bash
+sudo mkdir -p /opt/roon-random-albums
+cd /opt/roon-random-albums
 wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.36-docker.tar.gz
 tar -xzf roon-random-albums-v1.5.36-docker.tar.gz
 docker build -t roon-random-albums:1.5.36 .
@@ -68,17 +70,17 @@ curl -sSL https://get.docker.com | sh
 If you're running an older native (non-Docker) install, the app will show a
 migration banner automatically with copy-ready commands. Or follow these steps.
 
-Do the Docker build in a **fresh directory**, completely separate from your native
-install. This avoids any risk of old files interfering with the Docker image.
+The Docker build goes into `/opt/roon-random-albums`, completely separate from
+your native install, so there is no risk of old files interfering with the image.
 
 ```bash
 # 1. Stop the native service
 sudo systemctl stop roon-random-albums
 sudo systemctl disable roon-random-albums
 
-# 2. Create a fresh build directory and download the tarball into it
-mkdir ~/roon-random-albums-docker
-cd ~/roon-random-albums-docker
+# 2. Create the build directory and download the tarball
+sudo mkdir -p /opt/roon-random-albums
+cd /opt/roon-random-albums
 wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.36-docker.tar.gz
 tar -xzf roon-random-albums-v1.5.36-docker.tar.gz
 
@@ -113,7 +115,7 @@ Then remove it and the service file:
 sudo rm /etc/systemd/system/roon-random-albums.service
 sudo systemctl daemon-reload
 
-# Remove the old native install directory (not the new Docker build directory)
+# Remove the old native install directory
 rm -rf /path/to/old/roon-random-albums
 ```
 
@@ -137,6 +139,7 @@ To upgrade manually:
 
 ```bash
 docker stop roon-random-albums && docker rm roon-random-albums
+cd /opt/roon-random-albums
 wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v{NEW_VERSION}-docker.tar.gz
 tar -xzf roon-random-albums-v{NEW_VERSION}-docker.tar.gz
 docker build -t roon-random-albums:{NEW_VERSION} .
@@ -176,18 +179,16 @@ No keys required. The extension pulls in three pieces of external metadata:
 - **"No zones available"**
   → No active outputs visible to Roon yet. Wake a device or pick one in
   Roon's own remote first.
-- **Stats page is blank**
-  → Stats need at least one track to start playing after v1.5.27 is installed.
-  The "Recently played" section appears as soon as any track starts.
 - **Update fails with "extraction failed"**
-  → The container image may be old; rebuild using the steps in the Updating
-  section above. From v1.5.9 onward this is fixed automatically.
+  → The container image may be old; rebuild manually using the steps in the
+  Updating section above.
 
 ## File layout
 
 ```
-roon-random-albums/
+/opt/roon-random-albums/
 ├── Dockerfile
+├── .dockerignore
 ├── package.json
 ├── LICENSE                 # MIT
 ├── launcher.js             # supervises index.js; applies updates on restart
