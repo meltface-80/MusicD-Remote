@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.43] — 2026-06-19
+
+### Fixed
+- **Progress bar shows >100%** — albums that fail one API pass and cascade to the next (e.g., fail iTunes → TheAudioDB → MusicBrainz) were counted once per pass, so `done` grew to 3× the album count and the percentage climbed to 112%+. Replaced the single `done` counter with a pass-weighted progress function: files+iTunes share 0–20%, TheAudioDB 20–50%, MusicBrainz 50–80%, Discogs 80–100%. The bar now moves linearly through each pass and always stays between 0% and 100%.
+
 ## [1.5.42] — 2026-06-19
 
 ### Fixed

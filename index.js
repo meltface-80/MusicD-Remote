@@ -1190,7 +1190,21 @@ async function runLabelsIndexScan() {
   labelsIndex.progress = 0;
   const alreadyDone = albumIndex.albums.length - toScan.length;
   const total = albumIndex.albums.length;
-  let done = 0;
+  const scanCount = toScan.length;
+  // Progress helper — weights each pass so bar moves throughout the full scan.
+  // Passes 0+1 (files+iTunes) share 20%; TADB 30%; MB 30%; Discogs 20%.
+  // basePct = fraction of library already cached.
+  // Within each pass: interpolate between the pass start and end percentages.
+  const basePct = total > 0 ? alreadyDone / total : 0;
+  const scanPct = 1 - basePct; // fraction of bar dedicated to this scan
+  const PASS_ENDS = [0.20, 0.20, 0.50, 0.80, 1.00]; // cumulative pass weights
+  function passProgress(passIdx, pos, passTotal) {
+    const start = passIdx > 0 ? PASS_ENDS[passIdx - 1] : 0;
+    const end = PASS_ENDS[passIdx];
+    const frac = passTotal > 0 ? pos / passTotal : 1;
+    return Math.min(1, basePct + scanPct * (start + (end - start) * frac));
+  }
+  let done = 0; // kept for compatibility with file+iTunes pass tracking
 
   const startMsg = "[labels] scan started: " + toScan.length + " albums to look up (" + alreadyDone + " already cached)";
   console.log(startMsg);
@@ -1234,7 +1248,7 @@ async function runLabelsIndexScan() {
     if (fileLabel) {
       await saveLabelEntry(key, fileLabel, null, al);
       done++;
-      labelsIndex.progress = (alreadyDone + done) / total;
+      labelsIndex.progress = passProgress(0, done, scanCount);
     } else {
       needsApiScan.push(al);
     }
@@ -1270,7 +1284,7 @@ async function runLabelsIndexScan() {
       needsAudioDB.push(al);
     }
     done++;
-    labelsIndex.progress = (alreadyDone + done) / total;
+    labelsIndex.progress = passProgress(1, done, scanCount);
   };
   for (let i = 0; i < needsApiScan.length; i += ITUNES_BATCH) {
     if (itunesAborted) { needsAudioDB.push(...needsApiScan.slice(i)); break; }
@@ -1299,8 +1313,7 @@ async function runLabelsIndexScan() {
   for (let ti = 0; ti < needsAudioDB.length; ti++) {
     if (tadbAborted) {
       needsMB.push(...needsAudioDB.slice(ti));
-      done += needsAudioDB.length - ti;
-      labelsIndex.progress = (alreadyDone + done) / total;
+      labelsIndex.progress = passProgress(2, needsAudioDB.length, needsAudioDB.length);
       break;
     }
     const al = needsAudioDB[ti];
@@ -1320,8 +1333,7 @@ async function runLabelsIndexScan() {
         appendLabelsLog(msg);
       }
     }
-    done++;
-    labelsIndex.progress = (alreadyDone + done) / total;
+    labelsIndex.progress = passProgress(2, ti + 1, needsAudioDB.length);
     if ((ti + 1) % 100 === 0) {
       appendLabelsLog("[labels] pass 2 (TheAudioDB): " + (ti + 1) + "/" + needsAudioDB.length + " done so far");
     }
@@ -1348,8 +1360,7 @@ async function runLabelsIndexScan() {
   for (let mi = 0; mi < needsMB.length; mi++) {
     if (mbAborted) {
       needsDiscogs.push(...needsMB.slice(mi));
-      done += needsMB.length - mi;
-      labelsIndex.progress = (alreadyDone + done) / total;
+      labelsIndex.progress = passProgress(3, needsMB.length, needsMB.length);
       break;
     }
     const al = needsMB[mi];
@@ -1369,8 +1380,7 @@ async function runLabelsIndexScan() {
         appendLabelsLog(msg);
       }
     }
-    done++;
-    labelsIndex.progress = (alreadyDone + done) / total;
+    labelsIndex.progress = passProgress(3, mi + 1, needsMB.length);
     if ((mi + 1) % 100 === 0) {
       appendLabelsLog("[labels] pass 3 (MusicBrainz): " + (mi + 1) + "/" + needsMB.length + " done so far");
     }
@@ -1395,8 +1405,7 @@ async function runLabelsIndexScan() {
   let discogsAborted = false;
   for (let di = 0; di < needsDiscogs.length; di++) {
     if (discogsAborted) {
-      done += needsDiscogs.length - di;
-      labelsIndex.progress = (alreadyDone + done) / total;
+      labelsIndex.progress = passProgress(4, needsDiscogs.length, needsDiscogs.length);
       break;
     }
     const al = needsDiscogs[di];
@@ -1415,8 +1424,7 @@ async function runLabelsIndexScan() {
         appendLabelsLog(msg);
       }
     }
-    done++;
-    labelsIndex.progress = (alreadyDone + done) / total;
+    labelsIndex.progress = passProgress(4, di + 1, needsDiscogs.length);
     if ((di + 1) % 100 === 0) {
       appendLabelsLog("[labels] pass 4 (Discogs): " + (di + 1) + "/" + needsDiscogs.length + " done so far");
     }
