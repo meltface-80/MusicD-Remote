@@ -12,6 +12,11 @@ A web UI that shows a screenful of random albums from your Roon library, with in
 
 > The Roon API does not let third-party code navigate the Roon app itself, so the album detail view (art, tracks, action buttons) is rendered inside this UI. Tapping **Play Now** still plays through Roon on the zone you select.
 
+
+## Updates
+**v1.5.37** - Withbthis version I have been working on the labels section of the extension. I've changed the order to match labels and added a few extra tools to help. The biggest change is the :ro (read only) access to your local files. Why? If like me youbhave metadata including labels, this becomes the fast way to build the labels page. Its easily done if stored on the same server. For network shares, these will work once you `mnt` the share and then add its path to the docker build commands below. The choice is yours to add it or not. It's docker so needs to be added via terminal. 
+
+
 ## Features
 
 - **Random album grid** — fills your screen with random picks from your full library, refreshed on demand
