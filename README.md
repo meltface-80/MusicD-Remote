@@ -24,7 +24,7 @@ A web UI that shows a screenful of random albums from your Roon library, with in
 - **Filters** — narrow the random pool by genre, decade, tag, or label
 - **Artist view** — tap any artist name to see all their albums in your library
 - **Share card** — generates a 1200×600 PNG of the current album, ready to share
-- **In-app updater** — checks for new releases automatically; install with one tap from Settings, no terminal needed
+- **In-app updater** — checks for new releases automatically; install with one tap from Settings, and also allows rollback with no terminal needed
 
 ---
 
