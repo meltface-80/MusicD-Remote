@@ -4,7 +4,7 @@
 
 </div>
 
-# Random Albums — a Roon extension
+# Random Albums + Labels — a Roon extension
 
 > **Note:** If you are running a v1.6.x build, please roll back. A bad release sequence broke several features. Stop and remove your container, then reinstall from the v1.5.37 tarball using the instructions below.
 
