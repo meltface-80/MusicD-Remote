@@ -6,7 +6,7 @@
 
 # Random Albums — a Roon extension
 
-> **Note:** If you are running a v1.6.x build, please roll back. A bad release sequence broke several features. Stop and remove your container, then reinstall from the v1.5.35 tarball using the instructions below.
+> **Note:** If you are running a v1.6.x build, please roll back. A bad release sequence broke several features. Stop and remove your container, then reinstall from the v1.5.36 tarball using the instructions below.
 
 A web UI that shows a screenful of random albums from your Roon library, with instant whole-library search, playback actions targeting any zone, and more.
 
@@ -33,15 +33,15 @@ A web UI that shows a screenful of random albums from your Roon library, with in
 Each release ships a `*-docker.tar.gz`. Download it, build the image, and run:
 
 ```bash
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.35-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.35-docker.tar.gz
-docker build -t roon-random-albums:1.5.35 .
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.36-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.36-docker.tar.gz
+docker build -t roon-random-albums:1.5.36 .
 docker run -d \
   --name roon-random-albums \
   --restart unless-stopped \
   --network host \
   -v roon-random-albums-data:/app/data \
-  roon-random-albums:1.5.35
+  roon-random-albums:1.5.36
 ```
 
 `--network host` is required so the extension can discover your Roon Core on
@@ -66,50 +66,55 @@ curl -sSL https://get.docker.com | sh
 ## Migrating from a native install
 
 If you're running an older native (non-Docker) install, the app will show a
-migration banner automatically with copy-ready commands. Or follow these steps:
+migration banner automatically with copy-ready commands. Or follow these steps.
+
+Do the Docker build in a **fresh directory**, completely separate from your native
+install. This avoids any risk of old files interfering with the Docker image.
 
 ```bash
 # 1. Stop the native service
 sudo systemctl stop roon-random-albums
 sudo systemctl disable roon-random-albums
 
-# 2. Download and build the Docker image
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.35-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.35-docker.tar.gz
-docker build -t roon-random-albums:1.5.35 .
+# 2. Create a fresh build directory and download the tarball into it
+mkdir ~/roon-random-albums-docker
+cd ~/roon-random-albums-docker
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.36-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.36-docker.tar.gz
 
-# 3. Run the Docker container
+# 3. Build the Docker image
+docker build -t roon-random-albums:1.5.36 .
+
+# 4. Run the Docker container
 docker run -d \
   --name roon-random-albums \
   --restart unless-stopped \
   --network host \
   -v roon-random-albums-data:/app/data \
-  roon-random-albums:1.5.35
+  roon-random-albums:1.5.36
 ```
 
 Confirm the extension appears in **Roon → Settings → Extensions** and is working
-before proceeding. The old files are not deleted automatically.
+before proceeding.
 
 ### Cleaning up the old install
 
-Find where the native install lives — the path varies:
+Once Docker is confirmed working, remove the native install. If you're unsure
+where it lives:
 
 ```bash
 find / -name "roon-random-albums" -type d 2>/dev/null
 ```
 
-> **Important:** do not delete any directory that contains a `Dockerfile` — that is
-> your Docker build folder, not the native install. The native install will contain
-> `index.js`, `node_modules`, and usually a `config.json`.
+Then remove it and the service file:
 
 ```bash
 # Remove the service file
 sudo rm /etc/systemd/system/roon-random-albums.service
 sudo systemctl daemon-reload
 
-# Remove the native-only files — safe even if the directory is shared with your Docker build
-cd /path/to/roon-random-albums
-rm -rf node_modules package-lock.json config.json *.tar.gz
+# Remove the old native install directory (not the new Docker build directory)
+rm -rf /path/to/old/roon-random-albums
 ```
 
 Your Roon pairing, listening history, and label cache are all safe — they are stored
@@ -148,7 +153,7 @@ docker run -d --name roon-random-albums --restart unless-stopped --network host 
 Pass extra env vars with `-e` in the `docker run` command:
 
 ```bash
-docker run -d ... -e RRA_DEBUG=1 roon-random-albums:1.5.35
+docker run -d ... -e RRA_DEBUG=1 roon-random-albums:1.5.36
 ```
 
 ### Album metadata sources
@@ -165,7 +170,7 @@ No keys required. The extension pulls in three pieces of external metadata:
 - **"Waiting for Roon Core" never goes away**
   → Roon → Settings → Extensions → click **Enable** on *Random Albums*.
 - **Extension shows "self" instead of "MusicD"**
-  → Update to v1.5.35 or later.
+  → Update to v1.5.36 or later.
 - **Play Now does nothing**
   → Confirm a real zone is selected in the Settings dropdown.
 - **"No zones available"**

@@ -2,6 +2,12 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.36] — 2026-06-19
+
+### Fixed
+- **Missing `.dockerignore`** — without it, `COPY . .` in the Dockerfile was baking the native install's `node_modules` into the Docker image, overwriting the clean ones built by `npm install`. Also excluded `config.json`, `data/`, tarballs, and `.git` from the image.
+- **Migration instructions** — updated to use a fresh separate directory for the Docker build, making cleanup unambiguous: the old native directory can be safely `rm -rf`'d without any risk of deleting Docker build files.
+
 ## [1.5.35] — 2026-06-19
 
 ### Added
