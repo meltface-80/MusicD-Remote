@@ -18,7 +18,7 @@ A web UI that shows a screenful of random albums from your Roon library, with in
 - **Instant search** — whole-library search with results as you type
 - **Album detail** — full track listing, play/queue actions, release year, editorial review, and artist bio
 - **Now Playing** — live panel showing the current track with album art and transport controls
-- **Play unheard** — one tap to find and play an album not in your listening history
+- **Play unheard** — the compass - one tap to find and play an album not in your listening history. It selects anything you havent yet listened to. If every album has been played it will play anything that hasnt been played within 30 days
 - **Random Album Radio** — automatically queues a new random album when your queue runs dry, keeping music going without repeating recent plays
 - **Record labels** — browse your library by label, with Fan Art TV logos where available
 - **Filters** — narrow the random pool by genre, decade, tag, or label
