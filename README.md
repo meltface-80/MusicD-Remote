@@ -87,6 +87,28 @@ sudo systemctl stop roon-random-albums
 sudo systemctl disable roon-random-albums
 ```
 
+The old installation is not removed automatically. Once you've confirmed the Docker
+container is running and visible in Roon, clean up the native install:
+
+```bash
+# Remove the service file
+sudo rm /etc/systemd/system/roon-random-albums.service
+sudo systemctl daemon-reload
+
+# Remove the application directory (adjust path if yours is different)
+rm -rf ~/roon-random-albums
+```
+
+Your Roon pairing, listening history, and label cache are all safe — they are stored
+in the Docker volume (`roon-random-albums-data`) and are completely independent of
+the old directory.
+
+If you're not sure where the old install lives:
+
+```bash
+find / -name "roon-random-albums" -type d 2>/dev/null
+```
+
 ## Updating
 
 Updates are detected automatically on startup and every 6 hours. Install with
