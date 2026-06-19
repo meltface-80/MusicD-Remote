@@ -18,7 +18,9 @@ A web UI that shows a screenful of random albums from your Roon library, with in
 
 I've resolved an issue where label fragmentation was happing. e.g. Universal Music America and Universal Music Europe would show separately. I didn't think this was ideal, because I had 10 Universal Music labels.
 
-The biggest change is the `:ro` (read only) access to your local files. Why? If like me youbhave metadata including labels, this becomes the fast way to build the labels page. Its easily done if stored on the same server. For network shares, these will work once you `mnt` the share and then add its path to the docker build commands below. The choice is yours to add it or not. It's docker so needs to be added via terminal. I've also set the directory to `/opt/` and the `/app/data` directory remains untouched. 
+The biggest change is the `:ro` (read only) access to your local files. Why? If like me youbhave metadata including labels, this becomes the fast way to build the labels page. Its easily done if stored on the same server. For network shares, these will work once you `mnt` the share and then add its path to the docker build commands below. The choice is yours to add it or not. It's docker so needs to be added via terminal. I've also set the directory to `/opt/` and the `/app/data` directory remains untouched.
+
+If you only use Qobuz or Tidal you can ignore the below and update within the webUI. 
 
 ```
 sudo docker stop roon-random-albums
