@@ -102,15 +102,14 @@ find / -name "roon-random-albums" -type d 2>/dev/null
 > your Docker build folder, not the native install. The native install will contain
 > `index.js`, `node_modules`, and usually a `config.json`.
 
-Once you've identified the correct directory:
-
 ```bash
 # Remove the service file
 sudo rm /etc/systemd/system/roon-random-albums.service
 sudo systemctl daemon-reload
 
-# Remove the old application directory — replace the path with your actual one
-rm -rf /path/to/old/roon-random-albums
+# Remove the native app files — safe to run even if the directory is shared with your Docker build
+cd /path/to/roon-random-albums
+rm -rf node_modules index.js launcher.js lib public package.json package-lock.json config.json
 ```
 
 Your Roon pairing, listening history, and label cache are all safe — they are stored
