@@ -2,6 +2,12 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.40] — 2026-06-19
+
+### Fixed
+- **iTunes rate limiting** — reduced concurrency from 20 to 3 parallel requests and added a 500ms delay between batches. On the first 429 or 403 response the entire iTunes pass is aborted immediately rather than continuing to hammer a blocked endpoint; remaining albums fall through to TheAudioDB and MusicBrainz.
+- **File labels now override stale cache** — when file metadata scanning is enabled, the file label is now compared against every existing cache entry. Where the file tag disagrees with the cached API result, the file wins and the cache is updated. Previously file labels only applied to albums with no cache entry at all.
+
 ## [1.5.39] — 2026-06-19
 
 ### Fixed

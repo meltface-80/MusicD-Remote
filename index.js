@@ -909,8 +909,18 @@ function seedLabelsFromCache() {
 
 // ---------------------------------------------------------------------------
 // iTunes Search API — primary label source. Free, no key, returns recordLabel
-// directly. Parallelisable (no strict rate limit at moderate concurrency).
+// directly. Rate-limited to 3 concurrent with 500ms between batches.
+// Returns the symbol ITUNES_BLOCKED on 429/403 so the caller can abort the
+// entire iTunes pass rather than continuing to hammer a blocked endpoint.
 // ---------------------------------------------------------------------------
+const ITUNES_BLOCKED = Symbol("itunes_blocked");
+let itunesLastBatch = 0;
+async function itunesBatchWait() {
+  const elapsed = Date.now() - itunesLastBatch;
+  if (elapsed < 500) await new Promise(r => setTimeout(r, 500 - elapsed));
+  itunesLastBatch = Date.now();
+}
+
 async function fetchLabelFromiTunes(title, artist) {
   if (!title) return null;
   const term = [title, artist].filter(Boolean).join(" ");
@@ -933,6 +943,10 @@ async function fetchLabelFromiTunes(title, artist) {
     if (!label || /self.released|independent|self-released/i.test(label)) return null;
     return label;
   } catch (e) {
+    if (e.message && /429|403/.test(e.message)) {
+      if (DEBUG) console.error("[labels:itunes] rate limited — aborting iTunes pass");
+      return ITUNES_BLOCKED;
+    }
     if (DEBUG) console.error("[labels:itunes]", e.message);
     return null;
   }
@@ -1174,7 +1188,20 @@ async function runLabelsIndexScan() {
   };
 
   // Pass 0: File metadata — most authoritative source, beats all API results.
+  // Also sweeps the existing cache: if a file tag disagrees with a cached value,
+  // the file wins and the cache entry is updated in-place.
   const fileLabelMap = await buildFileLabelMap();
+  if (fileLabelMap.size) {
+    let overrideCount = 0;
+    for (const [key, fileLabel] of fileLabelMap) {
+      const cached = labelDiskCache.get(key);
+      if (cached && labelGroupKey(cached) !== labelGroupKey(fileLabel)) {
+        setLabelName(key, fileLabel);
+        overrideCount++;
+      }
+    }
+    if (DEBUG && overrideCount) console.log("[labels:files] overrode", overrideCount, "stale cache entries");
+  }
   const needsApiScan = [];
   for (const al of toScan) {
     const key = normalize(al.title) + "||" + normalize(al.subtitle);
@@ -1189,21 +1216,27 @@ async function runLabelsIndexScan() {
   }
   if (DEBUG && fileLabelMap.size) console.log("[labels] file pass:", fileLabelMap.size, "found,", needsApiScan.length, "still need API");
 
-  // Pass 1: iTunes — 20 concurrent, no rate limit.
+  // Pass 1: iTunes — 3 concurrent, 500ms between batches.
+  // Aborts the entire pass on first 429/403 to avoid getting IP-blocked.
   const needsAudioDB = [];
-  const SCAN_BATCH = 20;
+  const ITUNES_BATCH = 3;
+  let itunesAborted = false;
   const itunesCheck = async (al) => {
+    if (itunesAborted) { needsAudioDB.push(al); return; }
     const key = normalize(al.title) + "||" + normalize(al.subtitle);
     try {
       const label = await fetchLabelFromiTunes(al.title, al.subtitle);
-      if (label && !isLikelyNotALabel(label)) { await saveLabelEntry(key, label, null, al); }
+      if (label === ITUNES_BLOCKED) { itunesAborted = true; needsAudioDB.push(al); }
+      else if (label && !isLikelyNotALabel(label)) { await saveLabelEntry(key, label, null, al); }
       else { needsAudioDB.push(al); }
     } catch (e) { needsAudioDB.push(al); }
     done++;
     labelsIndex.progress = (alreadyDone + done) / total;
   };
-  for (let i = 0; i < needsApiScan.length; i += SCAN_BATCH) {
-    await Promise.allSettled(needsApiScan.slice(i, i + SCAN_BATCH).map(itunesCheck));
+  for (let i = 0; i < needsApiScan.length; i += ITUNES_BATCH) {
+    if (itunesAborted) { needsAudioDB.push(...needsApiScan.slice(i)); break; }
+    await itunesBatchWait();
+    await Promise.allSettled(needsApiScan.slice(i, i + ITUNES_BATCH).map(itunesCheck));
   }
 
   // Pass 2: TheAudioDB — serial (1 req/sec rate limit on the free API).
