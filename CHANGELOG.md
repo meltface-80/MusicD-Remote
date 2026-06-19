@@ -2,6 +2,17 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.39] — 2026-06-19
+
+### Fixed
+- **TheAudioDB rate limiting** — the free API has a strict rate limit; added 1.1s delay between requests and changed from 5 concurrent to serial to stop HTTP 429 errors.
+- **MusicBrainz timeouts** — increased request timeout from 8s to 20s to handle slow MB responses without aborting.
+- **File scan silent failure** — added a debug log when `parseFile` can't be resolved from music-metadata, replacing a silent early return that made it impossible to diagnose.
+- **"Independent" treated as a label** — added `independent` to the non-label filter so it's rejected at all sources and never shown in the labels view or looked up in Fan Art TV.
+
+### Changed
+- **Update check interval** — reduced from every 6 hours to every 7 days. Updates are still checked on startup; the Settings page manual check is unaffected.
+
 ## [1.5.38] — 2026-06-19
 
 ### Fixed

@@ -32,7 +32,7 @@ const REPO = (() => {
   return m ? { owner: m[1], repo: m[2] }
            : { owner: "meltface-80", repo: "Roon-Random-Albums-Extension" };
 })();
-const UPDATE_CHECK_MS = 6 * 60 * 60 * 1000; // re-check GitHub every 6 hours
+const UPDATE_CHECK_MS = 168 * 60 * 60 * 1000; // re-check GitHub every 7 days
 const updater = createUpdater({
   owner: REPO.owner, repo: REPO.repo,
   currentVersion: pkg.version,
@@ -655,7 +655,7 @@ let stmtInsertName, stmtInsertMbid, stmtInsertLogo;
 let stmtInsertPlay, stmtCompletePlay;
 
 // Non-label filter — must be defined before openLabelsDb() is called.
-const NON_LABEL_RE = /\b(management|agency|agencies|booking|touring|representation|ministry|foundation|fund)\b/i;
+const NON_LABEL_RE = /\b(management|agency|agencies|booking|touring|representation|ministry|foundation|fund|independent)\b/i;
 function isLikelyNotALabel(name) {
   return !name || NON_LABEL_RE.test(name);
 }
@@ -951,7 +951,7 @@ async function fetchLabelFromMusicBrainz(title, artist) {
   const url =
     `https://musicbrainz.org/ws/2/release/?query=${encodeURIComponent(q)}&fmt=json&limit=5`;
   try {
-    const json = await httpJson(url, { "User-Agent": MB_USER_AGENT });
+    const json = await httpJson(url, { "User-Agent": MB_USER_AGENT }, 20000);
     for (const r of json.releases || []) {
       const li = (r["label-info"] || [])[0];
       const labelObj = li && li.label;
@@ -1024,8 +1024,20 @@ async function fetchLabelFromDiscogs(title, artist) {
 // ---------------------------------------------------------------------------
 // TheAudioDB — free public API (no key required). Returns strLabel field.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// TheAudioDB — free public API (no key required). Returns strLabel field.
+// Rate limited to 1 req/sec — the public API is restrictive.
+// ---------------------------------------------------------------------------
+let tadbLastReq = 0;
+async function tadbWait() {
+  const elapsed = Date.now() - tadbLastReq;
+  if (elapsed < 1100) await new Promise(r => setTimeout(r, 1100 - elapsed));
+  tadbLastReq = Date.now();
+}
+
 async function fetchLabelFromTheAudioDB(title, artist) {
   if (!title || !artist) return null;
+  await tadbWait();
   const url = `https://www.theaudiodb.com/api/v1/json/2/searchalbum.php?s=${encodeURIComponent(artist)}&a=${encodeURIComponent(title)}`;
   try {
     const json = await httpJson(url, { "User-Agent": MB_USER_AGENT }, 10000);
@@ -1063,7 +1075,10 @@ async function buildFileLabelMap() {
     return map;
   }
   const parseFile = mm.parseFile || (mm.default && mm.default.parseFile);
-  if (!parseFile) return map;
+  if (!parseFile) {
+    if (DEBUG) console.error("[labels:files] music-metadata loaded but parseFile not found");
+    return map;
+  }
 
   const AUDIO_RE = /\.(flac|mp3|m4a|aac|ogg|opus|wv|ape|wav|aiff?)$/i;
 
@@ -1191,20 +1206,16 @@ async function runLabelsIndexScan() {
     await Promise.allSettled(needsApiScan.slice(i, i + SCAN_BATCH).map(itunesCheck));
   }
 
-  // Pass 2: TheAudioDB — 5 concurrent, free.
+  // Pass 2: TheAudioDB — serial (1 req/sec rate limit on the free API).
   if (DEBUG && needsAudioDB.length) console.log("[labels] TheAudioDB pass:", needsAudioDB.length, "albums");
   const needsMB = [];
-  const TADB_BATCH = 5;
-  const tadbCheck = async (al) => {
+  for (const al of needsAudioDB) {
     const key = normalize(al.title) + "||" + normalize(al.subtitle);
     try {
       const label = await fetchLabelFromTheAudioDB(al.title, al.subtitle);
       if (label) { await saveLabelEntry(key, label, null, al); }
       else { needsMB.push(al); }
     } catch (e) { needsMB.push(al); }
-  };
-  for (let i = 0; i < needsAudioDB.length; i += TADB_BATCH) {
-    await Promise.allSettled(needsAudioDB.slice(i, i + TADB_BATCH).map(tadbCheck));
   }
 
   // Pass 3: MusicBrainz for remaining misses — serial to respect rate limit.
