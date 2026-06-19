@@ -6,7 +6,7 @@
 
 # Random Albums — a Roon extension
 
-> **Note:** If you are running a v1.6.x build, please roll back. A bad release sequence broke several features. Stop and remove your container, then reinstall from the v1.5.36 tarball using the instructions below.
+> **Note:** If you are running a v1.6.x build, please roll back. A bad release sequence broke several features. Stop and remove your container, then reinstall from the v1.5.37 tarball using the instructions below.
 
 A web UI that shows a screenful of random albums from your Roon library, with instant whole-library search, playback actions targeting any zone, and more.
 
@@ -35,20 +35,25 @@ Each release ships a `*-docker.tar.gz`. Download it, build the image, and run:
 ```bash
 sudo mkdir -p /opt/roon-random-albums
 cd /opt/roon-random-albums
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.36-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.36-docker.tar.gz
-docker build -t roon-random-albums:1.5.36 .
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.37-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.37-docker.tar.gz
+docker build -t roon-random-albums:1.5.37 .
 docker run -d \
   --name roon-random-albums \
   --restart unless-stopped \
   --network host \
   -v roon-random-albums-data:/app/data \
-  roon-random-albums:1.5.36
+  -v /mnt/dietpi_userdata/4tb/Music:/music:ro \
+  roon-random-albums:1.5.37
 ```
 
 `--network host` is required so the extension can discover your Roon Core on
-the local network. The `-v` flag mounts a named Docker volume so that your
-Roon pairing, play history, and label cache survive container rebuilds.
+the local network. The `-v roon-random-albums-data` flag mounts a named Docker
+volume so that your Roon pairing, play history, and label cache survive container
+rebuilds. The `-v .../Music:/music:ro` flag mounts your music directory read-only
+so the extension can read label tags directly from your files — this is optional
+but gives the most accurate label data. Adjust the path to match your music
+library location.
 
 You should see the extension appear in **Roon → Settings → Extensions** under
 **MusicD**. Click **Enable**, then browse to `http://<your-server-ip>:3399`.
@@ -81,11 +86,11 @@ sudo systemctl disable roon-random-albums
 # 2. Create the build directory and download the tarball
 sudo mkdir -p /opt/roon-random-albums
 cd /opt/roon-random-albums
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.36-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.36-docker.tar.gz
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/raw/main/roon-random-albums-v1.5.37-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.37-docker.tar.gz
 
 # 3. Build the Docker image
-docker build -t roon-random-albums:1.5.36 .
+docker build -t roon-random-albums:1.5.37 .
 
 # 4. Run the Docker container
 docker run -d \
@@ -93,7 +98,8 @@ docker run -d \
   --restart unless-stopped \
   --network host \
   -v roon-random-albums-data:/app/data \
-  roon-random-albums:1.5.36
+  -v /mnt/dietpi_userdata/4tb/Music:/music:ro \
+  roon-random-albums:1.5.37
 ```
 
 Confirm the extension appears in **Roon → Settings → Extensions** and is working
@@ -137,15 +143,16 @@ docker restart roon-random-albums
 
 ## Configuration
 
-| Env var     | Default | What it does |
-|-------------|---------|--------------|
-| `PORT`      | `3399`  | HTTP port the UI listens on |
-| `RRA_DEBUG` | —       | Set to `1` for verbose logging |
+| Env var      | Default   | What it does |
+|--------------|-----------|--------------|
+| `PORT`       | `3399`    | HTTP port the UI listens on |
+| `RRA_DEBUG`  | —         | Set to `1` for verbose logging |
+| `MUSIC_DIR`  | `/music`  | Path where your music library is mounted inside the container |
 
 Pass extra env vars with `-e` in the `docker run` command:
 
 ```bash
-docker run -d ... -e RRA_DEBUG=1 roon-random-albums:1.5.36
+docker run -d ... -e RRA_DEBUG=1 roon-random-albums:1.5.37
 ```
 
 ### Album metadata sources
@@ -162,7 +169,7 @@ No keys required. The extension pulls in three pieces of external metadata:
 - **"Waiting for Roon Core" never goes away**
   → Roon → Settings → Extensions → click **Enable** on *Random Albums*.
 - **Extension shows "self" instead of "MusicD"**
-  → Update to v1.5.36 or later.
+  → Update to v1.5.37 or later.
 - **Play Now does nothing**
   → Confirm a real zone is selected in the Settings dropdown.
 - **"No zones available"**

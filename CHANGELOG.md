@@ -2,6 +2,21 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.37] — 2026-06-19
+
+### Added
+- **File metadata scanning** — the extension can now read LABEL/ORGANIZATION tags directly from your audio files when the music directory is mounted read-only in Docker (`-v /path/to/music:/music:ro`). File tags are the most authoritative source and are checked first, before any network API. Add `-v /mnt/dietpi_userdata/4tb/Music:/music:ro` to your `docker run` command to enable.
+- **Discogs label source** — restored as a final-pass fallback for albums no other source could identify. Runs serially at 1 req/sec to respect the rate limit.
+- **TheAudioDB label source** — added as a third-pass source between iTunes and MusicBrainz. Free, no key required, runs 5 concurrent requests.
+- **`/api/music-mount` endpoint** — reports whether the `/music` directory is mounted and what path is configured.
+
+### Fixed
+- **Label fragmentation by country/region** — labels like "[PIAS] America", "[PIAS] Belgium", "Universal Music Canada", "Universal Music France" now all group correctly under "[PIAS]" and "Universal Music" respectively. A new regex strips country and regional qualifiers (US, UK, America, Canada, France, Germany, Belgium, and 30+ others, plus International, Global, Nordic, etc.) before computing the group key.
+- **Management company false positives** — album entries where iTunes (or another source) returned a management or booking company instead of the actual label (e.g. "Velvet Hammer Music and Management" for Korn) are now detected and skipped. Existing bad entries are evicted from the SQLite cache on startup.
+
+### Changed
+- **Label scan pipeline** — now a 4-pass pipeline: file metadata → iTunes (20 concurrent) → TheAudioDB (5 concurrent) → MusicBrainz (serial) → Discogs (serial). Each album is only sent to subsequent passes if the previous pass found nothing.
+
 ## [1.5.36] — 2026-06-19
 
 ### Fixed

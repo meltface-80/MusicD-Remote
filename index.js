@@ -654,6 +654,12 @@ let labelsDb = null;
 let stmtInsertName, stmtInsertMbid, stmtInsertLogo;
 let stmtInsertPlay, stmtCompletePlay;
 
+// Non-label filter — must be defined before openLabelsDb() is called.
+const NON_LABEL_RE = /\b(management|agency|agencies|booking|touring|representation|ministry|foundation|fund)\b/i;
+function isLikelyNotALabel(name) {
+  return !name || NON_LABEL_RE.test(name);
+}
+
 function openLabelsDb() {
   if (!Database) {
     console.warn("[labels] better-sqlite3 not available — cache in memory only (data won't persist)");
@@ -693,8 +699,15 @@ function openLabelsDb() {
     stmtInsertLogo = labelsDb.prepare("INSERT OR REPLACE INTO label_logos (group_key, logo_url) VALUES (?, ?)");
     stmtInsertPlay  = labelsDb.prepare("INSERT INTO plays (ts, zone, track, artist, album, image_key, duration) VALUES (?,?,?,?,?,?,?)");
     stmtCompletePlay = labelsDb.prepare("UPDATE plays SET completed=1 WHERE id=?");
+    const stmtDeleteName = labelsDb.prepare("DELETE FROM label_names WHERE key = ?");
     for (const r of labelsDb.prepare("SELECT key, label FROM label_names").all()) {
-      if (r.label) labelDiskCache.set(r.key, r.label);
+      if (!r.label) continue;
+      if (isLikelyNotALabel(r.label)) {
+        stmtDeleteName.run(r.key);
+        if (DEBUG) console.log("[labels] evicted bad cache entry:", r.label);
+        continue;
+      }
+      labelDiskCache.set(r.key, r.label);
     }
     for (const r of labelsDb.prepare("SELECT group_key, mbid FROM label_mbids").all()) {
       labelMbidCache.set(r.group_key, r.mbid);
@@ -801,15 +814,28 @@ const labelsIndex = {
 // "Blue Note" all map to the same group key. Applied twice to catch "XYZ Music Records".
 const LABEL_SUFFIX_RE = /\s+(Records?|Recordings?|Music|Label|Labels|Group|Entertainment|Productions?|Publishing|Inc\.?|Ltd\.?|LLC|GmbH|S\.A\.?|s\.r\.l\.?|Verlag|Editions?|Edition)\.?\s*$/i;
 
+// Strip country / regional qualifiers so "[PIAS] America" and "[PIAS] Belgium" both
+// group under "[PIAS]", and "Universal Music Canada" groups with "Universal Music France".
+// Multi-word countries come first so "United States" is stripped before "States".
+const COUNTRY_REGION_SUFFIX_RE = /\s+(United\s+States|United\s+Kingdom|New\s+Zealand|South\s+Africa|Latin\s+America|North\s+America|Group\s+International|US|USA|UK|America|Canada|France|Germany|Belgium|Russia|Australia|Japan|Italy|Spain|Netherlands|Holland|Ireland|Sweden|Norway|Denmark|Finland|Poland|Brazil|Mexico|Argentina|Chile|China|Korea|India|Portugal|Switzerland|Austria|Romania|Greece|Hungary|Turkey|International|Classics?|Cooperative|Global|Worldwide|Latino|Nordic|Iberian|Benelux|Scandinavia|Asia|Europe|Africa|Pacific|APAC)\b\s*$/i;
+
 function labelGroupKey(name) {
   if (!name) return "";
-  let s = name.trim().replace(LABEL_SUFFIX_RE, "").trim().replace(LABEL_SUFFIX_RE, "").trim();
+  let s = name.trim()
+    .replace(COUNTRY_REGION_SUFFIX_RE, "").trim()
+    .replace(LABEL_SUFFIX_RE, "").trim()
+    .replace(LABEL_SUFFIX_RE, "").trim()
+    .replace(COUNTRY_REGION_SUFFIX_RE, "").trim();
   return s.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 function canonicalLabelName(name) {
   if (!name) return name;
-  return name.trim().replace(LABEL_SUFFIX_RE, "").trim().replace(LABEL_SUFFIX_RE, "").trim();
+  return name.trim()
+    .replace(COUNTRY_REGION_SUFFIX_RE, "").trim()
+    .replace(LABEL_SUFFIX_RE, "").trim()
+    .replace(LABEL_SUFFIX_RE, "").trim()
+    .replace(COUNTRY_REGION_SUFFIX_RE, "").trim();
 }
 
 function labelsIndexAddAlbum(labelName, album) {
@@ -957,9 +983,129 @@ async function fetchLabelMbidFromMusicBrainz(labelName) {
 }
 
 // ---------------------------------------------------------------------------
-// Background scan — pass 1: iTunes (20 concurrent, fast).
-// Pass 2: MusicBrainz (serial, rate-limited) for any iTunes misses.
-// Results saved to SQLite — scan only needs to run once.
+// Discogs — label source using key/secret auth (rate limit: 1 req/sec).
+// ---------------------------------------------------------------------------
+const DISCOGS_KEY    = "KFbYgRaYdpnKkHBRB0lV";
+const DISCOGS_SECRET = "UzDPIrwYxEZkIRtvncPoOYovwvvKHQHf";
+let discogsLastReq = 0;
+
+async function discogsWait() {
+  const elapsed = Date.now() - discogsLastReq;
+  if (elapsed < 1100) await new Promise(r => setTimeout(r, 1100 - elapsed));
+  discogsLastReq = Date.now();
+}
+
+async function fetchLabelFromDiscogs(title, artist) {
+  if (!title) return null;
+  await discogsWait();
+  const params = new URLSearchParams({ type: "release", release_title: title });
+  if (artist) params.set("artist", artist);
+  const url = `https://api.discogs.com/database/search?${params}`;
+  try {
+    const json = await httpJson(url, {
+      "Authorization": `Discogs key=${DISCOGS_KEY}, secret=${DISCOGS_SECRET}`,
+      "User-Agent": MB_USER_AGENT
+    });
+    const results = json && json.results;
+    if (!Array.isArray(results) || !results.length) return null;
+    const normTitle = normalize(title);
+    let match = results.find(r => normalize(r.title || "").includes(normTitle));
+    if (!match) match = results[0];
+    const label = match && Array.isArray(match.label) && match.label[0];
+    if (!label || isLikelyNotALabel(label)) return null;
+    if (/self.released|independent/i.test(label)) return null;
+    return label;
+  } catch (e) {
+    if (DEBUG) console.error("[labels:discogs]", e.message);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// TheAudioDB — free public API (no key required). Returns strLabel field.
+// ---------------------------------------------------------------------------
+async function fetchLabelFromTheAudioDB(title, artist) {
+  if (!title || !artist) return null;
+  const url = `https://www.theaudiodb.com/api/v1/json/2/searchalbum.php?s=${encodeURIComponent(artist)}&a=${encodeURIComponent(title)}`;
+  try {
+    const json = await httpJson(url, { "User-Agent": MB_USER_AGENT }, 10000);
+    const albums = json && json.album;
+    if (!Array.isArray(albums) || !albums.length) return null;
+    const normTitle = normalize(title);
+    const match = albums.find(a => normalize(a.strAlbum || "") === normTitle) || albums[0];
+    const label = match && match.strLabel;
+    if (!label || isLikelyNotALabel(label)) return null;
+    return label;
+  } catch (e) {
+    if (DEBUG) console.error("[labels:theaudiodb]", e.message);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// File metadata — read LABEL/ORGANIZATION tags from mounted music directory.
+// Container should be started with -v /path/to/music:/music:ro
+// ---------------------------------------------------------------------------
+const MUSIC_DIR = process.env.MUSIC_DIR || "/music";
+
+function musicDirMounted() {
+  try { return fs.statSync(MUSIC_DIR).isDirectory(); } catch (e) { return false; }
+}
+
+// Build a map of albumKey → label from audio file tags.
+// Expects Artist/Album/track.flac layout — reads one file per album directory.
+async function buildFileLabelMap() {
+  const map = new Map();
+  if (!musicDirMounted()) return map;
+  let mm;
+  try { mm = await import("music-metadata"); } catch (e) {
+    if (DEBUG) console.error("[labels:files] music-metadata not available:", e.message);
+    return map;
+  }
+  const parseFile = mm.parseFile || (mm.default && mm.default.parseFile);
+  if (!parseFile) return map;
+
+  try {
+    const artistDirs = fs.readdirSync(MUSIC_DIR, { withFileTypes: true })
+      .filter(d => d.isDirectory()).map(d => d.name);
+    for (const artistDir of artistDirs) {
+      const artistPath = path.join(MUSIC_DIR, artistDir);
+      let albumDirs;
+      try { albumDirs = fs.readdirSync(artistPath, { withFileTypes: true }).filter(d => d.isDirectory()); }
+      catch (e) { continue; }
+      for (const albumDirEnt of albumDirs) {
+        const albumPath = path.join(artistPath, albumDirEnt.name);
+        let files;
+        try { files = fs.readdirSync(albumPath).filter(f => /\.(flac|mp3|m4a|aac|ogg|opus|wv|ape|wav|aiff?)$/i.test(f)); }
+        catch (e) { continue; }
+        if (!files.length) continue;
+        const filePath = path.join(albumPath, files[0]);
+        try {
+          const meta = await parseFile(filePath, { duration: false, skipCovers: true });
+          const label = (meta.common.label && meta.common.label[0])
+            || meta.common.organization || null;
+          if (label && !isLikelyNotALabel(label)) {
+            const key = normalize(albumDirEnt.name) + "||" + normalize(artistDir);
+            map.set(key, label);
+          }
+        } catch (e) { /* unreadable file — skip */ }
+      }
+    }
+  } catch (e) {
+    if (DEBUG) console.error("[labels:files] scan error:", e.message);
+  }
+  if (DEBUG) console.log("[labels:files] file scan found", map.size, "labels");
+  return map;
+}
+
+// ---------------------------------------------------------------------------
+// Background scan — multi-pass label lookup pipeline.
+// Pass 0: File metadata (if /music mounted) — most authoritative.
+// Pass 1: iTunes (20 concurrent, fast, no key).
+// Pass 2: TheAudioDB (5 concurrent, free, no key).
+// Pass 3: MusicBrainz (serial, rate-limited) — broad coverage.
+// Pass 4: Discogs (serial, rate-limited) — last resort.
+// Results saved to SQLite — scan only needs to run once per album.
 // ---------------------------------------------------------------------------
 async function runLabelsIndexScan() {
   if (labelsIndex.building) return;
@@ -989,6 +1135,7 @@ async function runLabelsIndexScan() {
   if (DEBUG) console.log("[labels] scan:", toScan.length, "albums to look up");
 
   const saveLabelEntry = async (key, label, knownMbid, al) => {
+    if (isLikelyNotALabel(label)) return;
     setLabelName(key, label);
     labelsIndexAddAlbum(label, al);
     const gk = labelGroupKey(label);
@@ -1002,30 +1149,74 @@ async function runLabelsIndexScan() {
     }
   };
 
+  // Pass 0: File metadata — most authoritative source, beats all API results.
+  const fileLabelMap = await buildFileLabelMap();
+  const needsApiScan = [];
+  for (const al of toScan) {
+    const key = normalize(al.title) + "||" + normalize(al.subtitle);
+    const fileLabel = fileLabelMap.get(key);
+    if (fileLabel) {
+      await saveLabelEntry(key, fileLabel, null, al);
+      done++;
+      labelsIndex.progress = (alreadyDone + done) / total;
+    } else {
+      needsApiScan.push(al);
+    }
+  }
+  if (DEBUG && fileLabelMap.size) console.log("[labels] file pass:", fileLabelMap.size, "found,", needsApiScan.length, "still need API");
+
   // Pass 1: iTunes — 20 concurrent, no rate limit.
-  const needsMB = [];
+  const needsAudioDB = [];
   const SCAN_BATCH = 20;
   const itunesCheck = async (al) => {
     const key = normalize(al.title) + "||" + normalize(al.subtitle);
     try {
       const label = await fetchLabelFromiTunes(al.title, al.subtitle);
-      if (label) { await saveLabelEntry(key, label, null, al); }
-      else { needsMB.push(al); }
-    } catch (e) { needsMB.push(al); }
+      if (label && !isLikelyNotALabel(label)) { await saveLabelEntry(key, label, null, al); }
+      else { needsAudioDB.push(al); }
+    } catch (e) { needsAudioDB.push(al); }
     done++;
     labelsIndex.progress = (alreadyDone + done) / total;
   };
-  for (let i = 0; i < toScan.length; i += SCAN_BATCH) {
-    await Promise.allSettled(toScan.slice(i, i + SCAN_BATCH).map(itunesCheck));
+  for (let i = 0; i < needsApiScan.length; i += SCAN_BATCH) {
+    await Promise.allSettled(needsApiScan.slice(i, i + SCAN_BATCH).map(itunesCheck));
   }
 
-  // Pass 2: MusicBrainz for iTunes misses — serial to respect rate limit.
+  // Pass 2: TheAudioDB — 5 concurrent, free.
+  if (DEBUG && needsAudioDB.length) console.log("[labels] TheAudioDB pass:", needsAudioDB.length, "albums");
+  const needsMB = [];
+  const TADB_BATCH = 5;
+  const tadbCheck = async (al) => {
+    const key = normalize(al.title) + "||" + normalize(al.subtitle);
+    try {
+      const label = await fetchLabelFromTheAudioDB(al.title, al.subtitle);
+      if (label) { await saveLabelEntry(key, label, null, al); }
+      else { needsMB.push(al); }
+    } catch (e) { needsMB.push(al); }
+  };
+  for (let i = 0; i < needsAudioDB.length; i += TADB_BATCH) {
+    await Promise.allSettled(needsAudioDB.slice(i, i + TADB_BATCH).map(tadbCheck));
+  }
+
+  // Pass 3: MusicBrainz for remaining misses — serial to respect rate limit.
   if (DEBUG && needsMB.length) console.log("[labels] MB pass:", needsMB.length, "albums");
+  const needsDiscogs = [];
   for (const al of needsMB) {
     const key = normalize(al.title) + "||" + normalize(al.subtitle);
     try {
       const mbResult = await fetchLabelFromMusicBrainz(al.title, al.subtitle);
       if (mbResult) { await saveLabelEntry(key, mbResult.label, mbResult.mbid, al); }
+      else { needsDiscogs.push(al); }
+    } catch (e) { needsDiscogs.push(al); }
+  }
+
+  // Pass 4: Discogs — serial, rate-limited, last resort.
+  if (DEBUG && needsDiscogs.length) console.log("[labels] Discogs pass:", needsDiscogs.length, "albums");
+  for (const al of needsDiscogs) {
+    const key = normalize(al.title) + "||" + normalize(al.subtitle);
+    try {
+      const label = await fetchLabelFromDiscogs(al.title, al.subtitle);
+      if (label) { await saveLabelEntry(key, label, null, al); }
     } catch (e) { /* keep scanning */ }
   }
 
@@ -2044,6 +2235,11 @@ app.get("/api/library-stats", (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   const count = albumIndex.count;
   res.json({ albums: count, building: count === 0 && !!albumIndex.building });
+});
+
+// Music directory mount status — tells the UI whether file metadata scanning is available.
+app.get("/api/music-mount", (req, res) => {
+  res.json({ mounted: musicDirMounted(), path: MUSIC_DIR });
 });
 
 // ---------------------------------------------------------------------------
