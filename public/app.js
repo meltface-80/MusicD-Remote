@@ -2773,7 +2773,48 @@
     });
   }
 
-  const open = () => { loadRadio(); loadVersion(); overlay.classList.remove("hidden"); };
+  const discogsTokenInput  = document.getElementById("discogs-token-input");
+  const discogsTokenSave   = document.getElementById("discogs-token-save");
+  const discogsTokenStatus = document.getElementById("discogs-token-status");
+
+  async function loadDiscogsToken() {
+    try {
+      const r = await fetch("/api/settings/discogs-token");
+      const j = await r.json();
+      if (discogsTokenStatus) {
+        discogsTokenStatus.textContent = j.set ? ("Current: " + j.masked) : "Not set";
+      }
+    } catch (_) {}
+  }
+
+  if (discogsTokenSave) {
+    discogsTokenSave.addEventListener("click", async () => {
+      const token = discogsTokenInput ? discogsTokenInput.value.trim() : "";
+      if (!token) return;
+      discogsTokenSave.disabled = true;
+      try {
+        const r = await fetch("/api/settings/discogs-token", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token })
+        });
+        const j = await r.json();
+        if (j.ok) {
+          if (discogsTokenInput) discogsTokenInput.value = "";
+          showToast("Discogs token saved", "ok");
+          loadDiscogsToken();
+        } else {
+          showToast(j.error || "Failed to save token", "error");
+        }
+      } catch (e) {
+        showToast("Failed: " + e.message, "error");
+      } finally {
+        discogsTokenSave.disabled = false;
+      }
+    });
+  }
+
+  const open = () => { loadRadio(); loadVersion(); loadDiscogsToken(); overlay.classList.remove("hidden"); };
   const close = () => overlay.classList.add("hidden");
 
   openBtn.addEventListener("click", open);

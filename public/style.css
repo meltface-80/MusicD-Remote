@@ -1651,6 +1651,17 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 }
 .settings-update-btn:hover:not(:disabled) { color: var(--text); background: var(--bg-elev); }
 .settings-update-btn:disabled { opacity: .6; cursor: default; }
+.settings-token-row {
+  display: flex; gap: 8px; align-items: center; margin-top: 6px;
+}
+.settings-token-input {
+  flex: 1; min-width: 0;
+  background: var(--bg-elev-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 7px 10px;
+  color: var(--text); font-size: 13px; font-family: inherit;
+}
+.settings-token-input:focus { outline: none; border-color: var(--accent); }
+.settings-token-status { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
 
 /* ------------------------------------------------------------------ */
 /*  Docker migration banner                                            */

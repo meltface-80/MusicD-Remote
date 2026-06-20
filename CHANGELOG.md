@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.66] — 2026-06-20
+
+### Changed
+- **Discogs token in Settings UI** — the Discogs personal access token is now entered via the Settings panel in the web UI (gear icon → Discogs token field). It is stored in `data/cache/settings.json` and never appears in source code or environment variables. Existing installs can paste their token after upgrading.
+
 ## [1.5.65] — 2026-06-20
 
 ### Fixed

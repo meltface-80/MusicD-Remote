@@ -668,6 +668,9 @@ function savePersistedSettings(patch) {
   } catch (e) {}
 }
 
+// Load persisted Discogs token (set via web UI settings).
+discogsToken = loadPersistedSettings().discogsToken || "";
+
 // In-memory Maps — primary lookup path.
 const labelDiskCache = new Map();  // album key → label name
 const labelMbidCache = new Map();  // group key → MusicBrainz MBID
@@ -1086,9 +1089,9 @@ async function fetchLabelMbidFromMusicBrainz(labelName) {
 
 // ---------------------------------------------------------------------------
 // Discogs — personal access token auth (60 req/min vs 25 for key/secret).
-// Set DISCOGS_TOKEN env var when starting the container.
+// Stored in settings.json, configurable via the web UI settings panel.
 // ---------------------------------------------------------------------------
-const DISCOGS_TOKEN = process.env.DISCOGS_TOKEN || "";
+let discogsToken = "";
 let discogsLastReq = 0;
 const discogsLogoTried = new Set(); // per-session dedup — resets on container restart
 
@@ -2846,6 +2849,20 @@ app.get("/api/library-stats", (req, res) => {
 // Music directory mount status — tells the UI whether file metadata scanning is available.
 app.get("/api/music-mount", (req, res) => {
   res.json({ mounted: musicDirMounted(), path: MUSIC_DIR });
+});
+
+// Discogs personal access token — get status (masked) or save.
+app.get("/api/settings/discogs-token", (req, res) => {
+  res.json({
+    set: !!discogsToken,
+    masked: discogsToken ? "••••••••" + discogsToken.slice(-4) : ""
+  });
+});
+app.post("/api/settings/discogs-token", (req, res) => {
+  const token = ((req.body && req.body.token) || "").trim();
+  discogsToken = token;
+  savePersistedSettings({ discogsToken: token });
+  res.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------
