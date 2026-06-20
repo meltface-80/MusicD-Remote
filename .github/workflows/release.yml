@@ -38,7 +38,7 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         run: |
           VERSION=${{ steps.version.outputs.version }}
-          TARBALL="roon-random-albums-v${VERSION}-docker.tar.gz"
+          TARBALL="/tmp/roon-random-albums-v${VERSION}-docker.tar.gz"
           tar -czf "$TARBALL" \
             --exclude='./.git' \
             --exclude='./node_modules' \
