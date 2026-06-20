@@ -37,7 +37,7 @@ jobs:
         id: tarball
         if: steps.check.outputs.exists == 'false'
         run: |
-          TARBALL=$(ls roon-random-albums-v${{ steps.version.outputs.version }}-docker.tar.gz 2>/dev/null || true)
+          TARBALL=$(ls old/roon-random-albums-v${{ steps.version.outputs.version }}-docker.tar.gz 2>/dev/null || true)
           echo "path=$TARBALL" >> $GITHUB_OUTPUT
 
       - name: Extract changelog section

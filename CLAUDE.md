@@ -17,7 +17,7 @@ default behaviours. Do not deviate from them unless the user explicitly says so 
 1. Make code changes
 2. Bump `package.json` version
 3. Add a CHANGELOG.md entry (see format below)
-4. Build the tarball: `tar -czf roon-random-albums-vX.Y.Z-docker.tar.gz --exclude='./.git' --exclude='./node_modules' --exclude='./*.tar.gz' --exclude='./data' .`
+4. Build the tarball: `tar -czf old/roon-random-albums-vX.Y.Z-docker.tar.gz --exclude='./.git' --exclude='./node_modules' --exclude='./old' --exclude='./data' .`
 5. Commit **all four** in a single commit: code + `package.json` + `CHANGELOG.md` + tarball
 6. Push to main
 
@@ -67,7 +67,7 @@ sudo docker stop roon-random-albums
 sudo docker rm roon-random-albums
 sudo rm -f /opt/roon-random-albums/roon-random-albums-vPREVIOUS-docker.tar.gz
 cd /opt/roon-random-albums
-wget https://raw.githubusercontent.com/meltface-80/Roon-Random-Albums-Extension/main/roon-random-albums-vNEW-docker.tar.gz
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/releases/download/vNEW/roon-random-albums-vNEW-docker.tar.gz
 tar -xzf roon-random-albums-vNEW-docker.tar.gz
 docker build -t roon-random-albums:NEW .
 docker run -d \
