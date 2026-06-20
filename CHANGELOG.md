@@ -2,6 +2,14 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.67] — 2026-06-20
+
+### Fixed
+- **Discogs API calls broken** — all Discogs auth headers referenced `DISCOGS_TOKEN` (an undefined constant) instead of the `discogsToken` variable loaded from settings. Every API call was sending `Authorization: Discogs token=undefined`, causing silent auth failures. Fixed to use the correct variable name throughout.
+
+### Changed
+- **FanArt.tv key in Settings UI** — removed the hardcoded FanArt.tv API key. It is now entered via the Settings panel (gear icon → FanArt.tv key field) and stored in `data/cache/settings.json`. Enter your own free key from fanart.tv/get-an-api-key. No credentials remain hardcoded in source code.
+
 ## [1.5.66] — 2026-06-20
 
 ### Changed

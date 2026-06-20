@@ -668,8 +668,10 @@ function savePersistedSettings(patch) {
   } catch (e) {}
 }
 
-// Load persisted Discogs token (set via web UI settings).
-discogsToken = loadPersistedSettings().discogsToken || "";
+// Load persisted API keys (set via web UI settings).
+const _persisted = loadPersistedSettings();
+discogsToken = _persisted.discogsToken || "";
+fanartKey    = _persisted.fanartKey    || "";
 
 // In-memory Maps — primary lookup path.
 const labelDiskCache = new Map();  // album key → label name
@@ -836,9 +838,9 @@ function setLabelLogo(groupKey, logoUrl) {
 openLabelsDb();
 
 // ---------------------------------------------------------------------------
-// Fan Art TV — label logo images. Free API key required.
+// Fan Art TV — label logo images. Free API key — set via web UI settings.
 // ---------------------------------------------------------------------------
-const FANART_TV_KEY = "6c2ebc118ae8d196cd1b35b3d8f6912d";
+let fanartKey = "";
 
 const labelsIndex = {
   map:      new Map(),   // groupKey → { display, image_key, albums: [{offset,title,subtitle,image_key}] }
@@ -1109,7 +1111,7 @@ async function fetchLabelFromDiscogs(title, artist) {
   const url = `https://api.discogs.com/database/search?${params}`;
   try {
     const json = await httpJson(url, {
-      "Authorization": `Discogs token=${DISCOGS_TOKEN}`,
+      "Authorization": `Discogs token=${discogsToken}`,
       "User-Agent": MB_USER_AGENT
     });
     const results = json && json.results;
@@ -1564,9 +1566,9 @@ setInterval(() => {
 // Fetch label logo from Fan Art TV for a single label group key.
 // Results (including "no logo found" = null) are persisted so we don't re-query.
 async function fetchFanArtLogo(groupKey, mbid) {
-  if (!mbid || !FANART_TV_KEY) return;
+  if (!mbid || !fanartKey) return;
   if (labelLogoCache.has(groupKey)) return; // already tried
-  const url = `https://webservice.fanart.tv/v3/music/labels/${encodeURIComponent(mbid)}?api_key=${FANART_TV_KEY}`;
+  const url = `https://webservice.fanart.tv/v3/music/labels/${encodeURIComponent(mbid)}?api_key=${fanartKey}`;
   try {
     const json = await httpJson(url);
     const logos = json && json.musiclabel;
@@ -1587,7 +1589,7 @@ async function fetchFanArtLogo(groupKey, mbid) {
 // Kick off Fan Art TV logo fetches for all labels that have an MBID but no cached logo result.
 // Runs in batches of 5 concurrent requests — Fan Art TV has no strict rate limit.
 async function kickFanArtFetches() {
-  if (!FANART_TV_KEY) return;
+  if (!fanartKey) return;
   const pending = [];
   for (const [groupKey, entry] of labelsIndex.map) {
     if (!entry.mbid) continue;
@@ -1618,7 +1620,7 @@ async function fetchLogoFromDiscogs(labelName) {
   const url = `https://api.discogs.com/database/search?type=label&q=${encodeURIComponent(searchTerm)}&per_page=5`;
   try {
     const json = await httpJson(url, {
-      "Authorization": `Discogs token=${DISCOGS_TOKEN}`,
+      "Authorization": `Discogs token=${discogsToken}`,
       "User-Agent": MB_USER_AGENT
     }, 10000);
     const results = json && json.results;
@@ -2610,7 +2612,7 @@ app.get("/api/labels/logo-candidates", async (req, res) => {
   const name = (req.query.label || "").trim();
   if (!name) return res.status(400).json({ error: "label required" });
   const headers = {
-    "Authorization": `Discogs token=${DISCOGS_TOKEN}`,
+    "Authorization": `Discogs token=${discogsToken}`,
     "User-Agent": MB_USER_AGENT
   };
   const BAD = /no[-_]image|no[-_]label|spacer|avatar|default[-_]label/i;
@@ -2678,7 +2680,7 @@ app.post("/api/labels/logo", async (req, res) => {
       const BAD = /no[-_]image|no[-_]label|spacer|avatar|default[-_]label/i;
       const labelData = await httpJson(
         `https://api.discogs.com/labels/${discogsIdMatch[1]}`,
-        { "Authorization": `Discogs token=${DISCOGS_TOKEN}`, "User-Agent": MB_USER_AGENT },
+        { "Authorization": `Discogs token=${discogsToken}`, "User-Agent": MB_USER_AGENT },
         10000
       );
       const images = Array.isArray(labelData && labelData.images) ? labelData.images : [];
@@ -2862,6 +2864,20 @@ app.post("/api/settings/discogs-token", (req, res) => {
   const token = ((req.body && req.body.token) || "").trim();
   discogsToken = token;
   savePersistedSettings({ discogsToken: token });
+  res.json({ ok: true });
+});
+
+// FanArt.tv API key — get status (masked) or save.
+app.get("/api/settings/fanart-key", (req, res) => {
+  res.json({
+    set: !!fanartKey,
+    masked: fanartKey ? "••••••••" + fanartKey.slice(-4) : ""
+  });
+});
+app.post("/api/settings/fanart-key", (req, res) => {
+  const key = ((req.body && req.body.key) || "").trim();
+  fanartKey = key;
+  savePersistedSettings({ fanartKey: key });
   res.json({ ok: true });
 });
 

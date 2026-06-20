@@ -2814,7 +2814,48 @@
     });
   }
 
-  const open = () => { loadRadio(); loadVersion(); loadDiscogsToken(); overlay.classList.remove("hidden"); };
+  const fanartKeyInput  = document.getElementById("fanart-key-input");
+  const fanartKeySave   = document.getElementById("fanart-key-save");
+  const fanartKeyStatus = document.getElementById("fanart-key-status");
+
+  async function loadFanartKey() {
+    try {
+      const r = await fetch("/api/settings/fanart-key");
+      const j = await r.json();
+      if (fanartKeyStatus) {
+        fanartKeyStatus.textContent = j.set ? ("Current: " + j.masked) : "Not set";
+      }
+    } catch (_) {}
+  }
+
+  if (fanartKeySave) {
+    fanartKeySave.addEventListener("click", async () => {
+      const key = fanartKeyInput ? fanartKeyInput.value.trim() : "";
+      if (!key) return;
+      fanartKeySave.disabled = true;
+      try {
+        const r = await fetch("/api/settings/fanart-key", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key })
+        });
+        const j = await r.json();
+        if (j.ok) {
+          if (fanartKeyInput) fanartKeyInput.value = "";
+          showToast("FanArt.tv key saved", "ok");
+          loadFanartKey();
+        } else {
+          showToast(j.error || "Failed to save key", "error");
+        }
+      } catch (e) {
+        showToast("Failed: " + e.message, "error");
+      } finally {
+        fanartKeySave.disabled = false;
+      }
+    });
+  }
+
+  const open = () => { loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); overlay.classList.remove("hidden"); };
   const close = () => overlay.classList.add("hidden");
 
   openBtn.addEventListener("click", open);
