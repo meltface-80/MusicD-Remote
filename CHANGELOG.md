@@ -2,6 +2,17 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.60] — 2026-06-20
+
+### Added
+- **Label link in album modal** — the record label now appears on the subtitle line alongside the artist and year (`Kraftwerk · 1974 · Parlophone UK`). Tapping the label name navigates directly to that label's albums in the Labels browser.
+
+### Fixed
+- **Year shown from album data when MusicBrainz year is missing** — the subtitle year now falls back to the year returned by the album extras (Qobuz/Wikipedia source) if the MusicBrainz lookup returned nothing.
+
+### Changed
+- **Multi-select queue speed** — when queuing multiple albums, albums 2–N are now sent to Roon in parallel rather than sequentially. For a typical 3-album queue this roughly halves the wait time.
+
 ## [1.5.59] — 2026-06-20
 
 ### Fixed

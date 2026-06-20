@@ -3054,8 +3054,14 @@ app.post("/api/play-multi", async (req, res) => {
   if (!zone_or_output_id) return res.status(400).json({ error: "zone_or_output_id required" });
   if (!kind)              return res.status(400).json({ error: "kind required" });
   try {
-    for (let i = 0; i < offsets.length; i++) {
-      await openAlbumByOffset(offsets[i], zone_or_output_id, i === 0 ? kind : "queue", filter);
+    // First album uses the requested kind (play_now / queue / next).
+    // Remaining albums are always "queue" and run in parallel — each uses
+    // its own Roon browse session so they don't interfere with each other.
+    await openAlbumByOffset(offsets[0], zone_or_output_id, kind, filter);
+    if (offsets.length > 1) {
+      await Promise.all(
+        offsets.slice(1).map(off => openAlbumByOffset(off, zone_or_output_id, "queue", filter))
+      );
     }
     res.json({ ok: true });
   } catch (e) {

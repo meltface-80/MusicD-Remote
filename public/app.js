@@ -806,27 +806,38 @@
   }
 
   function renderExtras(extras, album) {
-    // 1. Append year to subtitle (keep the artist link button intact)
-    if (extras.year) {
+    // 1. Append year + label to subtitle line (artist button already present)
+    const yearToShow = extras.year || (extras.album && extras.album.year ? String(extras.album.year) : "");
+    if (yearToShow) {
       const yearSpan = document.createElement("span");
       yearSpan.className = "modal-subtitle-year";
-      yearSpan.textContent = " · " + extras.year;
+      yearSpan.textContent = " · " + yearToShow;
       modalSub.appendChild(yearSpan);
     }
+    if (extras.album && extras.album.label) {
+      const sep = document.createElement("span");
+      sep.className = "modal-subtitle-year";
+      sep.textContent = " · ";
+      modalSub.appendChild(sep);
+      const labelBtn = document.createElement("button");
+      labelBtn.className = "modal-artist-link";
+      labelBtn.textContent = extras.album.label;
+      labelBtn.addEventListener("click", () => {
+        closeModal();
+        if (window.__showLabelAlbums) window.__showLabelAlbums(extras.album.label);
+      });
+      modalSub.appendChild(labelBtn);
+    }
 
-    // 2. Album bio section (label, year, description, source link)
-    if (extras.album && (extras.album.description || extras.album.label || extras.album.year)) {
+    // 2. Album bio section (description + source link; year/label now in subtitle)
+    if (extras.album && (extras.album.description || (extras.album.url && extras.album.source))) {
       const section = document.getElementById("album-bio-section");
       const meta    = document.getElementById("album-meta");
       const text    = document.getElementById("album-bio-text");
       const toggle  = document.getElementById("album-bio-toggle");
       const srcLink = document.getElementById("album-bio-source");
 
-      const metaBits = [];
-      if (extras.album.year)  metaBits.push(extras.album.year);
-      if (extras.album.label) metaBits.push(extras.album.label);
-      meta.textContent = metaBits.join(" · ");
-      meta.style.display = metaBits.length ? "" : "none";
+      meta.style.display = "none";
 
       text.textContent = extras.album.description || "";
       text.style.display = extras.album.description ? "" : "none";
@@ -1323,7 +1334,8 @@
       updateScanBar(null);
       if (labelUnmergeSheet) labelUnmergeSheet.classList.add("hidden");
     }
-    window.__exitLabels = exitLabels;
+    window.__exitLabels       = exitLabels;
+    window.__showLabelAlbums  = showLabelAlbums;
 
     function makeScanLogLink() {
       const wrap = document.createElement("div");
