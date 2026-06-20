@@ -2586,20 +2586,77 @@ app.post("/api/labels/rescan-force", (req, res) => {
   res.json({ ok: true });
 });
 
+// Serve locally cached label logo images (downloaded at save time).
+app.get("/api/labels/logo-image/:filename", (req, res) => {
+  const filename = path.basename(req.params.filename);
+  const filepath = path.join(__dirname, "data", "cache", "logos", filename);
+  if (!fs.existsSync(filepath)) return res.status(404).end();
+  res.sendFile(filepath);
+});
+
+// Return Discogs logo candidates for the logo picker UI.
+app.get("/api/labels/logo-candidates", async (req, res) => {
+  const name = (req.query.label || "").trim();
+  if (!name) return res.status(400).json({ error: "label required" });
+  await discogsWait();
+  const searchTerm = name.replace(/^[^a-z0-9]+/i, "").trim() || name;
+  const url = `https://api.discogs.com/database/search?type=label&q=${encodeURIComponent(searchTerm)}&per_page=8`;
+  try {
+    const json = await httpJson(url, {
+      "Authorization": `Discogs key=${DISCOGS_KEY}, secret=${DISCOGS_SECRET}`,
+      "User-Agent": MB_USER_AGENT
+    }, 10000);
+    const results = (json && json.results) || [];
+    const BAD = /no[-_]image|no[-_]label|spacer|avatar|default[-_]label/i;
+    const candidates = results
+      .map(r => ({ title: r.title || "", img: r.cover_image || r.thumb || null }))
+      .filter(c => c.img && !c.img.endsWith(".gif") && !BAD.test(c.img))
+      .slice(0, 6);
+    res.json({ candidates });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Manually set (or override) the logo URL for a label tile.
+// Downloads and caches the image locally so any URL (including Discogs page
+// URLs that aren't direct image links) works reliably on mobile.
 // Body: { label: displayName, url: imageUrl }
-app.post("/api/labels/logo", (req, res) => {
+app.post("/api/labels/logo", async (req, res) => {
   const { label, url } = req.body || {};
   if (!label) return res.status(400).json({ error: "label required" });
   if (!url)   return res.status(400).json({ error: "url required" });
   const groupKey = labelGroupKey(label);
   if (!groupKey) return res.status(400).json({ error: "invalid label name" });
+
+  let storedUrl = url;
   try {
-    setLabelLogo(groupKey, url);
+    const ctl = new AbortController();
+    const tid = setTimeout(() => ctl.abort(), 15000);
+    const resp = await fetch(url, {
+      redirect: "follow",
+      signal: ctl.signal,
+      headers: { "User-Agent": MB_USER_AGENT, "Accept": "image/*,*/*;q=0.8" }
+    });
+    clearTimeout(tid);
+    const ct = (resp.headers.get("content-type") || "").toLowerCase();
+    if (ct.startsWith("image/")) {
+      const ext = ct.includes("png") ? "png" : ct.includes("gif") ? "gif" : ct.includes("webp") ? "webp" : "jpg";
+      const logosDir = path.join(__dirname, "data", "cache", "logos");
+      fs.mkdirSync(logosDir, { recursive: true });
+      fs.writeFileSync(path.join(logosDir, groupKey + "." + ext), Buffer.from(await resp.arrayBuffer()));
+      storedUrl = `/api/labels/logo-image/${groupKey}.${ext}`;
+    } else if (resp.url && resp.url !== url) {
+      storedUrl = resp.url;
+    }
+  } catch (_) { /* timeout or network error — store URL as-is */ }
+
+  try {
+    setLabelLogo(groupKey, storedUrl);
     const entry = labelsIndex.map.get(groupKey);
-    if (entry) entry.logo_url = url;
-    discogsLogoTried.delete(groupKey); // allow future automatic re-fetch if logo removed
-    res.json({ ok: true });
+    if (entry) entry.logo_url = storedUrl;
+    discogsLogoTried.delete(groupKey);
+    res.json({ ok: true, storedUrl });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

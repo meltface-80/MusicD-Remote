@@ -2,6 +2,12 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.63] — 2026-06-20
+
+### Changed
+- **Label logo picker** — the photo icon now opens a Discogs logo picker alongside the URL paste field. When the sheet opens, the server queries Discogs and shows up to 6 logo candidates as tappable thumbnails; tap one to save immediately with no URL copying needed. Works fully on iPhone with no clipboard gymnastics.
+- **Logo URL caching** — when a logo URL is saved (whether from the picker or pasted manually), the server downloads the image and stores it locally under `data/cache/logos/`. This means any URL works — including Discogs image viewer pages that aren't direct image links — because the server fetches and caches the bytes itself.
+
 ## [1.5.62] — 2026-06-20
 
 ### Fixed

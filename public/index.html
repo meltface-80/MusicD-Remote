@@ -159,14 +159,19 @@ sudo systemctl disable roon-random-albums</pre>
       </button>
     </div>
     <div id="logo-url-sheet" class="logo-url-sheet hidden">
-      <input id="logo-url-input" type="url" class="logo-url-input" placeholder="Paste image URL from Discogs or anywhere…" autocomplete="off">
-      <button id="logo-url-save" class="action-btn primary" type="button">Save</button>
-      <button id="logo-url-cancel" class="icon-btn" type="button" aria-label="Cancel">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M18 6 6 18M6 6l12 12"/>
-        </svg>
-      </button>
+      <div id="logo-candidates" class="logo-candidates">
+        <span class="logo-candidates-hint">Searching Discogs…</span>
+      </div>
+      <div class="logo-manual-row">
+        <input id="logo-url-input" type="url" class="logo-url-input" placeholder="Or paste any image URL…" autocomplete="off">
+        <button id="logo-url-save" class="action-btn primary" type="button">Save</button>
+        <button id="logo-url-cancel" class="icon-btn" type="button" aria-label="Cancel">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 6 6 18M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
     </div>
     <div id="content-count" class="content-count hidden"></div>
     <div id="status-banner" class="status-banner hidden"></div>

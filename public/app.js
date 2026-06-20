@@ -1213,6 +1213,7 @@
     const labelUnmergeClose  = document.getElementById("label-unmerge-close");
     const labelsLogoBtn      = document.getElementById("labels-logo-btn");
     const logoUrlSheet       = document.getElementById("logo-url-sheet");
+    const logoCandidatesEl   = document.getElementById("logo-candidates");
     const logoUrlInput       = document.getElementById("logo-url-input");
     const logoUrlSave        = document.getElementById("logo-url-save");
     const logoUrlCancel      = document.getElementById("logo-url-cancel");
@@ -1345,13 +1346,68 @@
     window.__exitLabels       = exitLabels;
     window.__showLabelAlbums  = showLabelAlbums;
 
-    // ----- Manual logo URL sheet -----
+    // ----- Logo picker sheet -----
+
+    async function saveLogo(url) {
+      if (!currentLabelName) return;
+      try {
+        const r = await fetch("/api/labels/logo", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ label: currentLabelName, url })
+        });
+        const j = await r.json();
+        if (j.ok) {
+          closeLabelLogoSheet();
+          showToast("Logo saved", "ok");
+        } else {
+          showToast(j.error || "Failed to save logo", "error");
+        }
+      } catch (e) {
+        showToast("Failed: " + e.message, "error");
+      }
+    }
+
+    async function loadLogoCandidates(labelName) {
+      if (!logoCandidatesEl) return;
+      logoCandidatesEl.innerHTML = '<span class="logo-candidates-hint">Searching Discogs…</span>';
+      try {
+        const r = await fetch("/api/labels/logo-candidates?label=" + encodeURIComponent(labelName));
+        const j = await r.json();
+        const candidates = (j && j.candidates) || [];
+        logoCandidatesEl.innerHTML = "";
+        if (!candidates.length) {
+          logoCandidatesEl.innerHTML = '<span class="logo-candidates-hint">No logos found on Discogs</span>';
+          return;
+        }
+        for (const c of candidates) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "logo-candidate-btn";
+          btn.title = c.title || "";
+          const img = document.createElement("img");
+          img.src = c.img;
+          img.alt = c.title || "";
+          img.loading = "lazy";
+          img.onerror = () => btn.remove();
+          btn.appendChild(img);
+          btn.addEventListener("click", () => saveLogo(c.img));
+          logoCandidatesEl.appendChild(btn);
+        }
+      } catch (_) {
+        logoCandidatesEl.innerHTML = '<span class="logo-candidates-hint">Discogs search failed</span>';
+      }
+    }
+
     if (labelsLogoBtn) {
       labelsLogoBtn.addEventListener("click", () => {
         if (!logoUrlSheet) return;
         const opening = logoUrlSheet.classList.contains("hidden");
         logoUrlSheet.classList.toggle("hidden");
-        if (opening && logoUrlInput) logoUrlInput.focus();
+        if (opening) {
+          loadLogoCandidates(currentLabelName || "");
+          if (logoUrlInput) logoUrlInput.focus();
+        }
       });
     }
     if (logoUrlCancel) {
@@ -1363,20 +1419,7 @@
         if (!url || !currentLabelName) return;
         logoUrlSave.disabled = true;
         try {
-          const r = await fetch("/api/labels/logo", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ label: currentLabelName, url })
-          });
-          const j = await r.json();
-          if (j.ok) {
-            closeLabelLogoSheet();
-            showToast("Logo saved — reload the labels page to see it", "ok");
-          } else {
-            showToast(j.error || "Failed to save logo", "error");
-          }
-        } catch (e) {
-          showToast("Failed: " + e.message, "error");
+          await saveLogo(url);
         } finally {
           logoUrlSave.disabled = false;
         }
@@ -1550,6 +1593,7 @@
     function closeLabelLogoSheet() {
       if (logoUrlSheet) logoUrlSheet.classList.add("hidden");
       if (logoUrlInput) logoUrlInput.value = "";
+      if (logoCandidatesEl) logoCandidatesEl.innerHTML = "";
     }
 
     async function showLabelAlbums(name) {
