@@ -41,7 +41,7 @@ push. It is configured with `--prerelease`. **Do not remove that flag.**
 - The README contains version references (install commands, tarball URLs, `docker build` tags).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.5.37** (until the user says otherwise).
+- Current stable version in the README: **v1.5.49** (until the user says otherwise).
 
 ---
 
@@ -85,16 +85,16 @@ docker run -d \
 
 | Version | Status    | Notes                              |
 |---------|-----------|------------------------------------|
-| v1.5.37 | **Latest (stable)** | README points here     |
-| v1.5.38 | pre-release | File scanner layout fix          |
-| v1.5.39 | pre-release | Rate limiting, MB timeout, misc  |
-| v1.5.40 | pre-release | iTunes rate limiting, file cache |
-| v1.5.41 | pre-release | Scan logging, 12h auto-rescan    |
-| v1.5.42 | pre-release | Progress tracking, circuit breaker |
-| v1.5.43 | pre-release | Progress bar >100% fix             |
-| v1.5.44 | pre-release | Label name text tiles              |
-| v1.5.45 | pre-release | Remove album-art fallback from label tiles |
-| v1.5.46 | pre-release | Label text size by longest word not word count |
-| v1.5.47 | pre-release | Consistent label text size via container query (8cqw) |
-| v1.5.48 | pre-release | Label text size increased to 9cqw |
-| v1.5.49 | pre-release | Discogs label logo fetches |
+| v1.5.37 | stable (superseded) | Previous README stable          |
+| v1.5.38 | stable (superseded) | File scanner layout fix          |
+| v1.5.39 | stable (superseded) | Rate limiting, MB timeout, misc  |
+| v1.5.40 | stable (superseded) | iTunes rate limiting, file cache |
+| v1.5.41 | stable (superseded) | Scan logging, 12h auto-rescan    |
+| v1.5.42 | stable (superseded) | Progress tracking, circuit breaker |
+| v1.5.43 | stable (superseded) | Progress bar >100% fix             |
+| v1.5.44 | stable (superseded) | Label name text tiles              |
+| v1.5.45 | stable (superseded) | Remove album-art fallback from label tiles |
+| v1.5.46 | stable (superseded) | Label text size by longest word not word count |
+| v1.5.47 | stable (superseded) | Consistent label text size via container query (8cqw) |
+| v1.5.48 | stable (superseded) | Label text size increased to 9cqw |
+| v1.5.49 | **Latest (stable)** | Discogs label logo fetches — README points here |
