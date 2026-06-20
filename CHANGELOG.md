@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.54] — 2026-06-20
+
+### Fixed
+- **Labels grid unstable during scan** — the tile grid was fully re-rendered on every 5-second poll whenever new labels appeared, causing a visible flash. The grid now only renders on first load and once more when the scan completes; the count text updates each poll so progress is still visible without the grid flickering.
+
 ## [1.5.53] — 2026-06-20
 
 ### Added

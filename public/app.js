@@ -1323,13 +1323,19 @@
         }
         const scanNote = j.scanning ? " (scanning… " + pct + "%)" : "";
         setCountText(labels.length.toLocaleString() + " labels" + scanNote);
-        renderLabelTiles(labels);
-        if (labelSelectToggle) labelSelectToggle.classList.remove("hidden");
-        // Show scan log link after labels render (remove any old one first)
-        const oldLink = grid.querySelector(".scan-log-link");
-        if (oldLink) oldLink.remove();
-        if (!j.scanning) grid.appendChild(makeScanLogLink());
-        // Keep refreshing while the scan adds more labels
+        // Only re-render tiles on first load or when the scan finishes.
+        // During an active scan, just update the count text so the grid stays
+        // stable — no flash every 5 s as new labels trickle in.
+        if (_lastLabelCount <= 0 || !j.scanning) {
+          renderLabelTiles(labels);
+          if (labelSelectToggle) labelSelectToggle.classList.remove("hidden");
+          const oldLink = grid.querySelector(".scan-log-link");
+          if (oldLink) oldLink.remove();
+          if (!j.scanning) grid.appendChild(makeScanLogLink());
+        } else {
+          if (labelSelectToggle) labelSelectToggle.classList.remove("hidden");
+        }
+        // Keep polling while the scan is running
         if (j.scanning) {
           setTimeout(() => { if (mode === "list") showLabelsList(true); }, 5000);
         }
