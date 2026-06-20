@@ -58,6 +58,42 @@ If step 3 cannot run (Roon not available), run steps 1 and 2 and explicitly note
 
 ---
 
+## Code review workflow (multi-agent)
+
+For any non-trivial change, run a full code review using parallel agents before committing. The `/code-review --effort high` skill automates this. It must be run on any change that touches:
+- The label scan pipeline (`runLabelsIndexScan`, `buildFileLabelMap`, pass logic)
+- Discogs or FanArt.tv API integration
+- Settings persistence (`savePersistedSettings`, `loadPersistedSettings`)
+- New UI components in `public/app.js` or `public/index.html`
+
+### Review angles (run in parallel via Agent tool)
+
+Spawn all 8 angles simultaneously, then verify surviving candidates:
+
+| Angle | What it hunts |
+|-------|---------------|
+| A — line-by-line diff scan | Inverted conditions, null deref, missing await, wrong variable |
+| B — removed-behavior auditor | Dropped guards, deleted error paths, narrowed validation |
+| C — cross-file tracer | Broken call sites, mismatched request/response shapes |
+| D — reuse | Code that re-implements an existing helper |
+| E — simplification | Redundant state, dead code, unnecessary nesting |
+| F — efficiency | Sync I/O on hot paths, redundant computation |
+| G — altitude | Bandaids layered on shared infrastructure |
+| H — CLAUDE.md conventions | Quote the exact rule and exact violating line |
+
+### Verify findings
+
+For each surviving candidate, spawn one verifier agent and get: **CONFIRMED / PLAUSIBLE / REFUTED**.
+- PLAUSIBLE by default — do not refute without quoting code that proves it impossible.
+- REFUTED only when the code provably makes it unreachable.
+- Keep CONFIRMED and PLAUSIBLE. Drop REFUTED.
+
+### Fix all confirmed findings before committing
+
+Do not commit with known CONFIRMED or PLAUSIBLE bugs. Fix them all in the same version bump.
+
+---
+
 ## Repository
 
 - Work directly on the **main branch** of `meltface-80/Roon-Random-Albums-Extension`.
