@@ -1233,6 +1233,21 @@
       }
     }
 
+    function setLabelTextArt(artEl, title) {
+      artEl.className = "album-art-wrap is-label-text";
+      artEl.innerHTML = "";
+      const words = (title || "").trim().split(/\s+/).filter(Boolean);
+      const list = words.length ? words : ["?"];
+      // Scale font down for longer names so they fit in the tile
+      const fs = list.length <= 2 ? "1.05em" : list.length <= 4 ? "0.9em" : "0.75em";
+      artEl.style.fontSize = fs;
+      list.forEach(word => {
+        const span = document.createElement("span");
+        span.textContent = word;
+        artEl.appendChild(span);
+      });
+    }
+
     function renderLabelTiles(labels) {
       if (labels.length === _lastLabelCount) return; // no new labels — skip re-render
       _lastLabelCount = labels.length;
@@ -1250,17 +1265,17 @@
           img.loading = "lazy"; img.alt = "";
           img.src = lb.logo_url;
           img.onerror = () => {
-            // Logo failed — fall back to album art or tag SVG
-            art.className = lb.image_key ? "album-art-wrap" : "album-art-wrap is-label";
+            // Logo failed — fall back to album art, then label name text
             img.remove();
             if (lb.image_key) {
+              art.className = "album-art-wrap";
               const fallback = document.createElement("img");
               fallback.loading = "lazy"; fallback.alt = "";
               fallback.src = `/api/image/${encodeURIComponent(lb.image_key)}?size=500`;
-              fallback.onerror = () => { art.className = "album-art-wrap is-label"; fallback.remove(); art.innerHTML = TAG_SVG; };
+              fallback.onerror = () => { fallback.remove(); setLabelTextArt(art, lb.title); };
               art.appendChild(fallback);
             } else {
-              art.innerHTML = TAG_SVG;
+              setLabelTextArt(art, lb.title);
             }
           };
           art.appendChild(img);
@@ -1269,15 +1284,10 @@
           const img = document.createElement("img");
           img.loading = "lazy"; img.alt = "";
           img.src = `/api/image/${encodeURIComponent(lb.image_key)}?size=500`;
-          img.onerror = () => {
-            art.className = "album-art-wrap is-label";
-            img.remove();
-            art.innerHTML = TAG_SVG;
-          };
+          img.onerror = () => { img.remove(); setLabelTextArt(art, lb.title); };
           art.appendChild(img);
         } else {
-          art.className = "album-art-wrap is-label";
-          art.innerHTML = TAG_SVG;
+          setLabelTextArt(art, lb.title);
         }
         const meta = document.createElement("div");
         meta.className = "album-meta";

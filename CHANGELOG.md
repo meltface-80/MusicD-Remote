@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.44] — 2026-06-20
+
+### Changed
+- **Label tiles without a logo now show the label name** — previously showed a generic tag icon. The label name is displayed centred in the tile, with each word on its own line (e.g. "Blue Note" = two lines, "Warner Music Group" = three lines). Font size scales down slightly for longer names. The tag icon is retired entirely from label tiles.
+
 ## [1.5.43] — 2026-06-19
 
 ### Fixed

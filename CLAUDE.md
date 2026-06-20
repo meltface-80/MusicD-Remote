@@ -91,3 +91,5 @@ docker run -d \
 | v1.5.40 | pre-release | iTunes rate limiting, file cache |
 | v1.5.41 | pre-release | Scan logging, 12h auto-rescan    |
 | v1.5.42 | pre-release | Progress tracking, circuit breaker |
+| v1.5.43 | pre-release | Progress bar >100% fix             |
+| v1.5.44 | pre-release | Label name text tiles              |
