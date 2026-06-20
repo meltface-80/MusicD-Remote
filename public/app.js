@@ -2801,7 +2801,7 @@
         const j = await r.json();
         if (j.ok) {
           if (discogsTokenInput) discogsTokenInput.value = "";
-          showToast("Discogs token saved", "ok");
+          showToast(j.saved === false ? "Token set but file write failed — won't persist after restart" : "Discogs token saved", j.saved === false ? "error" : "ok");
           loadDiscogsToken();
         } else {
           showToast(j.error || "Failed to save token", "error");
@@ -2842,7 +2842,7 @@
         const j = await r.json();
         if (j.ok) {
           if (fanartKeyInput) fanartKeyInput.value = "";
-          showToast("FanArt.tv key saved", "ok");
+          showToast(j.saved === false ? "Key set but file write failed — won't persist after restart" : "FanArt.tv key saved", j.saved === false ? "error" : "ok");
           loadFanartKey();
         } else {
           showToast(j.error || "Failed to save key", "error");

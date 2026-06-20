@@ -665,7 +665,11 @@ function savePersistedSettings(patch) {
     const cur = loadPersistedSettings();
     fs.mkdirSync(LABELS_DB_DIR, { recursive: true });
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ ...cur, ...patch }, null, 2));
-  } catch (e) {}
+    return true;
+  } catch (e) {
+    console.error("[settings] save failed:", e.message);
+    return false;
+  }
 }
 
 // Load persisted API keys (set via web UI settings).
@@ -2859,9 +2863,11 @@ app.get("/api/settings/discogs-token", (req, res) => {
 });
 app.post("/api/settings/discogs-token", (req, res) => {
   const token = ((req.body && req.body.token) || "").trim();
+  if (!token) return res.status(400).json({ ok: false, error: "token is empty" });
   discogsToken = token;
-  savePersistedSettings({ discogsToken: token });
-  res.json({ ok: true });
+  const saved = savePersistedSettings({ discogsToken: token });
+  console.log("[settings] discogs token set (" + token.length + " chars), persisted=" + saved);
+  res.json({ ok: true, saved });
 });
 
 // FanArt.tv API key — get status (masked) or save.
@@ -2873,9 +2879,11 @@ app.get("/api/settings/fanart-key", (req, res) => {
 });
 app.post("/api/settings/fanart-key", (req, res) => {
   const key = ((req.body && req.body.key) || "").trim();
+  if (!key) return res.status(400).json({ ok: false, error: "key is empty" });
   fanartKey = key;
-  savePersistedSettings({ fanartKey: key });
-  res.json({ ok: true });
+  const saved = savePersistedSettings({ fanartKey: key });
+  console.log("[settings] fanart key set (" + key.length + " chars), persisted=" + saved);
+  res.json({ ok: true, saved });
 });
 
 // ---------------------------------------------------------------------------

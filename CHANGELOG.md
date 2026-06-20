@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.69] — 2026-06-20
+
+### Fixed
+- **API token/key Save buttons not working** — both settings inputs were `type="password"`, which triggers iOS's keychain manager and can silently clear the field value before the click event fires, causing the empty-field guard to bail out. Changed to `type="text"` (API keys are not authentication passwords; the masked display in the status row provides sufficient visual protection). Also: the server-side POST handlers now reject empty values with a 400 response (instead of silently setting an empty token), log the received key length to Docker logs for diagnostics, and report whether the file write succeeded so the client can warn if persistence fails.
+
 ## [1.5.68] — 2026-06-20
 
 ### Fixed
