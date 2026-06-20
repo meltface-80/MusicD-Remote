@@ -2595,24 +2595,53 @@ app.get("/api/labels/logo-image/:filename", (req, res) => {
 });
 
 // Return Discogs logo candidates for the logo picker UI.
+// First searches by name (per_page=25). If none of those have usable images,
+// falls back to fetching full label data from the Discogs Labels API for the
+// best name match, which has a proper images[] array even when search results don't.
 app.get("/api/labels/logo-candidates", async (req, res) => {
   const name = (req.query.label || "").trim();
   if (!name) return res.status(400).json({ error: "label required" });
-  await discogsWait();
-  const searchTerm = name.replace(/^[^a-z0-9]+/i, "").trim() || name;
-  const url = `https://api.discogs.com/database/search?type=label&q=${encodeURIComponent(searchTerm)}&per_page=8`;
+  const headers = {
+    "Authorization": `Discogs key=${DISCOGS_KEY}, secret=${DISCOGS_SECRET}`,
+    "User-Agent": MB_USER_AGENT
+  };
+  const BAD = /no[-_]image|no[-_]label|spacer|avatar|default[-_]label/i;
+  const normTarget = labelGroupKey(name);
   try {
-    const json = await httpJson(url, {
-      "Authorization": `Discogs key=${DISCOGS_KEY}, secret=${DISCOGS_SECRET}`,
-      "User-Agent": MB_USER_AGENT
-    }, 10000);
+    await discogsWait();
+    const searchTerm = name.replace(/^[^a-z0-9]+/i, "").trim() || name;
+    const json = await httpJson(
+      `https://api.discogs.com/database/search?type=label&q=${encodeURIComponent(searchTerm)}&per_page=25`,
+      headers, 10000
+    );
     const results = (json && json.results) || [];
-    const BAD = /no[-_]image|no[-_]label|spacer|avatar|default[-_]label/i;
-    const candidates = results
-      .map(r => ({ title: r.title || "", img: r.cover_image || r.thumb || null }))
-      .filter(c => c.img && !c.img.endsWith(".gif") && !BAD.test(c.img))
-      .slice(0, 6);
-    res.json({ candidates });
+
+    // First pass — use whatever images search results include
+    const withImages = results
+      .map(r => ({ id: r.id, title: r.title || "", img: r.cover_image || r.thumb || null }))
+      .filter(c => c.img && !c.img.endsWith(".gif") && !BAD.test(c.img));
+    if (withImages.length) return res.json({ candidates: withImages.slice(0, 6) });
+
+    // No usable images in search results — fetch full label data for best name match.
+    // The Labels API images[] array has URIs even when search cover_image is absent.
+    const bestMatch = results.find(r => labelGroupKey(r.title || "") === normTarget)
+      || results.find(r => labelGroupKey(r.title || "").includes(normTarget))
+      || results[0];
+    if (bestMatch && bestMatch.id) {
+      await discogsWait();
+      const labelData = await httpJson(
+        `https://api.discogs.com/labels/${bestMatch.id}`,
+        headers, 10000
+      );
+      const images = Array.isArray(labelData && labelData.images) ? labelData.images : [];
+      const candidates = images
+        .filter(i => i.uri && !i.uri.endsWith(".gif") && !BAD.test(i.uri))
+        .slice(0, 6)
+        .map(i => ({ title: bestMatch.title, img: i.uri }));
+      return res.json({ candidates });
+    }
+
+    res.json({ candidates: [] });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -2629,11 +2658,32 @@ app.post("/api/labels/logo", async (req, res) => {
   const groupKey = labelGroupKey(label);
   if (!groupKey) return res.status(400).json({ error: "invalid label name" });
 
-  let storedUrl = url;
+  let imageUrl = url;
+
+  // If the URL is a Discogs label page (or image viewer), extract the label ID
+  // and use the Discogs API to get a real i.discogs.com CDN image URL.
+  // Handles: discogs.com/label/1495-~scape  and  discogs.com/label/1495-~scape/image/…
+  const discogsIdMatch = url.match(/discogs\.com\/label\/(\d+)/i);
+  if (discogsIdMatch) {
+    try {
+      await discogsWait();
+      const BAD = /no[-_]image|no[-_]label|spacer|avatar|default[-_]label/i;
+      const labelData = await httpJson(
+        `https://api.discogs.com/labels/${discogsIdMatch[1]}`,
+        { "Authorization": `Discogs key=${DISCOGS_KEY}, secret=${DISCOGS_SECRET}`, "User-Agent": MB_USER_AGENT },
+        10000
+      );
+      const images = Array.isArray(labelData && labelData.images) ? labelData.images : [];
+      const img = images.find(i => i.uri && !i.uri.endsWith(".gif") && !BAD.test(i.uri));
+      if (img && img.uri) imageUrl = img.uri;
+    } catch (_) {}
+  }
+
+  let storedUrl = imageUrl;
   try {
     const ctl = new AbortController();
     const tid = setTimeout(() => ctl.abort(), 15000);
-    const resp = await fetch(url, {
+    const resp = await fetch(imageUrl, {
       redirect: "follow",
       signal: ctl.signal,
       headers: { "User-Agent": MB_USER_AGENT, "Accept": "image/*,*/*;q=0.8" }
@@ -2646,7 +2696,7 @@ app.post("/api/labels/logo", async (req, res) => {
       fs.mkdirSync(logosDir, { recursive: true });
       fs.writeFileSync(path.join(logosDir, groupKey + "." + ext), Buffer.from(await resp.arrayBuffer()));
       storedUrl = `/api/labels/logo-image/${groupKey}.${ext}`;
-    } else if (resp.url && resp.url !== url) {
+    } else if (resp.url && resp.url !== imageUrl) {
       storedUrl = resp.url;
     }
   } catch (_) { /* timeout or network error — store URL as-is */ }

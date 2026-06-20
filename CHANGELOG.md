@@ -2,6 +2,12 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.64] — 2026-06-20
+
+### Fixed
+- **Logo picker shows "No logos found" for labels like `~scape`** — Discogs search results often omit `cover_image` for niche labels even when the label page has images. The candidates endpoint now falls back to the Discogs Labels API (`/labels/{id}`) for the best name-matched result, which always includes the full `images[]` array.
+- **Pasting a Discogs label URL in the logo sheet didn't work** — the Discogs image viewer URL (`discogs.com/label/1495-~scape/image/…`) requires a browser session to serve image bytes; the server-side fetch got HTML instead. The save endpoint now detects any Discogs label URL, extracts the label ID, calls the Discogs API to get a real `i.discogs.com` CDN image URL, and downloads that instead.
+
 ## [1.5.63] — 2026-06-20
 
 ### Changed
