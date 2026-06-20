@@ -1287,6 +1287,7 @@
       labelsBtn.classList.remove("is-active");
       if (labelsBar) labelsBar.classList.add("hidden");
       exitLabelSelectMode();
+      exitAlbumSelectMode();
       if (labelSelectToggle) labelSelectToggle.classList.add("hidden");
       if (labelUnmergeSheet) labelUnmergeSheet.classList.add("hidden");
     }
@@ -1347,8 +1348,8 @@
             setBanner("No labels found yet — the background scan looks up labels via iTunes and MusicBrainz. This can take a few minutes for large libraries.", false);
             // Show a rescan button so the user can retry without restarting the server.
             const rescanBtn = document.createElement("button");
-            rescanBtn.className = "primary-btn";
-            rescanBtn.style.cssText = "margin:16px auto;display:block;";
+            rescanBtn.className = "action-btn primary";
+            rescanBtn.style.cssText = "margin:16px auto;";
             rescanBtn.textContent = "Rescan now";
             rescanBtn.addEventListener("click", async () => {
               rescanBtn.disabled = true;
@@ -1566,7 +1567,13 @@
       const r = await fetch("/api/play-multi", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ offsets: albumSelected.map(a => a.offset), zone_or_output_id: selectedZoneId, kind })
+        body: JSON.stringify({
+          offsets: albumSelected.map(a => a.offset),
+          zone_or_output_id: selectedZoneId,
+          kind,
+          filter_type:  activeFilter ? activeFilter.type  : "",
+          filter_value: activeFilter ? activeFilter.value : ""
+        })
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);

@@ -106,6 +106,7 @@ button { font-family: inherit; }
 
 .topbar-controls {
   display: flex; align-items: center; gap: 8px;
+  margin-left: auto;
 }
 
 .icon-btn, .primary-btn {
@@ -1769,8 +1770,8 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
   background: var(--accent-soft); color: var(--accent); border-color: var(--accent);
 }
 
-/* Selected tile states */
-.album.label-tile.is-selected .album-art-wrap,
+/* Selected tile states — applies to both label tiles and regular album tiles */
+.album.is-selected .album-art-wrap,
 .album.label-tile.is-first-selected .album-art-wrap {
   outline: 2.5px solid rgba(255,255,255,.35);
   outline-offset: -2px;
@@ -1779,7 +1780,7 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
   outline-color: var(--accent);
 }
 /* Checkmark badge */
-.album.label-tile.is-selected .album-art-wrap::after,
+.album.is-selected .album-art-wrap::after,
 .album.label-tile.is-first-selected .album-art-wrap::after {
   content: "";
   position: absolute; top: 5px; right: 5px; z-index: 2;

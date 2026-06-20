@@ -2480,13 +2480,14 @@ app.get("/api/filters/labels", (req, res) => {
     });
   }
   labels.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
-  // If the album index is still loading (e.g. first startup), report scanning=true
-  // so the client keeps polling rather than showing a permanent "no labels" message.
-  const albumsBuilding = albumIndex.count === 0 && !!albumIndex.building;
+  // Report scanning=true whenever we have no data yet: covers both the case
+  // where the album index is actively building AND the brief window before
+  // buildAlbumIndex() is called (albumIndex.building is still null).
+  const noDataYet = labels.length === 0 && albumIndex.count === 0;
   res.json({
     labels,
-    scanning:  labelsIndex.building || albumsBuilding,
-    progress:  albumsBuilding ? albumIndex.progress : labelsIndex.progress,
+    scanning:  labelsIndex.building || noDataYet,
+    progress:  noDataYet ? (albumIndex.progress || 0) : labelsIndex.progress,
     count:     labelsIndex.count
   });
 });

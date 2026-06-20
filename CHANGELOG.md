@@ -2,6 +2,16 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.57] — 2026-06-20
+
+### Fixed
+- **Topbar buttons shift left on first load** — `justify-content: space-between` placed the controls div at flex-start when the album count badge was hidden (display:none). Added `margin-left: auto` to `.topbar-controls` so buttons always hug the right side regardless of the count badge visibility.
+- **Album multi-select: filter context missing** — when a genre or tag filter was active, multi-select play/queue requests omitted `filter_type`/`filter_value`, causing offsets to resolve against the full library instead of the filtered list and playing the wrong albums.
+- **Album select tiles: no visual feedback** — selected album tiles on the random wall had no highlight or checkmark. Generalised the existing label-tile selected-state CSS (outline + checkmark badge) to apply to all `.album.is-selected` tiles.
+- **Labels page: "No labels found yet" on fresh restart** — when the album index had not built yet (count=0) but `albumIndex.building` was still null (brief window before `buildAlbumIndex()` is called), the API reported `scanning:false`. The client showed the permanent "No labels found yet" message instead of polling. Now any response with empty labels AND zero albums returns `scanning:true`.
+- **`exitLabels()` not clearing album select mode** — navigating away from labels while album select mode was active left the action bar open.
+- **"Rescan now" button wrong class** — used `primary-btn` (square icon button style) instead of `action-btn primary` (text button style).
+
 ## [1.5.56] — 2026-06-20
 
 ### Fixed
