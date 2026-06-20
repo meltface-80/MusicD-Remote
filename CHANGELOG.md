@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.48] — 2026-06-20
+
+### Changed
+- **Label text size increased** — bumped from 8cqw to 9cqw.
+
 ## [1.5.47] — 2026-06-20
 
 ### Changed

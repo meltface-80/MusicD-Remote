@@ -396,7 +396,7 @@ main {
 }
 .album-art-wrap.is-label-text span {
   display: block; text-align: center;
-  font-size: 8cqw;
+  font-size: 9cqw;
   font-weight: 700; line-height: 1.2;
   color: var(--text); max-width: 100%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

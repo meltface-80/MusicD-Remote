@@ -96,3 +96,4 @@ docker run -d \
 | v1.5.45 | pre-release | Remove album-art fallback from label tiles |
 | v1.5.46 | pre-release | Label text size by longest word not word count |
 | v1.5.47 | pre-release | Consistent label text size via container query (8cqw) |
+| v1.5.48 | pre-release | Label text size increased to 9cqw |
