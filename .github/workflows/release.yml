@@ -33,11 +33,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Find tarball asset
+      - name: Build tarball
         id: tarball
         if: steps.check.outputs.exists == 'false'
         run: |
-          TARBALL=$(ls old/roon-random-albums-v${{ steps.version.outputs.version }}-docker.tar.gz 2>/dev/null || true)
+          VERSION=${{ steps.version.outputs.version }}
+          TARBALL="roon-random-albums-v${VERSION}-docker.tar.gz"
+          tar -czf "$TARBALL" \
+            --exclude='./.git' \
+            --exclude='./node_modules' \
+            --exclude='./old' \
+            --exclude='./data' \
+            .
           echo "path=$TARBALL" >> $GITHUB_OUTPUT
 
       - name: Extract changelog section

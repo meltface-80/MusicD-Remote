@@ -9,6 +9,7 @@ default behaviours. Do not deviate from them unless the user explicitly says so 
 
 - Work directly on the **main branch** of `meltface-80/Roon-Random-Albums-Extension`.
 - **Never use a feature branch.** Never create a pull request.
+- The `old/` folder contains two permanent historical tarballs (v1.5.37 and v1.5.49). **Do not add to or remove from this folder.**
 
 ---
 
@@ -17,11 +18,11 @@ default behaviours. Do not deviate from them unless the user explicitly says so 
 1. Make code changes
 2. Bump `package.json` version
 3. Add a CHANGELOG.md entry (see format below)
-4. Build the tarball: `tar -czf old/roon-random-albums-vX.Y.Z-docker.tar.gz --exclude='./.git' --exclude='./node_modules' --exclude='./old' --exclude='./data' .`
-5. Commit **all four** in a single commit: code + `package.json` + `CHANGELOG.md` + tarball
-6. Push to main
+4. Commit the three changed files in a single commit: code + `package.json` + `CHANGELOG.md`
+5. Push to main
 
-**Never push code without the tarball in the same commit.**
+**Do not build or commit a tarball.** GitHub Actions builds it automatically on push and
+uploads it as a release asset. The tarball is only ever in the GitHub release, never in the repo.
 
 ---
 
