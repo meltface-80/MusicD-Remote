@@ -5,6 +5,59 @@ default behaviours. Do not deviate from them unless the user explicitly says so 
 
 ---
 
+## ZERO-TOLERANCE QUALITY MANDATE
+
+**Regressions are not acceptable. Bugs introduced by a change are a failure, not a follow-up task.**
+
+### Mandatory pre-flight before every commit
+
+Run these in order. Do not commit if any step fails.
+
+```bash
+# 1. Syntax check — catches crashes before they happen
+node --check index.js
+
+# 2. Variable name consistency — grep for UPPER_SNAKE leftovers
+#    (catches the DISCOGS_TOKEN vs discogsToken class of bug)
+grep -n 'DISCOGS_TOKEN\|FANART_TV_KEY' index.js && echo "ERROR: stale constant name" || echo "OK"
+
+# 3. Temporal dead zone audit — every `let`/`const` must appear BEFORE
+#    any bare assignment to the same name at module level
+#    (catches the v1.5.66 startup crash class of bug)
+node -e "require('./index.js')" 2>&1 | head -5
+```
+
+If step 3 cannot run (Roon not available), run steps 1 and 2 and explicitly note why 3 was skipped.
+
+### Pre-flight checklist (tick each before every push)
+
+- [ ] `node --check index.js` exits 0
+- [ ] No `let x` declared after a bare `x = ...` assignment at module scope
+- [ ] Every variable referenced matches its exact declaration name (no UPPER_SNAKE drift)
+- [ ] Every new `catch (e) {}` is intentional — not swallowing a symptom
+- [ ] Auth headers reference the live variable, not a deleted constant
+- [ ] Any new HTML element ID matches the `getElementById` call in app.js exactly
+- [ ] `package.json` version bumped
+- [ ] CHANGELOG.md entry added
+
+### Development rules
+
+- **No incomplete implementations.** Write the full code. Never leave `// rest stays the same`.
+- **No silent catch.** `catch (e) {}` must have a comment explaining why silence is safe.
+- **Variable name freeze.** Once a variable is named, all references — declaration, assignment, template literals, log messages — use the identical name. Never mix camelCase and UPPER_SNAKE for the same value.
+- **Declaration before use.** With `let`/`const` in Node.js, a bare assignment `x = val` on line N while `let x` is on line N+500 is a ReferenceError. Always declare at the first-use site.
+- **No partial migrations.** When renaming a constant or moving it to settings, search the entire file with grep before committing to ensure zero stale references remain.
+
+### When a bug is found
+
+1. Identify the root cause (not the symptom).
+2. Confirm the root cause explains ALL reported failures.
+3. Fix the root cause, not the symptom.
+4. Add the relevant pre-flight check above if one would have caught it.
+5. Document what class of error it was in the CHANGELOG.
+
+---
+
 ## Repository
 
 - Work directly on the **main branch** of `meltface-80/Roon-Random-Albums-Extension`.
