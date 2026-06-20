@@ -26,29 +26,6 @@ A web UI that shows a screenful of random albums from your Roon library, with in
 - **Rate limit handling** — iTunes, TheAudioDB, MusicBrainz, and Discogs rate limits are handled gracefully; each aborts and cascades to the next source
 - **Stale cache override** — each new scan detects and replaces outdated cached entries
 
-If you only use Qobuz or Tidal you can update within the web UI. Otherwise:
-
-```bash
-sudo docker stop roon-random-albums
-sudo docker rm roon-random-albums
-sudo rm -f /opt/roon-random-albums/roon-random-albums-v*.tar.gz
-
-# this can be skipped if you have installed to `/opt/` before
-sudo mkdir -p /opt/roon-random-albums
-
-cd /opt/roon-random-albums
-wget https://raw.githubusercontent.com/meltface-80/Roon-Random-Albums-Extension/main/roon-random-albums-v1.5.49-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.49-docker.tar.gz
-docker build -t roon-random-albums:1.5.49 .
-docker run -d \
-  --name roon-random-albums \
-  --restart unless-stopped \
-  --network host \
-  -v roon-random-albums-data:/app/data \
-  -v /your/path/to/Music:/music:ro \
-  roon-random-albums:1.5.49
-```
-
 ## Features
 
 - **Random album grid** — fills your screen with random picks from your full library, refreshed on demand
