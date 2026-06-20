@@ -1744,3 +1744,113 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
   animation: compass-spin 2s cubic-bezier(.4,0,.2,1) forwards;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Label select / merge UI                                            */
+/* ------------------------------------------------------------------ */
+
+/* "Select" button in the topbar — only shown when labels list is active */
+.label-select-toggle {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 38px; padding: 0 12px;
+  background: var(--bg-elev); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 8px;
+  font-size: 13px; font-weight: 500; cursor: pointer;
+  white-space: nowrap;
+}
+.label-select-toggle.hidden { display: none; }
+.label-select-toggle:hover { color: var(--text); background: var(--bg-elev-2); }
+.label-select-toggle.is-active {
+  background: var(--accent-soft); color: var(--accent); border-color: var(--accent);
+}
+
+/* Selected tile states */
+.album.label-tile.is-selected .album-art-wrap,
+.album.label-tile.is-first-selected .album-art-wrap {
+  outline: 2.5px solid rgba(255,255,255,.35);
+  outline-offset: -2px;
+}
+.album.label-tile.is-first-selected .album-art-wrap {
+  outline-color: var(--accent);
+}
+/* Checkmark badge */
+.album.label-tile.is-selected .album-art-wrap::after,
+.album.label-tile.is-first-selected .album-art-wrap::after {
+  content: "";
+  position: absolute; top: 5px; right: 5px; z-index: 2;
+  width: 20px; height: 20px; border-radius: 50%;
+  background: rgba(255,255,255,.55)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E")
+    center/13px no-repeat;
+}
+.album.label-tile.is-first-selected .album-art-wrap::after {
+  background-color: var(--accent);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230b1418' stroke-width='2.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+}
+[data-theme="light"] .album.label-tile.is-first-selected .album-art-wrap::after {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+}
+
+/* "N merged" text under the label subtitle */
+.album-merged-info {
+  font-size: 10px; color: var(--accent);
+  margin-top: 1px; cursor: pointer; user-select: none;
+  letter-spacing: .02em;
+}
+.album-merged-info:hover { text-decoration: underline; }
+
+/* Bottom merge action bar */
+.label-merge-bar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 75;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 16px;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  background: color-mix(in srgb, var(--bg-elev-2) 96%, transparent);
+  border-top: 1px solid var(--border);
+  backdrop-filter: saturate(160%) blur(14px);
+  -webkit-backdrop-filter: saturate(160%) blur(14px);
+  box-shadow: 0 -4px 16px rgba(0,0,0,.22);
+}
+.label-merge-bar.hidden { display: none; }
+.label-merge-info {
+  flex: 1; min-width: 0;
+  font-size: 13px; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.label-merge-info strong { color: var(--text); }
+.label-merge-actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+
+/* Unmerge bottom sheet */
+.label-unmerge-sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 80;
+  background: var(--bg-elev); border-top: 1px solid var(--border);
+  border-radius: 14px 14px 0 0;
+  padding: 0 0 calc(8px + env(safe-area-inset-bottom));
+  box-shadow: 0 -8px 32px rgba(0,0,0,.4);
+  max-height: 55vh; overflow-y: auto;
+}
+.label-unmerge-sheet.hidden { display: none; }
+.label-unmerge-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px; color: var(--text-dim);
+  position: sticky; top: 0; background: var(--bg-elev);
+}
+.label-unmerge-header strong { color: var(--text); }
+.label-unmerge-list { padding: 6px 0; }
+.label-unmerge-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; gap: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.label-unmerge-row:last-child { border-bottom: none; }
+.label-unmerge-source {
+  flex: 1; font-size: 14px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.label-unmerge-remove {
+  flex-shrink: 0; width: 32px; height: 32px;
+  color: var(--danger); border-color: var(--danger);
+}
+.label-unmerge-remove:hover { background: rgba(224,100,100,.12); }
+

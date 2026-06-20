@@ -2,6 +2,12 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.53] — 2026-06-20
+
+### Added
+- **Label merge UI** — a "Select" button appears in the topbar when the Labels page is open. Tap it to enter select mode, then tap two or more label tiles to choose them (the first tapped is the merge target — shown with an accent checkmark). The merge bar at the bottom shows the target name and a Merge button. Merges are saved to the SQLite database and survive container restarts and rescans.
+- **Label unmerge** — tiles that have labels merged into them show a small "N merged" indicator below the album count. Tapping it opens a bottom sheet listing each merged label with an × button to remove it one at a time.
+
 ## [1.5.52] — 2026-06-20
 
 ### Fixed

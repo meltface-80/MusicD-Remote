@@ -668,9 +668,10 @@ function savePersistedSettings(patch) {
 const labelDiskCache = new Map();  // album key → label name
 const labelMbidCache = new Map();  // group key → MusicBrainz MBID
 const labelLogoCache = new Map();  // group key → logo URL | null (null = tried, not found)
+const labelMerges    = new Map();  // source groupKey → { targetKey, targetDisplay, sourceDisplay }
 
 let labelsDb = null;
-let stmtInsertName, stmtInsertMbid, stmtInsertLogo;
+let stmtInsertName, stmtInsertMbid, stmtInsertLogo, stmtInsertMerge, stmtDeleteMerge;
 let stmtInsertPlay, stmtCompletePlay;
 
 // Non-label filter — must be defined before openLabelsDb() is called.
@@ -712,10 +713,18 @@ function openLabelsDb() {
         duration INTEGER,
         completed INTEGER DEFAULT 0
       );
+      CREATE TABLE IF NOT EXISTS label_merges (
+        source_key     TEXT PRIMARY KEY,
+        source_display TEXT NOT NULL,
+        target_key     TEXT NOT NULL,
+        target_display TEXT NOT NULL
+      );
     `);
-    stmtInsertName = labelsDb.prepare("INSERT OR REPLACE INTO label_names (key, label) VALUES (?, ?)");
-    stmtInsertMbid = labelsDb.prepare("INSERT OR REPLACE INTO label_mbids (group_key, mbid) VALUES (?, ?)");
-    stmtInsertLogo = labelsDb.prepare("INSERT OR REPLACE INTO label_logos (group_key, logo_url) VALUES (?, ?)");
+    stmtInsertName  = labelsDb.prepare("INSERT OR REPLACE INTO label_names (key, label) VALUES (?, ?)");
+    stmtInsertMbid  = labelsDb.prepare("INSERT OR REPLACE INTO label_mbids (group_key, mbid) VALUES (?, ?)");
+    stmtInsertLogo  = labelsDb.prepare("INSERT OR REPLACE INTO label_logos (group_key, logo_url) VALUES (?, ?)");
+    stmtInsertMerge = labelsDb.prepare("INSERT OR REPLACE INTO label_merges (source_key, source_display, target_key, target_display) VALUES (?, ?, ?, ?)");
+    stmtDeleteMerge = labelsDb.prepare("DELETE FROM label_merges WHERE source_key = ?");
     stmtInsertPlay  = labelsDb.prepare("INSERT INTO plays (ts, zone, track, artist, album, image_key, duration) VALUES (?,?,?,?,?,?,?)");
     stmtCompletePlay = labelsDb.prepare("UPDATE plays SET completed=1 WHERE id=?");
     const stmtDeleteName = labelsDb.prepare("DELETE FROM label_names WHERE key = ?");
@@ -734,10 +743,13 @@ function openLabelsDb() {
     for (const r of labelsDb.prepare("SELECT group_key, logo_url FROM label_logos").all()) {
       labelLogoCache.set(r.group_key, r.logo_url);
     }
+    for (const r of labelsDb.prepare("SELECT source_key, source_display, target_key, target_display FROM label_merges").all()) {
+      labelMerges.set(r.source_key, { targetKey: r.target_key, targetDisplay: r.target_display, sourceDisplay: r.source_display });
+    }
     migrateOldJsonCaches();
     if (DEBUG) console.log(
       "[labels] db ready:", labelDiskCache.size, "names,",
-      labelMbidCache.size, "mbids,", labelLogoCache.size, "logos"
+      labelMbidCache.size, "mbids,", labelLogoCache.size, "logos,", labelMerges.size, "merges"
     );
   } catch (e) {
     console.error("[labels] db open failed:", e.message, "— in-memory only");
@@ -889,12 +901,16 @@ function canonicalLabelName(name) {
 
 function labelsIndexAddAlbum(labelName, album) {
   if (!labelName || !album) return;
-  const groupKey = labelGroupKey(labelName);
+  let groupKey = labelGroupKey(labelName);
   if (!groupKey) return;
+  // Redirect manually merged source labels to their canonical target.
+  const merge = labelMerges.get(groupKey);
+  let displayName = canonicalLabelName(labelName);
+  if (merge) { groupKey = merge.targetKey; displayName = merge.targetDisplay; }
   let entry = labelsIndex.map.get(groupKey);
   if (!entry) {
     entry = {
-      display:   canonicalLabelName(labelName),
+      display:   displayName,
       image_key: album.image_key || null,
       mbid:      labelMbidCache.get(groupKey) || null,
       logo_url:  labelLogoCache.has(groupKey) ? (labelLogoCache.get(groupKey) || null) : null,
@@ -956,6 +972,23 @@ function seedLabelsFromCache() {
   kickFanArtFetches()
     .then(() => kickDiscogsLogoFetches())
     .catch(e => { if (DEBUG) console.error("[labels] logo fetch error:", e.message); });
+}
+
+// Lightweight map rebuild used after manual merges/unmerges — re-applies all
+// labelMerges redirects without kicking another round of logo fetches.
+function rebuildLabelsMap() {
+  labelsIndex.map.clear();
+  labelsIndex.count = 0;
+  for (const al of albumIndex.albums) {
+    const key = normalize(al.title) + "||" + normalize(al.subtitle);
+    const override = labelsOverride.get(key);
+    if (override) { labelsIndexAddAlbum(override, al); continue; }
+    const diskLabel = labelDiskCache.get(key);
+    if (diskLabel) { labelsIndexAddAlbum(diskLabel, al); continue; }
+    const q = qobuzCache.get(key);
+    if (q && q.label) labelsIndexAddAlbum(q.label, al);
+  }
+  labelsIndex.count = labelsIndex.map.size;
 }
 
 // ---------------------------------------------------------------------------
@@ -2424,14 +2457,22 @@ app.get("/api/filters/labels", (req, res) => {
       if (DEBUG) console.error("[labels] scan error:", e.message);
     });
   }
+  // Build reverse merge map so each tile knows what's merged into it.
+  const mergesByTarget = new Map();
+  for (const [sk, m] of labelMerges) {
+    if (!mergesByTarget.has(m.targetKey)) mergesByTarget.set(m.targetKey, []);
+    mergesByTarget.get(m.targetKey).push({ key: sk, display: m.sourceDisplay });
+  }
   const labels = [];
-  for (const [, entry] of labelsIndex.map) {
+  for (const [groupKey, entry] of labelsIndex.map) {
     labels.push({
+      key:        groupKey,
       title:      entry.display,
       subtitle:   entry.albums.length + " album" + (entry.albums.length === 1 ? "" : "s"),
       albumCount: entry.albums.length,
       image_key:  entry.image_key || null,
-      logo_url:   entry.logo_url  || null
+      logo_url:   entry.logo_url  || null,
+      mergedFrom: mergesByTarget.get(groupKey) || []
     });
   }
   labels.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
@@ -2493,6 +2534,36 @@ app.post("/api/labels/rescan", (req, res) => {
     if (DEBUG) console.error(msg);
     appendLabelsLog(msg);
   });
+  res.json({ ok: true });
+});
+
+// Merge two or more label tiles into one.
+// Body: { items: [{key, display}, ...] } — first item is the merge target (canonical name).
+// All subsequent items become sources whose albums are redirected to the target.
+app.post("/api/labels/merge", (req, res) => {
+  const { items } = req.body || {};
+  if (!Array.isArray(items) || items.length < 2) {
+    return res.status(400).json({ error: "Need at least 2 labels" });
+  }
+  const [target, ...sources] = items;
+  if (!target.key || !target.display) return res.status(400).json({ error: "Invalid target" });
+  for (const src of sources) {
+    if (!src.key || src.key === target.key) continue;
+    if (labelsDb) stmtInsertMerge.run(src.key, src.display || src.key, target.key, target.display);
+    labelMerges.set(src.key, { targetKey: target.key, targetDisplay: target.display, sourceDisplay: src.display || src.key });
+  }
+  rebuildLabelsMap();
+  appendLabelsLog("[labels] merged " + sources.length + " label(s) into '" + target.display + "'");
+  res.json({ ok: true });
+});
+
+// Remove a single source label from a merge group.
+app.delete("/api/labels/merge/:sourceKey", (req, res) => {
+  const { sourceKey } = req.params;
+  if (labelsDb) stmtDeleteMerge.run(sourceKey);
+  labelMerges.delete(sourceKey);
+  rebuildLabelsMap();
+  appendLabelsLog("[labels] unmerged key '" + sourceKey + "'");
   res.json({ ok: true });
 });
 

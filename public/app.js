@@ -1112,10 +1112,19 @@
   // opens carrying a { type:"label" } filter so detail + play resolve the
   // offset against that label's album list (reusing all existing machinery).
   (() => {
-    const labelsBtn   = document.getElementById("labels-toggle");
-    const labelsBar   = document.getElementById("labels-bar");
-    const labelsBack  = document.getElementById("labels-back");
-    const labelsTitle = document.getElementById("labels-title");
+    const labelsBtn          = document.getElementById("labels-toggle");
+    const labelsBar          = document.getElementById("labels-bar");
+    const labelsBack         = document.getElementById("labels-back");
+    const labelsTitle        = document.getElementById("labels-title");
+    const labelSelectToggle  = document.getElementById("label-select-toggle");
+    const labelMergeBar      = document.getElementById("label-merge-bar");
+    const labelMergeInfo     = document.getElementById("label-merge-info");
+    const labelMergeBtn      = document.getElementById("label-merge-btn");
+    const labelMergeCancelBtn = document.getElementById("label-merge-cancel-btn");
+    const labelUnmergeSheet  = document.getElementById("label-unmerge-sheet");
+    const labelUnmergeName   = document.getElementById("label-unmerge-name");
+    const labelUnmergeList   = document.getElementById("label-unmerge-list");
+    const labelUnmergeClose  = document.getElementById("label-unmerge-close");
     if (!labelsBtn) return;
 
     const TAG_SVG =
@@ -1124,8 +1133,10 @@
       '<path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/>' +
       '<line x1="7" y1="7" x2="7.01" y2="7"/></svg>';
 
-    let mode = null;   // null | "list" | "albums"
+    let mode = null;           // null | "list" | "albums"
     let _lastLabelCount = -1;  // track last rendered count to avoid flicker on re-poll
+    let labelsSelectMode = false;
+    let labelsSelected   = [];  // [{key, display, mergedFrom}] — first item is merge target
 
     function labelOrder() {
       return localStorage.getItem("rra-label-order") === "random" ? "random" : "alpha";
@@ -1135,12 +1146,106 @@
       return Number.isFinite(v) && v > 0 ? v : 1;
     }
 
+    function exitLabelSelectMode() {
+      labelsSelectMode = false;
+      labelsSelected = [];
+      if (labelSelectToggle) {
+        labelSelectToggle.classList.remove("is-active");
+        const sp = labelSelectToggle.querySelector("span");
+        if (sp) sp.textContent = "Select";
+      }
+      if (labelMergeBar) labelMergeBar.classList.add("hidden");
+      grid.querySelectorAll(".album.label-tile.is-selected,.album.label-tile.is-first-selected")
+        .forEach(b => b.classList.remove("is-selected", "is-first-selected"));
+    }
+
+    function updateMergeBar() {
+      if (!labelMergeInfo || !labelMergeBtn) return;
+      const n = labelsSelected.length;
+      while (labelMergeInfo.firstChild) labelMergeInfo.removeChild(labelMergeInfo.firstChild);
+      if (n === 0) {
+        labelMergeInfo.textContent = "Tap labels to select";
+        labelMergeBtn.querySelector("span").textContent = "Merge";
+        labelMergeBtn.disabled = true;
+      } else if (n === 1) {
+        const s = document.createElement("strong"); s.textContent = labelsSelected[0].display;
+        labelMergeInfo.appendChild(s);
+        labelMergeInfo.appendChild(document.createTextNode(" — select more to merge"));
+        labelMergeBtn.querySelector("span").textContent = "Merge";
+        labelMergeBtn.disabled = true;
+      } else {
+        labelMergeInfo.appendChild(document.createTextNode("Merge " + n + " into "));
+        const s = document.createElement("strong"); s.textContent = labelsSelected[0].display;
+        labelMergeInfo.appendChild(s);
+        labelMergeBtn.querySelector("span").textContent = "Merge";
+        labelMergeBtn.disabled = false;
+      }
+    }
+
+    function handleLabelTileSelect(btn, lb) {
+      const idx = labelsSelected.findIndex(s => s.key === lb.key);
+      if (idx >= 0) {
+        labelsSelected.splice(idx, 1);
+        btn.classList.remove("is-selected", "is-first-selected");
+      } else {
+        labelsSelected.push({ key: lb.key, display: lb.title, mergedFrom: lb.mergedFrom || [] });
+        btn.classList.add("is-selected");
+      }
+      // Re-apply first-selected only to the first item in the array.
+      grid.querySelectorAll(".album.label-tile").forEach(b => b.classList.remove("is-first-selected"));
+      if (labelsSelected.length > 0) {
+        const fk = labelsSelected[0].key;
+        const fb = grid.querySelector(`.album.label-tile[data-label-key="${CSS.escape(fk)}"]`);
+        if (fb) fb.classList.add("is-first-selected");
+      }
+      updateMergeBar();
+    }
+
+    function showUnmergeSheet(targetDisplay, sources) {
+      if (!labelUnmergeSheet || !labelUnmergeName || !labelUnmergeList) return;
+      labelUnmergeName.textContent = targetDisplay;
+      labelUnmergeList.innerHTML = "";
+      for (const src of sources) {
+        const row = document.createElement("div");
+        row.className = "label-unmerge-row";
+        const nameEl = document.createElement("span");
+        nameEl.className = "label-unmerge-source";
+        nameEl.textContent = src.display;
+        const xBtn = document.createElement("button");
+        xBtn.type = "button";
+        xBtn.className = "icon-btn label-unmerge-remove";
+        xBtn.setAttribute("aria-label", "Remove " + src.display);
+        xBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+        xBtn.addEventListener("click", async () => {
+          xBtn.disabled = true;
+          try {
+            const r = await fetch("/api/labels/merge/" + encodeURIComponent(src.key), { method: "DELETE" });
+            if (!r.ok) throw new Error((await r.json()).error || "Failed");
+            row.remove();
+            if (!labelUnmergeList.children.length) labelUnmergeSheet.classList.add("hidden");
+            _lastLabelCount = -1;
+            showLabelsList(false);
+          } catch(e) {
+            xBtn.disabled = false;
+            if (window.__showToast) window.__showToast("Unmerge failed: " + e.message, "error");
+          }
+        });
+        row.appendChild(nameEl);
+        row.appendChild(xBtn);
+        labelUnmergeList.appendChild(row);
+      }
+      labelUnmergeSheet.classList.remove("hidden");
+    }
+
     function exitLabels() {
       mode = null;
       labelsActive = false;
       _lastLabelCount = -1;
       labelsBtn.classList.remove("is-active");
       if (labelsBar) labelsBar.classList.add("hidden");
+      exitLabelSelectMode();
+      if (labelSelectToggle) labelSelectToggle.classList.add("hidden");
+      if (labelUnmergeSheet) labelUnmergeSheet.classList.add("hidden");
     }
     window.__exitLabels = exitLabels;
 
@@ -1219,6 +1324,7 @@
         const scanNote = j.scanning ? " (scanning… " + pct + "%)" : "";
         setCountText(labels.length.toLocaleString() + " labels" + scanNote);
         renderLabelTiles(labels);
+        if (labelSelectToggle) labelSelectToggle.classList.remove("hidden");
         // Show scan log link after labels render (remove any old one first)
         const oldLink = grid.querySelector(".scan-log-link");
         if (oldLink) oldLink.remove();
@@ -1248,7 +1354,8 @@
     }
 
     function renderLabelTiles(labels) {
-      if (labels.length === _lastLabelCount) return; // no new labels — skip re-render
+      if (labels.length === _lastLabelCount && !labelsSelectMode) return; // no change — skip re-render
+      if (labelsSelectMode) exitLabelSelectMode(); // re-render clears tile selection state
       _lastLabelCount = labels.length;
       grid.innerHTML = "";
       const frag = document.createDocumentFragment();
@@ -1257,6 +1364,7 @@
         btn.className = "album label-tile";
         btn.type = "button";
         btn.setAttribute("aria-label", lb.title || "Label");
+        btn.dataset.labelKey = lb.key || "";
         const art = document.createElement("div");
         if (lb.logo_url) {
           art.className = "album-art-wrap is-label-logo";
@@ -1270,12 +1378,27 @@
         }
         const meta = document.createElement("div");
         meta.className = "album-meta";
-        meta.innerHTML = `<div class="album-title"></div><div class="album-artist"></div>`;
-        meta.querySelector(".album-title").textContent  = lb.title || "";
-        meta.querySelector(".album-artist").textContent = lb.subtitle || "";
+        const titleEl  = document.createElement("div"); titleEl.className  = "album-title";  titleEl.textContent  = lb.title || "";
+        const artistEl = document.createElement("div"); artistEl.className = "album-artist"; artistEl.textContent = lb.subtitle || "";
+        meta.appendChild(titleEl);
+        meta.appendChild(artistEl);
+        if (lb.mergedFrom && lb.mergedFrom.length > 0) {
+          const mergedEl = document.createElement("div");
+          mergedEl.className = "album-merged-info";
+          mergedEl.textContent = lb.mergedFrom.length + " merged";
+          mergedEl.title = "Tap to manage merged labels";
+          mergedEl.addEventListener("click", (e) => {
+            e.stopPropagation();
+            if (!labelsSelectMode) showUnmergeSheet(lb.title, lb.mergedFrom);
+          });
+          meta.appendChild(mergedEl);
+        }
         btn.appendChild(art);
         btn.appendChild(meta);
-        btn.addEventListener("click", () => showLabelAlbums(lb.title));
+        btn.addEventListener("click", () => {
+          if (labelsSelectMode) handleLabelTileSelect(btn, lb);
+          else showLabelAlbums(lb.title);
+        });
         frag.appendChild(btn);
       }
       grid.appendChild(frag);
@@ -1315,6 +1438,49 @@
     }
 
     if (labelsBack) labelsBack.addEventListener("click", () => showLabelsList());
+
+    if (labelSelectToggle) {
+      labelSelectToggle.addEventListener("click", () => {
+        labelsSelectMode = !labelsSelectMode;
+        if (labelsSelectMode) {
+          labelSelectToggle.classList.add("is-active");
+          const sp = labelSelectToggle.querySelector("span"); if (sp) sp.textContent = "Done";
+          if (labelMergeBar) { labelMergeBar.classList.remove("hidden"); updateMergeBar(); }
+        } else {
+          exitLabelSelectMode();
+        }
+      });
+    }
+
+    if (labelMergeBtn) {
+      labelMergeBtn.addEventListener("click", async () => {
+        if (labelsSelected.length < 2) return;
+        labelMergeBtn.disabled = true;
+        try {
+          const r = await fetch("/api/labels/merge", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ items: labelsSelected.map(s => ({ key: s.key, display: s.display })) })
+          });
+          const j = await r.json();
+          if (!r.ok) throw new Error(j.error || "Merge failed");
+          exitLabelSelectMode();
+          _lastLabelCount = -1;
+          showLabelsList(false);
+        } catch(e) {
+          labelMergeBtn.disabled = false;
+          if (window.__showToast) window.__showToast("Merge failed: " + e.message, "error");
+        }
+      });
+    }
+
+    if (labelMergeCancelBtn) labelMergeCancelBtn.addEventListener("click", exitLabelSelectMode);
+
+    if (labelUnmergeClose) {
+      labelUnmergeClose.addEventListener("click", () => {
+        if (labelUnmergeSheet) labelUnmergeSheet.classList.add("hidden");
+      });
+    }
 
     labelsBtn.addEventListener("click", () => {
       if (mode) { exitLabels(); loadRandom(); }
