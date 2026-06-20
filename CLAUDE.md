@@ -93,3 +93,4 @@ docker run -d \
 | v1.5.42 | pre-release | Progress tracking, circuit breaker |
 | v1.5.43 | pre-release | Progress bar >100% fix             |
 | v1.5.44 | pre-release | Label name text tiles              |
+| v1.5.45 | pre-release | Remove album-art fallback from label tiles |

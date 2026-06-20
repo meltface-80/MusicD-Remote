@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.45] — 2026-06-20
+
+### Fixed
+- **Label tiles still showing album covers** — labels without a Fan Art TV logo were falling back to the first album's cover art, making the tile indistinguishable from an album. Removed the album-art fallback from label tiles entirely. The display hierarchy is now: Fan Art TV logo → label name text. Nothing else.
+
 ## [1.5.44] — 2026-06-20
 
 ### Changed

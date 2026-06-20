@@ -1264,26 +1264,6 @@
           const img = document.createElement("img");
           img.loading = "lazy"; img.alt = "";
           img.src = lb.logo_url;
-          img.onerror = () => {
-            // Logo failed — fall back to album art, then label name text
-            img.remove();
-            if (lb.image_key) {
-              art.className = "album-art-wrap";
-              const fallback = document.createElement("img");
-              fallback.loading = "lazy"; fallback.alt = "";
-              fallback.src = `/api/image/${encodeURIComponent(lb.image_key)}?size=500`;
-              fallback.onerror = () => { fallback.remove(); setLabelTextArt(art, lb.title); };
-              art.appendChild(fallback);
-            } else {
-              setLabelTextArt(art, lb.title);
-            }
-          };
-          art.appendChild(img);
-        } else if (lb.image_key) {
-          art.className = "album-art-wrap";
-          const img = document.createElement("img");
-          img.loading = "lazy"; img.alt = "";
-          img.src = `/api/image/${encodeURIComponent(lb.image_key)}?size=500`;
           img.onerror = () => { img.remove(); setLabelTextArt(art, lb.title); };
           art.appendChild(img);
         } else {
