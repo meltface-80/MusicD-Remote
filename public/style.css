@@ -384,15 +384,19 @@ main {
 }
 .album-art-wrap.is-label-logo img { width: 80%; height: 80%; object-fit: contain; display: block; }
 
-/* Label name text tile — shown when no logo or album art is available.
-   Each word of the label name sits on its own line, centred. */
+/* Label name text tile — shown when no logo is available.
+   Each word of the label name sits on its own line, centred.
+   font-size uses container query width (cqw) so it scales with the tile
+   and 16-letter words always fit with thin margins regardless of screen size. */
 .album-art-wrap.is-label-text {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 2px; padding: 14px; box-sizing: border-box;
+  gap: 2px; padding: 8px; box-sizing: border-box;
   background: linear-gradient(135deg, var(--bg-elev-2), var(--bg-elev));
+  container-type: inline-size;
 }
 .album-art-wrap.is-label-text span {
   display: block; text-align: center;
+  font-size: 8cqw;
   font-weight: 700; line-height: 1.2;
   color: var(--text); max-width: 100%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

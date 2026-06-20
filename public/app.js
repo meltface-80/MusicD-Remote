@@ -1236,19 +1236,9 @@
     function setLabelTextArt(artEl, title) {
       artEl.className = "album-art-wrap is-label-text";
       artEl.innerHTML = "";
+      artEl.style.fontSize = "";
       const words = (title || "").trim().split(/\s+/).filter(Boolean);
-      const list = words.length ? words : ["?"];
-      // Size by the longest single word — tile width is the constraint, not word count.
-      // "3 Beads of Sweat" (max=5) should be larger than "Rockproduktionen" (max=16).
-      const maxLen = Math.max(...list.map(w => w.length));
-      const fs = maxLen <= 4  ? "1.5em"
-               : maxLen <= 6  ? "1.25em"
-               : maxLen <= 8  ? "1.05em"
-               : maxLen <= 11 ? "0.88em"
-               : maxLen <= 14 ? "0.75em"
-               :                "0.62em";
-      artEl.style.fontSize = fs;
-      list.forEach(word => {
+      (words.length ? words : ["?"]).forEach(word => {
         const span = document.createElement("span");
         span.textContent = word;
         artEl.appendChild(span);

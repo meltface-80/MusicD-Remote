@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.47] — 2026-06-20
+
+### Changed
+- **Label text tiles: consistent font size across all tiles using container query width** — removed per-label JS font-size calculation entirely. Font is now `8cqw` (8% of the tile's own width), so "Rockproduktionen" (16 letters) fits with thin margins and every other label uses that same size. Scales automatically with tile width on any screen size.
+
 ## [1.5.46] — 2026-06-20
 
 ### Fixed
