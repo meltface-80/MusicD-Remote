@@ -2523,7 +2523,13 @@
       const r = await fetch("/api/update/status", { cache: "no-store" });
       if (r.ok) {
         const s = await r.json();
-        if (s && s.current) { versionEl.textContent = "Roon Random Albums v" + s.current; versionLoaded = true; }
+        if (s && s.current) {
+          const parts = (s.current || "").split(".");
+          versionEl.textContent = parts.length >= 3
+            ? "MusicD Random Albums v" + parts[0] + "." + parts[1] + " (Build " + parts[2] + ")"
+            : "MusicD Random Albums v" + s.current;
+          versionLoaded = true;
+        }
       }
     } catch (e) {}
   }

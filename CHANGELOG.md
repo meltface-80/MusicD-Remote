@@ -2,6 +2,14 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.55] — 2026-06-20
+
+### Changed
+- **Version display** — both the Roon Extensions list and the web UI Settings panel now show `MusicD Random Albums v1.5 (Build 55)` instead of the raw semver string. The Roon registration `display_name` is `MusicD Random Albums v1.5` and `display_version` is `Build 55`.
+
+### Fixed
+- **Long-press on artwork** — images inside album and label tiles no longer trigger the iOS save/copy context menu or browser drag-to-save on desktop (`pointer-events: none` + `-webkit-touch-callout: none`).
+
 ## [1.5.54] — 2026-06-20
 
 ### Fixed

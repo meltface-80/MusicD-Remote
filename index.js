@@ -18,6 +18,10 @@ const RoonApiSettings  = require("node-roon-api-settings");
 const { createUpdater } = require("./lib/updater");
 const { radioDecision } = require("./lib/radio");
 const pkg = require("./package.json");
+// Parse "1.5.54" → display "MusicD Random Albums v1.5 (Build 54)"
+const [_vmaj, _vmin, _vpatch] = (pkg.version || "0.0.0").split(".");
+const DISPLAY_SHORTVER = _vmaj + "." + _vmin;   // "1.5"
+const DISPLAY_BUILD    = _vpatch || "0";          // "54"
 
 const PORT       = parseInt(process.env.PORT || "3399", 10);
 const ALBUM_COUNT_DEFAULT = 24;
@@ -52,8 +56,8 @@ const scrobbleState = new Map();
 
 const roon = new RoonApi({
   extension_id:        "com.musicd.roon.random-albums",
-  display_name:        "Random Albums",
-  display_version:     pkg.version,
+  display_name:        "MusicD Random Albums v" + DISPLAY_SHORTVER,
+  display_version:     "Build " + DISPLAY_BUILD,
   publisher:           "MusicD",
   email:               "hello@musicd.app",
   log_level:           "none",
@@ -155,7 +159,7 @@ function makeSettingsLayout() {
     layout.push({
       type: "dropdown", title: "Install update", setting: "do_update",
       values: [
-        { title: "Keep v" + pkg.version, value: "no" },
+        { title: "Keep Build " + DISPLAY_BUILD, value: "no" },
         { title: "Install v" + st.latest + " now (restarts the extension)", value: "yes" }
       ]
     });
