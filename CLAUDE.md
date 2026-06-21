@@ -14,39 +14,17 @@ default behaviours. Do not deviate from them unless the user explicitly says so 
 Run these in order. Do not commit if any step fails.
 
 ```bash
-# CLAUDE.md - Mobile-First Zero-Tolerance Quality System
+# 1. Syntax check — catches crashes before they happen
+node --check index.js
 
-## Core Mandate
-- ZERO regression allowed. Every bug fix must include a corresponding test.
-- ZERO blind-merging. Never output partial layouts or say "this will do."
-- ALWAYS run automated tests before asking for mobile user validation.
+# 2. Variable name consistency — grep for UPPER_SNAKE leftovers
+#    (catches the DISCOGS_TOKEN vs discogsToken class of bug)
+grep -n 'DISCOGS_TOKEN\|FANART_TV_KEY' index.js && echo "ERROR: stale constant name" || echo "OK"
 
-## Mobile Agent Workflow (Remote Control Loop)
-When executing prompts via the iOS app, Claude must act as a multi-agent loop:
-1. **Architect Agent**: Scan files, map side effects, and verify changes won't break mobile rendering.
-2. **Reviewer Agent**: Ensure the change handles edge cases, empty states, and errors safely.
-3. **Developer Agent**: Apply complete, production-grade code. No inline placeholders (`// ...`).
-4. **QA Agent**: Execute the exact build/test commands, verify pass status, and cleanly format the results.
-
-## Push Notification Triggers
-- Use the mobile push notification channel proactively (`/config` notification settings).
-- Send a high-priority push notification IMMEDIATELY when:
-  * A long-running test suite finishes or errors out.
-  * An architectural blocker requires a strict design decision.
-  * Code has passed all QA checks and is ready for mobile review.
-- Tag notifications clearly: `[PASS] Ready for review` or `[FAIL] Test Error on Line X`.
-
-## Compact Operational Commands
-Keep output text compact to prevent excessive scrolling on small iOS displays.
-- Install Dependencies: [Insert e.g., `npm install` or `pod install`]
-- Run Type Checks: [Insert e.g., `npm run lint` or `swiftlint`]
-- Execute Test Suite: [Insert e.g., `npm test` or `xcodebuild test`]
-- Auto-Fix & Format: [Insert e.g., `npx prettier --write .` or `swiftformat .`]
-
-## Anti-Regression & Fail-Safe Guardrails
-- **Fail Fast**: If a test fails, halt immediately. Do not guess or continue writing features.
-- **Strict Layout Constraints**: Never let UI changes break standard responsiveness or overflow mobile views.
-- **Forbidden Patterns**: Never rewrite `.pbxproj` or core project configuration files unless explicitly directed. Use isolated source code files.
+# 3. Temporal dead zone audit — every `let`/`const` must appear BEFORE
+#    any bare assignment to the same name at module level
+#    (catches the v1.5.66 startup crash class of bug)
+node -e "require('./index.js')" 2>&1 | head -5
 ```
 
 If step 3 cannot run (Roon not available), run steps 1 and 2 and explicitly note why 3 was skipped.
@@ -129,22 +107,44 @@ Do not commit with known CONFIRMED or PLAUSIBLE bugs. Fix them all in the same v
 1. Make code changes
 2. Bump `package.json` version
 3. Add a CHANGELOG.md entry (see format below)
-4. Commit the three changed files in a single commit: code + `package.json` + `CHANGELOG.md`
-5. Push to main
+4. Run pre-flight checks (see above)
+5. Commit the changed files in a single commit: code + `package.json` + `CHANGELOG.md`
+6. Push to main
+7. Build the tarball and send it to the user (see below)
 
-**Do not build or commit a tarball.** GitHub Actions builds it automatically on push and
-uploads it as a release asset. The tarball is only ever in the GitHub release, never in the repo.
+**Do not commit the tarball.** It is built locally and handed to the user directly.
 
 ---
 
-## GitHub releases — ALWAYS pre-release
+## Building and delivering the tarball
 
-The GitHub Actions workflow (`.github/workflows/release.yml`) creates a release on every
-push. It is configured with `--prerelease`. **Do not remove that flag.**
+After pushing, build the tarball locally and send it to the user with `SendUserFile`:
 
-- Every build goes out as a **pre-release**. GitHub will NOT mark it as latest.
-- The user manually promotes a release to "latest" when satisfied with testing.
-- **Never manually create a release or change the latest/pre-release status yourself.**
+```bash
+VERSION=$(node -p "require('./package.json').version")
+TARBALL="/tmp/roon-random-albums-v${VERSION}-docker.tar.gz"
+tar -czf "$TARBALL" \
+  --exclude='./.git' \
+  --exclude='./node_modules' \
+  --exclude='./old' \
+  --exclude='./data' \
+  .
+```
+
+Then call `SendUserFile` with the tarball path. The user will upload it to their cloud storage
+and provide a share link. Once they provide the link, give the full docker install command
+using that link (see template below).
+
+---
+
+## GitHub releases — user-controlled
+
+The user manually publishes releases on GitHub when they are satisfied with testing.
+
+- **Never create a GitHub release yourself.**
+- **Never change the latest/pre-release status yourself.**
+- The GitHub Actions workflow (`.github/workflows/release.yml`) still exists but is not
+  relied upon for the build/test cycle.
 
 ---
 
@@ -170,16 +170,17 @@ Add a new section at the top, above the previous version:
 
 ---
 
-## After each build — give the user the full docker command
+## After each build — docker install command template
 
-Always provide the full rebuild command with the new version, ready to copy-paste:
+Once the user provides a share link for the tarball, give this command with the link and
+version filled in:
 
 ```bash
 sudo docker stop roon-random-albums
 sudo docker rm roon-random-albums
 sudo rm -f /opt/roon-random-albums/roon-random-albums-vPREVIOUS-docker.tar.gz
 cd /opt/roon-random-albums
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/releases/download/vNEW/roon-random-albums-vNEW-docker.tar.gz
+wget -O roon-random-albums-vNEW-docker.tar.gz "SHARE_LINK"
 tar -xzf roon-random-albums-vNEW-docker.tar.gz
 docker build -t roon-random-albums:NEW .
 docker run -d \
@@ -210,3 +211,6 @@ docker run -d \
 | v1.5.47 | stable (superseded) | Consistent label text size via container query (8cqw) |
 | v1.5.48 | stable (superseded) | Label text size increased to 9cqw |
 | v1.5.49 | **Latest (stable)** | Discogs label logo fetches — README points here |
+| v1.5.70 | superseded | Code review fixes: scan lockout, CDN redirect, auth guards |
+| v1.5.71 | superseded | Label scan/logo pipeline fixes (8-angle code review) |
+| v1.5.72 | current    | Label pipeline correctness, FanArt merge-redirect, Discogs retry fix |
