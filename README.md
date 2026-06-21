@@ -66,14 +66,14 @@ sudo mkdir -p /opt/roon-random-albums
 cd /opt/roon-random-albums
 wget https://github.com/meltface-80/Roon-Random-Albums-Extension/releases/download/v1.5.74/roon-random-albums-v1.5.74-docker.tar.gz
 tar -xzf roon-random-albums-v1.5.74-docker.tar.gz
-docker build -t roon-random-albums:1.5.72 .
+docker build -t roon-random-albums:1.5.74 .
 docker run -d \
   --name roon-random-albums \
   --restart unless-stopped \
   --network host \
   -v roon-random-albums-data:/app/data \
   -v /your/path/to/Music:/music:ro \
-  roon-random-albums:1.5.72
+  roon-random-albums:1.5.74
 ```
 
 `--network host` is required so the extension can discover your Roon Core on the local network. The `-v roon-random-albums-data` flag mounts a named Docker volume so that your Roon pairing, play history, and label cache survive container rebuilds. The `-v .../Music:/music:ro` flag mounts your music directory read-only so the extension can read label tags directly from your files — this is optional but gives the most accurate label data. Adjust the path to match your music library location.
@@ -127,14 +127,14 @@ wget https://github.com/meltface-80/Roon-Random-Albums-Extension/releases/downlo
 tar -xzf roon-random-albums-v1.5.74-docker.tar.gz
 
 # 3. Build and run
-docker build -t roon-random-albums:1.5.72 .
+docker build -t roon-random-albums:1.5.74 .
 docker run -d \
   --name roon-random-albums \
   --restart unless-stopped \
   --network host \
   -v roon-random-albums-data:/app/data \
   -v /your/path/to/Music:/music:ro \
-  roon-random-albums:1.5.72
+  roon-random-albums:1.5.74
 ```
 
 Confirm the extension appears in **Roon → Settings → Extensions** before removing the old install.
