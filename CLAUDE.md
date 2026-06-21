@@ -9,6 +9,17 @@ default behaviours. Do not deviate from them unless the user explicitly says so 
 
 **Regressions are not acceptable. Bugs introduced by a change are a failure, not a follow-up task.**
 
+### Agent workflow — run for every non-trivial change
+
+Every change must pass through all four agents before committing:
+
+1. **Architect Agent** — scan files, map side effects, verify the change won't break adjacent behaviour or mobile rendering.
+2. **Reviewer Agent** — ensure the change handles edge cases, empty states, and errors safely.
+3. **Developer Agent** — apply complete, production-grade code. No inline placeholders (`// ...` or `// rest stays the same`).
+4. **QA Agent** — execute the pre-flight checks below, verify pass status, and report results clearly.
+
+Keep output compact — no wall-of-text explanations. Tag results clearly: `[PASS]` or `[FAIL] reason`.
+
 ### Mandatory pre-flight before every commit
 
 Run these in order. Do not commit if any step fails.
