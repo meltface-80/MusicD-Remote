@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.74] — 2026-06-21
+
+### Changed
+- **"Self-Released" and "Independent" now appear as label tiles** — previously filtered out entirely; now treated as valid labels so self-released albums are browsable in the Labels view.
+
 ## [1.5.73] — 2026-06-21
 
 ### Added

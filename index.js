@@ -696,7 +696,7 @@ let stmtInsertName, stmtInsertMbid, stmtInsertLogo, stmtInsertMerge, stmtDeleteM
 let stmtInsertPlay, stmtCompletePlay;
 
 // Non-label filter — must be defined before openLabelsDb() is called.
-const NON_LABEL_RE = /\b(management|agency|agencies|booking|touring|representation|ministry|foundation|fund|independent|self.?released)\b/i;
+const NON_LABEL_RE = /\b(management|agency|agencies|booking|touring|representation|ministry|foundation|fund)\b/i;
 function isLikelyNotALabel(name) {
   return !name || NON_LABEL_RE.test(name);
 }
