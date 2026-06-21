@@ -33,7 +33,6 @@ A web UI that shows a screenful of random albums from your Roon library, with in
 - **Discogs token in Settings** — enter your Discogs personal access token via the gear icon → Discogs token. No environment variables or config files needed; it is stored in your Docker volume and survives updates.
 - **FanArt.tv key in Settings** — same for your FanArt.tv API key. Enter it in Settings → FanArt.tv key.
 - **Improved logo search** — Discogs logo fetches now handle labels with leading symbols (e.g. `~scape`, `[PIAS]`, `(4AD)`) correctly. Placeholder/spacer images are filtered out automatically. Network errors can retry on the next scan; only definitive "not found" results are cached.
-- **Self-Released / Independent filtered** — these strings are now reliably rejected across all label sources (iTunes, TheAudioDB, MusicBrainz, Discogs, Qobuz) so they never appear as label tiles.
 
 ### Scan pipeline
 
@@ -44,7 +43,6 @@ A web UI that shows a screenful of random albums from your Roon library, with in
 ### Other
 
 - **Random Album Radio reliability** — fixed edge cases where radio would auto-start after a Roon restart or container restart when it should have stayed stopped.
-- **API token save fixed** — API key fields changed from `type="password"` (which iOS keychain could silently blank) to `type="text"`, fixing saves that appeared to work but stored nothing.
 
 ---
 
@@ -72,7 +70,7 @@ FanArt.tv provides high-quality label logos for labels that have a MusicBrainz M
 
 ---
 
-> **Note on label accuracy** — an album may appear under a label that differs from the one shown in Roon's own album view. This is usually correct: many albums were released under multiple labels simultaneously (for example, Daughtry's *Baptized* was released under 19 Recordings, RCA, and Sony Music). The extension shows whichever label your file tags or the scan sources attribute to the album. Use the merge feature to combine label variants, or the logo picker's URL field to override individual label assignments.
+> **Note on label accuracy** — an album may appear under a label that differs from the one shown in Roon's own album view. This is usually correct: many albums were released under multiple labels simultaneously (for example, Daughtry's *Baptized* was released under 19 Recordings, RCA, and Sony Music). The extension shows whichever label your file tags or the scan sources attribute to the album in the case of being a Qobuz or Tidal version.
 
 ---
 
