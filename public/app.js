@@ -1359,6 +1359,7 @@
         });
         const j = await r.json();
         if (j.ok) {
+          currentLabelLogoUrl = j.storedUrl || url; // keep current URL in sync with what the server persisted
           closeLabelLogoSheet();
           showToast("Logo saved", "ok");
         } else {

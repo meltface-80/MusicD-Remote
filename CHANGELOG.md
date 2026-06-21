@@ -2,6 +2,19 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.71] — 2026-06-21
+
+### Fixed
+- **`kickDiscogsLogoFetches` re-fetched labels already confirmed as having no logo** — used `labelLogoCache.get(key)` (truthy check) which is falsy for `null` sentinel entries (stored when FanArt TV found no logo). Changed to `labelLogoCache.has(key)` so labels previously confirmed as logo-less are correctly skipped, consistent with `kickFanArtFetches`.
+- **iTunes label match returned wrong-artist album** — fallback `results.find()` had a permanently-dead title operand in an `||` condition (line 1036 already exhausted all title matches). Effective behaviour was artist-only matching, which could attribute any album from the same artist regardless of title. Cleaned up to clearly express the intent: artist-alone as a tiebreaker before `results[0]`.
+- **Progress bar froze at 20% for entire iTunes pass** — `PASS_ENDS = [0.20, 0.20, ...]` gave the iTunes pass zero width (`end === start`). Fixed to `[0.10, 0.20, ...]` so files cover 0–10% and iTunes covers 10–20%.
+- **Discogs searches failed for labels with leading or trailing brackets** — `[PIAS]` was stripped to `PIAS]`; `(4AD)` to `4AD)`. The trailing bracket was passed to Elasticsearch and could trip range-query parsing, returning zero or wrong results. Changed to strip both leading AND trailing non-alphanumeric characters in both `fetchLogoFromDiscogs` and the `/api/labels/logo-candidates` endpoint.
+- **`"Self-Released"` persisted as a real record label** — the MusicBrainz and TheAudioDB fetch paths only checked `isLikelyNotALabel` which did not test for "Self-Released"/"self released". iTunes and Discogs had private inline guards that the shared gate was missing. Added `self.?released` to `NON_LABEL_RE` so all four fetch paths reject it consistently.
+- **Logo URL not updated in `currentLabelLogoUrl` after saving** — `saveLogo()` in app.js ignored the `storedUrl` field returned by `POST /api/labels/logo`. The server downloads and locally caches the image (returning `/api/labels/logo-image/xyz.jpg`), but `currentLabelLogoUrl` was left pointing to the original Discogs CDN URL. Now assigns `j.storedUrl` on success.
+- **Discogs logo stored under source key after mid-flight merge** — if `POST /api/labels/merge` ran while `kickDiscogsLogoFetches` was in progress, the logo was persisted under the source (merged-away) groupKey in SQLite. After a restart, `labelLogoCache` held the logo under the source key but not the target key, so the merged label tile showed no logo. Now follows `labelMerges` at store time to write under the canonical target key.
+- **CLAUDE.md violation: two silent catches without explanatory comments** — `catch (e) {}` in `runLabelsIndexScan` (awaiting album index build) and `catch (e) { return; }` in `buildFileLabelMap`'s `scanDir` (directory read failure) both lacked required comments. Added comments explaining why silence is safe in each case.
+- **Duplicate TheAudioDB section header comment** — removed copy-paste duplicate 3-line comment block above `fetchLabelFromTheAudioDB`.
+
 ## [1.5.70] — 2026-06-20
 
 ### Fixed

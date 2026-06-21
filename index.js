@@ -696,7 +696,7 @@ let stmtInsertName, stmtInsertMbid, stmtInsertLogo, stmtInsertMerge, stmtDeleteM
 let stmtInsertPlay, stmtCompletePlay;
 
 // Non-label filter — must be defined before openLabelsDb() is called.
-const NON_LABEL_RE = /\b(management|agency|agencies|booking|touring|representation|ministry|foundation|fund|independent)\b/i;
+const NON_LABEL_RE = /\b(management|agency|agencies|booking|touring|representation|ministry|foundation|fund|independent|self.?released)\b/i;
 function isLikelyNotALabel(name) {
   return !name || NON_LABEL_RE.test(name);
 }
@@ -1035,11 +1035,9 @@ async function fetchLabelFromiTunes(title, artist) {
     const normTitle = normalize(title);
     let match = results.find(r => normalize(r.collectionName || "") === normTitle);
     if (!match && artist) {
+      // No exact title match — try artist match as a weaker fallback before results[0].
       const normArtist = normalize(artist);
-      match = results.find(r =>
-        normalize(r.collectionName || "") === normTitle ||
-        normalize(r.artistName || "") === normArtist
-      );
+      match = results.find(r => normalize(r.artistName || "") === normArtist);
     }
     if (!match) match = results[0];
     const label = match && match.recordLabel;
@@ -1140,9 +1138,6 @@ async function fetchLabelFromDiscogs(title, artist) {
 
 // ---------------------------------------------------------------------------
 // TheAudioDB — free public API (no key required). Returns strLabel field.
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// TheAudioDB — free public API (no key required). Returns strLabel field.
 // Rate limited to 1 req/sec — the public API is restrictive.
 // ---------------------------------------------------------------------------
 let tadbLastReq = 0;
@@ -1208,7 +1203,7 @@ async function buildFileLabelMap(onProgress) {
   async function scanDir(dirPath, depth) {
     if (depth > MAX_DEPTH) return;
     let entries;
-    try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch (e) { return; }
+    try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch (e) { return; /* permission denied or dir vanished mid-scan — skip silently */ }
 
     const audioFile = entries.find(e => e.isFile() && AUDIO_RE.test(e.name));
     if (audioFile) {
@@ -1256,7 +1251,7 @@ async function buildFileLabelMap(onProgress) {
 async function runLabelsIndexScan() {
   if (labelsIndex.building) return;
   if (albumIndex.count === 0) {
-    if (albumIndex.building) { try { await albumIndex.building; } catch (e) {} }
+    if (albumIndex.building) { try { await albumIndex.building; } catch (e) { /* albumIndex build failed — safe to continue; the count===0 check below will abort */ } }
     if (albumIndex.count === 0) return;
   }
   labelsIndex.building = true;
@@ -1315,7 +1310,7 @@ async function runLabelsIndexScan() {
   // Within each pass: interpolate between the pass start and end percentages.
   const basePct = total > 0 ? alreadyDone / total : 0;
   const scanPct = 1 - basePct; // fraction of bar dedicated to this scan
-  const PASS_ENDS = [0.20, 0.20, 0.50, 0.80, 1.00]; // cumulative pass weights
+  const PASS_ENDS = [0.10, 0.20, 0.50, 0.80, 1.00]; // cumulative pass weights: files 0-10%, iTunes 10-20%, TADB 20-50%, MB 50-80%, Discogs 80-100%
   function passProgress(passIdx, pos, passTotal) {
     const start = passIdx > 0 ? PASS_ENDS[passIdx - 1] : 0;
     const end = PASS_ENDS[passIdx];
@@ -1635,10 +1630,11 @@ async function kickFanArtFetches() {
 async function fetchLogoFromDiscogs(labelName) {
   if (!discogsToken) return { logo: null, reason: "no-token" };
   await discogsWait();
-  // Strip leading non-alphanumeric characters before searching — Discogs uses
-  // Elasticsearch where ~ is a fuzzy operator, so "~scape" is misinterpreted.
+  // Strip leading AND trailing non-alphanumeric characters before searching — Discogs uses
+  // Elasticsearch where ~ is a fuzzy operator ("~scape"), and unbalanced brackets like
+  // "[PIAS]" → "PIAS]" or "(4AD)" → "4AD)" trip range-query parsing.
   // The original name is still used for result matching via labelGroupKey.
-  const searchTerm = labelName.replace(/^[^a-z0-9]+/i, "").trim() || labelName;
+  const searchTerm = labelName.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, "").trim() || labelName;
   const url = `https://api.discogs.com/database/search?type=label&q=${encodeURIComponent(searchTerm)}&per_page=5`;
   try {
     const json = await httpJson(url, {
@@ -1667,7 +1663,7 @@ async function kickDiscogsLogoFetches() {
   const pending = [];
   for (const [groupKey, entry] of labelsIndex.map) {
     if (discogsLogoTried.has(groupKey)) continue;
-    if (labelLogoCache.get(groupKey)) continue; // already has a valid logo URL
+    if (labelLogoCache.has(groupKey)) continue; // .has() correctly skips null ("tried, not found") entries too
     if (!entry.display) continue;
     pending.push({ groupKey, display: entry.display });
   }
@@ -1679,8 +1675,11 @@ async function kickDiscogsLogoFetches() {
     discogsLogoTried.add(groupKey);
     const { logo, reason } = await fetchLogoFromDiscogs(display);
     if (logo) {
-      setLabelLogo(groupKey, logo);
-      const entry = labelsIndex.map.get(groupKey);
+      // Follow any merge that happened mid-flight so logo persists under the canonical key.
+      const mergeTarget = labelMerges.get(groupKey);
+      const canonKey = mergeTarget ? mergeTarget.targetKey : groupKey;
+      setLabelLogo(canonKey, logo);
+      const entry = labelsIndex.map.get(canonKey);
       if (entry) entry.logo_url = logo;
       found++;
       if (DEBUG) console.log("[labels:discogs:logo]", display, "→", logo);
@@ -2643,7 +2642,7 @@ app.get("/api/labels/logo-candidates", async (req, res) => {
   const normTarget = labelGroupKey(name);
   try {
     await discogsWait();
-    const searchTerm = name.replace(/^[^a-z0-9]+/i, "").trim() || name;
+    const searchTerm = name.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, "").trim() || name;
     const json = await httpJson(
       `https://api.discogs.com/database/search?type=label&q=${encodeURIComponent(searchTerm)}&per_page=25`,
       headers, 10000
