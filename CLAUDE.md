@@ -105,10 +105,12 @@ Do not commit with known CONFIRMED or PLAUSIBLE bugs. Fix them all in the same v
 
 ---
 
-## Repository
+## Repository — branch + PR workflow
 
-- Work directly on the **main branch** of `meltface-80/Roon-Random-Albums-Extension`.
-- **Never use a feature branch.** Never create a pull request.
+- Develop on a **feature branch** of `meltface-80/Roon-Random-Albums-Extension` (e.g. `claude/<topic>`). Never commit directly to `main`.
+- For each change: commit to the branch, build and **commit the tarball to the branch** (see below), push, and give the user the docker install command for the branch build. The user tests the branch build, then opens and merges the PR themselves.
+- **Never open or merge a pull request yourself** unless the user explicitly asks. The user merges.
+- After the user confirms the merge, update `README.md` version references and any other affected docs (see the README rule below).
 - The `old/` folder contains two permanent historical tarballs (v1.5.37 and v1.5.49). **Do not add to or remove from this folder.**
 
 ---
@@ -119,32 +121,38 @@ Do not commit with known CONFIRMED or PLAUSIBLE bugs. Fix them all in the same v
 2. Bump `package.json` version
 3. Add a CHANGELOG.md entry (see format below)
 4. Run pre-flight checks (see above)
-5. Commit the changed files in a single commit: code + `package.json` + `CHANGELOG.md`
-6. Push to main
-7. Build the tarball and send it to the user (see below)
+5. Build the tarball and place it at the repo root, replacing the previous version's tarball (`git rm` the old one, `git add` the new one)
+6. Commit in a single commit: code + `package.json` + `CHANGELOG.md` + the new tarball
+7. Push to the feature branch
+8. Give the user the docker install command for the branch build (see template below)
 
-**Do not commit the tarball.** It is built locally and handed to the user directly.
+**Commit the tarball to the branch.** Downloading it from GitHub (raw) is byte-exact; routing it through Dropbox/cloud storage corrupted the archive. Keep only the current version's tarball in the repo — replace it each build.
 
 ---
 
 ## Building and delivering the tarball
 
-After pushing, build the tarball locally and send it to the user with `SendUserFile`:
+Build the tarball to `/tmp` first (so `tar` doesn't include the output file mid-write), then copy
+it to the repo root and commit it to the branch. **Do not send it through Dropbox/cloud storage —
+that corrupted the archive.** The user downloads it byte-exact from GitHub raw.
 
 ```bash
 VERSION=$(node -p "require('./package.json').version")
-TARBALL="/tmp/roon-random-albums-v${VERSION}-docker.tar.gz"
-tar -czf "$TARBALL" \
+TARBALL="roon-random-albums-v${VERSION}-docker.tar.gz"
+tar -czf "/tmp/${TARBALL}" \
   --exclude='./.git' \
   --exclude='./node_modules' \
   --exclude='./old' \
   --exclude='./data' \
+  --exclude='./*.tar.gz' \
   .
+cp "/tmp/${TARBALL}" "./${TARBALL}"
+git rm -q roon-random-albums-v<PREVIOUS>-docker.tar.gz   # drop the old branch tarball
+git add "${TARBALL}"
 ```
 
-Then call `SendUserFile` with the tarball path. The user will upload it to their cloud storage
-and provide a share link. Once they provide the link, give the full docker install command
-using that link (see template below).
+Commit the tarball with the rest of the change, push the branch, then give the user the docker
+install command (see template below) using the GitHub **raw** URL for the tarball on the branch.
 
 ---
 
@@ -164,7 +172,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
 - The README contains version references (install commands, tarball URLs, `docker build` tags).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.5.74** (until the user says otherwise).
+- Current stable version in the README: **v1.5.76** (until the user says otherwise).
 
 ---
 
@@ -183,15 +191,18 @@ Add a new section at the top, above the previous version:
 
 ## After each build — docker install command template
 
-Once the user provides a share link for the tarball, give this command with the link and
-version filled in:
+After pushing the branch, give this command with the version and branch filled in. It downloads
+the tarball byte-exact from GitHub raw (no Dropbox). Drop the `/music` mount line when the user
+is testing a Qobuz/Tidal streaming-only scenario.
 
 ```bash
 sudo docker stop roon-random-albums
 sudo docker rm roon-random-albums
 sudo rm -f /opt/roon-random-albums/roon-random-albums-vPREVIOUS-docker.tar.gz
 cd /opt/roon-random-albums
-wget -O roon-random-albums-vNEW-docker.tar.gz "SHARE_LINK"
+wget -O roon-random-albums-vNEW-docker.tar.gz \
+  "https://raw.githubusercontent.com/meltface-80/Roon-Random-Albums-Extension/refs/heads/<BRANCH>/roon-random-albums-vNEW-docker.tar.gz"
+file roon-random-albums-vNEW-docker.tar.gz   # expect: gzip compressed data
 tar -xzf roon-random-albums-vNEW-docker.tar.gz
 docker build -t roon-random-albums:NEW .
 docker run -d \
@@ -221,7 +232,10 @@ docker run -d \
 | v1.5.46 | stable (superseded) | Label text size by longest word not word count |
 | v1.5.47 | stable (superseded) | Consistent label text size via container query (8cqw) |
 | v1.5.48 | stable (superseded) | Label text size increased to 9cqw |
-| v1.5.49 | **Latest (stable)** | Discogs label logo fetches — README points here |
+| v1.5.49 | stable (superseded) | Discogs label logo fetches |
+| v1.5.74 | stable (superseded) | Search sections, label-in-modal, Self-Released/Independent tiles |
+| v1.5.75 | stable (superseded) | Qobuz label pass for streaming-only (Qobuz/Tidal) libraries |
+| v1.5.76 | **Latest (stable)** | Manual logo picker thumbnails doubled — README points here |
 | v1.5.70 | superseded | Code review fixes: scan lockout, CDN redirect, auth guards |
 | v1.5.71 | superseded | Label scan/logo pipeline fixes (8-angle code review) |
 | v1.5.72 | current    | Label pipeline correctness, FanArt merge-redirect, Discogs retry fix |
