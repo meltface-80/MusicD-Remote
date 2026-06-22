@@ -477,13 +477,13 @@ main {
 .logo-url-sheet.hidden { display: none; }
 .logo-candidates {
   display: flex; gap: 8px; overflow-x: auto;
-  padding: 2px 0 2px; min-height: 52px;
+  padding: 2px 0 2px; min-height: 104px;
   align-items: center; scrollbar-width: none;
 }
 .logo-candidates::-webkit-scrollbar { display: none; }
 .logo-candidates-hint { font-size: 12px; color: var(--text); opacity: 0.5; }
 .logo-candidate-btn {
-  flex-shrink: 0; width: 52px; height: 52px; padding: 2px;
+  flex-shrink: 0; width: 104px; height: 104px; padding: 2px;
   border-radius: 8px; overflow: hidden;
   border: 2px solid var(--border); cursor: pointer;
   background: var(--bg-elev-2);

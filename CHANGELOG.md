@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.76] — 2026-06-22
+
+### Changed
+- **Manual logo picker thumbnails doubled in size** — the Discogs logo candidates shown when manually choosing a label logo were 52×52px and hard to make out. They are now 104×104px (container `min-height` bumped to match) so the logos are legible before selecting.
+
 ## [1.5.75] — 2026-06-22
 
 ### Changed
