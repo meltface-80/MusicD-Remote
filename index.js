@@ -3242,6 +3242,19 @@ app.post("/api/qobuz/favorite", async (req, res) => {
   }
 });
 
+// Remove an album from the user's Qobuz favourites (idempotent).
+app.post("/api/qobuz/unfavorite", async (req, res) => {
+  const albumId = ((req.body && req.body.album_id) || "").toString().trim();
+  if (!albumId) return res.status(400).json({ ok: false, error: "album_id required" });
+  try {
+    await qobuzWithToken(t => qobuz.unfavoriteAlbum(t, albumId));
+    res.json({ ok: true });
+  } catch (e) {
+    const code = e && e.code === 429 ? 429 : (/not connected/i.test(e.message) ? 400 : 502);
+    res.status(code).json({ ok: false, error: e.message });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Library search (instant, prefix-aware, typo-tolerant — see albumIndex above)
 // ---------------------------------------------------------------------------

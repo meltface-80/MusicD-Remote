@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.81] — 2026-06-23
+
+### Added
+- **Un-favourite from the Qobuz new-releases overlay** — the favourite button is now a two-way toggle. Tapping "✓ Added" removes the album from your Qobuz favourites (via `favorite/delete`) and flips back to "♥ Favourite"; tapping "♥ Favourite" adds it as before. The add behaviour is unchanged; the button is disabled only while a request is in flight, and reverts cleanly on error.
+
 ## [1.5.80] — 2026-06-23
 
 ### Fixed

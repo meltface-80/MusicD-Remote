@@ -3055,27 +3055,37 @@
     if (e.key === "Escape" && !overlay.classList.contains("hidden")) close();
   });
 
-  async function favourite(albumId, button) {
-    button.disabled = true;
+  // Reflect favourite state on a button (added = in the user's Qobuz library).
+  function setFavState(button, added) {
+    button.dataset.fav = added ? "1" : "0";
+    button.textContent = added ? "✓ Added" : "♥ Favourite";
+    button.classList.toggle("is-done", added);
+  }
+
+  // Toggle favourite/un-favourite against Qobuz, then flip the button state.
+  async function toggleFavourite(albumId, button) {
+    const wasAdded = button.dataset.fav === "1";
     const prev = button.textContent;
+    button.disabled = true;
     button.textContent = "…";
     try {
-      const r = await fetch("/api/qobuz/favorite", {
+      const r = await fetch(wasAdded ? "/api/qobuz/unfavorite" : "/api/qobuz/favorite", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ album_id: albumId })
       });
       const j = await r.json();
       if (j.ok) {
-        button.textContent = "✓ Added";
-        button.classList.add("is-done");
-        toast("Added to Qobuz favourites", "ok");
+        setFavState(button, !wasAdded);
+        toast(wasAdded ? "Removed from Qobuz favourites" : "Added to Qobuz favourites", "ok");
       } else {
-        button.disabled = false; button.textContent = prev;
-        toast(j.error || "Couldn't add favourite", "error");
+        button.textContent = prev;
+        toast(j.error || "Couldn't update favourite", "error");
       }
     } catch (e) {
-      button.disabled = false; button.textContent = prev;
+      button.textContent = prev;
       toast("Failed: " + e.message, "error");
+    } finally {
+      button.disabled = false;
     }
   }
 
@@ -3107,15 +3117,10 @@
         const fav = document.createElement("button");
         fav.type = "button";
         fav.className = "qobuz-nr-fav";
-        if (a.favourited) {
-          // Already in the user's Qobuz library (added here or on another device).
-          fav.textContent = "✓ Added";
-          fav.classList.add("is-done");
-          fav.disabled = true;
-        } else {
-          fav.textContent = "♥ Favourite";
-          fav.addEventListener("click", () => favourite(a.id, fav));
-        }
+        // Tappable toggle: "✓ Added" (in library) ⇄ "♥ Favourite". Initial state
+        // reflects the user's current Qobuz favourites (added here or elsewhere).
+        setFavState(fav, !!a.favourited);
+        fav.addEventListener("click", () => toggleFavourite(a.id, fav));
         row.appendChild(fav);
         frag.appendChild(row);
       }
