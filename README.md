@@ -4,7 +4,7 @@
 
 </div>
 
-# Random Albums + Labels — a Roon extension v1.5.76
+# Random Albums + Labels — a Roon extension v1.5.77
 
 A web UI that shows a screenful of random albums from your Roon library, with instant whole-library search, playback actions targeting any zone, and more.
 
@@ -64,9 +64,9 @@ FanArt.tv provides high-quality label logos for labels that have a MusicBrainz M
 ```bash
 sudo mkdir -p /opt/roon-random-albums
 cd /opt/roon-random-albums
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/releases/download/v1.5.76/roon-random-albums-v1.5.76-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.76-docker.tar.gz
-docker build -t roon-random-albums:1.5.76 .
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/releases/download/v1.5.77/roon-random-albums-v1.5.77-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.77-docker.tar.gz
+docker build -t roon-random-albums:1.5.77 .
 docker run -d \
   --name roon-random-albums \
   --restart unless-stopped \
@@ -74,7 +74,7 @@ docker run -d \
   -v roon-random-albums-data:/app/data \
 # remove the below line if you only use Qobuz/Tidal
   -v /your/path/to/Music:/music:ro \
-  roon-random-albums:1.5.76
+  roon-random-albums:1.5.77
 ```
 
 `--network host` is required so the extension can discover your Roon Core on the local network. The `-v roon-random-albums-data` flag mounts a named Docker volume so that your Roon pairing, play history, and label cache survive container rebuilds. The `-v .../Music:/music:ro` flag mounts your music directory read-only so the extension can read label tags directly from your files — this is optional but gives the most accurate label data. Adjust the path to match your music library location.
@@ -125,11 +125,11 @@ sudo systemctl disable roon-random-albums
 # 2. Create the build directory and download the tarball
 sudo mkdir -p /opt/roon-random-albums
 cd /opt/roon-random-albums
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/releases/download/v1.5.76/roon-random-albums-v1.5.76-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.76-docker.tar.gz
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/releases/download/v1.5.77/roon-random-albums-v1.5.77-docker.tar.gz
+tar -xzf roon-random-albums-v1.5.77-docker.tar.gz
 
 # 3. Build and run
-docker build -t roon-random-albums:1.5.76 .
+docker build -t roon-random-albums:1.5.77 .
 docker run -d \
   --name roon-random-albums \
   --restart unless-stopped \
@@ -137,7 +137,7 @@ docker run -d \
   -v roon-random-albums-data:/app/data \
 # remove the below line if you only use Qobuz/Tidal
   -v /your/path/to/Music:/music:ro \
-  roon-random-albums:1.5.76
+  roon-random-albums:1.5.77
 ```
 
 Confirm the extension appears in **Roon → Settings → Extensions** before removing the old install.
@@ -167,7 +167,7 @@ Your Roon pairing, listening history, and label cache are all safe — they live
 Pass extra env vars with `-e` in the `docker run` command:
 
 ```bash
-docker run -d ... -e RRA_DEBUG=1 roon-random-albums:1.5.76
+docker run -d ... -e RRA_DEBUG=1 roon-random-albums:1.5.77
 ```
 
 ### Album metadata sources
