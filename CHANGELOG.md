@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.78] — 2026-06-23
+
+### Added
+- **Read-only Roon browse probe (`/api/debug/browse-probe`)** — a diagnostic endpoint to confirm, against a live Roon Core, exactly what's reachable for a future Qobuz integration: whether Qobuz "New Releases" can be browsed (and how many albums it holds), and whether an "Add to Library"/"Add to Favorites" action exists on a Qobuz album. Walks the browse tree from the root through a slash-separated `path` of node titles and dumps the resulting level; with `album=<index>` it drills into one album to list its actions. **It never passes a zone, so nothing is ever played, queued, or added** — purely a read of the tree. No user-facing behaviour changes; no Qobuz/favourites/decades features are implemented yet (pending what this probe reveals).
+
 ## [1.5.77] — 2026-06-23
 
 ### Fixed

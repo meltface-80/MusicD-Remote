@@ -2,3 +2,4 @@ node_modules/
 .update/
 config.json
 .claude/
+data/

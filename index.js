@@ -2956,6 +2956,83 @@ app.get("/api/debug/filter", async (req, res) => {
   }
 });
 
+// Debug: read-only probe of the Roon browse tree. Walks from the browse root
+// through a slash-separated `path` of node titles (case-insensitive) and dumps
+// what the resulting level contains. Optionally drills into one album at that
+// level (`album=<index>`) to dump its contents/action_list. Used to confirm
+// (a) whether Qobuz "New Releases" is reachable and how many albums it holds,
+// and (b) whether an "Add to Library"/"Add to Favorites" action exists on a
+// Qobuz album — WITHOUT invoking anything. No zone_or_output_id is ever passed,
+// so nothing is played, queued, or added; this only reads the tree. Examples:
+//   /api/debug/browse-probe                                   → list browse root
+//   /api/debug/browse-probe?path=Qobuz                        → list the Qobuz section
+//   /api/debug/browse-probe?path=Qobuz/New%20Releases         → list those albums (count)
+//   /api/debug/browse-probe?path=Qobuz/New%20Releases&album=0 → dump album 0's actions
+app.get("/api/debug/browse-probe", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  const hierarchy = "browse";
+  const segments = (req.query.path || "").toString().split("/").map(s => s.trim()).filter(Boolean);
+  const albumRaw = req.query.album;
+  const albumIdx = albumRaw === undefined ? -1 : parseInt(albumRaw, 10);
+  if (albumRaw !== undefined && (!Number.isFinite(albumIdx) || albumIdx < 0)) {
+    return res.status(400).json({ error: "album must be a non-negative integer index" });
+  }
+  const mapItem = it => ({
+    title: it.title,
+    subtitle: it.subtitle || null,
+    hint: it.hint || null,
+    has_image: !!it.image_key,
+    has_item_key: !!it.item_key
+  });
+  const sessionKey = "rra_probe_" + Math.random().toString(36).slice(2, 10);
+  try {
+    await browse({ hierarchy, pop_all: true, multi_session_key: sessionKey });
+    const resolved = [];
+    for (const seg of segments) {
+      const node = await findItemByTitle(sessionKey, hierarchy, seg, 1000);
+      if (!node) {
+        const here = await loadLevel(sessionKey, hierarchy, 200);
+        return res.status(404).json({
+          error: 'Could not find "' + seg + '" at this level',
+          resolved,
+          available_here: here.items.map(i => i.title)
+        });
+      }
+      resolved.push({ segment: seg, matchedTitle: node.title || null, hint: node.hint || null });
+      await browse({ hierarchy, item_key: node.item_key, multi_session_key: sessionKey });
+    }
+    const level = await loadLevel(sessionKey, hierarchy, 300);
+    const out = {
+      path: segments,
+      resolved,
+      count: level.total,
+      items: level.items.map((it, idx) => Object.assign({ idx }, mapItem(it)))
+    };
+    if (albumIdx >= 0) {
+      const target = level.items[albumIdx];
+      if (!target) {
+        out.album = { error: "No item at index " + albumIdx + " (level has " + level.items.length + " items)" };
+      } else if (!target.item_key) {
+        out.album = { error: 'Item "' + (target.title || "") + '" has no item_key to drill into' };
+      } else {
+        // Read-only drill: browse the album item with NO zone, then list its
+        // contents (top-level action_list items + tracks). Nothing is invoked.
+        await browse({ hierarchy, item_key: target.item_key, multi_session_key: sessionKey });
+        const inside = await load({ hierarchy, offset: 0, count: 500, multi_session_key: sessionKey });
+        out.album = {
+          title: target.title || null,
+          subtitle: target.subtitle || null,
+          list_title: (inside.list && inside.list.title) || null,
+          items: (inside.items || []).map(mapItem)
+        };
+      }
+    }
+    res.json(out);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get("/api/image/:image_key", async (req, res) => {
   if (!core) return res.status(503).end();
   const size = Math.max(64, Math.min(1200, parseInt(req.query.size || "400", 10)));
