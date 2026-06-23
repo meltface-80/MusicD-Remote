@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.77] — 2026-06-23
+
+### Fixed
+- **Back from a deep-linked label now lands on that label in the Labels grid** — when you open a label by tapping its link in an album view (or a search chip) rather than by scrolling the Labels grid to it, pressing back used to reset the Labels grid to the top. `showLabelAlbums` previously saved the *current* screen's scroll offset, which was meaningless for a deep-link. It now records the label name for deep-links and scrolls that label's tile into view (centered) when you return, while tile taps from the grid keep restoring the exact scroll position as before.
+
 ## [1.5.76] — 2026-06-22
 
 ### Changed

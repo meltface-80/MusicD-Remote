@@ -1288,6 +1288,7 @@
     let currentLabelName = null;
     let currentLabelLogoUrl = null; // set when showLabelAlbums loads — used by logo picker
     let _labelsScrollSaved = 0;    // restores position when returning from a label's album view
+    let _labelsScrollTarget = null; // label name to scroll into view when arriving via a deep-link (album/search)
     const mainEl = document.querySelector("main");
 
     const TAG_SVG =
@@ -1585,7 +1586,21 @@
           const oldLink = grid.querySelector(".scan-log-link");
           if (oldLink) oldLink.remove();
           if (!j.scanning) grid.appendChild(makeScanLogLink());
-          if (restoreScroll && mainEl) {
+          if (_labelsScrollTarget && mainEl) {
+            // Arrived via a deep-link (album view / search chip). Scroll the grid
+            // to that label's tile so "back" lands on it instead of the top.
+            const want = _labelsScrollTarget.trim().toLowerCase();
+            _labelsScrollTarget = null;
+            requestAnimationFrame(() => {
+              let found = null;
+              grid.querySelectorAll(".label-tile").forEach(t => {
+                if (found) return;
+                const tt = t.querySelector(".album-title");
+                if (tt && tt.textContent.trim().toLowerCase() === want) found = t;
+              });
+              if (found) found.scrollIntoView({ block: "center" });
+            });
+          } else if (restoreScroll && mainEl) {
             requestAnimationFrame(() => { mainEl.scrollTop = _labelsScrollSaved; _labelsScrollSaved = 0; });
           }
         }
@@ -1657,7 +1672,7 @@
         btn.appendChild(meta);
         btn.addEventListener("click", () => {
           if (labelsSelectMode) handleLabelTileSelect(btn, lb);
-          else showLabelAlbums(lb.title);
+          else showLabelAlbums(lb.title, true);
         });
         addLongPress(btn, () => {
           if (!labelsSelectMode) enterLabelSelectMode();
@@ -1674,8 +1689,17 @@
       if (logoCandidatesEl) logoCandidatesEl.innerHTML = "";
     }
 
-    async function showLabelAlbums(name) {
-      _labelsScrollSaved = mainEl ? mainEl.scrollTop : 0;
+    async function showLabelAlbums(name, fromLabelsList = false) {
+      if (fromLabelsList) {
+        // Came from a tap on the Labels grid — remember the grid scroll position.
+        _labelsScrollSaved = mainEl ? mainEl.scrollTop : 0;
+        _labelsScrollTarget = null;
+      } else {
+        // Deep-linked from an album view or search chip — there's no Labels-grid
+        // scroll position to restore, so remember which label to scroll to on back.
+        _labelsScrollSaved = 0;
+        _labelsScrollTarget = name;
+      }
       exitAlbumSelectMode();
       closeLabelLogoSheet();
       currentLabelName = name;
