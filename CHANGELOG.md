@@ -2,6 +2,12 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.84] — 2026-06-23
+
+### Added
+- **Decade focus in the filter button** — the filter sheet now has a "Decade" section alongside Genre and Tag. Pick a decade (e.g. 1990s) to narrow the random wall to albums released in that decade. Because Roon's browse API exposes no release year, the decade is matched against a per-album year the extension now collects — for free — during the existing label scan: from file tags (local libraries), the Qobuz pass (streaming), and MusicBrainz label hits (same response, no extra request), plus whenever an album modal is opened. Years are stored in a new `album_years` SQLite table.
+  - **The Decade list populates gradually** and may be sparse at first: it only lists decades that already have albums with a resolved year, so it fills in as the label scan runs and as you browse. For streaming-only libraries especially, expect it to grow over the first scan rather than appear complete immediately.
+
 ## [1.5.83] — 2026-06-23
 
 ### Fixed

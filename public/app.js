@@ -1153,6 +1153,8 @@
     const genresList   = document.getElementById("filter-genres-list");
     const tagsToggle   = document.getElementById("filter-tags-toggle");
     const tagsList     = document.getElementById("filter-tags-list");
+    const decadesToggle = document.getElementById("filter-decades-toggle");
+    const decadesList   = document.getElementById("filter-decades-list");
     if (!overlay || !toggleBtn) return;
 
     function markActive() {
@@ -1184,7 +1186,9 @@
       if (!rows.length) {
         const d = document.createElement("div");
         d.className = "filter-empty";
-        d.textContent = type === "genre" ? "No genres found" : "No tags found";
+        d.textContent = type === "genre" ? "No genres found"
+                      : (type === "tag" ? "No tags found"
+                      : "No decades yet — release years fill in as the label scan runs.");
         container.appendChild(d);
         return;
       }
@@ -1210,17 +1214,19 @@
       markActive();
     }
 
-    const loaded = { genre: false, tag: false };
+    const loaded = { genre: false, tag: false, decade: false };
     async function ensureList(type) {
       if (loaded[type]) return;
-      const container = type === "genre" ? genresList : tagsList;
+      const container = type === "genre" ? genresList : (type === "tag" ? tagsList : decadesList);
       container.innerHTML = '<div class="filter-empty">Loading\u2026</div>';
       try {
-        const url = type === "genre" ? "/api/filters/genres" : "/api/filters/tags";
+        const url = type === "genre" ? "/api/filters/genres"
+                  : (type === "tag" ? "/api/filters/tags" : "/api/filters/decades");
         const r = await fetch(url);
         const j = await r.json();
         if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
-        renderList(container, type, (type === "genre" ? j.genres : j.tags) || []);
+        const rows = type === "genre" ? j.genres : (type === "tag" ? j.tags : j.decades);
+        renderList(container, type, rows || []);
         loaded[type] = true;
       } catch (e) {
         container.innerHTML = "";
@@ -1242,6 +1248,7 @@
     }
     wireSection(genresToggle, genresList, "genre");
     wireSection(tagsToggle,   tagsList,   "tag");
+    wireSection(decadesToggle, decadesList, "decade");
 
     function open()  { overlay.classList.remove("hidden"); markActive(); }
     function close() { overlay.classList.add("hidden"); }
