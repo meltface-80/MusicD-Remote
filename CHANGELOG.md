@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.82] — 2026-06-23
+
+### Added
+- **Tap a Qobuz new release to see its review** — tapping a row in the Qobuz New Releases overlay now opens an isolated detail view with the album artwork, the editorial review (fetched by title + artist via the existing `/api/album/extras`, so no Roon library entry is needed), and a favourite toggle. A Back button returns to the list. The favourite button in the detail and the one on the list row stay in sync, so adding/removing in either place is reflected in both. Tapping the favourite button on a row no longer also opens the detail (event isolated).
+
 ## [1.5.81] — 2026-06-23
 
 ### Added

@@ -1951,7 +1951,29 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 .qobuz-nr-row {
   display: flex; align-items: center; gap: 12px;
   padding: 8px; border-radius: 10px; background: var(--bg-elev-2);
+  cursor: pointer;
 }
+.qobuz-nr-row:active { background: var(--bg-elev); }
+
+/* Qobuz album detail (review) view */
+.qobuz-nr-detail { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding: 4px 0 8px; }
+.qobuz-nr-back {
+  align-self: flex-start; cursor: pointer;
+  background: none; border: none; color: var(--accent);
+  font-size: 15px; padding: 4px 2px;
+}
+.qobuz-nr-detail-head { display: flex; gap: 14px; align-items: flex-start; }
+.qobuz-nr-detail-art {
+  flex-shrink: 0; width: 96px; height: 96px; border-radius: 8px;
+  object-fit: cover; background: var(--bg-elev);
+}
+.qobuz-nr-detail-meta { flex: 1; min-width: 0; }
+.qobuz-nr-detail-title  { font-weight: 700; font-size: 17px; }
+.qobuz-nr-detail-artist { font-size: 14px; opacity: 0.8; margin-top: 2px; }
+.qobuz-nr-detail .qobuz-nr-fav { align-self: flex-start; }
+.qobuz-nr-review { font-size: 14px; line-height: 1.5; }
+.qobuz-nr-review-text { white-space: pre-wrap; }
+.qobuz-nr-review-src { display: inline-block; margin-top: 10px; color: var(--accent); }
 .qobuz-nr-art {
   flex-shrink: 0; width: 56px; height: 56px; border-radius: 6px;
   object-fit: cover; background: var(--bg-elev);

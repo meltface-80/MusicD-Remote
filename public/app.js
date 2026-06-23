@@ -3043,6 +3043,7 @@
   const overlay  = document.getElementById("qobuz-overlay");
   const listEl   = document.getElementById("qobuz-nr-list");
   const statusEl = document.getElementById("qobuz-nr-status");
+  const detailEl = document.getElementById("qobuz-nr-detail");
   if (!btn || !overlay) return;
 
   const toast = (msg, kind) => { if (window.__showToast) window.__showToast(msg, kind); };
@@ -3062,12 +3063,15 @@
     button.classList.toggle("is-done", added);
   }
 
-  // Toggle favourite/un-favourite against Qobuz, then flip the button state.
-  async function toggleFavourite(albumId, button) {
-    const wasAdded = button.dataset.fav === "1";
-    const prev = button.textContent;
-    button.disabled = true;
-    button.textContent = "…";
+  // Toggle favourite/un-favourite against Qobuz, updating every button that
+  // represents this album (the list row and, if open, the detail view) so they
+  // stay in sync. `buttons` may be a single button or an array.
+  async function toggleFavourite(albumId, buttons) {
+    const btns = (Array.isArray(buttons) ? buttons : [buttons]).filter(Boolean);
+    if (!btns.length) return;
+    const wasAdded = btns[0].dataset.fav === "1";
+    const prev = btns.map(b => b.textContent);
+    btns.forEach(b => { b.disabled = true; b.textContent = "…"; });
     try {
       const r = await fetch(wasAdded ? "/api/qobuz/unfavorite" : "/api/qobuz/favorite", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -3075,21 +3079,103 @@
       });
       const j = await r.json();
       if (j.ok) {
-        setFavState(button, !wasAdded);
+        btns.forEach(b => setFavState(b, !wasAdded));
         toast(wasAdded ? "Removed from Qobuz favourites" : "Added to Qobuz favourites", "ok");
       } else {
-        button.textContent = prev;
+        btns.forEach((b, i) => { b.textContent = prev[i]; });
         toast(j.error || "Couldn't update favourite", "error");
       }
     } catch (e) {
-      button.textContent = prev;
+      btns.forEach((b, i) => { b.textContent = prev[i]; });
       toast("Failed: " + e.message, "error");
     } finally {
-      button.disabled = false;
+      btns.forEach(b => { b.disabled = false; });
+    }
+  }
+
+  // Return from the album detail view to the releases list.
+  function showList() {
+    if (detailEl) { detailEl.classList.add("hidden"); detailEl.innerHTML = ""; detailEl.dataset.albumId = ""; }
+    if (listEl) listEl.classList.remove("hidden");
+    if (statusEl) statusEl.classList.remove("hidden");
+  }
+
+  // Open an isolated detail view for a Qobuz album: artwork, editorial review
+  // (fetched by title+artist via /api/album/extras — no Roon needed), and a
+  // favourite toggle kept in sync with the originating list row's button.
+  async function openDetail(album, rowFavBtn) {
+    if (!detailEl) return;
+    detailEl.innerHTML = "";
+    detailEl.dataset.albumId = album.id;
+
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "qobuz-nr-back";
+    back.textContent = "‹ Back";
+    back.addEventListener("click", showList);
+
+    const head = document.createElement("div");
+    head.className = "qobuz-nr-detail-head";
+    head.innerHTML =
+      (album.image
+        ? '<img class="qobuz-nr-detail-art" alt="" src="' + esc(album.image) + '">'
+        : '<div class="qobuz-nr-detail-art"></div>') +
+      '<div class="qobuz-nr-detail-meta">' +
+        '<div class="qobuz-nr-detail-title">'  + esc(album.title)  + '</div>' +
+        '<div class="qobuz-nr-detail-artist">' + esc(album.artist) + '</div>' +
+        (album.release_date ? '<div class="qobuz-nr-date">' + esc(album.release_date) + '</div>' : '') +
+      '</div>';
+
+    const favBtn = document.createElement("button");
+    favBtn.type = "button";
+    favBtn.className = "qobuz-nr-fav";
+    setFavState(favBtn, rowFavBtn && rowFavBtn.dataset.fav === "1");
+    favBtn.addEventListener("click", () => toggleFavourite(album.id, [favBtn, rowFavBtn]));
+
+    const review = document.createElement("div");
+    review.className = "qobuz-nr-review";
+    review.textContent = "Loading review…";
+
+    detailEl.appendChild(back);
+    detailEl.appendChild(head);
+    detailEl.appendChild(favBtn);
+    detailEl.appendChild(review);
+
+    if (listEl) listEl.classList.add("hidden");
+    if (statusEl) statusEl.classList.add("hidden");
+    detailEl.classList.remove("hidden");
+
+    try {
+      const params = new URLSearchParams({ title: album.title || "", artist: album.artist || "" });
+      const r = await fetch("/api/album/extras?" + params.toString());
+      const j = await r.json().catch(() => ({}));
+      // Guard against a fast back→open switching the detail to another album.
+      if (detailEl.dataset.albumId !== String(album.id)) return;
+      const alb = j && j.album;
+      const desc = alb && alb.description;
+      review.innerHTML = "";
+      if (desc) {
+        const p = document.createElement("div");
+        p.className = "qobuz-nr-review-text";
+        p.textContent = desc;
+        review.appendChild(p);
+        if (alb.url && alb.source) {
+          const link = document.createElement("a");
+          link.className = "qobuz-nr-review-src";
+          link.href = alb.url; link.target = "_blank"; link.rel = "noopener";
+          link.textContent = "View on " + alb.source;
+          review.appendChild(link);
+        }
+      } else {
+        review.textContent = "No review available for this release.";
+      }
+    } catch (e) {
+      if (detailEl.dataset.albumId === String(album.id)) review.textContent = "Couldn't load review.";
     }
   }
 
   async function load() {
+    showList(); // reset to the list (in case a detail view was open)
     if (statusEl) statusEl.textContent = "Loading new releases…";
     if (listEl) listEl.innerHTML = "";
     try {
@@ -3120,8 +3206,10 @@
         // Tappable toggle: "✓ Added" (in library) ⇄ "♥ Favourite". Initial state
         // reflects the user's current Qobuz favourites (added here or elsewhere).
         setFavState(fav, !!a.favourited);
-        fav.addEventListener("click", () => toggleFavourite(a.id, fav));
+        fav.addEventListener("click", (e) => { e.stopPropagation(); toggleFavourite(a.id, fav); });
         row.appendChild(fav);
+        // Tapping the row (anywhere but the favourite button) opens the detail view.
+        row.addEventListener("click", () => openDetail(a, fav));
         frag.appendChild(row);
       }
       if (listEl) listEl.appendChild(frag);
