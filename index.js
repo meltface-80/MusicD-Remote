@@ -1168,6 +1168,7 @@ function sanitizeDiscogsSearchTerm(name) {
 
 let discogsLastReq = 0;
 const discogsLogoTried = new Set(); // per-session dedup — resets on container restart
+let bandcampLastReq = 0;
 
 async function discogsWait() {
   const elapsed = Date.now() - discogsLastReq;
@@ -1244,16 +1245,17 @@ function musicDirMounted() {
 // Expects Artist/Album/track.flac layout — reads one file per album directory.
 async function buildFileLabelMap(onProgress) {
   const map = new Map();
-  if (!musicDirMounted()) return map;
+  const bandcampMap = new Map(); // albumKey → Bandcamp album page URL (from COMMENT tag)
+  if (!musicDirMounted()) return { labelMap: map, bandcampMap };
   let mm;
   try { mm = await import("music-metadata"); } catch (e) {
     if (DEBUG) console.error("[labels:files] music-metadata not available:", e.message);
-    return map;
+    return { labelMap: map, bandcampMap };
   }
   const parseFile = mm.parseFile || (mm.default && mm.default.parseFile);
   if (!parseFile) {
     if (DEBUG) console.error("[labels:files] music-metadata loaded but parseFile not found");
-    return map;
+    return { labelMap: map, bandcampMap };
   }
 
   const AUDIO_RE = /\.(flac|mp3|m4a|aac|ogg|opus|wv|ape|wav|aiff?)$/i;
@@ -1300,6 +1302,21 @@ async function buildFileLabelMap(onProgress) {
           const ykey = normalize(album) + "||" + normalize(albumartist || "");
           if (!albumYearCache.has(ykey)) setAlbumYear(ykey, fyear);
         }
+        // Extract Bandcamp album page URL from COMMENT tags (embedded by Bandcamp downloader).
+        // Scan all comment entries — the URL may not be in slot 0 if other tags share the field.
+        if (album) {
+          const comments = meta.common.comment || [];
+          for (const c of comments) {
+            const text = typeof c === "string" ? c : (c && c.text ? c.text : "");
+            // Require /album/ path to avoid artist pages or bare domain mentions.
+            const bcMatch = text.match(/https?:\/\/[a-z0-9-]+\.bandcamp\.com\/album\/[a-z0-9_%-]+/i);
+            if (bcMatch) {
+              const bcKey = normalize(album) + "||" + normalize(albumartist || "");
+              if (!bandcampMap.has(bcKey)) bandcampMap.set(bcKey, bcMatch[0]);
+              break;
+            }
+          }
+        }
       } catch (e) { /* unreadable — skip */ }
     }
 
@@ -1313,8 +1330,8 @@ async function buildFileLabelMap(onProgress) {
   } catch (e) {
     if (DEBUG) console.error("[labels:files] scan error:", e.message);
   }
-  if (DEBUG) console.log("[labels:files] file scan found", map.size, "labels");
-  return map;
+  if (DEBUG) console.log("[labels:files] file scan found", map.size, "labels,", bandcampMap.size, "Bandcamp URLs");
+  return { labelMap: map, bandcampMap };
 }
 
 // ---------------------------------------------------------------------------
@@ -1348,11 +1365,11 @@ async function runLabelsIndexScan() {
   // so corrected file tags override stale API-derived cache entries on every scan,
   // including 12-hour auto-rescans where all albums are already cached.
   const estimate = albumIndex.albums.length || 1000;
-  const fileLabelMap = musicDirMounted()
+  const { labelMap: fileLabelMap, bandcampMap } = musicDirMounted()
     ? await buildFileLabelMap((n) => {
         labelsIndex.progress = Math.min(0.15, n / estimate);
       })
-    : new Map();
+    : { labelMap: new Map(), bandcampMap: new Map() };
   if (fileLabelMap.size) {
     let overrideCount = 0;
     for (const [key, fileLabel] of fileLabelMap) {
@@ -1401,11 +1418,11 @@ async function runLabelsIndexScan() {
   const streamingOnly = !musicDirMounted();
   const PASS = streamingOnly
     ? { files: 0, itunes: 1, qobuz: 2, tadb: 3, mb: 4, discogs: 5 }
-    : { files: 0, itunes: 1,            tadb: 2, mb: 3, discogs: 4 };
+    : { files: 0, itunes: 1, bandcamp: 2, tadb: 3, mb: 4, discogs: 5 };
   // cumulative pass weights (fraction of the scan portion of the bar).
   const PASS_ENDS = streamingOnly
     ? [0.05, 0.15, 0.45, 0.60, 0.85, 1.00] // files, iTunes, Qobuz, TADB, MB, Discogs
-    : [0.10, 0.20,       0.50, 0.80, 1.00]; // files, iTunes, TADB, MB, Discogs
+    : [0.10, 0.20, 0.30, 0.55, 0.80, 1.00]; // files, iTunes, Bandcamp, TADB, MB, Discogs
   function passProgress(passIdx, pos, passTotal) {
     const start = passIdx > 0 ? PASS_ENDS[passIdx - 1] : 0;
     const end = PASS_ENDS[passIdx];
@@ -1456,6 +1473,72 @@ async function runLabelsIndexScan() {
     appendLabelsLog(fileMsg);
   }
 
+  // Pass 0B: Bandcamp — local library only (requires /music mount for COMMENT tag extraction).
+  // Fetches album pages for purchases where the downloader embedded a bandcamp.com URL in tags.
+  // Serial with 1.5 s between requests; circuit breaker at 5 consecutive errors or any 429/403.
+  const needsItunes = [];
+  if (!streamingOnly && bandcampMap.size) {
+    const bcQueue = [], bcSkip = [];
+    for (const al of needsApiScan) {
+      (bandcampMap.has(normalize(al.title) + "||" + normalize(al.subtitle)) ? bcQueue : bcSkip).push(al);
+    }
+    needsItunes.push(...bcSkip);
+    if (bcQueue.length) {
+      const bcStartMsg = "[labels] pass 0B (Bandcamp): " + bcQueue.length + " albums with embedded URLs";
+      if (DEBUG) console.log(bcStartMsg);
+      appendLabelsLog(bcStartMsg);
+      let bcErrors = 0, bcConsec = 0, bcAborted = false;
+      let bcResolved = 0;
+      const bcDeadline = Date.now() + 5 * 60 * 1000;
+      for (let bi = 0; bi < bcQueue.length; bi++) {
+        if (bcAborted) { needsItunes.push(...bcQueue.slice(bi)); break; }
+        const al = bcQueue[bi];
+        const key = normalize(al.title) + "||" + normalize(al.subtitle);
+        const url = bandcampMap.get(key);
+        try {
+          await bandcampWait();
+          const result = await fetchLabelFromBandcamp(url, al.subtitle);
+          if (result && result.label && !isLikelyNotALabel(result.label)) {
+            await saveLabelEntry(key, result.label, null, al);
+            if (result.year && !albumYearCache.has(key)) setAlbumYear(key, result.year);
+            bcResolved++;
+            bcConsec = 0;
+          } else {
+            if (result && result.year && !albumYearCache.has(key)) setAlbumYear(key, result.year);
+            needsItunes.push(al);
+            bcConsec = 0;
+          }
+        } catch (e) {
+          bcErrors++;
+          bcConsec++;
+          needsItunes.push(al);
+          appendLabelsLog("[labels:bandcamp] error for \"" + al.title + "\": " + e.message);
+          if (e.message && (e.message.includes("429") || e.message.includes("403"))) {
+            bcAborted = true;
+            appendLabelsLog("[labels:bandcamp] rate limited — aborting Bandcamp pass");
+          } else if (bcConsec >= 5) {
+            bcAborted = true;
+            appendLabelsLog("[labels:bandcamp] 5 consecutive errors — aborting Bandcamp pass");
+          }
+        }
+        labelsIndex.progress = passProgress(PASS.bandcamp, bi + 1, bcQueue.length);
+        if (!bcAborted && Date.now() > bcDeadline) {
+          bcAborted = true;
+          needsItunes.push(...bcQueue.slice(bi + 1));
+          appendLabelsLog("[labels:bandcamp] 5-minute time limit reached — remainder forwarded to iTunes");
+          break;
+        }
+      }
+      const bcMsg = "[labels] pass 0B (Bandcamp): complete, " + bcResolved + " resolved, " +
+        needsItunes.length + " forwarded to iTunes" +
+        (bcAborted ? " (aborted)" : "") + (bcErrors ? ", " + bcErrors + " errors total" : "");
+      if (DEBUG) console.log(bcMsg);
+      appendLabelsLog(bcMsg);
+    }
+  } else {
+    needsItunes.push(...needsApiScan);
+  }
+
   // Pass 1: iTunes — 3 concurrent, 500ms between batches.
   // Aborts the entire pass on first 429/403 to avoid getting IP-blocked.
   const needsAudioDB = [];
@@ -1483,12 +1566,12 @@ async function runLabelsIndexScan() {
     done++;
     labelsIndex.progress = passProgress(PASS.itunes, done, scanCount);
   };
-  for (let i = 0; i < needsApiScan.length; i += ITUNES_BATCH) {
-    if (itunesAborted) { needsAudioDB.push(...needsApiScan.slice(i)); break; }
+  for (let i = 0; i < needsItunes.length; i += ITUNES_BATCH) {
+    if (itunesAborted) { needsAudioDB.push(...needsItunes.slice(i)); break; }
     await itunesBatchWait();
-    await Promise.allSettled(needsApiScan.slice(i, i + ITUNES_BATCH).map(itunesCheck));
+    await Promise.allSettled(needsItunes.slice(i, i + ITUNES_BATCH).map(itunesCheck));
   }
-  if (needsApiScan.length) {
+  if (needsItunes.length) {
     const itunesMsg = "[labels] pass 1 (iTunes): done, " + needsAudioDB.length + " forwarded to next pass" +
       (itunesAborted ? " (aborted — rate limited)" : "") +
       (itunesErrors ? ", " + itunesErrors + " errors" : "");
@@ -1858,6 +1941,33 @@ async function mbWait() {
   if (elapsed < 1100) await new Promise(r => setTimeout(r, 1100 - elapsed));
   mbLastReq = Date.now();
 }
+async function bandcampWait() {
+  const elapsed = Date.now() - bandcampLastReq;
+  if (elapsed < 1500) await new Promise(r => setTimeout(r, 1500 - elapsed));
+  bandcampLastReq = Date.now();
+}
+
+// Fetch label and release year from a Bandcamp album page URL.
+// Parses all JSON-LD blocks embedded in the page and picks the MusicAlbum entry.
+// Returns { label, year } or null on any failure.
+async function fetchLabelFromBandcamp(url, albumArtist) {
+  const html = await httpText(url, { "User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9" }, 10000);
+  const re = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m, albumData = null;
+  while ((m = re.exec(html)) !== null) {
+    try {
+      const obj = JSON.parse(m[1]);
+      if (obj["@type"] === "MusicAlbum") { albumData = obj; break; }
+    } catch (e) { /* JSON.parse failure on one block is safe — the while loop continues to the next block */ }
+  }
+  if (!albumData) return null;
+  const publisher = albumData.publisher && albumData.publisher.name ? albumData.publisher.name.trim() : null;
+  // Discard self-released: publisher matches the album artist
+  const label = publisher && normalize(publisher) !== normalize(albumArtist || "") ? publisher : null;
+  const yearMatch = String(albumData.datePublished || "").match(/\b(19|20)\d{2}\b/);
+  const year = yearMatch ? yearMatch[0] : null;
+  return { label, year };
+}
 async function qobuzWait() {
   const elapsed = Date.now() - qobuzLastReq;
   if (elapsed < 700) await new Promise(r => setTimeout(r, 700 - elapsed));
@@ -2022,16 +2132,25 @@ async function fetchQobuz(title, artist) {
     }
     if (seen.size === 0) { qobuzCache.set(key, null); return null; }
 
-    const titleFirst  = firstSignificantToken(title);
     const artistFirst = firstSignificantToken(artist || "");
-    let chosenSlug = null, chosenId = null;
+    // Score each candidate by how many title words (> 3 chars) appear in its slug.
+    // Taking only the first token was too loose: "songs" matched both
+    // "songs-about-new-york-…" and "songs-of-peace-praise-…" for Various Artists.
+    // Scoring all tokens picks the best match; short-title fallback uses firstSignificantToken.
+    const titleTokens = normalize(title).split(" ").filter(w => w.length > 3);
+    const titleCheck  = titleTokens.length > 0 ? titleTokens : [firstSignificantToken(title)].filter(Boolean);
+    let bestScore = -1, chosenSlug = null, chosenId = null;
     for (const [id, slug] of seen) {
       const sn = slug.toLowerCase();
-      if (titleFirst  && !sn.includes(titleFirst))  continue;
       if (artistFirst && !sn.includes(artistFirst)) continue;
-      chosenSlug = slug; chosenId = id; break;
+      const score = titleCheck.filter(tok => sn.includes(tok)).length;
+      if (score > bestScore) { bestScore = score; chosenSlug = slug; chosenId = id; }
     }
-    if (!chosenSlug) { qobuzCache.set(key, null); return null; }
+    // Require all tokens to match for short titles (1-2 tokens); at least 2 for longer titles.
+    // Math.max(1,...) ensures the floor is 1 even when titleCheck is empty (all words ≤3 chars),
+    // so a zero-score slug is never accepted regardless of title length.
+    const minScore = Math.max(1, Math.min(titleCheck.length, 2));
+    if (!chosenSlug || bestScore < minScore) { qobuzCache.set(key, null); return null; }
 
     // 3) Fetch the album page
     await qobuzWait();

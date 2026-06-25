@@ -2,6 +2,25 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.88] — 2026-06-25
+
+### Fixed
+- **Code review fixes (multi-angle review):**
+  - Qobuz slug scorer: `minScore` now uses `Math.max(1, Math.min(titleCheck.length, 2))` — the previous `Math.min` alone produced `minScore = 0` for titles where all words are ≤3 chars (e.g. "Hi", "S/T"), allowing a zero-score slug through with no title verification. The `Math.max(1,...)` floor ensures at least one title token must match.
+  - `fetchLabelFromBandcamp`: removed a redundant outer `try { ... } catch (e) { throw e; }` wrapper that caught and immediately rethrew without any transformation — dead code that contradicted the JSDoc contract and added misleading structure.
+  - Silent catch comment in `fetchLabelFromBandcamp` now explains why silence is safe (`JSON.parse` failure on one JSON-LD block is safe because the while-loop continues to the next block).
+  - Bandcamp pass partition: replaced two sequential `.filter()` traversals of `needsApiScan` with a single one-pass partition, halving `normalize()` calls during queue building.
+
+## [1.5.87] — 2026-06-25
+
+### Fixed
+- **Qobuz link and label opens wrong album for compilations** — the Qobuz search result slug matcher used only the first significant title word (e.g. `"songs"`) to pick the best match, which was too loose for compilation albums by Various Artists: `"songs-of-peace-praise-various-artists"` matched just as well as `"songs-about-new-york-various-artists"`. The matcher now scores every candidate by how many title words (> 3 characters) appear in its slug and picks the highest scorer, so the correct album is selected. Short single-word titles fall back to the previous first-token check. This also fixes the wrong label appearing in the album modal when the Qobuz pass resolved the label from the incorrect album page.
+
+## [1.5.86] — 2026-06-25
+
+### Added
+- **Bandcamp label lookup (Pass 0B)** — local libraries now get a dedicated Bandcamp metadata pass during the label scan. Bandcamp downloads embed the album page URL in the `COMMENT` tag of every file; the extension now extracts that URL during the file scan and fetches the album's JSON-LD to retrieve the label name and release year — no API key required. Self-released albums (where Bandcamp lists the artist as the label) are detected and forwarded to the standard API chain rather than creating spurious artist-named label tiles. The pass runs after file-tag resolution and before iTunes, so it resolves Bandcamp purchases before hitting external APIs. Serial with 1.5 s between requests; circuit breaker at 5 consecutive errors or any 429/403; 5-minute wall-clock cap per scan. Results are cached in SQLite so subsequent scans skip already-resolved albums. Inert for streaming-only (Qobuz/Tidal) setups that have no `/music` mount.
+
 ## [1.5.85] — 2026-06-23
 
 ### Added
