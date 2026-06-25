@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.89] — 2026-06-25
+
+### Fixed
+- **Share card stale album on now-playing screen** — when the next album started playing, the share card still showed the previous album. `updateNpScreen()` was updating the display but not `window.__currentAlbum`, so the share button read the album that was playing when the modal first opened. Fixed by syncing `currentAlbum` / `window.__currentAlbum` whenever the album art key changes (the same point where the artwork is refreshed).
+
 ## [1.5.88] — 2026-06-25
 
 ### Fixed

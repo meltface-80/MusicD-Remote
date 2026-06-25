@@ -2088,6 +2088,14 @@
     if (bigArt && np.image_key && np.image_key !== lastNpImgKey) {
       bigArt.src = "/api/image/" + encodeURIComponent(np.image_key) + "?size=800";
       lastNpImgKey = np.image_key;
+      // Album changed — keep currentAlbum in sync so the share card reflects
+      // what is currently playing, not what was playing when the modal opened.
+      currentAlbum = Object.assign({}, currentAlbum || {}, {
+        title:     np.line3 || (currentAlbum && currentAlbum.title)    || "",
+        subtitle:  np.line2 || (currentAlbum && currentAlbum.subtitle) || "",
+        image_key: np.image_key
+      });
+      window.__currentAlbum = currentAlbum;
     }
 
     const playing = currentZone.state === "playing" || currentZone.state === "loading";
