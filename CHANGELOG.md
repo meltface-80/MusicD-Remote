@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.91] — 2026-06-25
+
+### Added
+- **Pitchfork reviews** — album detail modal now shows the Pitchfork editorial review and score when available. The score (e.g. 8.4) and a **BNM** badge for Best New Music are displayed alongside year and label. Pitchfork is preferred over Qobuz as the review source; Qobuz still provides label/year when Pitchfork has the review. Falls back silently for albums with no Pitchfork review (older albums or those not reviewed). Review body extracted from JSON-LD `reviewBody` field; score from `__PRELOADED_STATE__`.
+
 ## [1.5.90] — 2026-06-25
 
 ### Fixed

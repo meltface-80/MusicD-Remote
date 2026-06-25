@@ -840,6 +840,24 @@
       });
       modalSub.appendChild(labelBtn);
     }
+    if (extras.album && extras.album.score != null) {
+      const sep = document.createElement("span");
+      sep.className = "modal-subtitle-year";
+      sep.textContent = " · ";
+      modalSub.appendChild(sep);
+      const chip = document.createElement("span");
+      chip.className = "pitchfork-score";
+      chip.textContent = extras.album.score % 1 === 0
+        ? extras.album.score + ".0"
+        : String(extras.album.score);
+      modalSub.appendChild(chip);
+      if (extras.album.isBestNewMusic) {
+        const bnm = document.createElement("span");
+        bnm.className = "bnm-badge";
+        bnm.textContent = "BNM";
+        modalSub.appendChild(bnm);
+      }
+    }
 
     // 2. Album bio section (description + source link; year/label now in subtitle)
     if (extras.album && (extras.album.description || (extras.album.url && extras.album.source))) {
