@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.90] — 2026-06-25
+
+### Fixed
+- **Share card shows previous album on now-playing screen (correct fix)** — the v1.5.89 attempt wrote to `currentAlbum`, a variable not declared in the mini-transport IIFE, causing a sloppy-mode scope leak with unreliable results. Root cause: `window.__currentAlbum` is only written by `openAlbum()` when the modal opens, so it never updates as tracks advance. Fix: `updateNpScreen()` now writes the live `now_playing` object to `window.__currentNpData` on every poll; the share button reads this when the modal is in NP mode, bypassing `window.__currentAlbum` entirely.
+
 ## [1.5.89] — 2026-06-25
 
 ### Fixed

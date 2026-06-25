@@ -2080,6 +2080,11 @@
     const np = currentZone && currentZone.now_playing;
     if (!np) { npTrack.textContent = "—"; npArtist.textContent = ""; npAlbum.textContent = ""; return; }
 
+    // Expose live now_playing so the share button can read current album data
+    // directly rather than relying on window.__currentAlbum, which is only set
+    // when the modal opens and is never updated as tracks advance.
+    window.__currentNpData = np;
+
     npTrack.textContent  = np.line1 || "—";
     npArtist.textContent = np.line2 || "";
     npAlbum.textContent  = np.line3 || "";
@@ -2088,14 +2093,6 @@
     if (bigArt && np.image_key && np.image_key !== lastNpImgKey) {
       bigArt.src = "/api/image/" + encodeURIComponent(np.image_key) + "?size=800";
       lastNpImgKey = np.image_key;
-      // Album changed — keep currentAlbum in sync so the share card reflects
-      // what is currently playing, not what was playing when the modal opened.
-      currentAlbum = Object.assign({}, currentAlbum || {}, {
-        title:     np.line3 || (currentAlbum && currentAlbum.title)    || "",
-        subtitle:  np.line2 || (currentAlbum && currentAlbum.subtitle) || "",
-        image_key: np.image_key
-      });
-      window.__currentAlbum = currentAlbum;
     }
 
     const playing = currentZone.state === "playing" || currentZone.state === "loading";
@@ -2656,13 +2653,19 @@
   // Wire the share button inside the album modal
   if (modalBtn) {
     modalBtn.addEventListener("click", () => {
+      // On the now-playing screen use window.__currentNpData (updated every poll
+      // by updateNpScreen) so the card always reflects the current track, not the
+      // album that was playing when the modal first opened.
+      const npModal = document.getElementById("album-modal");
+      const isNp = npModal && npModal.classList.contains("np-mode");
+      const np = isNp && window.__currentNpData;
+      if (np) {
+        open({ title: np.line3 || "", artist: np.line2 || "", image_key: np.image_key });
+        return;
+      }
       const a = window.__currentAlbum;
       if (!a) return;
-      open({
-        title:     a.title    || "",
-        artist:    a.subtitle || "",
-        image_key: a.image_key
-      });
+      open({ title: a.title || "", artist: a.subtitle || "", image_key: a.image_key });
     });
   }
 })();
