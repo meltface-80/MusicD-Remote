@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.87] — 2026-06-25
+
+### Fixed
+- **Qobuz link and label opens wrong album for compilations** — the Qobuz search result slug matcher used only the first significant title word (e.g. `"songs"`) to pick the best match, which was too loose for compilation albums by Various Artists: `"songs-of-peace-praise-various-artists"` matched just as well as `"songs-about-new-york-various-artists"`. The matcher now scores every candidate by how many title words (> 3 characters) appear in its slug and picks the highest scorer, so the correct album is selected. Short single-word titles fall back to the previous first-token check. This also fixes the wrong label appearing in the album modal when the Qobuz pass resolved the label from the incorrect album page.
+
 ## [1.5.86] — 2026-06-25
 
 ### Added

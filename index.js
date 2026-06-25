@@ -2134,16 +2134,21 @@ async function fetchQobuz(title, artist) {
     }
     if (seen.size === 0) { qobuzCache.set(key, null); return null; }
 
-    const titleFirst  = firstSignificantToken(title);
     const artistFirst = firstSignificantToken(artist || "");
-    let chosenSlug = null, chosenId = null;
+    // Score each candidate by how many title words (> 3 chars) appear in its slug.
+    // Taking only the first token was too loose: "songs" matched both
+    // "songs-about-new-york-…" and "songs-of-peace-praise-…" for Various Artists.
+    // Scoring all tokens picks the best match; short-title fallback uses firstSignificantToken.
+    const titleTokens = normalize(title).split(" ").filter(w => w.length > 3);
+    const titleCheck  = titleTokens.length > 0 ? titleTokens : [firstSignificantToken(title)].filter(Boolean);
+    let bestScore = -1, chosenSlug = null, chosenId = null;
     for (const [id, slug] of seen) {
       const sn = slug.toLowerCase();
-      if (titleFirst  && !sn.includes(titleFirst))  continue;
       if (artistFirst && !sn.includes(artistFirst)) continue;
-      chosenSlug = slug; chosenId = id; break;
+      const score = titleCheck.filter(tok => sn.includes(tok)).length;
+      if (score > bestScore) { bestScore = score; chosenSlug = slug; chosenId = id; }
     }
-    if (!chosenSlug) { qobuzCache.set(key, null); return null; }
+    if (!chosenSlug || bestScore < 1) { qobuzCache.set(key, null); return null; }
 
     // 3) Fetch the album page
     await qobuzWait();
