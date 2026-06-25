@@ -1478,8 +1478,10 @@ async function runLabelsIndexScan() {
   // Serial with 1.5 s between requests; circuit breaker at 5 consecutive errors or any 429/403.
   const needsItunes = [];
   if (!streamingOnly && bandcampMap.size) {
-    const bcQueue = needsApiScan.filter(al => bandcampMap.has(normalize(al.title) + "||" + normalize(al.subtitle)));
-    const bcSkip  = needsApiScan.filter(al => !bandcampMap.has(normalize(al.title) + "||" + normalize(al.subtitle)));
+    const bcQueue = [], bcSkip = [];
+    for (const al of needsApiScan) {
+      (bandcampMap.has(normalize(al.title) + "||" + normalize(al.subtitle)) ? bcQueue : bcSkip).push(al);
+    }
     needsItunes.push(...bcSkip);
     if (bcQueue.length) {
       const bcStartMsg = "[labels] pass 0B (Bandcamp): " + bcQueue.length + " albums with embedded URLs";
@@ -1949,26 +1951,22 @@ async function bandcampWait() {
 // Parses all JSON-LD blocks embedded in the page and picks the MusicAlbum entry.
 // Returns { label, year } or null on any failure.
 async function fetchLabelFromBandcamp(url, albumArtist) {
-  try {
-    const html = await httpText(url, { "User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9" }, 10000);
-    const re = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-    let m, albumData = null;
-    while ((m = re.exec(html)) !== null) {
-      try {
-        const obj = JSON.parse(m[1]);
-        if (obj["@type"] === "MusicAlbum") { albumData = obj; break; }
-      } catch (e) { /* malformed block — try next */ }
-    }
-    if (!albumData) return null;
-    const publisher = albumData.publisher && albumData.publisher.name ? albumData.publisher.name.trim() : null;
-    // Discard self-released: publisher matches the album artist
-    const label = publisher && normalize(publisher) !== normalize(albumArtist || "") ? publisher : null;
-    const yearMatch = String(albumData.datePublished || "").match(/\b(19|20)\d{2}\b/);
-    const year = yearMatch ? yearMatch[0] : null;
-    return { label, year };
-  } catch (e) {
-    throw e;
+  const html = await httpText(url, { "User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9" }, 10000);
+  const re = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m, albumData = null;
+  while ((m = re.exec(html)) !== null) {
+    try {
+      const obj = JSON.parse(m[1]);
+      if (obj["@type"] === "MusicAlbum") { albumData = obj; break; }
+    } catch (e) { /* JSON.parse failure on one block is safe — the while loop continues to the next block */ }
   }
+  if (!albumData) return null;
+  const publisher = albumData.publisher && albumData.publisher.name ? albumData.publisher.name.trim() : null;
+  // Discard self-released: publisher matches the album artist
+  const label = publisher && normalize(publisher) !== normalize(albumArtist || "") ? publisher : null;
+  const yearMatch = String(albumData.datePublished || "").match(/\b(19|20)\d{2}\b/);
+  const year = yearMatch ? yearMatch[0] : null;
+  return { label, year };
 }
 async function qobuzWait() {
   const elapsed = Date.now() - qobuzLastReq;
@@ -2148,7 +2146,11 @@ async function fetchQobuz(title, artist) {
       const score = titleCheck.filter(tok => sn.includes(tok)).length;
       if (score > bestScore) { bestScore = score; chosenSlug = slug; chosenId = id; }
     }
-    if (!chosenSlug || bestScore < 1) { qobuzCache.set(key, null); return null; }
+    // Require all tokens to match for short titles (1-2 tokens); at least 2 for longer titles.
+    // Math.max(1,...) ensures the floor is 1 even when titleCheck is empty (all words ≤3 chars),
+    // so a zero-score slug is never accepted regardless of title length.
+    const minScore = Math.max(1, Math.min(titleCheck.length, 2));
+    if (!chosenSlug || bestScore < minScore) { qobuzCache.set(key, null); return null; }
 
     // 3) Fetch the album page
     await qobuzWait();

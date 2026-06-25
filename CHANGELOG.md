@@ -2,6 +2,15 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.88] — 2026-06-25
+
+### Fixed
+- **Code review fixes (multi-angle review):**
+  - Qobuz slug scorer: `minScore` now uses `Math.max(1, Math.min(titleCheck.length, 2))` — the previous `Math.min` alone produced `minScore = 0` for titles where all words are ≤3 chars (e.g. "Hi", "S/T"), allowing a zero-score slug through with no title verification. The `Math.max(1,...)` floor ensures at least one title token must match.
+  - `fetchLabelFromBandcamp`: removed a redundant outer `try { ... } catch (e) { throw e; }` wrapper that caught and immediately rethrew without any transformation — dead code that contradicted the JSDoc contract and added misleading structure.
+  - Silent catch comment in `fetchLabelFromBandcamp` now explains why silence is safe (`JSON.parse` failure on one JSON-LD block is safe because the while-loop continues to the next block).
+  - Bandcamp pass partition: replaced two sequential `.filter()` traversals of `needsApiScan` with a single one-pass partition, halving `normalize()` calls during queue building.
+
 ## [1.5.87] — 2026-06-25
 
 ### Fixed
