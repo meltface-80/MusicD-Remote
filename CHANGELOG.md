@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.86] — 2026-06-25
+
+### Added
+- **Bandcamp label lookup (Pass 0B)** — local libraries now get a dedicated Bandcamp metadata pass during the label scan. Bandcamp downloads embed the album page URL in the `COMMENT` tag of every file; the extension now extracts that URL during the file scan and fetches the album's JSON-LD to retrieve the label name and release year — no API key required. Self-released albums (where Bandcamp lists the artist as the label) are detected and forwarded to the standard API chain rather than creating spurious artist-named label tiles. The pass runs after file-tag resolution and before iTunes, so it resolves Bandcamp purchases before hitting external APIs. Serial with 1.5 s between requests; circuit breaker at 5 consecutive errors or any 429/403; 5-minute wall-clock cap per scan. Results are cached in SQLite so subsequent scans skip already-resolved albums. Inert for streaming-only (Qobuz/Tidal) setups that have no `/music` mount.
+
 ## [1.5.85] — 2026-06-23
 
 ### Added
