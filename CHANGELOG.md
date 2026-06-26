@@ -2,6 +2,28 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.92] — 2026-06-26
+
+### Fixed
+- **TypeError crash on `/api/album/extras`** — `bios` was declared `const` in a destructured `await Promise.all()` but then conditionally reassigned when `labelDiskCache` held a canonical label for the album. In Node.js strict mode this throws `TypeError: Assignment to constant variable`, returning a 500 for any album whose label had been scanned. Changed to `let`.
+- **NaN score chip** — Pitchfork score guard used `!= null` which passes NaN through; `parseFloat` on a malformed JSON value can return NaN. Changed guard to `typeof score === "number" && !isNaN(score)`.
+- **Silent catch comment** — malformed JSON-LD block catch in `fetchPitchfork` now explicitly notes why silence is safe (loop continues to the next script tag).
+
+## [1.5.91] — 2026-06-25
+
+### Added
+- **Pitchfork reviews** — album detail modal now shows the Pitchfork editorial review and score when available. The score (e.g. 8.4) and a **BNM** badge for Best New Music are displayed alongside year and label. Pitchfork is preferred over Qobuz as the review source; Qobuz still provides label/year when Pitchfork has the review. Falls back silently for albums with no Pitchfork review (older albums or those not reviewed). Review body extracted from JSON-LD `reviewBody` field; score from `__PRELOADED_STATE__`.
+
+## [1.5.90] — 2026-06-25
+
+### Fixed
+- **Share card shows previous album on now-playing screen (correct fix)** — the v1.5.89 attempt wrote to `currentAlbum`, a variable not declared in the mini-transport IIFE, causing a sloppy-mode scope leak with unreliable results. Root cause: `window.__currentAlbum` is only written by `openAlbum()` when the modal opens, so it never updates as tracks advance. Fix: `updateNpScreen()` now writes the live `now_playing` object to `window.__currentNpData` on every poll; the share button reads this when the modal is in NP mode, bypassing `window.__currentAlbum` entirely.
+
+## [1.5.89] — 2026-06-25
+
+### Fixed
+- **Share card stale album on now-playing screen** — when the next album started playing, the share card still showed the previous album. `updateNpScreen()` was updating the display but not `window.__currentAlbum`, so the share button read the album that was playing when the modal first opened. Fixed by syncing `currentAlbum` / `window.__currentAlbum` whenever the album art key changes (the same point where the artwork is refreshed).
+
 ## [1.5.88] — 2026-06-25
 
 ### Fixed

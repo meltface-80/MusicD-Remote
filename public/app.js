@@ -840,6 +840,24 @@
       });
       modalSub.appendChild(labelBtn);
     }
+    if (extras.album && typeof extras.album.score === "number" && !isNaN(extras.album.score)) {
+      const sep = document.createElement("span");
+      sep.className = "modal-subtitle-year";
+      sep.textContent = " · ";
+      modalSub.appendChild(sep);
+      const chip = document.createElement("span");
+      chip.className = "pitchfork-score";
+      chip.textContent = extras.album.score % 1 === 0
+        ? extras.album.score + ".0"
+        : String(extras.album.score);
+      modalSub.appendChild(chip);
+      if (extras.album.isBestNewMusic) {
+        const bnm = document.createElement("span");
+        bnm.className = "bnm-badge";
+        bnm.textContent = "BNM";
+        modalSub.appendChild(bnm);
+      }
+    }
 
     // 2. Album bio section (description + source link; year/label now in subtitle)
     if (extras.album && (extras.album.description || (extras.album.url && extras.album.source))) {
@@ -2080,6 +2098,11 @@
     const np = currentZone && currentZone.now_playing;
     if (!np) { npTrack.textContent = "—"; npArtist.textContent = ""; npAlbum.textContent = ""; return; }
 
+    // Expose live now_playing so the share button can read current album data
+    // directly rather than relying on window.__currentAlbum, which is only set
+    // when the modal opens and is never updated as tracks advance.
+    window.__currentNpData = np;
+
     npTrack.textContent  = np.line1 || "—";
     npArtist.textContent = np.line2 || "";
     npAlbum.textContent  = np.line3 || "";
@@ -2648,13 +2671,19 @@
   // Wire the share button inside the album modal
   if (modalBtn) {
     modalBtn.addEventListener("click", () => {
+      // On the now-playing screen use window.__currentNpData (updated every poll
+      // by updateNpScreen) so the card always reflects the current track, not the
+      // album that was playing when the modal first opened.
+      const npModal = document.getElementById("album-modal");
+      const isNp = npModal && npModal.classList.contains("np-mode");
+      const np = isNp && window.__currentNpData;
+      if (np) {
+        open({ title: np.line3 || "", artist: np.line2 || "", image_key: np.image_key });
+        return;
+      }
       const a = window.__currentAlbum;
       if (!a) return;
-      open({
-        title:     a.title    || "",
-        artist:    a.subtitle || "",
-        image_key: a.image_key
-      });
+      open({ title: a.title || "", artist: a.subtitle || "", image_key: a.image_key });
     });
   }
 })();

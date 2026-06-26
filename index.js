@@ -644,9 +644,10 @@ const BROWSER_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-const mbCache    = new Map();
-const qobuzCache = new Map();
-const wikiCache  = new Map();
+const mbCache       = new Map();
+const qobuzCache    = new Map();
+const pitchforkCache = new Map();
+const wikiCache     = new Map();
 let mbLastReq    = 0;
 let qobuzLastReq = 0;
 
@@ -1168,7 +1169,8 @@ function sanitizeDiscogsSearchTerm(name) {
 
 let discogsLastReq = 0;
 const discogsLogoTried = new Set(); // per-session dedup — resets on container restart
-let bandcampLastReq = 0;
+let bandcampLastReq  = 0;
+let pitchforkLastReq = 0;
 
 async function discogsWait() {
   const elapsed = Date.now() - discogsLastReq;
@@ -1946,6 +1948,20 @@ async function bandcampWait() {
   if (elapsed < 1500) await new Promise(r => setTimeout(r, 1500 - elapsed));
   bandcampLastReq = Date.now();
 }
+async function pitchforkWait() {
+  const elapsed = Date.now() - pitchforkLastReq;
+  if (elapsed < 1000) await new Promise(r => setTimeout(r, 1000 - elapsed));
+  pitchforkLastReq = Date.now();
+}
+function slugifyForPitchfork(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/['']/g, "")           // drop apostrophes before stripping
+    .replace(/[^a-z0-9\s-]/g, " ")  // non-alphanumeric → space
+    .replace(/\s+/g, "-")           // spaces → hyphens
+    .replace(/-+/g, "-")            // collapse multiple hyphens
+    .replace(/^-+|-+$/g, "");       // trim hyphens
+}
 
 // Fetch label and release year from a Bandcamp album page URL.
 // Parses all JSON-LD blocks embedded in the page and picks the MusicAlbum entry.
@@ -2356,38 +2372,113 @@ async function fetchWikipedia(title, artist) {
   return result;
 }
 
-// Combine: Qobuz preferred for the album review; Wikipedia for the artist
-// (and as fallback for the album when Qobuz has nothing).
+async function fetchPitchfork(title, artist) {
+  const key = normalize(title) + "||" + normalize(artist || "");
+  if (pitchforkCache.has(key)) return pitchforkCache.get(key);
+
+  // Use primary artist only (before collaborators)
+  const primaryArtist = String(artist || "").split(/\s*[/,&]\s*|\s+feat\.\s+/i)[0].trim();
+  const artistSlug = slugifyForPitchfork(primaryArtist);
+  const albumSlug  = slugifyForPitchfork(title);
+  if (!artistSlug || !albumSlug) { pitchforkCache.set(key, null); return null; }
+
+  const url = `https://pitchfork.com/reviews/albums/${artistSlug}-${albumSlug}/`;
+  try {
+    await pitchforkWait();
+    const html = await httpText(url, { "User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9" }, 15000);
+
+    // Extract review body from JSON-LD (schema.org Review type)
+    let description = null;
+    const ldRe = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+    let m;
+    while ((m = ldRe.exec(html)) !== null) {
+      try {
+        const obj = JSON.parse(m[1]);
+        if (obj["@type"] === "Review" && obj.reviewBody) {
+          description = stripHtml(obj.reviewBody).trim() || null;
+          break;
+        }
+      } catch (e) { /* malformed JSON-LD block — try next tag; silence safe as loop continues */ }
+    }
+
+    // Extract score and BNM flag from inline __PRELOADED_STATE__ via targeted regex
+    let score = null, isBestNewMusic = false;
+    const scoreM = html.match(/"musicRating"\s*:\s*\{[^}]*?"score"\s*:\s*(\d+(?:\.\d+)?)/);
+    if (scoreM) score = parseFloat(scoreM[1]);
+    const bnmM = html.match(/"isBestNewMusic"\s*:\s*(true|false)/);
+    if (bnmM) isBestNewMusic = bnmM[1] === "true";
+
+    if (!description && score === null) { pitchforkCache.set(key, null); return null; }
+
+    // Verify the review is for the right artist
+    if (description) {
+      const artistFirst = firstSignificantToken(primaryArtist);
+      if (artistFirst && !normalize(description).includes(artistFirst)) {
+        pitchforkCache.set(key, null);
+        return null;
+      }
+    }
+
+    const out = { description, score, isBestNewMusic, url, source: "Pitchfork" };
+    pitchforkCache.set(key, out);
+    return out;
+  } catch (e) {
+    if (DEBUG) console.error("[pitchfork]", e.message);
+    pitchforkCache.set(key, null);
+    return null;
+  }
+}
+
+// Combine: Pitchfork preferred, then Qobuz, then Wikipedia for the album review;
+// Wikipedia also used for the artist bio.
 async function fetchAlbumBios(title, artist) {
   if (!title) return null;
-  const [qobuz, wiki] = await Promise.all([
+  const [pitchfork, qobuz, wiki] = await Promise.all([
+    fetchPitchfork(title, artist).catch(() => null),
     fetchQobuz(title, artist).catch(() => null),
     fetchWikipedia(title, artist).catch(() => null)
   ]);
 
   let album = null;
-  if (qobuz && qobuz.description) {
+  if (pitchfork && pitchfork.description) {
     album = {
-      description: qobuz.description,
-      year:        qobuz.year  || (wiki && wiki.album && /(\d{4})/.exec(wiki.album.description || "") || [])[1] || null,
-      label:       qobuz.label || null,
-      url:         qobuz.url,
-      source:      "Qobuz"
+      description:    pitchfork.description,
+      year:           (qobuz && qobuz.year) || null,
+      label:          (qobuz && qobuz.label) || null,
+      url:            pitchfork.url,
+      source:         "Pitchfork",
+      score:          pitchfork.score,
+      isBestNewMusic: pitchfork.isBestNewMusic
+    };
+  } else if (qobuz && qobuz.description) {
+    album = {
+      description:    qobuz.description,
+      year:           qobuz.year  || (wiki && wiki.album && /(\d{4})/.exec(wiki.album.description || "") || [])[1] || null,
+      label:          qobuz.label || null,
+      url:            qobuz.url,
+      source:         "Qobuz",
+      score:          null,
+      isBestNewMusic: false
     };
   } else if (wiki && wiki.album) {
     album = {
-      description: wiki.album.description,
-      year:        null,
-      label:       qobuz && qobuz.label ? qobuz.label : null,
-      url:         wiki.album.url,
-      source:      "Wikipedia"
+      description:    wiki.album.description,
+      year:           null,
+      label:          (qobuz && qobuz.label) ? qobuz.label : null,
+      url:            wiki.album.url,
+      source:         "Wikipedia",
+      score:          null,
+      isBestNewMusic: false
     };
   } else if (qobuz) {
-    // Qobuz had year/label but no review
     album = {
-      description: null,
-      year:  qobuz.year, label: qobuz.label,
-      url:   qobuz.url,  source: "Qobuz"
+      description:    null,
+      year:           qobuz.year,
+      label:          qobuz.label,
+      url:            qobuz.url,
+      source:         "Qobuz",
+      score:          null,
+      isBestNewMusic: false
     };
   }
 
@@ -2398,11 +2489,6 @@ async function fetchAlbumBios(title, artist) {
     source:      "Wikipedia"
   } : null;
 
-  // Final safety net, source-agnostic (covers Wikipedia and anything added
-  // later, not just Qobuz). Decode entities once more and confirm a leading
-  // "Artist -" dateline, if any, matches the requested artist. A blank bio
-  // beats a wrong one, so drop only the description — the card and the in-app
-  // bio both read this single field.
   if (album && album.description) {
     album.description = decodeEntities(album.description).trim();
     const lead = leadArtistOf(album.description);
@@ -3719,7 +3805,7 @@ app.get("/api/album/extras", async (req, res) => {
   const artist = String(req.query.artist || "");
   if (!title) return res.status(400).json({ error: "title query parameter required" });
   try {
-    const [year, bios] = await Promise.all([
+    let [year, bios] = await Promise.all([
       fetchAlbumYear(title, artist),
       fetchAlbumBios(title, artist)
     ]);
