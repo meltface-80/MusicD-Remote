@@ -2098,11 +2098,6 @@
     const np = currentZone && currentZone.now_playing;
     if (!np) { npTrack.textContent = "—"; npArtist.textContent = ""; npAlbum.textContent = ""; return; }
 
-    // Expose live now_playing so the share button can read current album data
-    // directly rather than relying on window.__currentAlbum, which is only set
-    // when the modal opens and is never updated as tracks advance.
-    window.__currentNpData = np;
-
     npTrack.textContent  = np.line1 || "—";
     npArtist.textContent = np.line2 || "";
     npAlbum.textContent  = np.line3 || "";
@@ -2306,6 +2301,13 @@
   // Let the modal code refresh bar visibility + the now-playing screen on open,
   // tab switch, and close.
   window.__refreshTransport = () => { refreshVisibility(); updateNpScreen(); };
+
+  // Live getter for the share button: reads currentZone directly at call time
+  // instead of relying on a mirrored global kept in sync by convention. This
+  // is the third fix for "share card shows a stale album" (v1.5.89, v1.5.90,
+  // and the Queue-tab case fixed alongside this getter) — a read-time getter
+  // makes the whole class of "forgot to update the mirror" bug impossible.
+  window.__getCurrentNp = () => currentZone && currentZone.now_playing;
 
   btnVol.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -2671,12 +2673,13 @@
   // Wire the share button inside the album modal
   if (modalBtn) {
     modalBtn.addEventListener("click", () => {
-      // On the now-playing screen use window.__currentNpData (updated every poll
-      // by updateNpScreen) so the card always reflects the current track, not the
-      // album that was playing when the modal first opened.
+      // On the now-playing screen read the live zone state directly via
+      // window.__getCurrentNp() (not a mirrored global) so the card always
+      // reflects the current track, not the album that was playing when the
+      // modal first opened, regardless of which modal tab is active.
       const npModal = document.getElementById("album-modal");
       const isNp = npModal && npModal.classList.contains("np-mode");
-      const np = isNp && window.__currentNpData;
+      const np = isNp && window.__getCurrentNp && window.__getCurrentNp();
       if (np) {
         open({ title: np.line3 || "", artist: np.line2 || "", image_key: np.image_key });
         return;

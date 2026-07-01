@@ -2,6 +2,12 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.93] — 2026-07-01
+
+### Fixed
+- **Share card still showed a stale album on the now-playing screen's Queue tab** — this is the third fix for this bug class (see v1.5.89, v1.5.90). Root cause: `window.__currentNpData` was only reassigned inside `updateNpScreen()`, which bails out via `onNowPlayingScreen()` unless the modal's "Now playing" tab (not "Queue") is the active tab. So switching to the Queue tab while a track advanced left the share button reading the last track that was showing before the tab switch. Instead of adding a fourth sync point, removed the mirrored global entirely: the share button now calls `window.__getCurrentNp()`, a getter that reads `currentZone.now_playing` live at click time, so there is no cached value to go stale regardless of which modal tab is active.
+- **Error class:** repeated "stale mirrored global" bug — a value copied into `window.*` by convention at one call site, read from a different call site, going out of sync whenever a new UI state (Queue tab) bypassed the sync point. Replaced the mirror with a read-time getter to make the whole class structurally impossible going forward.
+
 ## [1.5.92] — 2026-06-26
 
 ### Fixed
