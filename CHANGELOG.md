@@ -2,6 +2,12 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.96] — 2026-07-02
+
+### Fixed
+- **"Play on" zone list rows overlapped with many zones (user report, 18 zones)** — `.np-device-list` is a flex column capped at 240px with `overflow-y: auto`, but the zone rows kept their default `flex-shrink: 1`, so instead of overflowing into the scrollbar they were compressed below their text height (18 rows ≈ 718px squeezed into 240px → ~11px boxes under 18px text). Rows now have `flex-shrink: 0`, restoring natural height and scrolling; the list cap was also raised to `min(48vh, 320px)` so tall screens show more zones at once. Applies to both the mini-transport and now-playing zone pickers (shared class); verified no ancestor clips the taller popover on small phones.
+- **Error class:** flex children inside a max-height scroll container shrink before the container scrolls — the scrollbar never appears because the compressed content technically "fits". Other capped lists were audited: none share the pattern (block layouts or uncapped sheets).
+
 ## [1.5.95] — 2026-07-02
 
 ### Fixed
