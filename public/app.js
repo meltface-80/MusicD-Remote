@@ -84,7 +84,7 @@
 
   // ----- Sizing -----
   // Returns a fixed album count that exactly fills the responsive grid:
-  //   Phone portrait   → 3×3  = 9   (landscape is blocked via CSS overlay)
+  //   Phone portrait   → 3 cols × measured rows (min 3×3 = 9, capped at 96)
   //   Tablet portrait  → 5×4  = 20
   //   Tablet landscape → 7×3  = 21
   //   Desktop          → 9×5  = 45
@@ -94,8 +94,36 @@
     const isLandscape = w > h;
     const minDim = Math.min(w, h);  // smallest dimension identifies phones vs tablets
 
-    // Phone (narrowest side < 768 px)
-    if (minDim < 768) return 9;     // 3×3, landscape is blocked via CSS overlay
+    // Phone (narrowest side < 768 px): 3 columns fixed (landscape is blocked
+    // via CSS overlay). Measure how many rows of square-art tiles fit the
+    // visible grid area so tall phones fill the screen instead of always 3×3.
+    if (minDim < 768) {
+      const COLS = 3;
+      const ROW_GAP = 12;        // matches phone .album-grid gap: 12px 8px (style.css)
+      const COL_GAP = 8;
+      // Tile text block on phones (style.css ≤767px rules):
+      //   6px .album-meta margin-top + 2 title lines (12px × 1.25) +
+      //   1px flex gap + 1 artist line (10.5px × 1.3 ≈ 13.65px) ≈ 51px
+      const TEXT_BLOCK = 51;
+      const mainEl = document.querySelector("main");
+      let gridW, availH;
+      if (mainEl && mainEl.clientHeight > 0) {
+        const cs = window.getComputedStyle(mainEl);
+        gridW = mainEl.clientWidth
+          - (parseFloat(cs.paddingLeft) || 0)
+          - (parseFloat(cs.paddingRight) || 0);
+        availH = mainEl.clientHeight;
+      } else {
+        // Pre-layout fallback: 14px <main> side padding, ~210px for the
+        // top bar plus <main> vertical padding.
+        gridW = w - 28;
+        availH = h - 210;
+      }
+      const tileW = (gridW - (COLS - 1) * COL_GAP) / COLS;
+      const tileH = tileW + TEXT_BLOCK;
+      const rows = Math.max(3, Math.floor((availH + ROW_GAP) / (tileH + ROW_GAP)));
+      return Math.min(96, COLS * rows);  // 96 = server max for ?count (index.js)
+    }
 
     // Desktop (width ≥ 1200 px)
     if (w >= 1200) return 45;       // 9×5

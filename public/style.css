@@ -65,7 +65,7 @@ button { font-family: inherit; }
    can't drift when the iOS keyboard opens — the keyboard just overlays the
    bottom of the screen (and the transport bar). */
 .app {
-  position: fixed; inset: 0;
+  position: fixed; top: 0; right: 0; bottom: 0; left: 0; /* inset longhands: old Safari (<14.1) */
   z-index: 0;
   display: flex; flex-direction: column;
 }
@@ -160,6 +160,14 @@ button { font-family: inherit; }
   .topbar-row { gap: 16px; }
   .primary-btn { width: auto; padding: 0 16px; }
   .primary-btn span { display: inline; }
+}
+
+/* Compact top bar on narrow phones — nine controls plus the album count
+   share one row, so shrink the buttons instead of crushing the count. */
+@media (max-width: 479px) {
+  .topbar-controls { gap: 5px; }
+  .topbar .icon-btn, .topbar .primary-btn { width: 34px; height: 34px; }
+  .topbar .icon-btn svg, .topbar .primary-btn svg { width: 18px; height: 18px; }
 }
 
 /* ------------------------------------------------------------------ */
@@ -355,17 +363,9 @@ main {
   .album-grid { grid-template-columns: repeat(9, minmax(0, 1fr)); gap: 18px 12px; }
 }
 
-/* Title/subtitle scale — clamp to 2 lines at compact column counts */
-@media (max-width: 767px) and (min-width: 360px) {
-  .album-title {
-    font-size: 12px; line-height: 1.25;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-  .album-artist { font-size: 11px; }
-}
+/* Title/subtitle scale — phone (≤767px) rules live AFTER the base
+   .album-meta/.album-title/.album-artist rules further down, because equal
+   specificity means source order decides and the base rules would win. */
 /* Tablet portrait (5 cols) and tablet landscape (7 cols) also need small text */
 @media (min-width: 768px) and (max-width: 1199px) {
   .album-title {
@@ -415,7 +415,7 @@ main {
 }
 .album-art-wrap.no-image::after {
   content: "♪";
-  position: absolute; inset: 0;
+  position: absolute; top: 0; right: 0; bottom: 0; left: 0; /* inset longhands: old Safari */
   display: flex; align-items: center; justify-content: center;
   font-size: 48px; color: var(--text-faint);
 }
@@ -508,6 +508,25 @@ main {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* Phone (3 cols, ≤767px): tighter gutters and a trimmed tile text block so
+   more rows fit; title clamps to 2 lines on all phones, including <360px.
+   NOTE: keep the TEXT_BLOCK / gap constants in computeAlbumCount() (app.js)
+   in sync with the values below. This block sits after the base
+   .album-meta/.album-title/.album-artist rules on purpose — equal
+   specificity means source order decides. */
+@media (max-width: 767px) {
+  .album-grid { gap: 12px 8px; }
+  .album-meta { margin-top: 6px; gap: 1px; }
+  .album-title {
+    font-size: 12px; line-height: 1.25;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .album-artist { font-size: 10.5px; }
+}
+
 /* Skeleton */
 .album.skeleton .album-art-wrap {
   background: linear-gradient(110deg,
@@ -533,11 +552,11 @@ main {
 /*  Modal — mobile first (stacked), side-by-side ≥ 720px              */
 /* ------------------------------------------------------------------ */
 .modal {
-  position: fixed; inset: 0; z-index: 50;
+  position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 50; /* inset longhands: old Safari */
   display: flex; padding: 0; align-items: stretch;
 }
 .modal-backdrop {
-  position: absolute; inset: 0;
+  position: absolute; top: 0; right: 0; bottom: 0; left: 0;
   background: rgba(0,0,0,.55);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
@@ -923,13 +942,13 @@ main {
 /*  Share card overlay                                                 */
 /* ------------------------------------------------------------------ */
 .share-overlay {
-  position: fixed; inset: 0; z-index: 60;
+  position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 60; /* inset longhands: old Safari */
   display: flex; align-items: center; justify-content: center;
   padding: 20px;
   font-family: "Manrope", var(--font-sans);
 }
 .share-backdrop {
-  position: absolute; inset: 0;
+  position: absolute; top: 0; right: 0; bottom: 0; left: 0;
   background: rgba(0,0,0,.65);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
@@ -1593,9 +1612,9 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 /* ------------------------------------------------------------------ */
 /*  Settings bottom sheet                                              */
 /* ------------------------------------------------------------------ */
-.settings-overlay { position: fixed; inset: 0; z-index: 90; display: flex; align-items: flex-end; }
+.settings-overlay { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 90; display: flex; align-items: flex-end; }
 .settings-overlay.hidden { display: none; }
-.settings-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.5); -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); }
+.settings-backdrop { position: absolute; top: 0; right: 0; bottom: 0; left: 0; background: rgba(0,0,0,.5); -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); }
 .settings-sheet {
   position: relative; width: 100%; max-width: 720px; margin: 0 auto;
   background: var(--bg-elev);
@@ -1731,9 +1750,9 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 /* ------------------------------------------------------------------ */
 /*  Confirm dialog                                                     */
 /* ------------------------------------------------------------------ */
-.confirm-overlay { position: fixed; inset: 0; z-index: 95; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.confirm-overlay { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 95; display: flex; align-items: center; justify-content: center; padding: 24px; }
 .confirm-overlay.hidden { display: none; }
-.confirm-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.55); -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); }
+.confirm-backdrop { position: absolute; top: 0; right: 0; bottom: 0; left: 0; background: rgba(0,0,0,.55); -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); }
 .confirm-box {
   position: relative; width: 100%; max-width: 340px;
   background: var(--bg-elev); border: 1px solid var(--border);
@@ -1821,7 +1840,7 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 /* ------------------------------------------------------------------ */
 .landscape-block {
   display: none;
-  position: fixed; inset: 0; z-index: 1000;
+  position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 1000; /* inset longhands: old Safari */
   background: var(--bg);
   flex-direction: column; align-items: center; justify-content: center;
   gap: 20px;
@@ -2144,3 +2163,36 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
   padding: 4px 10px; border-radius: 8px; background: var(--bg-elev);
 }
 .tidal-auth-wait { font-size: 12px; color: var(--text-faint); text-align: center; }
+
+/* ------------------------------------------------------------------ */
+/*  Old-Safari (<15) square-tile fallback                              */
+/*  Safari before 15 ignores aspect-ratio, so each cover <img>'s       */
+/*  intrinsic size inflates/deflates the grid tracks (unequal columns, */
+/*  colliding text). Prop the square with a padding-top spacer and     */
+/*  absolutely position the artwork. Modern browsers never apply any   */
+/*  of this: the whole block is inside @supports not (aspect-ratio).   */
+/* ------------------------------------------------------------------ */
+@supports not (aspect-ratio: 1 / 1) {
+  .album-art-wrap::before { content: ""; display: block; padding-top: 100%; }
+  .album-art-wrap img { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+  .album-art-wrap.is-label-logo img { top: 10%; left: 10%; width: 80%; height: 80%; }
+
+  /* Label text tile is a COLUMN flex of <span> words — the ::before
+     spacer would become the first flex item and stack a square's worth
+     of height above the words. Drop the spacer and prop the square with
+     50% vertical padding on a zero-height content box instead: the words
+     stay flex-centred on the content box, which sits exactly at the
+     vertical middle of the square. width:auto lets the grid stretch the
+     border box to the track despite content-box sizing. */
+  .album-art-wrap.is-label-text::before { content: none; }
+  .album-art-wrap.is-label-text {
+    box-sizing: content-box; width: auto; height: 0; padding: 50% 8px;
+  }
+  /* cqw units don't exist on old Safari — give the words a fixed size */
+  .album-art-wrap.is-label-text span { font-size: 12px; }
+
+  /* Album modal artwork relies on aspect-ratio too */
+  .modal-art { position: relative; }
+  .modal-art::before { content: ""; display: block; padding-top: 100%; }
+  .modal-art img { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+}

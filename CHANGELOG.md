@@ -2,6 +2,18 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.99] — 2026-07-02
+
+### Fixed
+- **Old iPad (Safari < 15) rendered a broken wall grid** — ragged, unequal columns with tile text colliding between neighbours. Root cause: `aspect-ratio: 1/1` (the rule keeping covers square) is ignored by Safari before 15, so each cover's intrinsic image size inflated/deflated its grid track. Fixed with the classic padding-top square fallback + absolutely positioned artwork inside `@supports not (aspect-ratio: 1/1)` — old Safari gets uniform square tiles back (wall, label tiles, and album-modal art); modern browsers are untouched. Also converted all `inset: 0` shorthands (unsupported < Safari 14.1) to longhands — this was silently breaking the album modal and other overlay backdrops on the same devices.
+- **Phone wall always rendered exactly 9 albums, leaving a dead bottom third on tall phones** — `computeAlbumCount()` hardcoded `return 9` for any phone. It now measures the real grid area and fills as many 3-column rows as fit (e.g. 12 albums on a Pro-class iPhone), min 9, capped at the server's 96.
+- **Phone title/artist sizing rules were dead CSS** — the phone typography block sat *before* the base rules with equal specificity, so source order made phones silently render the desktop 14px sizes. Moved after the base rules (and the 2-line title clamp now also applies below 360px viewport width).
+- **Error class:** the iPad bug was *modern-CSS-without-fallback* (aspect-ratio, inset) — fixed with `@supports`-gated fallbacks and longhands; the dead phone CSS was an *equal-specificity source-order* trap — documented in place so the block isn't moved again.
+
+### Changed
+- **Compact top bar on narrow phones (≤ 479px)** — the nine controls shrink to 34px with tighter gaps so the album count no longer truncates to "8,07…".
+- **Denser phone wall** — tighter grid gutters (12×8px) and a slimmer tile text block (12px 2-line titles, 10.5px artist) so more music fits each screenful.
+
 ## [1.5.98] — 2026-07-02
 
 ### Changed
