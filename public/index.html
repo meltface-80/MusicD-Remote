@@ -461,28 +461,30 @@ sudo systemctl disable roon-random-albums</pre>
   <!-- Qobuz browser overlay (self-contained; does not touch the album grid) -->
   <div id="qobuz-overlay" class="settings-overlay hidden" role="dialog" aria-modal="true" aria-label="Qobuz">
     <div class="settings-backdrop" data-qobuz-close></div>
-    <div class="settings-sheet">
-      <div class="settings-grip"></div>
-      <div class="settings-head">
-        <h2>Qobuz</h2>
-        <button id="qobuz-overlay-close" class="icon-btn" type="button" aria-label="Close" data-qobuz-close>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
-        </button>
-      </div>
-      <div class="qobuz-search-row">
-        <input id="qobuz-search-input" type="search" placeholder="Search the Qobuz catalogue…"
-               autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
-        <button id="qobuz-search-clear" class="hidden" type="button" aria-label="Clear search">×</button>
-      </div>
-      <div id="qobuz-tabs" role="tablist" aria-label="Qobuz sections">
-        <button class="qobuz-tab is-active" type="button" role="tab" data-qtab="new-releases">New Releases</button>
-        <button class="qobuz-tab" type="button" role="tab" data-qtab="best-sellers">Best Sellers</button>
-        <button class="qobuz-tab" type="button" role="tab" data-qtab="most-streamed">Most Streamed</button>
-        <button class="qobuz-tab" type="button" role="tab" data-qtab="press-awards">Press Awards</button>
-        <button class="qobuz-tab" type="button" role="tab" data-qtab="editor-picks">Editor's Picks</button>
+    <div class="settings-sheet qobuz-sheet">
+      <div class="qobuz-pin">
+        <div class="settings-grip"></div>
+        <div class="settings-head">
+          <h2>Qobuz</h2>
+          <button id="qobuz-overlay-close" class="icon-btn" type="button" aria-label="Close" data-qobuz-close>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <div class="qobuz-search-row">
+          <input id="qobuz-search-input" type="search" placeholder="Search the Qobuz catalogue…"
+                 autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          <button id="qobuz-search-clear" class="hidden" type="button" aria-label="Clear search">×</button>
+        </div>
+        <div id="qobuz-tabs" role="tablist" aria-label="Qobuz sections">
+          <button class="qobuz-tab is-active" type="button" role="tab" data-qtab="new-releases">New Releases</button>
+          <button class="qobuz-tab" type="button" role="tab" data-qtab="best-sellers">Best Sellers</button>
+          <button class="qobuz-tab" type="button" role="tab" data-qtab="most-streamed">Most Streamed</button>
+          <button class="qobuz-tab" type="button" role="tab" data-qtab="press-awards">Press Awards</button>
+          <button class="qobuz-tab" type="button" role="tab" data-qtab="editor-picks">Editor's Picks</button>
+        </div>
       </div>
       <div id="qobuz-nr-status" class="settings-token-status"></div>
       <div id="qobuz-artist-head" class="hidden"></div>

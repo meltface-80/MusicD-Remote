@@ -3169,14 +3169,48 @@
     if (detailEl) { detailEl.classList.add("hidden"); detailEl.innerHTML = ""; detailEl.dataset.albumId = ""; }
   }
 
+  // Empty the shared list containers (rows, artist strip/header, load-more).
+  // During a view change this runs only once the fetch outcome (results, empty,
+  // or error) is ready — never before the fetch — so the previous rows stay on
+  // screen under the "Searching…"/"Loading…" status instead of the content area
+  // blanking while a request is in flight.
+  function resetListContainers() {
+    if (listEl) listEl.innerHTML = "";
+    if (artistHeadEl) { artistHeadEl.classList.add("hidden"); artistHeadEl.innerHTML = ""; }
+    if (artistsEl) { artistsEl.classList.add("hidden"); artistsEl.innerHTML = ""; }
+    if (loadMoreEl) loadMoreEl.classList.add("hidden");
+  }
+
+  // Reset the search box UI (text, × visibility, pending debounce) WITHOUT
+  // navigating — for callers about to render a view of their own (tab click,
+  // overlay open). clearSearch() adds the return-to-tab navigation on top.
+  function resetSearchBox() {
+    if (searchInput) searchInput.value = "";
+    if (searchClear) searchClear.classList.add("hidden");
+    clearSearchTimer();
+  }
+
+  // Cancel the search: empty the box, drop any pending debounce, and return to
+  // the last active tab. Shared by the × clear button and the Escape key.
+  function clearSearch() {
+    resetSearchBox();
+    applySearch("");
+  }
+
   // Fully hide the overlay (and any open detail). Called only from the popstate
   // handler when the view stack empties — never directly from a close affordance,
   // so viewStack and the history stack can never get out of step.
   function hideOverlay() {
     overlay.classList.add("hidden");
     viewStack = [];
+    reqSeq++; // orphan any in-flight fetch — a late response must not repopulate the hidden overlay
     clearSearchTimer();
     clearDetail();
+    // Drop this session's rows/status now — the deferred-clear render path
+    // would otherwise show them again on the next open while its first
+    // request is still in flight.
+    resetListContainers();
+    if (statusEl) statusEl.textContent = "";
   }
 
   // All back/close affordances (× button, backdrop, ‹ Back, Esc) step back one
@@ -3188,16 +3222,13 @@
   overlay.querySelectorAll("[data-qobuz-close]").forEach(el => el.addEventListener("click", goBack));
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || !overlayVisible()) return;
-    // Escape while typing in the search box clears/dismisses the field — the
-    // standard cancel-my-input gesture must not blow away the whole overlay.
+    // Escape while typing must never navigate the overlay away. Staged:
+    // 1st press (text present) clears the box — same action as the × button —
+    // keeping focus so the user can retype; 2nd press (box empty) just blurs;
+    // only with the input unfocused does Escape step back / close.
     if (searchInput && document.activeElement === searchInput) {
-      if (searchInput.value) {
-        searchInput.value = "";
-        if (searchClear) searchClear.classList.add("hidden");
-        clearSearchTimer();
-        applySearch("");
-      }
-      searchInput.blur();
+      if (searchInput.value) clearSearch();
+      else searchInput.blur();
       return;
     }
     goBack();
@@ -3386,6 +3417,12 @@
   // DOM (rows, artist strip/header, load-more state) was only hidden, never
   // cleared, so this is pure visibility work — no refetch.
   function restoreListAfterDetail(top) {
+    // Exception: with deferred clearing, stale rows stay clickable while a
+    // request is in flight, so a detail can be opened from a view whose fetch
+    // was then orphaned (reqSeq bumped) before it ever loaded. Restoring
+    // visibility would present the PREVIOUS view's rows under a stuck
+    // "Searching…"/"Loading…" status — refetch the view instead.
+    if (!top.loaded) { render(top); return; }
     clearDetail();
     if (searchRowEl) searchRowEl.classList.remove("hidden");
     if (tabsEl) tabsEl.classList.remove("hidden");
@@ -3555,14 +3592,25 @@
       return;
     }
 
-    // Common reset for list-type views (tab / search / artist).
+    // Common chrome for list-type views (tab / search / artist). The list
+    // containers are deliberately NOT cleared here: the previous rows stay
+    // visible under the "Searching…"/"Loading…" status while the request is in
+    // flight, and resetListContainers() swaps them out only once the outcome
+    // (results, empty, or error) is known. The full-screen sheet plus this
+    // deferred clear is what stops the overlay collapsing/jumping during a
+    // search. The reqSeq guard already drops stale responses, so an old view's
+    // rows can never be appended into the new view.
     clearDetail();
     if (searchRowEl) searchRowEl.classList.remove("hidden");
     if (tabsEl) tabsEl.classList.remove("hidden");
     if (statusEl) statusEl.classList.remove("hidden");
-    if (listEl) { listEl.classList.remove("hidden"); listEl.innerHTML = ""; }
-    if (artistHeadEl) { artistHeadEl.classList.add("hidden"); artistHeadEl.innerHTML = ""; }
-    if (artistsEl) { artistsEl.classList.add("hidden"); artistsEl.innerHTML = ""; }
+    if (listEl) listEl.classList.remove("hidden");
+    // Chrome that ACTS on the outgoing view must not stay live while the
+    // replacement view's request is in flight: the artist header's ‹ Back
+    // would pop a level below the view just selected, and Load more would
+    // page a list that's about to be replaced. Rows and artist chips stay —
+    // taps on them push views that self-heal (see restoreListAfterDetail).
+    if (artistHeadEl) artistHeadEl.classList.add("hidden");
     if (loadMoreEl) loadMoreEl.classList.add("hidden");
 
     try {
@@ -3570,6 +3618,7 @@
         if (statusEl) statusEl.textContent = "Loading new releases…";
         const j = await qFetch("/api/qobuz/new-releases?days=30");
         if (seq !== reqSeq) return; // a newer view/request superseded this one
+        resetListContainers();
         const albums = j.albums || [];
         view.loaded = true;
         if (statusEl) statusEl.textContent = albums.length
@@ -3580,6 +3629,7 @@
         if (statusEl) statusEl.textContent = "Loading…";
         const j = await qFetch("/api/qobuz/featured?type=" + encodeURIComponent(view.tab));
         if (seq !== reqSeq) return; // superseded
+        resetListContainers();
         const albums = j.albums || [];
         view.loaded = true;
         if (statusEl) statusEl.textContent = albums.length
@@ -3590,6 +3640,7 @@
         if (statusEl) statusEl.textContent = "Searching…";
         const j = await qFetch("/api/qobuz/search?q=" + encodeURIComponent(view.query) + "&offset=0");
         if (seq !== reqSeq) return; // superseded (e.g. user kept typing)
+        resetListContainers();
         const albums = j.albums || [];
         const artists = j.artists || [];
         view.offset = 0;
@@ -3609,6 +3660,7 @@
         const j = await qFetch("/api/qobuz/artist-albums?artist_id=" +
           encodeURIComponent(view.artistId) + "&offset=0");
         if (seq !== reqSeq) return; // superseded
+        resetListContainers();
         const albums = j.albums || [];
         view.offset = 0;
         view.hasMore = !!j.has_more;
@@ -3624,6 +3676,9 @@
       }
     } catch (e) {
       if (seq !== reqSeq) return; // superseded — a newer render owns the status line
+      // The failed view owns the content area now — stale rows from the
+      // previous view would be misleading under an error message, so clear.
+      resetListContainers();
       const notConnected = /not connected/i.test(e.message);
       if (statusEl) statusEl.textContent = notConnected
         ? "Connect your Qobuz account in Settings to browse Qobuz."
@@ -3703,12 +3758,7 @@
   }
 
   if (searchClear) {
-    searchClear.addEventListener("click", () => {
-      if (searchInput) searchInput.value = "";
-      searchClear.classList.add("hidden");
-      clearSearchTimer();
-      applySearch("");
-    });
+    searchClear.addEventListener("click", clearSearch);
   }
 
   if (tabsEl) {
@@ -3716,9 +3766,7 @@
       const tab = t.dataset.qtab;
       if (!tab || !viewStack.length) return;
       activeTab = tab;
-      clearSearchTimer();
-      if (searchInput) searchInput.value = "";
-      if (searchClear) searchClear.classList.add("hidden");
+      resetSearchBox();
       const top = currentView();
       if (top.kind === "tab" && top.tab === tab) { updateTabActive(); return; }
       replaceTop({ kind: "tab", tab });
@@ -3728,9 +3776,7 @@
   btn.addEventListener("click", () => {
     if (overlayVisible()) return;
     activeTab = "new-releases";
-    clearSearchTimer();
-    if (searchInput) searchInput.value = "";
-    if (searchClear) searchClear.classList.add("hidden");
+    resetSearchBox();
     viewStack = [{ kind: "tab", tab: "new-releases" }];
     history.pushState({ qz: 1 }, ""); // a back press from the root view closes the overlay
     overlay.classList.remove("hidden");

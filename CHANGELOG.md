@@ -2,6 +2,22 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.96] — 2026-07-02
+
+### Fixed
+- **"Play on" zone list rows overlapped with many zones (user report, 18 zones)** — `.np-device-list` is a flex column capped at 240px with `overflow-y: auto`, but the zone rows kept their default `flex-shrink: 1`, so instead of overflowing into the scrollbar they were compressed below their text height (18 rows ≈ 718px squeezed into 240px → ~11px boxes under 18px text). Rows now have `flex-shrink: 0`, restoring natural height and scrolling; the list cap was also raised to `min(48vh, 320px)` so tall screens show more zones at once. Applies to both the mini-transport and now-playing zone pickers (shared class); verified no ancestor clips the taller popover on small phones.
+- **Error class:** flex children inside a max-height scroll container shrink before the container scrolls — the scrollbar never appears because the compressed content technically "fits". Other capped lists were audited: none share the pattern (block layouts or uncapped sheets).
+
+## [1.5.95] — 2026-07-02
+
+### Fixed
+- **Qobuz sheet "ducked" out of view while typing a search** — the overlay reused the settings bottom-sheet styles, whose height is content-driven (`max-height: 86vh`, bottom-anchored). Every search render cleared the list before fetching, so the sheet collapsed to a sliver while the request was in flight, then re-expanded when results arrived. The Qobuz overlay is now full screen with a fixed, viewport-driven height (`100dvh`, `100vh` fallback, safe-area aware) so the frame never moves, and list content is cleared only when a fetch outcome (results, empty, or error) is ready — previous rows stay visible under the "Searching…" status.
+- **Error class:** content-driven container height + clear-before-fetch — two independently reasonable pieces (a collapsible bottom sheet, an eager list reset) composing into a layout jump. Fixed at both altitudes: fixed-height frame and deferred clearing.
+
+### Changed
+- **Qobuz overlay is persistent until closed manually** — grip, title/close, search box, and tab chips are pinned to the top of the sheet while the list scrolls beneath. Escape while typing now clears the search text (like the × button) instead of navigating; a second Escape blurs the input; only with the input unfocused does Escape step back/close. Typing can never dismiss the overlay.
+- Stale chrome from an outgoing view (artist "‹ Back" header, "Load more") is hidden the moment a new view's request starts, so it can't act on the view being replaced; opening a detail from a still-loading list self-heals by refetching on back; closing the overlay orphans any in-flight request so late responses can't repopulate it.
+
 ## [1.5.94] — 2026-07-02
 
 ### Added
