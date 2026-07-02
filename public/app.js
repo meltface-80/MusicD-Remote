@@ -3110,50 +3110,149 @@
 })();
 
 /* ------------------------------------------------------------------ */
-/*  Qobuz New Releases — self-contained overlay (browse + favourite)   */
-/*  Isolated from the album grid / labels / filters; uses only the     */
-/*  Qobuz API endpoints and window.__showToast.                        */
+/*  Qobuz browser — self-contained overlay (tabs, search, artists,     */
+/*  album detail + favourite). Isolated from the album grid / labels / */
+/*  filters; uses only the Qobuz API endpoints and window.__showToast. */
 /* ------------------------------------------------------------------ */
 (function initQobuzNewReleases() {
-  const btn      = document.getElementById("qobuz-toggle");
-  const overlay  = document.getElementById("qobuz-overlay");
-  const listEl   = document.getElementById("qobuz-nr-list");
-  const statusEl = document.getElementById("qobuz-nr-status");
-  const detailEl = document.getElementById("qobuz-nr-detail");
+  const btn          = document.getElementById("qobuz-toggle");
+  const overlay      = document.getElementById("qobuz-overlay");
+  const listEl       = document.getElementById("qobuz-nr-list");
+  const statusEl     = document.getElementById("qobuz-nr-status");
+  const detailEl     = document.getElementById("qobuz-nr-detail");
+  const searchInput  = document.getElementById("qobuz-search-input");
+  const searchClear  = document.getElementById("qobuz-search-clear");
+  const tabsEl       = document.getElementById("qobuz-tabs");
+  const artistHeadEl = document.getElementById("qobuz-artist-head");
+  const artistsEl    = document.getElementById("qobuz-artists");
+  const loadMoreEl   = document.getElementById("qobuz-load-more");
+  const searchRowEl  = overlay ? overlay.querySelector(".qobuz-search-row") : null;
   if (!btn || !overlay) return;
+
+  const PAGE_SIZE = 50;
 
   const toast = (msg, kind) => { if (window.__showToast) window.__showToast(msg, kind); };
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
     c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
   const overlayVisible = () => !overlay.classList.contains("hidden");
-  const detailVisible  = () => !!detailEl && !detailEl.classList.contains("hidden");
 
-  // Fully hide the overlay (and any open detail).
+  // View stack — one entry per history level pushed while the overlay is open.
+  // Each entry: { kind: 'tab', tab } | { kind: 'search', query }
+  //           | { kind: 'artist', artistId, artistName } | { kind: 'detail', album, rowFavBtn }
+  // plus bookkeeping set while shown: loaded (fetch completed), offset/hasMore/
+  // limit (paged views), snapshot (rendered list DOM saved when an artist view
+  // covers this one — see snapshotListInto/restoreSnapshot).
+  // Invariant: entry N was created by the history.pushState carrying {qz: N+1…},
+  // so history.state.qz always equals the stack depth for the current entry.
+  // The popstate handler RECONCILES against that depth rather than blindly
+  // popping once, which keeps the stack correct across Forward presses and
+  // multi-step history jumps. Tab switches and new searches REPLACE the top
+  // entry (no push) — they are siblings, not depth.
+  let viewStack = [];
+  const currentView = () => viewStack[viewStack.length - 1] || null;
+
+  // Last tab the user explicitly selected — where clearing the search returns to.
+  let activeTab = "new-releases";
+
+  // Monotonic request counter: every render/loadMore bumps it and any response
+  // arriving after a newer request started is dropped (out-of-order guard).
+  let reqSeq = 0;
+
+  let searchTimer = null;
+
+  function clearSearchTimer() {
+    if (searchTimer) { clearTimeout(searchTimer); searchTimer = null; }
+  }
+
+  function clearDetail() {
+    if (detailEl) { detailEl.classList.add("hidden"); detailEl.innerHTML = ""; detailEl.dataset.albumId = ""; }
+  }
+
+  // Fully hide the overlay (and any open detail). Called only from the popstate
+  // handler when the view stack empties — never directly from a close affordance,
+  // so viewStack and the history stack can never get out of step.
   function hideOverlay() {
     overlay.classList.add("hidden");
-    if (detailEl) { detailEl.classList.add("hidden"); detailEl.innerHTML = ""; detailEl.dataset.albumId = ""; }
+    viewStack = [];
+    clearSearchTimer();
+    clearDetail();
   }
 
   // All back/close affordances (× button, backdrop, ‹ Back, Esc) step back one
   // history level via history.back(), which the popstate handler turns into
-  // detail → list → closed. This also makes the Android/browser back button
+  // detail → list → … → closed. This also makes the Android/browser back button
   // behave naturally instead of leaving the page.
   const goBack = () => history.back();
 
   overlay.querySelectorAll("[data-qobuz-close]").forEach(el => el.addEventListener("click", goBack));
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && overlayVisible()) goBack();
+    if (e.key !== "Escape" || !overlayVisible()) return;
+    // Escape while typing in the search box clears/dismisses the field — the
+    // standard cancel-my-input gesture must not blow away the whole overlay.
+    if (searchInput && document.activeElement === searchInput) {
+      if (searchInput.value) {
+        searchInput.value = "";
+        if (searchClear) searchClear.classList.add("hidden");
+        clearSearchTimer();
+        applySearch("");
+      }
+      searchInput.blur();
+      return;
+    }
+    goBack();
   });
 
-  // Browser / Android back: while the overlay is open, unwind detail→list→closed
-  // rather than navigating away. No-op when the overlay isn't open, so the rest
+  // Browser / Android back (and Forward): while the overlay is open, reconcile
+  // the view stack against the depth stored in history.state instead of blindly
+  // popping once — Forward presses and multi-step jumps then self-heal rather
+  // than corrupting the stack. No-op when the overlay isn't open, so the rest
   // of the app (which uses no history state) is unaffected.
-  window.addEventListener("popstate", () => {
+  window.addEventListener("popstate", (e) => {
     if (!overlayVisible()) return;
-    if (detailVisible()) showList();
-    else hideOverlay();
+    const depth = (e.state && Number.isFinite(e.state.qz)) ? e.state.qz : 0;
+    if (depth >= viewStack.length) {
+      // Forward into a history entry whose view we already discarded — bounce
+      // back to the deepest view we still have. The resulting popstate lands
+      // exactly on depth === viewStack.length and no-ops.
+      if (depth > viewStack.length) history.go(viewStack.length - depth);
+      return;
+    }
+    const popped = currentView();
+    viewStack.length = depth;
+    if (!viewStack.length) { hideOverlay(); return; }
+    const top = currentView();
+    // A view covered by an artist push had its rendered list saved — restore
+    // it without refetching (keeps loaded pages + scroll position).
+    if (top.snapshot) { restoreSnapshot(top); return; }
+    // Leaving a detail view: the list underneath is still intact in the DOM
+    // (detail only hides it), so just restore visibility — no refetch.
+    if (popped && popped.kind === "detail") { restoreListAfterDetail(top); return; }
+    render(top);
   });
+
+  // Push a deeper view (detail or artist): one viewStack entry + one history entry.
+  function pushView(view) {
+    const covered = currentView();
+    // An artist view re-renders the shared list DOM, so save the covered list
+    // view's rendered state first for an instant, fetch-free back. (Detail
+    // views only hide the list — no snapshot needed. Views that never finished
+    // loading have nothing worth saving; back will refetch them instead.)
+    if (view.kind === "artist" && covered && covered.kind !== "detail" && covered.loaded) {
+      snapshotListInto(covered);
+    }
+    viewStack.push(view);
+    history.pushState({ qz: viewStack.length }, "");
+    render(view);
+  }
+
+  // Replace the top view (tab switch, new search): no history entry, so the
+  // 1:1 viewStack ↔ history invariant is preserved.
+  function replaceTop(view) {
+    if (!viewStack.length) return;
+    viewStack[viewStack.length - 1] = view;
+    render(view);
+  }
 
   // Reflect favourite state on a button (added = in the user's Qobuz library).
   function setFavState(button, added) {
@@ -3192,17 +3291,185 @@
     }
   }
 
-  // Return from the album detail view to the releases list.
-  function showList() {
-    if (detailEl) { detailEl.classList.add("hidden"); detailEl.innerHTML = ""; detailEl.dataset.albumId = ""; }
-    if (listEl) listEl.classList.remove("hidden");
-    if (statusEl) statusEl.classList.remove("hidden");
+  // Highlight the active tab chip. While a search / artist / detail view is on
+  // top, no chip is highlighted.
+  function updateTabActive() {
+    if (!tabsEl) return;
+    const top = currentView();
+    const active = top && top.kind === "tab" ? top.tab : null;
+    tabsEl.querySelectorAll(".qobuz-tab").forEach(t =>
+      t.classList.toggle("is-active", t.dataset.qtab === active));
   }
 
-  // Open an isolated detail view for a Qobuz album: artwork, editorial review
-  // (fetched by title+artist via /api/album/extras — no Roon needed), and a
-  // favourite toggle kept in sync with the originating list row's button.
-  async function openDetail(album, rowFavBtn) {
+  // Muted edition/version suffix ("Deluxe Edition" …) shown after a title.
+  const versionHtml = (a) =>
+    a.version ? ' <span class="qobuz-nr-version">' + esc(a.version) + '</span>' : '';
+
+  // Build one album row (art, title [+ version], artist, date, favourite button;
+  // row tap → detail). Shared by every list-type view.
+  function buildAlbumRow(a) {
+    const row = document.createElement("div");
+    row.className = "qobuz-nr-row";
+    const art = a.image
+      ? '<img class="qobuz-nr-art" loading="lazy" alt="" src="' + esc(a.image) + '">'
+      : '<div class="qobuz-nr-art"></div>';
+    const date = a.release_date ? '<div class="qobuz-nr-date">' + esc(a.release_date) + '</div>' : '';
+    row.innerHTML = art +
+      '<div class="qobuz-nr-meta">' +
+        '<div class="qobuz-nr-title">'  + esc(a.title) + versionHtml(a) + '</div>' +
+        '<div class="qobuz-nr-artist">' + esc(a.artist) + '</div>' +
+        date +
+      '</div>';
+    const fav = document.createElement("button");
+    fav.type = "button";
+    fav.className = "qobuz-nr-fav";
+    // Tappable toggle: "✓ Added" (in library) ⇄ "♥ Favourite". Initial state
+    // reflects the user's current Qobuz favourites (added here or elsewhere).
+    setFavState(fav, !!a.favourited);
+    fav.addEventListener("click", (e) => { e.stopPropagation(); toggleFavourite(a.id, fav); });
+    row.appendChild(fav);
+    // Tapping the row (anywhere but the favourite button) opens the detail view.
+    row.addEventListener("click", () => pushView({ kind: "detail", album: a, rowFavBtn: fav }));
+    return row;
+  }
+
+  function appendAlbumRows(albums) {
+    if (!listEl) return;
+    const frag = document.createDocumentFragment();
+    for (const a of albums) frag.appendChild(buildAlbumRow(a));
+    listEl.appendChild(frag);
+  }
+
+  // Artist matches strip shown above search results (offset 0 only).
+  function renderArtistStrip(artists) {
+    if (!artistsEl) return;
+    artistsEl.innerHTML = "";
+    if (!artists.length) { artistsEl.classList.add("hidden"); return; }
+    for (const ar of artists) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "qobuz-artist-chip";
+      chip.innerHTML =
+        (ar.image
+          ? '<img class="qobuz-artist-thumb" loading="lazy" alt="" src="' + esc(ar.image) + '">'
+          : '<div class="qobuz-artist-thumb"></div>') +
+        '<span class="qobuz-artist-name">' + esc(ar.name) + '</span>';
+      chip.addEventListener("click", () =>
+        pushView({ kind: "artist", artistId: ar.id, artistName: ar.name }));
+      artistsEl.appendChild(chip);
+    }
+    artistsEl.classList.remove("hidden");
+  }
+
+  // Artist discography header: ‹ Back affordance (same as detail) + round thumb + name.
+  function renderArtistHead(image, name) {
+    if (!artistHeadEl) return;
+    artistHeadEl.innerHTML = "";
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "qobuz-nr-back";
+    back.textContent = "‹ Back";
+    back.addEventListener("click", goBack);
+    const head = document.createElement("div");
+    head.className = "qobuz-artist-head-row";
+    head.innerHTML =
+      (image
+        ? '<img class="qobuz-artist-head-art" alt="" src="' + esc(image) + '">'
+        : '<div class="qobuz-artist-head-art"></div>') +
+      '<div class="qobuz-artist-head-name">' + esc(name) + '</div>';
+    artistHeadEl.appendChild(back);
+    artistHeadEl.appendChild(head);
+    artistHeadEl.classList.remove("hidden");
+  }
+
+  // Restore the list chrome after popping a detail view. The underlying list
+  // DOM (rows, artist strip/header, load-more state) was only hidden, never
+  // cleared, so this is pure visibility work — no refetch.
+  function restoreListAfterDetail(top) {
+    clearDetail();
+    if (searchRowEl) searchRowEl.classList.remove("hidden");
+    if (tabsEl) tabsEl.classList.remove("hidden");
+    if (statusEl) statusEl.classList.remove("hidden");
+    if (listEl) listEl.classList.remove("hidden");
+    if (artistHeadEl) artistHeadEl.classList.toggle("hidden", top.kind !== "artist");
+    if (artistsEl) artistsEl.classList.toggle("hidden",
+      !(top.kind === "search" && artistsEl.childElementCount > 0));
+    if (loadMoreEl) loadMoreEl.classList.toggle("hidden", !top.hasMore);
+    syncChrome(top);
+  }
+
+  // Save a rendered list view's DOM (rows, artist strip/header, status,
+  // load-more state) onto its stack entry before an artist view takes over the
+  // shared containers. Moving nodes into fragments keeps their listeners alive.
+  function snapshotListInto(view) {
+    const snap = {
+      list:          document.createDocumentFragment(),
+      artists:       document.createDocumentFragment(),
+      head:          document.createDocumentFragment(),
+      artistsHidden: artistsEl ? artistsEl.classList.contains("hidden") : true,
+      headHidden:    artistHeadEl ? artistHeadEl.classList.contains("hidden") : true,
+      status:        statusEl ? statusEl.textContent : "",
+      loadMoreHidden: loadMoreEl ? loadMoreEl.classList.contains("hidden") : true
+    };
+    if (listEl) while (listEl.firstChild) snap.list.appendChild(listEl.firstChild);
+    if (artistsEl) while (artistsEl.firstChild) snap.artists.appendChild(artistsEl.firstChild);
+    if (artistHeadEl) while (artistHeadEl.firstChild) snap.head.appendChild(artistHeadEl.firstChild);
+    view.snapshot = snap;
+  }
+
+  // Put a snapshotted list view back on screen — no refetch, loaded pages and
+  // favourite-button state (live nodes) survive intact.
+  function restoreSnapshot(view) {
+    const snap = view.snapshot;
+    view.snapshot = null;
+    reqSeq++; // orphan any in-flight fetch owned by the view being discarded
+    clearDetail();
+    if (searchRowEl) searchRowEl.classList.remove("hidden");
+    if (tabsEl) tabsEl.classList.remove("hidden");
+    if (statusEl) { statusEl.classList.remove("hidden"); statusEl.textContent = snap.status; }
+    if (listEl) { listEl.innerHTML = ""; listEl.appendChild(snap.list); listEl.classList.remove("hidden"); }
+    if (artistHeadEl) {
+      artistHeadEl.innerHTML = "";
+      artistHeadEl.appendChild(snap.head);
+      artistHeadEl.classList.toggle("hidden", snap.headHidden);
+    }
+    if (artistsEl) {
+      artistsEl.innerHTML = "";
+      artistsEl.appendChild(snap.artists);
+      artistsEl.classList.toggle("hidden", snap.artistsHidden);
+    }
+    if (loadMoreEl) loadMoreEl.classList.toggle("hidden", snap.loadMoreHidden);
+    syncChrome(view);
+  }
+
+  // Keep the search box, its clear button, and the tab chips consistent with
+  // the view being shown — a popstate can resurface a search whose text a tab
+  // switch cleared, and vice versa. Never fight live typing: the input is left
+  // alone while focused.
+  function syncChrome(view) {
+    updateTabActive();
+    if (!searchInput) return;
+    if (document.activeElement !== searchInput) {
+      if (view.kind === "search") searchInput.value = view.query;
+      else if (view.kind === "tab") searchInput.value = "";
+    }
+    if (searchClear) searchClear.classList.toggle("hidden", !searchInput.value);
+  }
+
+  // fetch + JSON with a clean error path: non-JSON bodies (proxy or maintenance
+  // HTML pages) surface as "HTTP nnn" instead of a JSON SyntaxError message.
+  async function qFetch(url) {
+    const r = await fetch(url);
+    let j = null;
+    try { j = await r.json(); } catch (e) { /* non-JSON body — handled below via r.ok/status */ }
+    if (!r.ok) throw new Error((j && j.error) || ("HTTP " + r.status));
+    return j || {};
+  }
+
+  // Isolated detail view for a Qobuz album: artwork, editorial review (fetched
+  // by title+artist via /api/album/extras — no Roon needed), and a favourite
+  // toggle kept in sync with the originating list row's button.
+  async function renderDetail(album, rowFavBtn) {
     if (!detailEl) return;
     detailEl.innerHTML = "";
     detailEl.dataset.albumId = album.id;
@@ -3220,7 +3487,7 @@
         ? '<img class="qobuz-nr-detail-art" alt="" src="' + esc(album.image) + '">'
         : '<div class="qobuz-nr-detail-art"></div>') +
       '<div class="qobuz-nr-detail-meta">' +
-        '<div class="qobuz-nr-detail-title">'  + esc(album.title)  + '</div>' +
+        '<div class="qobuz-nr-detail-title">' + esc(album.title) + versionHtml(album) + '</div>' +
         '<div class="qobuz-nr-detail-artist">' + esc(album.artist) + '</div>' +
         (album.release_date ? '<div class="qobuz-nr-date">' + esc(album.release_date) + '</div>' : '') +
       '</div>';
@@ -3239,11 +3506,7 @@
     detailEl.appendChild(head);
     detailEl.appendChild(favBtn);
     detailEl.appendChild(review);
-
-    if (listEl) listEl.classList.add("hidden");
-    if (statusEl) statusEl.classList.add("hidden");
     detailEl.classList.remove("hidden");
-    history.pushState({ qz: "detail" }, ""); // so back returns to the list, not the wall
 
     try {
       const params = new URLSearchParams({ title: album.title || "", artist: album.artist || "" });
@@ -3274,58 +3537,204 @@
     }
   }
 
-  async function load() {
-    showList(); // reset to the list (in case a detail view was open)
-    if (statusEl) statusEl.textContent = "Loading new releases…";
-    if (listEl) listEl.innerHTML = "";
+  // Single dispatcher: renders whatever view is on top of the stack.
+  async function render(view) {
+    const seq = ++reqSeq;
+    // Any view change invalidates a pending debounced search — without this, a
+    // timer set while typing could fire after the user navigated (e.g. into a
+    // detail view) and replace what they're looking at with search results.
+    clearSearchTimer();
+    syncChrome(view);
+
+    if (view.kind === "detail") {
+      // Detail takes over the sheet: hide the list chrome but leave its DOM
+      // intact so back is instant (see restoreListAfterDetail).
+      [searchRowEl, tabsEl, statusEl, artistHeadEl, artistsEl, listEl, loadMoreEl]
+        .forEach(el => { if (el) el.classList.add("hidden"); });
+      renderDetail(view.album, view.rowFavBtn);
+      return;
+    }
+
+    // Common reset for list-type views (tab / search / artist).
+    clearDetail();
+    if (searchRowEl) searchRowEl.classList.remove("hidden");
+    if (tabsEl) tabsEl.classList.remove("hidden");
+    if (statusEl) statusEl.classList.remove("hidden");
+    if (listEl) { listEl.classList.remove("hidden"); listEl.innerHTML = ""; }
+    if (artistHeadEl) { artistHeadEl.classList.add("hidden"); artistHeadEl.innerHTML = ""; }
+    if (artistsEl) { artistsEl.classList.add("hidden"); artistsEl.innerHTML = ""; }
+    if (loadMoreEl) loadMoreEl.classList.add("hidden");
+
     try {
-      const r = await fetch("/api/qobuz/new-releases?days=30");
-      const j = await r.json();
-      if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
-      const albums = j.albums || [];
-      if (statusEl) statusEl.textContent = albums.length
-        ? (albums.length + " releases in the last " + (j.days || 30) + " days")
-        : ("No new releases found in the last " + (j.days || 30) + " days.");
-      const frag = document.createDocumentFragment();
-      for (const a of albums) {
-        const row = document.createElement("div");
-        row.className = "qobuz-nr-row";
-        const art = a.image
-          ? '<img class="qobuz-nr-art" loading="lazy" alt="" src="' + esc(a.image) + '">'
-          : '<div class="qobuz-nr-art"></div>';
-        const date = a.release_date ? '<div class="qobuz-nr-date">' + esc(a.release_date) + '</div>' : '';
-        row.innerHTML = art +
-          '<div class="qobuz-nr-meta">' +
-            '<div class="qobuz-nr-title">'  + esc(a.title)  + '</div>' +
-            '<div class="qobuz-nr-artist">' + esc(a.artist) + '</div>' +
-            date +
-          '</div>';
-        const fav = document.createElement("button");
-        fav.type = "button";
-        fav.className = "qobuz-nr-fav";
-        // Tappable toggle: "✓ Added" (in library) ⇄ "♥ Favourite". Initial state
-        // reflects the user's current Qobuz favourites (added here or elsewhere).
-        setFavState(fav, !!a.favourited);
-        fav.addEventListener("click", (e) => { e.stopPropagation(); toggleFavourite(a.id, fav); });
-        row.appendChild(fav);
-        // Tapping the row (anywhere but the favourite button) opens the detail view.
-        row.addEventListener("click", () => openDetail(a, fav));
-        frag.appendChild(row);
+      if (view.kind === "tab" && view.tab === "new-releases") {
+        if (statusEl) statusEl.textContent = "Loading new releases…";
+        const j = await qFetch("/api/qobuz/new-releases?days=30");
+        if (seq !== reqSeq) return; // a newer view/request superseded this one
+        const albums = j.albums || [];
+        view.loaded = true;
+        if (statusEl) statusEl.textContent = albums.length
+          ? (albums.length + " releases in the last " + (j.days || 30) + " days")
+          : ("No new releases found in the last " + (j.days || 30) + " days.");
+        appendAlbumRows(albums);
+      } else if (view.kind === "tab") {
+        if (statusEl) statusEl.textContent = "Loading…";
+        const j = await qFetch("/api/qobuz/featured?type=" + encodeURIComponent(view.tab));
+        if (seq !== reqSeq) return; // superseded
+        const albums = j.albums || [];
+        view.loaded = true;
+        if (statusEl) statusEl.textContent = albums.length
+          ? (albums.length + " albums")
+          : "No albums found.";
+        appendAlbumRows(albums);
+      } else if (view.kind === "search") {
+        if (statusEl) statusEl.textContent = "Searching…";
+        const j = await qFetch("/api/qobuz/search?q=" + encodeURIComponent(view.query) + "&offset=0");
+        if (seq !== reqSeq) return; // superseded (e.g. user kept typing)
+        const albums = j.albums || [];
+        const artists = j.artists || [];
+        view.offset = 0;
+        view.hasMore = !!j.has_more;
+        view.limit = j.limit || PAGE_SIZE;
+        view.loaded = true;
+        renderArtistStrip(artists);
+        if (statusEl) statusEl.textContent = albums.length
+          ? ((j.total || albums.length) + " albums for “" + view.query + "”")
+          : (artists.length
+              ? ("No album matches for “" + view.query + "” — artists below")
+              : ("No results for “" + view.query + "”"));
+        appendAlbumRows(albums);
+        if (loadMoreEl) loadMoreEl.classList.toggle("hidden", !view.hasMore);
+      } else if (view.kind === "artist") {
+        if (statusEl) statusEl.textContent = "Loading…";
+        const j = await qFetch("/api/qobuz/artist-albums?artist_id=" +
+          encodeURIComponent(view.artistId) + "&offset=0");
+        if (seq !== reqSeq) return; // superseded
+        const albums = j.albums || [];
+        view.offset = 0;
+        view.hasMore = !!j.has_more;
+        view.limit = j.limit || PAGE_SIZE;
+        view.loaded = true;
+        const artist = j.artist || {};
+        renderArtistHead(artist.image || null, artist.name || view.artistName || "");
+        if (statusEl) statusEl.textContent = albums.length
+          ? ((j.total || albums.length) + " albums")
+          : "No albums found.";
+        appendAlbumRows(albums);
+        if (loadMoreEl) loadMoreEl.classList.toggle("hidden", !view.hasMore);
       }
-      if (listEl) listEl.appendChild(frag);
     } catch (e) {
+      if (seq !== reqSeq) return; // superseded — a newer render owns the status line
       const notConnected = /not connected/i.test(e.message);
       if (statusEl) statusEl.textContent = notConnected
-        ? "Connect your Qobuz account in Settings to see new releases."
+        ? "Connect your Qobuz account in Settings to browse Qobuz."
         : ("Couldn't load: " + e.message);
     }
   }
 
+  // Append the next page of a paged view (search / artist). offset advances by
+  // the server's page limit; the server says whether more pages exist
+  // (has_more) — it knows the raw page length, which the client cannot infer
+  // once malformed items have been filtered out.
+  async function loadMore() {
+    const view = currentView();
+    if (!view || (view.kind !== "search" && view.kind !== "artist") || !view.hasMore) return;
+    if (!loadMoreEl || loadMoreEl.disabled) return;
+    const seq = ++reqSeq;
+    const nextOffset = (view.offset || 0) + (view.limit || PAGE_SIZE);
+    loadMoreEl.disabled = true;
+    loadMoreEl.textContent = "Loading…";
+    try {
+      const url = view.kind === "search"
+        ? "/api/qobuz/search?q=" + encodeURIComponent(view.query) + "&offset=" + nextOffset
+        : "/api/qobuz/artist-albums?artist_id=" + encodeURIComponent(view.artistId) + "&offset=" + nextOffset;
+      const j = await qFetch(url);
+      if (seq !== reqSeq) return; // superseded — the view was replaced meanwhile
+      view.offset = nextOffset;
+      view.hasMore = !!j.has_more;
+      view.limit = j.limit || view.limit || PAGE_SIZE;
+      appendAlbumRows(j.albums || []);
+      loadMoreEl.classList.toggle("hidden", !view.hasMore);
+    } catch (e) {
+      if (seq === reqSeq) toast("Couldn't load more: " + e.message, "error");
+    } finally {
+      loadMoreEl.disabled = false;
+      loadMoreEl.textContent = "Load more";
+    }
+  }
+  if (loadMoreEl) loadMoreEl.addEventListener("click", loadMore);
+
+  // Apply the current search box value: ≥2 chars starts/updates a search view;
+  // an empty box returns from search to the last active tab. Always REPLACES
+  // the top view (search is a sibling of the tabs, not a deeper level).
+  function applySearch(q, explicit) {
+    if (!overlayVisible() || !viewStack.length) return;
+    const top = currentView();
+    if (!q) {
+      if (top.kind === "search") replaceTop({ kind: "tab", tab: activeTab });
+      return;
+    }
+    if (q.length < 2) {
+      // Too short for a useful catalog query. The debounce path just waits for
+      // more input, but an explicit Enter deserves feedback, not silence.
+      if (explicit && statusEl) statusEl.textContent = "Type at least 2 characters to search.";
+      return;
+    }
+    if (top.kind === "search" && top.query === q) return; // unchanged
+    replaceTop({ kind: "search", query: q });
+  }
+
+  if (searchInput) {
+    // Debounced live search: 450 ms after the last keystroke.
+    searchInput.addEventListener("input", () => {
+      if (searchClear) searchClear.classList.toggle("hidden", !searchInput.value);
+      clearSearchTimer();
+      const q = searchInput.value.trim();
+      if (!q) { applySearch(""); return; } // clearing reverts immediately
+      searchTimer = setTimeout(() => { searchTimer = null; applySearch(q); }, 450);
+    });
+    // Enter searches immediately (and dismisses the mobile keyboard).
+    searchInput.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      clearSearchTimer();
+      applySearch(searchInput.value.trim(), true);
+      searchInput.blur();
+    });
+  }
+
+  if (searchClear) {
+    searchClear.addEventListener("click", () => {
+      if (searchInput) searchInput.value = "";
+      searchClear.classList.add("hidden");
+      clearSearchTimer();
+      applySearch("");
+    });
+  }
+
+  if (tabsEl) {
+    tabsEl.querySelectorAll(".qobuz-tab").forEach(t => t.addEventListener("click", () => {
+      const tab = t.dataset.qtab;
+      if (!tab || !viewStack.length) return;
+      activeTab = tab;
+      clearSearchTimer();
+      if (searchInput) searchInput.value = "";
+      if (searchClear) searchClear.classList.add("hidden");
+      const top = currentView();
+      if (top.kind === "tab" && top.tab === tab) { updateTabActive(); return; }
+      replaceTop({ kind: "tab", tab });
+    }));
+  }
+
   btn.addEventListener("click", () => {
     if (overlayVisible()) return;
-    history.pushState({ qz: "list" }, ""); // a back press from the list closes the overlay
+    activeTab = "new-releases";
+    clearSearchTimer();
+    if (searchInput) searchInput.value = "";
+    if (searchClear) searchClear.classList.add("hidden");
+    viewStack = [{ kind: "tab", tab: "new-releases" }];
+    history.pushState({ qz: 1 }, ""); // a back press from the root view closes the overlay
     overlay.classList.remove("hidden");
-    load();
+    render(currentView());
   });
 })();
 

@@ -2010,3 +2010,87 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 .qobuz-nr-fav.is-done { color: var(--accent); border-color: var(--accent); opacity: 0.85; }
 .qobuz-nr-fav:disabled { cursor: default; }
 
+/* Muted "version" suffix (e.g. Deluxe Edition) after album titles */
+.qobuz-nr-version { font-weight: 400; font-size: 12px; opacity: 0.6; }
+
+/* Qobuz browser: catalogue search box */
+.qobuz-search-row { position: relative; display: flex; margin: 2px 0 8px; }
+.qobuz-search-row input {
+  flex: 1; min-width: 0;
+  background: var(--bg-elev-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 36px 8px 10px;
+  color: var(--text); font-size: 14px; font-family: inherit;
+  -webkit-appearance: none; appearance: none;
+}
+.qobuz-search-row input:focus { outline: none; border-color: var(--accent); }
+.qobuz-search-row input::placeholder { color: var(--text-faint); }
+.qobuz-search-row input::-webkit-search-cancel-button { display: none; }
+#qobuz-search-clear {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  width: 28px; height: 28px; border-radius: 50%;
+  border: none; background: none; cursor: pointer;
+  color: var(--text-dim); font-size: 18px; line-height: 1; padding: 0;
+}
+#qobuz-search-clear:active { color: var(--text); }
+
+/* Qobuz browser: tab chips (horizontal scroll, no wrap) */
+#qobuz-tabs {
+  display: flex; gap: 8px; overflow-x: auto;
+  padding: 2px 0 8px; margin-bottom: 4px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+#qobuz-tabs::-webkit-scrollbar { display: none; }
+.qobuz-tab {
+  flex-shrink: 0; white-space: nowrap; cursor: pointer;
+  padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--bg-elev);
+  color: var(--text-dim); font-size: 13px; font-family: inherit;
+}
+.qobuz-tab.is-active { color: var(--accent); border-color: var(--accent); }
+
+/* Qobuz browser: artist matches strip (search results) */
+#qobuz-artists {
+  display: flex; gap: 12px; overflow-x: auto;
+  padding: 4px 0 10px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+#qobuz-artists::-webkit-scrollbar { display: none; }
+.qobuz-artist-chip {
+  flex-shrink: 0; width: 68px;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: var(--text); font-family: inherit;
+}
+.qobuz-artist-thumb {
+  width: 56px; height: 56px; border-radius: 50%;
+  object-fit: cover; background: var(--bg-elev);
+}
+.qobuz-artist-name {
+  max-width: 68px; font-size: 11px; color: var(--text-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Qobuz browser: artist discography header */
+#qobuz-artist-head { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 10px; }
+.qobuz-artist-head-row { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.qobuz-artist-head-art {
+  flex-shrink: 0; width: 64px; height: 64px; border-radius: 50%;
+  object-fit: cover; background: var(--bg-elev);
+}
+.qobuz-artist-head-name {
+  min-width: 0; font-weight: 700; font-size: 17px;
+  overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Qobuz browser: load-more paging button */
+#qobuz-load-more {
+  width: 100%; margin: 10px 0 4px; padding: 10px 12px;
+  border-radius: 8px; border: 1px solid var(--border);
+  background: var(--bg-elev); color: var(--text);
+  font-size: 13px; font-family: inherit; cursor: pointer;
+}
+#qobuz-load-more:active { border-color: var(--accent); }
+#qobuz-load-more:disabled { cursor: default; opacity: 0.7; }
+

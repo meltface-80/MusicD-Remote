@@ -725,6 +725,19 @@ let qobuzUsername    = _persisted.qobuzUsername    || "";
 let qobuzPasswordMd5 = _persisted.qobuzPasswordMd5 || "";
 let qobuzToken       = _persisted.qobuzToken       || "";
 let qobuzDisplayName = _persisted.qobuzDisplayName || "";
+// Short-lived cache of the user's favourited album ids, shared by all Qobuz
+// browse routes so each page render doesn't re-fetch the full favourites list
+// (which risks 429s). null = stale/never fetched.
+let qobuzFavIdsCache = null;        // Set of album ids, or null when stale
+let qobuzFavIdsCacheAt = 0;         // epoch ms of last successful fetch
+let qobuzFavIdsPending = null;      // in-flight fetch promise — concurrent callers share it
+const QOBUZ_FAV_CACHE_MS = 60 * 1000;
+const QOBUZ_FAV_STALE_MAX_MS = 10 * 60 * 1000; // never serve marks older than this on error
+// Featured/browse lists change slowly (~daily) but each tab tap would otherwise
+// hit the rate-limit-sensitive unofficial API. Cache the RAW item arrays per
+// type; favourite flags are applied per request from the (fresher) favIds cache.
+const qobuzFeaturedCache = new Map(); // type → { items, at }
+const QOBUZ_FEATURED_CACHE_MS = 10 * 60 * 1000;
 
 // In-memory Maps — primary lookup path.
 const labelDiskCache = new Map();  // album key → label name
@@ -3436,7 +3449,8 @@ app.post("/api/settings/label-folder-depth", (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Qobuz (UNOFFICIAL API) — new releases + add-to-favourites only. See lib/qobuz.js.
+// Qobuz (UNOFFICIAL API) — new releases, featured lists, catalog search,
+// artist discographies + favourites. See lib/qobuz.js.
 // Uses the LMS/Lyrion Qobuz plugin's app_id; against Qobuz ToS; user's own
 // account; no streaming/downloading (Roon streams). Use at your own risk.
 // ---------------------------------------------------------------------------
@@ -3476,6 +3490,84 @@ function qobuzReleaseTs(a) {
   return null;
 }
 
+// Shared album→JSON normalizer for every album-returning Qobuz route.
+// `favIds` is a Set of the user's favourited album ids (strings).
+function normalizeQobuzAlbum(a, favIds) {
+  return {
+    id:           String(a.id),
+    title:        a.title || "",
+    version:      a.version || null,
+    artist:       (a.artist && a.artist.name) || (a.performer && a.performer.name) || "",
+    artist_id:    (a.artist && a.artist.id != null) ? String(a.artist.id) : null,
+    image:        qobuz.pickImage(a),
+    released_at:  qobuzReleaseTs(a),
+    release_date: a.release_date_original || null,
+    favourited:   favIds.has(String(a.id))
+  };
+}
+
+// Normalize a raw Qobuz items array, skipping malformed entries without an id.
+function normalizeQobuzAlbums(items, favIds) {
+  const albums = [];
+  for (const a of items || []) {
+    if (!a || !a.id) continue;
+    albums.push(normalizeQobuzAlbum(a, favIds));
+  }
+  return albums;
+}
+
+// Shared HTTP status mapping for Qobuz route failures: 429 passes through,
+// "not connected" is the caller's fault (400), everything else is upstream (502).
+function qobuzErrorStatus(e) {
+  return e && e.code === 429 ? 429 : (/not connected/i.test(e.message) ? 400 : 502);
+}
+
+// Non-negative integer `offset` query param, defaulting to 0.
+function parseOffsetParam(req) {
+  const offset = parseInt(req.query.offset, 10);
+  return (Number.isFinite(offset) && offset > 0) ? offset : 0;
+}
+
+// The user's favourited album ids, cached for QOBUZ_FAV_CACHE_MS so several
+// browse routes don't each hammer favorite/getUserFavoriteIds (429 risk).
+// Concurrent callers on a cold cache share one in-flight fetch. Best-effort:
+// on fetch failure, returns the previous cache if it isn't older than
+// QOBUZ_FAV_STALE_MAX_MS, otherwise an empty Set — the list still renders,
+// just without favourite marks (matching the old per-request behaviour).
+async function getQobuzFavIdsCached() {
+  if (qobuzFavIdsCache && (Date.now() - qobuzFavIdsCacheAt) < QOBUZ_FAV_CACHE_MS) {
+    return qobuzFavIdsCache;
+  }
+  if (qobuzFavIdsPending) return qobuzFavIdsPending;
+  qobuzFavIdsPending = (async () => {
+    try {
+      const ids = await qobuzWithToken(t => qobuz.getFavoriteAlbumIds(t));
+      qobuzFavIdsCache = ids;
+      qobuzFavIdsCacheAt = Date.now();
+      return ids;
+    } catch (e) {
+      if (DEBUG) console.error("[qobuz] favourite-ids lookup failed:", e.message);
+      if (qobuzFavIdsCache && (Date.now() - qobuzFavIdsCacheAt) < QOBUZ_FAV_STALE_MAX_MS) {
+        return qobuzFavIdsCache;
+      }
+      return new Set();
+    } finally {
+      qobuzFavIdsPending = null;
+    }
+  })();
+  return qobuzFavIdsPending;
+}
+
+// Raw featured items per type, cached for QOBUZ_FEATURED_CACHE_MS — tab
+// flapping in the UI must not translate into repeated upstream calls.
+async function getFeaturedItemsCached(type) {
+  const hit = qobuzFeaturedCache.get(type);
+  if (hit && (Date.now() - hit.at) < QOBUZ_FEATURED_CACHE_MS) return hit.items;
+  const items = await qobuzWithToken(t => qobuz.getFeaturedAlbums(t, type, 150));
+  qobuzFeaturedCache.set(type, { items, at: Date.now() });
+  return items;
+}
+
 // Connection status (never returns credentials).
 app.get("/api/settings/qobuz", (req, res) => {
   res.json({ connected: !!qobuzToken, username: qobuzUsername || "", displayName: qobuzDisplayName || "" });
@@ -3492,6 +3584,8 @@ app.post("/api/settings/qobuz", async (req, res) => {
     qobuzToken       = r.token;
     qobuzDisplayName = r.displayName;
     savePersistedSettings({ qobuzUsername, qobuzPasswordMd5, qobuzToken, qobuzDisplayName });
+    qobuzFavIdsCache = null; // account may have changed — drop cached favourite ids
+    qobuzFeaturedCache.clear();
     console.log("[settings] qobuz connected as " + qobuzDisplayName);
     res.json({ ok: true, displayName: qobuzDisplayName });
   } catch (e) {
@@ -3501,6 +3595,8 @@ app.post("/api/settings/qobuz", async (req, res) => {
 // Disconnect: clear all stored Qobuz credentials/token.
 app.post("/api/settings/qobuz/disconnect", (req, res) => {
   qobuzUsername = qobuzPasswordMd5 = qobuzToken = qobuzDisplayName = "";
+  qobuzFavIdsCache = null;
+  qobuzFeaturedCache.clear();
   savePersistedSettings({ qobuzUsername: "", qobuzPasswordMd5: "", qobuzToken: "", qobuzDisplayName: "" });
   res.json({ ok: true });
 });
@@ -3510,15 +3606,12 @@ app.get("/api/qobuz/new-releases", async (req, res) => {
   let days = parseInt(req.query.days, 10);
   if (!Number.isFinite(days) || days <= 0 || days > 365) days = 30;
   try {
-    const items = await qobuzWithToken(t => qobuz.getFeaturedAlbums(t, "new-releases-full", 150));
     // Which of these are already in the user's Qobuz favourites (any device).
-    // Best-effort: if this fails (e.g. 429), the list still renders without it.
-    let favIds = new Set();
-    try {
-      favIds = await qobuzWithToken(t => qobuz.getFavoriteAlbumIds(t));
-    } catch (e) {
-      if (DEBUG) console.error("[qobuz] favourite-ids lookup failed:", e.message);
-    }
+    // Best-effort (cached): on failure the list still renders without marks.
+    const [items, favIds] = await Promise.all([
+      getFeaturedItemsCached("new-releases-full"),
+      getQobuzFavIdsCached()
+    ]);
     const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
     const future = Date.now() + 2 * 24 * 60 * 60 * 1000; // tolerate a couple days' skew
     const albums = [];
@@ -3526,21 +3619,12 @@ app.get("/api/qobuz/new-releases", async (req, res) => {
       if (!a || !a.id) continue;
       const ts = qobuzReleaseTs(a);
       if (ts !== null && (ts < cutoff || ts > future)) continue; // outside the window
-      albums.push({
-        id:           String(a.id),
-        title:        a.title || "",
-        artist:       (a.artist && a.artist.name) || (a.performer && a.performer.name) || "",
-        image:        (a.image && (a.image.large || a.image.small || a.image.thumbnail)) || null,
-        released_at:  ts,
-        release_date: a.release_date_original || null,
-        favourited:   favIds.has(String(a.id))
-      });
+      albums.push(normalizeQobuzAlbum(a, favIds));
     }
     albums.sort((x, y) => (y.released_at || 0) - (x.released_at || 0));
     res.json({ albums, days });
   } catch (e) {
-    const code = e && e.code === 429 ? 429 : (/not connected/i.test(e.message) ? 400 : 502);
-    res.status(code).json({ error: e.message });
+    res.status(qobuzErrorStatus(e)).json({ error: e.message });
   }
 });
 
@@ -3550,10 +3634,10 @@ app.post("/api/qobuz/favorite", async (req, res) => {
   if (!albumId) return res.status(400).json({ ok: false, error: "album_id required" });
   try {
     await qobuzWithToken(t => qobuz.favoriteAlbum(t, albumId));
+    if (qobuzFavIdsCache) qobuzFavIdsCache.add(albumId); // keep cache coherent
     res.json({ ok: true });
   } catch (e) {
-    const code = e && e.code === 429 ? 429 : (/not connected/i.test(e.message) ? 400 : 502);
-    res.status(code).json({ ok: false, error: e.message });
+    res.status(qobuzErrorStatus(e)).json({ ok: false, error: e.message });
   }
 });
 
@@ -3563,10 +3647,84 @@ app.post("/api/qobuz/unfavorite", async (req, res) => {
   if (!albumId) return res.status(400).json({ ok: false, error: "album_id required" });
   try {
     await qobuzWithToken(t => qobuz.unfavoriteAlbum(t, albumId));
+    if (qobuzFavIdsCache) qobuzFavIdsCache.delete(albumId); // keep cache coherent
     res.json({ ok: true });
   } catch (e) {
-    const code = e && e.code === 429 ? 429 : (/not connected/i.test(e.message) ? 400 : 502);
-    res.status(code).json({ ok: false, error: e.message });
+    res.status(qobuzErrorStatus(e)).json({ ok: false, error: e.message });
+  }
+});
+
+// Full Qobuz catalog search (albums + artists), paged by offset. Results keep
+// Qobuz's relevance order. Artist matches are only included on the first page.
+app.get("/api/qobuz/search", async (req, res) => {
+  const q = String(req.query.q || "").trim();
+  if (!q) return res.status(400).json({ error: "q required" });
+  const offset = parseOffsetParam(req);
+  try {
+    const [r, favIds] = await Promise.all([
+      qobuzWithToken(t => qobuz.searchCatalog(t, q, 50, offset)),
+      getQobuzFavIdsCached()
+    ]);
+    const albums = normalizeQobuzAlbums(r.albums.items, favIds);
+    const artists = [];
+    if (offset === 0) {
+      for (const x of r.artists.items.slice(0, 8)) {
+        if (!x || !x.id) continue;
+        artists.push({
+          id:           String(x.id),
+          name:         x.name || "",
+          image:        qobuz.pickImage(x),
+          albums_count: x.albums_count || 0
+        });
+      }
+    }
+    // has_more is computed from the RAW page length: normalization can drop
+    // malformed items, so comparing filtered counts against Qobuz's total
+    // would leave a dead "Load more" on the last page.
+    const hasMore = offset + r.albums.items.length < r.albums.total;
+    res.json({ query: q, offset, limit: 50, total: r.albums.total, has_more: hasMore, albums, artists });
+  } catch (e) {
+    res.status(qobuzErrorStatus(e)).json({ error: e.message });
+  }
+});
+
+// A Qobuz artist's discography, paged by offset. Albums stay in Qobuz's own
+// order — sorting each 50-album page independently would make dates jump
+// around at every "Load more" seam, so no per-page re-sort here.
+app.get("/api/qobuz/artist-albums", async (req, res) => {
+  const artistId = String(req.query.artist_id || "").trim();
+  if (!artistId) return res.status(400).json({ error: "artist_id required" });
+  const offset = parseOffsetParam(req);
+  try {
+    const [r, favIds] = await Promise.all([
+      qobuzWithToken(t => qobuz.getArtist(t, artistId, 50, offset)),
+      getQobuzFavIdsCached()
+    ]);
+    const albums = normalizeQobuzAlbums(r.albums.items, favIds);
+    const hasMore = offset + r.albums.items.length < r.albums.total; // raw length — see /api/qobuz/search
+    res.json({ artist: r.artist, offset, limit: 50, total: r.albums.total, has_more: hasMore, albums });
+  } catch (e) {
+    res.status(qobuzErrorStatus(e)).json({ error: e.message });
+  }
+});
+
+// Qobuz featured/browse categories. Albums are returned in Qobuz's own order
+// (meaningful for e.g. best-sellers), so no re-sorting here.
+const QOBUZ_FEATURED_TYPES = new Set([
+  "new-releases-full", "best-sellers", "most-streamed", "press-awards",
+  "editor-picks", "qobuzissims", "ideal-discography", "recent-releases"
+]);
+app.get("/api/qobuz/featured", async (req, res) => {
+  const type = String(req.query.type || "").trim();
+  if (!QOBUZ_FEATURED_TYPES.has(type)) return res.status(400).json({ error: "invalid type" });
+  try {
+    const [items, favIds] = await Promise.all([
+      getFeaturedItemsCached(type),
+      getQobuzFavIdsCached()
+    ]);
+    res.json({ type, albums: normalizeQobuzAlbums(items, favIds) });
+  } catch (e) {
+    res.status(qobuzErrorStatus(e)).json({ error: e.message });
   }
 });
 
