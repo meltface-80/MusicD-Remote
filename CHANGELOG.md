@@ -2,6 +2,28 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.94] — 2026-07-02
+
+### Added
+- **Full Qobuz catalog access** — the Qobuz overlay is now a complete browser, not just New Releases:
+  - **Catalog search** — search the entire Qobuz catalogue (debounced live search, Enter for immediate), with album results paged 50 at a time via a Load more button and a strip of matching artists above the results.
+  - **Artist discographies** — tap an artist match to browse every album Qobuz has for them, paged.
+  - **Browse tabs** — New Releases, Best Sellers, Most Streamed, Press Awards, and Editor's Picks category chips.
+  - Every album everywhere keeps the favourite toggle (♥ Favourite ⇄ ✓ Added) and the tap-for-detail review view, so anything found can be added to (or removed from) your Qobuz library — which is what makes it appear in Roon.
+  - New endpoints: `GET /api/qobuz/search`, `GET /api/qobuz/artist-albums`, `GET /api/qobuz/featured`; new lib functions `searchCatalog`, `getArtist` (`catalog/search` / `artist/get` — unsigned endpoints, still no streaming and no app_secret). `/api/qobuz/new-releases` is unchanged.
+- **Rate-limit protection** — the user's favourite ids are cached for 60 s and shared across all browse routes (with in-flight dedup and a 10-minute stale ceiling); featured lists are cached raw for 10 minutes per category, so tab-flapping doesn't hammer the unofficial API; upstream data + favourite ids are fetched in parallel per request.
+
+### Fixed (found by the 8-angle pre-commit review of this feature)
+- **History/back robustness** — the overlay's back navigation now reconciles its view stack against the depth stored in `history.state` instead of blindly popping once, so browser Forward presses and multi-step history jumps self-heal instead of corrupting navigation.
+- **Search results survive artist detours** — opening an artist from search results snapshots the rendered list; pressing back restores it instantly (loaded pages, favourite-button state and all) with no refetch.
+- **Load more correctness** — "more pages exist" is now computed server-side from the raw page length (`has_more`); the old client-side `filtered-count < total` math could leave a dead Load more button when Qobuz returned malformed items.
+- **Artist discography paging order** — removed the server's per-page re-sort, which made release dates jump around at every Load more seam.
+- **Pending search debounce cancelled on navigation** — a 450 ms search timer could previously fire after the user had opened an album detail and replace it with search results.
+- **Escape while typing** — Escape in the search box now clears/dismisses the field instead of closing the whole overlay mid-edit.
+- **Non-JSON error bodies** — gateway/maintenance HTML error pages now surface as "HTTP nnn" instead of a JSON parse error message (JSON is parsed defensively before the ok-check).
+- **Misc UI states** — tab switches and back presses keep the search box, clear button, and tab chips in sync with the visible view; a too-short Enter press gives feedback; "no albums but artist matches" search results no longer show a contradictory "No results" line; generic not-connected copy for non-New-Releases views.
+- **Error class:** the paging and status bugs were *contract mismatches between filtered and raw counts* across the client/server seam — resolved by moving the pagination decision to the side that sees the raw data. The history bug was *convention-maintained parallel state* (view stack vs history stack) — resolved by reconciling against the authoritative copy (`history.state`) instead of mirroring by discipline, the same class as the v1.5.93 share-card fix.
+
 ## [1.5.93] — 2026-07-01
 
 ### Fixed

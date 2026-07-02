@@ -45,7 +45,7 @@
           </svg>
         </button>
 
-        <button id="qobuz-toggle" class="icon-btn" aria-label="Qobuz new releases" title="Qobuz new releases">
+        <button id="qobuz-toggle" class="icon-btn" aria-label="Qobuz" title="Qobuz">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M9 18V6l10-2v12"/>
@@ -458,13 +458,13 @@ sudo systemctl disable roon-random-albums</pre>
   </div>
 
   <!-- Settings bottom sheet -->
-  <!-- Qobuz New Releases overlay (self-contained; does not touch the album grid) -->
-  <div id="qobuz-overlay" class="settings-overlay hidden" role="dialog" aria-modal="true" aria-label="Qobuz New Releases">
+  <!-- Qobuz browser overlay (self-contained; does not touch the album grid) -->
+  <div id="qobuz-overlay" class="settings-overlay hidden" role="dialog" aria-modal="true" aria-label="Qobuz">
     <div class="settings-backdrop" data-qobuz-close></div>
     <div class="settings-sheet">
       <div class="settings-grip"></div>
       <div class="settings-head">
-        <h2>Qobuz · New Releases</h2>
+        <h2>Qobuz</h2>
         <button id="qobuz-overlay-close" class="icon-btn" type="button" aria-label="Close" data-qobuz-close>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -472,8 +472,23 @@ sudo systemctl disable roon-random-albums</pre>
           </svg>
         </button>
       </div>
+      <div class="qobuz-search-row">
+        <input id="qobuz-search-input" type="search" placeholder="Search the Qobuz catalogue…"
+               autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <button id="qobuz-search-clear" class="hidden" type="button" aria-label="Clear search">×</button>
+      </div>
+      <div id="qobuz-tabs" role="tablist" aria-label="Qobuz sections">
+        <button class="qobuz-tab is-active" type="button" role="tab" data-qtab="new-releases">New Releases</button>
+        <button class="qobuz-tab" type="button" role="tab" data-qtab="best-sellers">Best Sellers</button>
+        <button class="qobuz-tab" type="button" role="tab" data-qtab="most-streamed">Most Streamed</button>
+        <button class="qobuz-tab" type="button" role="tab" data-qtab="press-awards">Press Awards</button>
+        <button class="qobuz-tab" type="button" role="tab" data-qtab="editor-picks">Editor's Picks</button>
+      </div>
       <div id="qobuz-nr-status" class="settings-token-status"></div>
+      <div id="qobuz-artist-head" class="hidden"></div>
+      <div id="qobuz-artists" class="hidden"></div>
       <div id="qobuz-nr-list" class="qobuz-nr-list"></div>
+      <button id="qobuz-load-more" class="hidden" type="button">Load more</button>
       <div id="qobuz-nr-detail" class="qobuz-nr-detail hidden"></div>
     </div>
   </div>
@@ -596,7 +611,7 @@ sudo systemctl disable roon-random-albums</pre>
 
       <div class="settings-block">
         <div class="settings-row">
-          <span class="settings-label">Qobuz account <button class="settings-info-btn" data-info="Connects to Qobuz via the unofficial API (the Lyrion/LMS plugin's app id). Used only to list new releases and add albums to your Qobuz favourites/library — no streaming or downloading (Roon streams). Against Qobuz's Terms of Service and may break at any time. Your password is sent to Qobuz once to obtain a token; only the token is stored, never the plaintext password." aria-label="Info">ⓘ</button></span>
+          <span class="settings-label">Qobuz account <button class="settings-info-btn" data-info="Connects to Qobuz via the unofficial API (the Lyrion/LMS plugin's app id). Used only to browse and search the Qobuz catalogue and add albums to your Qobuz favourites/library — no streaming or downloading (Roon streams). Against Qobuz's Terms of Service and may break at any time. Your password is sent to Qobuz once to obtain a token; only the token is stored, never the plaintext password." aria-label="Info">ⓘ</button></span>
         </div>
         <div class="settings-token-row">
           <input id="qobuz-username-input" type="email" class="settings-token-input" placeholder="Qobuz email…" autocomplete="off" spellcheck="false">
