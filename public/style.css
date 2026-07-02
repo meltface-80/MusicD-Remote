@@ -1970,8 +1970,9 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
    frame stays put while results load/clear (no bottom-sheet "ducking" on
    mobile while typing). Scoped to the Qobuz overlay only — the base
    .settings-overlay/.settings-sheet rules used by Settings are untouched. */
-#qobuz-overlay { align-items: stretch; }
-#qobuz-overlay .qobuz-sheet {
+#qobuz-overlay, #tidal-overlay { align-items: stretch; }
+#qobuz-overlay .qobuz-sheet,
+#tidal-overlay .qobuz-sheet {
   height: 100vh;   /* fallback for browsers without dvh support */
   height: 100dvh;
   max-height: none;
@@ -1985,7 +1986,8 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
    rows scrolling beneath. The 2px bottom padding stops the tabs' bottom
    margin collapsing out of the wrapper, so the background covers the full
    pinned area. */
-#qobuz-overlay .qobuz-pin {
+#qobuz-overlay .qobuz-pin,
+#tidal-overlay .qobuz-pin {
   position: sticky;
   top: 0;
   z-index: 5;
@@ -2055,22 +2057,22 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 .qobuz-search-row input:focus { outline: none; border-color: var(--accent); }
 .qobuz-search-row input::placeholder { color: var(--text-faint); }
 .qobuz-search-row input::-webkit-search-cancel-button { display: none; }
-#qobuz-search-clear {
+#qobuz-search-clear, #tidal-search-clear {
   position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
   width: 28px; height: 28px; border-radius: 50%;
   border: none; background: none; cursor: pointer;
   color: var(--text-dim); font-size: 18px; line-height: 1; padding: 0;
 }
-#qobuz-search-clear:active { color: var(--text); }
+#qobuz-search-clear:active, #tidal-search-clear:active { color: var(--text); }
 
 /* Qobuz browser: tab chips (horizontal scroll, no wrap) */
-#qobuz-tabs {
+#qobuz-tabs, #tidal-tabs {
   display: flex; gap: 8px; overflow-x: auto;
   padding: 2px 0 8px; margin-bottom: 4px;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
 }
-#qobuz-tabs::-webkit-scrollbar { display: none; }
+#qobuz-tabs::-webkit-scrollbar, #tidal-tabs::-webkit-scrollbar { display: none; }
 .qobuz-tab {
   flex-shrink: 0; white-space: nowrap; cursor: pointer;
   padding: 6px 12px; border-radius: 999px;
@@ -2080,13 +2082,13 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 .qobuz-tab.is-active { color: var(--accent); border-color: var(--accent); }
 
 /* Qobuz browser: artist matches strip (search results) */
-#qobuz-artists {
+#qobuz-artists, #tidal-artists {
   display: flex; gap: 12px; overflow-x: auto;
   padding: 4px 0 10px;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
 }
-#qobuz-artists::-webkit-scrollbar { display: none; }
+#qobuz-artists::-webkit-scrollbar, #tidal-artists::-webkit-scrollbar { display: none; }
 .qobuz-artist-chip {
   flex-shrink: 0; width: 68px;
   display: flex; flex-direction: column; align-items: center; gap: 4px;
@@ -2103,7 +2105,7 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 }
 
 /* Qobuz browser: artist discography header */
-#qobuz-artist-head { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 10px; }
+#qobuz-artist-head, #tidal-artist-head { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 10px; }
 .qobuz-artist-head-row { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .qobuz-artist-head-art {
   flex-shrink: 0; width: 64px; height: 64px; border-radius: 50%;
@@ -2115,12 +2117,30 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 }
 
 /* Qobuz browser: load-more paging button */
-#qobuz-load-more {
+#qobuz-load-more, #tidal-load-more {
   width: 100%; margin: 10px 0 4px; padding: 10px 12px;
   border-radius: 8px; border: 1px solid var(--border);
   background: var(--bg-elev); color: var(--text);
   font-size: 13px; font-family: inherit; cursor: pointer;
 }
-#qobuz-load-more:active { border-color: var(--accent); }
-#qobuz-load-more:disabled { cursor: default; opacity: 0.7; }
+#qobuz-load-more:active, #tidal-load-more:active { border-color: var(--accent); }
+#qobuz-load-more:disabled, #tidal-load-more:disabled { cursor: default; opacity: 0.7; }
 
+
+/* Tidal device-authorization pending block (settings sheet) */
+.tidal-auth-pending {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  margin: 10px 0; padding: 12px;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg-elev-2);
+}
+.tidal-auth-link {
+  color: var(--accent); font-size: 14px; font-weight: 600;
+  text-decoration: underline; word-break: break-all; text-align: center;
+}
+.tidal-auth-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 22px; letter-spacing: .18em; color: var(--text);
+  padding: 4px 10px; border-radius: 8px; background: var(--bg-elev);
+}
+.tidal-auth-wait { font-size: 12px; color: var(--text-faint); text-align: center; }

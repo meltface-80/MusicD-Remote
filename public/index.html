@@ -45,12 +45,26 @@
           </svg>
         </button>
 
+        <!-- Qobuz "Q" logomark (Arcticons, CC BY 4.0) — 48-unit viewBox, so the
+             3.6 stroke renders at the same visual weight as the 1.8 strokes
+             on the neighbouring 24-unit icons. -->
         <button id="qobuz-toggle" class="icon-btn" aria-label="Qobuz" title="Qobuz">
+          <svg width="20" height="20" viewBox="0 0 48 48" fill="none" stroke="currentColor"
+               stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M39.203 39.203A21.43 21.43 0 0 0 45.5 24c0-11.874-9.626-21.5-21.5-21.5S2.5 12.126 2.5 24S12.126 45.5 24 45.5c4.89 0 9.4-1.633 13.012-4.383"/>
+            <circle cx="24" cy="24" r="4.873"/>
+            <path d="M32.944 32.944L45.5 45.5"/>
+          </svg>
+        </button>
+
+        <!-- Hidden until a Tidal account is connected (app.js loadTidalStatus unhides it) -->
+        <button id="tidal-toggle" class="icon-btn hidden" aria-label="Tidal" title="Tidal">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M9 18V6l10-2v12"/>
-            <circle cx="6" cy="18" r="3"/>
-            <circle cx="16" cy="16" r="3"/>
+            <path d="M2 9l3-3 3 3-3 3z"/>
+            <path d="M9 9l3-3 3 3-3 3z"/>
+            <path d="M16 9l3-3 3 3-3 3z"/>
+            <path d="M9 16l3-3 3 3-3 3z"/>
           </svg>
         </button>
 
@@ -495,6 +509,44 @@ sudo systemctl disable roon-random-albums</pre>
     </div>
   </div>
 
+  <!-- Tidal browser overlay — same structure/classes as the Qobuz overlay
+       (shared qobuz-* CLASSES drive the styling; only ids differ). Driven by
+       the same initServiceBrowser factory in app.js. -->
+  <div id="tidal-overlay" class="settings-overlay hidden" role="dialog" aria-modal="true" aria-label="Tidal">
+    <div class="settings-backdrop" data-tidal-close></div>
+    <div class="settings-sheet qobuz-sheet">
+      <div class="qobuz-pin">
+        <div class="settings-grip"></div>
+        <div class="settings-head">
+          <h2>Tidal</h2>
+          <button id="tidal-overlay-close" class="icon-btn" type="button" aria-label="Close" data-tidal-close>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <div class="qobuz-search-row">
+          <input id="tidal-search-input" type="search" placeholder="Search the Tidal catalogue…"
+                 autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+          <button id="tidal-search-clear" class="hidden" type="button" aria-label="Clear search">×</button>
+        </div>
+        <div id="tidal-tabs" role="tablist" aria-label="Tidal sections">
+          <button class="qobuz-tab is-active" type="button" role="tab" data-qtab="new-releases">New Releases</button>
+          <button class="qobuz-tab" type="button" role="tab" data-qtab="top">Top Albums</button>
+          <button class="qobuz-tab" type="button" role="tab" data-qtab="rising">Rising</button>
+          <button class="qobuz-tab" type="button" role="tab" data-qtab="recommended">Recommended</button>
+        </div>
+      </div>
+      <div id="tidal-nr-status" class="settings-token-status"></div>
+      <div id="tidal-artist-head" class="hidden"></div>
+      <div id="tidal-artists" class="hidden"></div>
+      <div id="tidal-nr-list" class="qobuz-nr-list"></div>
+      <button id="tidal-load-more" class="hidden" type="button">Load more</button>
+      <div id="tidal-nr-detail" class="qobuz-nr-detail hidden"></div>
+    </div>
+  </div>
+
   <div id="settings-overlay" class="settings-overlay hidden" role="dialog" aria-modal="true" aria-label="Settings">
     <div class="settings-backdrop" data-settings-close></div>
     <div class="settings-sheet">
@@ -625,6 +677,19 @@ sudo systemctl disable roon-random-albums</pre>
         <div id="qobuz-status" class="settings-token-status"></div>
         <button id="qobuz-disconnect" class="settings-update-btn hidden" type="button">Disconnect</button>
         <div class="settings-token-status" style="opacity:.6;font-size:11px;margin-top:6px;">Unofficial Qobuz API — against Qobuz ToS, may break, use at your own risk.</div>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <div class="settings-block">
+        <div class="settings-row">
+          <span class="settings-label">Tidal account <button class="settings-info-btn" data-info="Connects to Tidal via the unofficial API (the Lyrion/LMS Tidal plugin's client id). Used only to browse and search the Tidal catalogue and manage your Tidal favourites/library — no streaming or downloading (Roon streams). Against Tidal's Terms of Service and may break at any time. Login happens on Tidal's own device-authorization page — your password is never entered here; only tokens are stored." aria-label="Info">ⓘ</button></span>
+        </div>
+        <button id="tidal-connect" class="settings-update-btn" type="button">Connect Tidal…</button>
+        <div id="tidal-auth-pending" class="tidal-auth-pending hidden"></div>
+        <div id="tidal-status" class="settings-token-status"></div>
+        <button id="tidal-disconnect" class="settings-update-btn hidden" type="button">Disconnect</button>
+        <div class="settings-token-status" style="opacity:.6;font-size:11px;margin-top:6px;">Unofficial Tidal API — against Tidal ToS, may break, use at your own risk.</div>
       </div>
 
       <div class="settings-divider"></div>

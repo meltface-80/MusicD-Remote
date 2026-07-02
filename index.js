@@ -717,6 +717,61 @@ let fanartKey    = _persisted.fanartKey    || "";
 // because it's measured from the music root, not the audio folder.
 let labelFolderDepth = parseInt(_persisted.labelFolderDepth, 10) || 0;
 
+// Short-lived cache of a streaming service's favourited album ids, shared by
+// all of that service's browse routes so each page render doesn't re-fetch the
+// full favourites list (429 risk). Concurrent callers on a cold cache share
+// one in-flight fetch. Best-effort: on fetch failure, serves the previous ids
+// if they aren't older than `staleMaxMs`, otherwise an empty Set — the list
+// still renders, just without favourite marks. `fetchIds` must resolve to a
+// Set of album-id strings.
+function makeFavIdsCache({ name, fetchIds, cacheMs = 60 * 1000, staleMaxMs = 10 * 60 * 1000 }) {
+  let ids = null;      // Set of album ids, or null when stale/never fetched
+  let at = 0;          // epoch ms of last successful fetch
+  let pending = null;  // in-flight fetch promise — concurrent callers share it
+  return {
+    async get() {
+      if (ids && (Date.now() - at) < cacheMs) return ids;
+      if (pending) return pending;
+      pending = (async () => {
+        try {
+          const fresh = await fetchIds();
+          ids = fresh;
+          at = Date.now();
+          return fresh;
+        } catch (e) {
+          if (DEBUG) console.error("[" + name + "] favourite-ids lookup failed:", e.message);
+          if (ids && (Date.now() - at) < staleMaxMs) return ids; // stale-on-error ceiling
+          return new Set();
+        } finally {
+          pending = null;
+        }
+      })();
+      return pending;
+    },
+    add(id)    { if (ids) ids.add(String(id)); },
+    remove(id) { if (ids) ids.delete(String(id)); },
+    clear()    { ids = null; at = 0; }
+  };
+}
+
+// TTL memo keyed by string. Featured/browse lists change slowly (~daily) but
+// each tab tap would otherwise hit the rate-limit-sensitive unofficial APIs.
+// Values are cached RAW; favourite flags are applied per request from the
+// (fresher) fav-ids caches. Errors are not cached — a failed fetch just throws.
+function makeTtlCache(ttlMs) {
+  const map = new Map(); // key → { value, at }
+  return {
+    async get(key, fetchFn) {
+      const hit = map.get(key);
+      if (hit && (Date.now() - hit.at) < ttlMs) return hit.value;
+      const value = await fetchFn();
+      map.set(key, { value, at: Date.now() });
+      return value;
+    },
+    clear() { map.clear(); }
+  };
+}
+
 // Qobuz (UNOFFICIAL API — see lib/qobuz.js). Credentials/token set via Settings.
 // We persist the username, the md5 of the password (for silent re-login), the
 // user_auth_token, and the display name. Never the plaintext password.
@@ -725,19 +780,43 @@ let qobuzUsername    = _persisted.qobuzUsername    || "";
 let qobuzPasswordMd5 = _persisted.qobuzPasswordMd5 || "";
 let qobuzToken       = _persisted.qobuzToken       || "";
 let qobuzDisplayName = _persisted.qobuzDisplayName || "";
-// Short-lived cache of the user's favourited album ids, shared by all Qobuz
-// browse routes so each page render doesn't re-fetch the full favourites list
-// (which risks 429s). null = stale/never fetched.
-let qobuzFavIdsCache = null;        // Set of album ids, or null when stale
-let qobuzFavIdsCacheAt = 0;         // epoch ms of last successful fetch
-let qobuzFavIdsPending = null;      // in-flight fetch promise — concurrent callers share it
-const QOBUZ_FAV_CACHE_MS = 60 * 1000;
-const QOBUZ_FAV_STALE_MAX_MS = 10 * 60 * 1000; // never serve marks older than this on error
-// Featured/browse lists change slowly (~daily) but each tab tap would otherwise
-// hit the rate-limit-sensitive unofficial API. Cache the RAW item arrays per
-// type; favourite flags are applied per request from the (fresher) favIds cache.
-const qobuzFeaturedCache = new Map(); // type → { items, at }
-const QOBUZ_FEATURED_CACHE_MS = 10 * 60 * 1000;
+// qobuzWithToken is a hoisted function declaration (Qobuz section below), and
+// fetchIds only runs once a route calls .get() — long after startup.
+const qobuzFavIds = makeFavIdsCache({
+  name: "qobuz",
+  fetchIds: () => qobuzWithToken(t => qobuz.getFavoriteAlbumIds(t))
+});
+const qobuzFeaturedCache = makeTtlCache(10 * 60 * 1000); // type → raw items[]
+
+// Tidal (UNOFFICIAL API — see lib/tidal.js). Connected via Tidal's OAuth
+// device flow in Settings; we persist the refresh token, user id, country
+// code, and display name — never a password (login happens on tidal.com).
+const tidal = require("./lib/tidal");
+let tidalRefreshToken = _persisted.tidalRefreshToken || "";
+let tidalUserId       = _persisted.tidalUserId       || "";
+let tidalCountryCode  = _persisted.tidalCountryCode  || "US";
+let tidalDisplayName  = _persisted.tidalDisplayName  || "";
+// In-memory only: short-lived access token minted from the refresh token.
+let tidalAccessToken = "";
+let tidalAccessTokenExpiry = 0; // epoch ms; refresh 5 min early
+// Device-flow login in progress, or null. `timer` drives the server-side poll
+// loop; `error` holds the terminal failure for GET /api/settings/tidal/status.
+let tidalPendingAuth = null; // { deviceCode, interval, expiresAt, netFails, timer, error }
+let tidalAuthGen = 0; // /start generation counter — a newer login attempt supersedes an older one racing it
+// tidalWithToken is a hoisted function declaration (Tidal section below).
+const tidalFavIds = makeFavIdsCache({
+  name: "tidal",
+  fetchIds: () => tidalWithToken(async (t, cc, userId) => {
+    const entries = await tidal.getFavoriteAlbums(t, cc, userId);
+    const ids = new Set();
+    for (const en of entries) {
+      const item = en && en.item; // favourites come wrapped as { created, item }
+      if (item && item.id != null) ids.add(String(item.id));
+    }
+    return ids;
+  })
+});
+const tidalFeaturedCache = makeTtlCache(10 * 60 * 1000); // "groups" | "albums:<type>"
 
 // In-memory Maps — primary lookup path.
 const labelDiskCache = new Map();  // album key → label name
@@ -3516,9 +3595,10 @@ function normalizeQobuzAlbums(items, favIds) {
   return albums;
 }
 
-// Shared HTTP status mapping for Qobuz route failures: 429 passes through,
-// "not connected" is the caller's fault (400), everything else is upstream (502).
-function qobuzErrorStatus(e) {
+// Shared HTTP status mapping for streaming-service (Qobuz/Tidal) route
+// failures: 429 passes through, "not connected" is the caller's fault (400),
+// everything else is upstream (502).
+function serviceErrorStatus(e) {
   return e && e.code === 429 ? 429 : (/not connected/i.test(e.message) ? 400 : 502);
 }
 
@@ -3528,44 +3608,10 @@ function parseOffsetParam(req) {
   return (Number.isFinite(offset) && offset > 0) ? offset : 0;
 }
 
-// The user's favourited album ids, cached for QOBUZ_FAV_CACHE_MS so several
-// browse routes don't each hammer favorite/getUserFavoriteIds (429 risk).
-// Concurrent callers on a cold cache share one in-flight fetch. Best-effort:
-// on fetch failure, returns the previous cache if it isn't older than
-// QOBUZ_FAV_STALE_MAX_MS, otherwise an empty Set — the list still renders,
-// just without favourite marks (matching the old per-request behaviour).
-async function getQobuzFavIdsCached() {
-  if (qobuzFavIdsCache && (Date.now() - qobuzFavIdsCacheAt) < QOBUZ_FAV_CACHE_MS) {
-    return qobuzFavIdsCache;
-  }
-  if (qobuzFavIdsPending) return qobuzFavIdsPending;
-  qobuzFavIdsPending = (async () => {
-    try {
-      const ids = await qobuzWithToken(t => qobuz.getFavoriteAlbumIds(t));
-      qobuzFavIdsCache = ids;
-      qobuzFavIdsCacheAt = Date.now();
-      return ids;
-    } catch (e) {
-      if (DEBUG) console.error("[qobuz] favourite-ids lookup failed:", e.message);
-      if (qobuzFavIdsCache && (Date.now() - qobuzFavIdsCacheAt) < QOBUZ_FAV_STALE_MAX_MS) {
-        return qobuzFavIdsCache;
-      }
-      return new Set();
-    } finally {
-      qobuzFavIdsPending = null;
-    }
-  })();
-  return qobuzFavIdsPending;
-}
-
-// Raw featured items per type, cached for QOBUZ_FEATURED_CACHE_MS — tab
-// flapping in the UI must not translate into repeated upstream calls.
-async function getFeaturedItemsCached(type) {
-  const hit = qobuzFeaturedCache.get(type);
-  if (hit && (Date.now() - hit.at) < QOBUZ_FEATURED_CACHE_MS) return hit.items;
-  const items = await qobuzWithToken(t => qobuz.getFeaturedAlbums(t, type, 150));
-  qobuzFeaturedCache.set(type, { items, at: Date.now() });
-  return items;
+// Raw featured items per type (10-min TTL, see makeTtlCache) — tab flapping
+// in the UI must not translate into repeated upstream calls.
+function getFeaturedItemsCached(type) {
+  return qobuzFeaturedCache.get(type, () => qobuzWithToken(t => qobuz.getFeaturedAlbums(t, type, 150)));
 }
 
 // Connection status (never returns credentials).
@@ -3584,7 +3630,7 @@ app.post("/api/settings/qobuz", async (req, res) => {
     qobuzToken       = r.token;
     qobuzDisplayName = r.displayName;
     savePersistedSettings({ qobuzUsername, qobuzPasswordMd5, qobuzToken, qobuzDisplayName });
-    qobuzFavIdsCache = null; // account may have changed — drop cached favourite ids
+    qobuzFavIds.clear(); // account may have changed — drop cached favourite ids
     qobuzFeaturedCache.clear();
     console.log("[settings] qobuz connected as " + qobuzDisplayName);
     res.json({ ok: true, displayName: qobuzDisplayName });
@@ -3595,7 +3641,7 @@ app.post("/api/settings/qobuz", async (req, res) => {
 // Disconnect: clear all stored Qobuz credentials/token.
 app.post("/api/settings/qobuz/disconnect", (req, res) => {
   qobuzUsername = qobuzPasswordMd5 = qobuzToken = qobuzDisplayName = "";
-  qobuzFavIdsCache = null;
+  qobuzFavIds.clear();
   qobuzFeaturedCache.clear();
   savePersistedSettings({ qobuzUsername: "", qobuzPasswordMd5: "", qobuzToken: "", qobuzDisplayName: "" });
   res.json({ ok: true });
@@ -3610,7 +3656,7 @@ app.get("/api/qobuz/new-releases", async (req, res) => {
     // Best-effort (cached): on failure the list still renders without marks.
     const [items, favIds] = await Promise.all([
       getFeaturedItemsCached("new-releases-full"),
-      getQobuzFavIdsCached()
+      qobuzFavIds.get()
     ]);
     const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
     const future = Date.now() + 2 * 24 * 60 * 60 * 1000; // tolerate a couple days' skew
@@ -3624,7 +3670,7 @@ app.get("/api/qobuz/new-releases", async (req, res) => {
     albums.sort((x, y) => (y.released_at || 0) - (x.released_at || 0));
     res.json({ albums, days });
   } catch (e) {
-    res.status(qobuzErrorStatus(e)).json({ error: e.message });
+    res.status(serviceErrorStatus(e)).json({ error: e.message });
   }
 });
 
@@ -3634,10 +3680,10 @@ app.post("/api/qobuz/favorite", async (req, res) => {
   if (!albumId) return res.status(400).json({ ok: false, error: "album_id required" });
   try {
     await qobuzWithToken(t => qobuz.favoriteAlbum(t, albumId));
-    if (qobuzFavIdsCache) qobuzFavIdsCache.add(albumId); // keep cache coherent
+    qobuzFavIds.add(albumId); // keep cache coherent (no-op while the cache is cold)
     res.json({ ok: true });
   } catch (e) {
-    res.status(qobuzErrorStatus(e)).json({ ok: false, error: e.message });
+    res.status(serviceErrorStatus(e)).json({ ok: false, error: e.message });
   }
 });
 
@@ -3647,10 +3693,10 @@ app.post("/api/qobuz/unfavorite", async (req, res) => {
   if (!albumId) return res.status(400).json({ ok: false, error: "album_id required" });
   try {
     await qobuzWithToken(t => qobuz.unfavoriteAlbum(t, albumId));
-    if (qobuzFavIdsCache) qobuzFavIdsCache.delete(albumId); // keep cache coherent
+    qobuzFavIds.remove(albumId); // keep cache coherent (no-op while the cache is cold)
     res.json({ ok: true });
   } catch (e) {
-    res.status(qobuzErrorStatus(e)).json({ ok: false, error: e.message });
+    res.status(serviceErrorStatus(e)).json({ ok: false, error: e.message });
   }
 });
 
@@ -3663,7 +3709,7 @@ app.get("/api/qobuz/search", async (req, res) => {
   try {
     const [r, favIds] = await Promise.all([
       qobuzWithToken(t => qobuz.searchCatalog(t, q, 50, offset)),
-      getQobuzFavIdsCached()
+      qobuzFavIds.get()
     ]);
     const albums = normalizeQobuzAlbums(r.albums.items, favIds);
     const artists = [];
@@ -3684,7 +3730,7 @@ app.get("/api/qobuz/search", async (req, res) => {
     const hasMore = offset + r.albums.items.length < r.albums.total;
     res.json({ query: q, offset, limit: 50, total: r.albums.total, has_more: hasMore, albums, artists });
   } catch (e) {
-    res.status(qobuzErrorStatus(e)).json({ error: e.message });
+    res.status(serviceErrorStatus(e)).json({ error: e.message });
   }
 });
 
@@ -3698,13 +3744,13 @@ app.get("/api/qobuz/artist-albums", async (req, res) => {
   try {
     const [r, favIds] = await Promise.all([
       qobuzWithToken(t => qobuz.getArtist(t, artistId, 50, offset)),
-      getQobuzFavIdsCached()
+      qobuzFavIds.get()
     ]);
     const albums = normalizeQobuzAlbums(r.albums.items, favIds);
     const hasMore = offset + r.albums.items.length < r.albums.total; // raw length — see /api/qobuz/search
     res.json({ artist: r.artist, offset, limit: 50, total: r.albums.total, has_more: hasMore, albums });
   } catch (e) {
-    res.status(qobuzErrorStatus(e)).json({ error: e.message });
+    res.status(serviceErrorStatus(e)).json({ error: e.message });
   }
 });
 
@@ -3720,11 +3766,398 @@ app.get("/api/qobuz/featured", async (req, res) => {
   try {
     const [items, favIds] = await Promise.all([
       getFeaturedItemsCached(type),
-      getQobuzFavIdsCached()
+      qobuzFavIds.get()
     ]);
     res.json({ type, albums: normalizeQobuzAlbums(items, favIds) });
   } catch (e) {
-    res.status(qobuzErrorStatus(e)).json({ error: e.message });
+    res.status(serviceErrorStatus(e)).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Tidal (UNOFFICIAL API) — new releases, featured lists, catalog search,
+// artist discographies + favourites. See lib/tidal.js.
+// Uses the LMS/Lyrion Tidal plugin's client credentials; against Tidal ToS;
+// user's own account; no streaming/downloading (Roon streams). Login is via
+// Tidal's OAuth device flow — we never see the user's password. Use at your
+// own risk.
+// ---------------------------------------------------------------------------
+
+// Mint (or reuse) a short-lived access token from the stored refresh token.
+// Refreshes 5 minutes before expiry. Throws a "not connected" error when no
+// refresh token is stored (message matched by the frontend + serviceErrorStatus).
+// Single-flight: concurrent callers (routes fire 2-3 Tidal calls in parallel
+// via Promise.all) share one refresh exchange — Tidal may rotate refresh
+// tokens, and parallel exchanges with the same token could invalidate it.
+let tidalRefreshPending = null;
+async function tidalEnsureAccessToken() {
+  if (!tidalRefreshToken) throw new Error("Tidal not connected — connect your Tidal account in Settings");
+  if (tidalAccessToken && Date.now() < tidalAccessTokenExpiry) return tidalAccessToken;
+  if (tidalRefreshPending) return tidalRefreshPending;
+  tidalRefreshPending = (async () => {
+    try {
+      const r = await tidal.refreshAccessToken(tidalRefreshToken);
+      // The user may have disconnected while the exchange was in flight —
+      // installing the fresh tokens would silently "re-connect" the account.
+      if (!tidalRefreshToken) throw new Error("Tidal not connected — connect your Tidal account in Settings");
+      tidalAccessToken = r.accessToken;
+      tidalAccessTokenExpiry = Date.now() + Math.max(r.expiresIn - 300, 60) * 1000;
+      if (r.refreshToken && r.refreshToken !== tidalRefreshToken) {
+        tidalRefreshToken = r.refreshToken; // Tidal rotated it — persist the new one
+        savePersistedSettings({ tidalRefreshToken });
+      }
+      return tidalAccessToken;
+    } catch (e) {
+      // A definitive rejection (revoked/expired refresh token) means the
+      // stored connection is dead: degrade to "not connected" so the UI
+      // shows the reconnect prompt instead of an endless 502.
+      if (e && e.code === 401 && tidalRefreshToken) {
+        console.error("[tidal] refresh token rejected — clearing stored connection");
+        tidalRefreshToken = tidalUserId = tidalDisplayName = "";
+        tidalAccessToken = "";
+        tidalAccessTokenExpiry = 0;
+        tidalFavIds.clear();
+        tidalFeaturedCache.clear();
+        savePersistedSettings({ tidalRefreshToken: "", tidalUserId: "", tidalDisplayName: "" });
+        throw new Error("Tidal not connected — connect your Tidal account in Settings");
+      }
+      throw e;
+    } finally {
+      tidalRefreshPending = null;
+    }
+  })();
+  return tidalRefreshPending;
+}
+
+// Run an authenticated Tidal call as fn(accessToken, countryCode, userId); on
+// a 401 (expired/revoked access token) refresh once and retry. Throws a
+// "not connected" error if no refresh token is stored.
+async function tidalWithToken(fn) {
+  const token = await tidalEnsureAccessToken();
+  try {
+    return await fn(token, tidalCountryCode, tidalUserId);
+  } catch (e) {
+    if (e && e.code === 401 && tidalRefreshToken) {
+      tidalAccessToken = "";      // discard the rejected token …
+      tidalAccessTokenExpiry = 0; // … and force a fresh refresh
+      const fresh = await tidalEnsureAccessToken();
+      return await fn(fresh, tidalCountryCode, tidalUserId);
+    }
+    throw e;
+  }
+}
+
+// Best-effort release timestamp (ms) from a Tidal album object ("YYYY-MM-DD").
+function tidalReleaseTs(a) {
+  if (a.releaseDate) {
+    const t = Date.parse(a.releaseDate);
+    if (Number.isFinite(t)) return t;
+  }
+  return null;
+}
+
+// Shared album→JSON normalizer for every album-returning Tidal route — the
+// same shape normalizeQobuzAlbum emits, so the frontend stays service-generic.
+// `favIds` is a Set of the user's favourited album ids (strings).
+function normalizeTidalAlbum(a, favIds) {
+  const lead = (a.artist && a.artist.name) ? a.artist : (a.artists && a.artists[0]) || null;
+  return {
+    id:           String(a.id),
+    title:        a.title || "",
+    version:      a.version || null,
+    artist:       (lead && lead.name) || "",
+    artist_id:    (lead && lead.id != null) ? String(lead.id) : null,
+    image:        a.cover ? tidal.coverUrl(a.cover, "640x640") : null,
+    released_at:  tidalReleaseTs(a),
+    release_date: a.releaseDate || null,
+    favourited:   favIds.has(String(a.id))
+  };
+}
+
+// Normalize a raw Tidal items array, skipping malformed entries without an id.
+function normalizeTidalAlbums(items, favIds) {
+  const albums = [];
+  for (const a of items || []) {
+    if (!a || a.id == null) continue;
+    albums.push(normalizeTidalAlbum(a, favIds));
+  }
+  return albums;
+}
+
+// Resolve a featured group ("new", "top", …) against Tidal's live /featured
+// list — group ids aren't guaranteed stable, so match id OR name
+// case-insensitively. Returns the group object, or null when Tidal doesn't
+// currently offer it. The groups list shares the 10-min featured TTL cache.
+async function resolveTidalFeaturedGroup(wanted) {
+  const groups = await tidalFeaturedCache.get("groups", () =>
+    tidalWithToken((t, cc) => tidal.getFeaturedGroups(t, cc)));
+  const w = String(wanted).toLowerCase();
+  // Exact id/name/path match first; fall back to a prefix match so a group
+  // Tidal renames from "new" to e.g. "New albums" keeps resolving.
+  for (const g of groups) {
+    if (String(g.id).toLowerCase() === w || String(g.name).toLowerCase() === w ||
+        String(g.path || "").toLowerCase() === w) return g;
+  }
+  for (const g of groups) {
+    if (String(g.id).toLowerCase().startsWith(w) ||
+        String(g.name).toLowerCase().startsWith(w) ||
+        String(g.path || "").toLowerCase().startsWith(w)) return g;
+  }
+  return null;
+}
+
+// Raw featured items per group type (10-min TTL, see makeTtlCache) — the
+// Tidal counterpart of getFeaturedItemsCached. A group missing upstream
+// yields [] WITHOUT caching it: an unmatched/renamed group is re-probed on
+// the next tap instead of pinning an empty tab for 10 minutes (the groups
+// list itself is still TTL-cached, so re-probing is cheap).
+async function getTidalFeaturedItemsCached(type) {
+  const group = await resolveTidalFeaturedGroup(type);
+  if (!group) return [];
+  return tidalFeaturedCache.get("albums:" + type, () =>
+    tidalWithToken((t, cc) => tidal.getFeaturedAlbums(t, cc, group.id, 150)));
+}
+
+// Connection status (never returns tokens).
+app.get("/api/settings/tidal", (req, res) => {
+  res.json({ connected: !!tidalRefreshToken, displayName: tidalDisplayName || "" });
+});
+
+// Start the OAuth device flow: respond immediately with the code/URL the user
+// must approve on tidal.com, then poll the token endpoint server-side until
+// approval, a terminal error, or code expiry. GET /api/settings/tidal/status
+// reports the outcome. Starting a new flow supersedes a previous pending one.
+app.post("/api/settings/tidal/start", async (req, res) => {
+  try {
+    if (tidalPendingAuth && tidalPendingAuth.timer) clearTimeout(tidalPendingAuth.timer);
+    tidalPendingAuth = null;
+    // Guard the gap across the await: a second /start racing this one must
+    // win outright — without this, the server could poll flow A's deviceCode
+    // while the UI displays flow B's user code (approval would never land).
+    const gen = ++tidalAuthGen;
+    const d = await tidal.startDeviceAuth();
+    if (gen !== tidalAuthGen) {
+      return res.status(409).json({ ok: false, error: "superseded by a newer Tidal login attempt" });
+    }
+    const pending = {
+      deviceCode: d.deviceCode,
+      interval:   Math.max(d.interval, 2) * 1000,
+      expiresAt:  Date.now() + d.expiresIn * 1000,
+      netFails:   0,    // consecutive network failures — a blip must not kill the login
+      timer:      null,
+      error:      null
+    };
+    tidalPendingAuth = pending;
+    const poll = async () => {
+      if (tidalPendingAuth !== pending) return; // superseded or cancelled
+      pending.timer = null;
+      try {
+        if (Date.now() >= pending.expiresAt) {
+          pending.error = "Login timed out — the Tidal code expired before it was approved";
+          console.error("[tidal] device login expired before approval");
+          return;
+        }
+        const r = await tidal.pollDeviceToken(pending.deviceCode);
+        if (tidalPendingAuth !== pending) return; // superseded while awaiting
+        if (r.pending) {
+          pending.netFails = 0;
+          // RFC 8628 slow_down: stretch the polling interval by 5s and keep going.
+          if (r.slowDown) pending.interval += 5000;
+          pending.timer = setTimeout(poll, pending.interval);
+          return;
+        }
+        // Approved — persist the connection and prime the access token.
+        tidalRefreshToken = r.refreshToken;
+        tidalUserId       = r.userId;
+        tidalCountryCode  = r.countryCode;
+        tidalDisplayName  = r.displayName;
+        tidalAccessToken  = r.accessToken;
+        tidalAccessTokenExpiry = Date.now() + Math.max(r.expiresIn - 300, 60) * 1000;
+        savePersistedSettings({ tidalRefreshToken, tidalUserId, tidalCountryCode, tidalDisplayName });
+        tidalFavIds.clear();       // account may have changed — drop cached favourite ids
+        tidalFeaturedCache.clear();
+        tidalPendingAuth = null;
+        console.log("[settings] tidal connected as " + tidalDisplayName);
+      } catch (e) {
+        if (tidalPendingAuth !== pending) return;
+        // A structured OAuth error (access_denied, expired_token, …) is a
+        // definitive outcome; a network blip mid-approval is not — retry up
+        // to 3 consecutive times before declaring the login dead.
+        if (!e.oauthError && pending.netFails < 3) {
+          pending.netFails++;
+          console.error("[tidal] device login poll failed (retry " + pending.netFails + "/3):", e.message);
+          pending.timer = setTimeout(poll, pending.interval);
+          return;
+        }
+        pending.error = e.message; // terminal (denied/expired code) — surfaced via /status
+        console.error("[tidal] device login failed:", e.message);
+      }
+    };
+    pending.timer = setTimeout(poll, pending.interval);
+    res.json({
+      user_code:                 d.userCode,
+      verification_uri:          d.verificationUri,
+      verification_uri_complete: d.verificationUriComplete,
+      expires_in:                d.expiresIn
+    });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
+// Device-flow progress for the settings UI to poll.
+app.get("/api/settings/tidal/status", (req, res) => {
+  if (tidalRefreshToken) return res.json({ state: "connected", displayName: tidalDisplayName || "" });
+  if (tidalPendingAuth) {
+    if (tidalPendingAuth.error) return res.json({ state: "error", error: tidalPendingAuth.error });
+    return res.json({ state: "pending" });
+  }
+  res.json({ state: "idle" });
+});
+
+// Disconnect: clear all stored Tidal tokens/identity and any pending login.
+app.post("/api/settings/tidal/disconnect", (req, res) => {
+  if (tidalPendingAuth && tidalPendingAuth.timer) clearTimeout(tidalPendingAuth.timer);
+  tidalPendingAuth = null;
+  tidalRefreshToken = tidalUserId = tidalDisplayName = "";
+  tidalCountryCode = "US";
+  tidalAccessToken = "";
+  tidalAccessTokenExpiry = 0;
+  tidalFavIds.clear();
+  tidalFeaturedCache.clear();
+  savePersistedSettings({ tidalRefreshToken: "", tidalUserId: "", tidalCountryCode: "US", tidalDisplayName: "" });
+  res.json({ ok: true });
+});
+
+// New releases from the last N days (default 30), newest first — same shape
+// and windowing as /api/qobuz/new-releases.
+app.get("/api/tidal/new-releases", async (req, res) => {
+  let days = parseInt(req.query.days, 10);
+  if (!Number.isFinite(days) || days <= 0 || days > 365) days = 30;
+  try {
+    // Which of these are already in the user's Tidal favourites (any device).
+    // Best-effort (cached): on failure the list still renders without marks.
+    const [items, favIds] = await Promise.all([
+      getTidalFeaturedItemsCached("new"),
+      tidalFavIds.get()
+    ]);
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    const future = Date.now() + 2 * 24 * 60 * 60 * 1000; // tolerate a couple days' skew
+    const albums = [];
+    for (const a of items) {
+      if (!a || a.id == null) continue;
+      const ts = tidalReleaseTs(a);
+      if (ts !== null && (ts < cutoff || ts > future)) continue; // outside the window
+      albums.push(normalizeTidalAlbum(a, favIds));
+    }
+    albums.sort((x, y) => (y.released_at || 0) - (x.released_at || 0));
+    res.json({ albums, days });
+  } catch (e) {
+    res.status(serviceErrorStatus(e)).json({ error: e.message });
+  }
+});
+
+// Add an album to the user's Tidal favourites (idempotent).
+app.post("/api/tidal/favorite", async (req, res) => {
+  const albumId = ((req.body && req.body.album_id) || "").toString().trim();
+  if (!albumId) return res.status(400).json({ ok: false, error: "album_id required" });
+  try {
+    await tidalWithToken((t, cc, userId) => tidal.favoriteAlbum(t, cc, userId, albumId));
+    tidalFavIds.add(albumId); // keep cache coherent (no-op while the cache is cold)
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(serviceErrorStatus(e)).json({ ok: false, error: e.message });
+  }
+});
+
+// Remove an album from the user's Tidal favourites (idempotent).
+app.post("/api/tidal/unfavorite", async (req, res) => {
+  const albumId = ((req.body && req.body.album_id) || "").toString().trim();
+  if (!albumId) return res.status(400).json({ ok: false, error: "album_id required" });
+  try {
+    await tidalWithToken((t, cc, userId) => tidal.unfavoriteAlbum(t, cc, userId, albumId));
+    tidalFavIds.remove(albumId); // keep cache coherent (no-op while the cache is cold)
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(serviceErrorStatus(e)).json({ ok: false, error: e.message });
+  }
+});
+
+// Full Tidal catalog search (albums + artists), paged by offset. Results keep
+// Tidal's relevance order. Artist matches are only included on the first page.
+app.get("/api/tidal/search", async (req, res) => {
+  const q = String(req.query.q || "").trim();
+  if (!q) return res.status(400).json({ error: "q required" });
+  const offset = parseOffsetParam(req);
+  try {
+    const [albumsPage, artistsPage, favIds] = await Promise.all([
+      tidalWithToken((t, cc) => tidal.searchAlbums(t, cc, q, 50, offset)),
+      offset === 0
+        ? tidalWithToken((t, cc) => tidal.searchArtists(t, cc, q, 8))
+        : Promise.resolve({ items: [], total: 0 }),
+      tidalFavIds.get()
+    ]);
+    const albums = normalizeTidalAlbums(albumsPage.items, favIds);
+    const artists = [];
+    for (const x of artistsPage.items) {
+      if (!x || x.id == null) continue;
+      artists.push({
+        id:           String(x.id),
+        name:         x.name || "",
+        image:        x.picture ? tidal.coverUrl(x.picture, "750x750") : null,
+        albums_count: 0 // Tidal search doesn't report a per-artist album count
+      });
+    }
+    const hasMore = offset + albumsPage.items.length < albumsPage.total; // raw length — see /api/qobuz/search
+    res.json({ query: q, offset, limit: 50, total: albumsPage.total, has_more: hasMore, albums, artists });
+  } catch (e) {
+    res.status(serviceErrorStatus(e)).json({ error: e.message });
+  }
+});
+
+// A Tidal artist's discography, paged by offset. Albums stay in Tidal's own
+// order — matching /api/qobuz/artist-albums, which keeps upstream order so
+// dates don't jump around at every "Load more" seam.
+app.get("/api/tidal/artist-albums", async (req, res) => {
+  const artistId = String(req.query.artist_id || "").trim();
+  if (!artistId) return res.status(400).json({ error: "artist_id required" });
+  const offset = parseOffsetParam(req);
+  try {
+    const [artist, page, favIds] = await Promise.all([
+      tidalWithToken((t, cc) => tidal.getArtist(t, cc, artistId)),
+      tidalWithToken((t, cc) => tidal.getArtistAlbums(t, cc, artistId, 50, offset)),
+      tidalFavIds.get()
+    ]);
+    const albums = normalizeTidalAlbums(page.items, favIds);
+    const hasMore = offset + page.items.length < page.total; // raw length — see /api/qobuz/search
+    res.json({
+      artist: {
+        id:    artist.id,
+        name:  artist.name,
+        image: artist.picture ? tidal.coverUrl(artist.picture, "750x750") : null
+      },
+      offset, limit: 50, total: page.total, has_more: hasMore, albums
+    });
+  } catch (e) {
+    res.status(serviceErrorStatus(e)).json({ error: e.message });
+  }
+});
+
+// Tidal featured/browse categories ("new" is served by /api/tidal/new-releases).
+// Albums are returned in Tidal's own order (meaningful for e.g. top), so no
+// re-sorting here.
+const TIDAL_FEATURED_TYPES = new Set(["top", "rising", "recommended"]);
+app.get("/api/tidal/featured", async (req, res) => {
+  const type = String(req.query.type || "").trim();
+  if (!TIDAL_FEATURED_TYPES.has(type)) return res.status(400).json({ error: "invalid type" });
+  try {
+    const [items, favIds] = await Promise.all([
+      getTidalFeaturedItemsCached(type),
+      tidalFavIds.get()
+    ]);
+    res.json({ type, albums: normalizeTidalAlbums(items, favIds) });
+  } catch (e) {
+    res.status(serviceErrorStatus(e)).json({ error: e.message });
   }
 });
 

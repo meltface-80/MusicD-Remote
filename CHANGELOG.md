@@ -2,6 +2,30 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.98] — 2026-07-02
+
+### Changed
+- **Qobuz top-bar button now shows the Qobuz "Q" logomark** (open ring, centre dot, diagonal tail — line-style mark from Arcticons, CC BY 4.0) instead of the generic music-note icon, matching the Tidal button's branded diamond mark. Rendered at the same stroke weight as the neighbouring icons (48-unit viewBox with a proportionally scaled 3.6 stroke).
+
+## [1.5.97] — 2026-07-02
+
+### Added
+- **Tidal browser with full Qobuz feature parity** — a second streaming-service browser alongside Qobuz:
+  - Catalog search (debounced live search, paged 50 at a time, artist matches strip), artist discographies, and browse tabs (New Releases, Top Albums, Rising, Recommended).
+  - Favourite toggle (♥ ⇄ ✓ Added) on every album — adding to your Tidal favourites is what makes an album appear in Roon — plus the tap-for-detail review view.
+  - **Separate top-bar button** with the Tidal diamond mark, shown **only while a Tidal account is connected**; the Qobuz button is unchanged.
+  - **Login via Tidal's OAuth device flow** (Settings → Tidal account → Connect): the extension shows a code and a link to Tidal's own authorization page — your password is never entered into the extension; only tokens are stored. Access tokens are refreshed silently server-side.
+  - Uses the unofficial Tidal API with the Lyrion/LMS Tidal plugin's client credentials — browse/search/favourites only, **no streaming and no downloading** (Roon streams); against Tidal's ToS and may break at any time, same caveats as the Qobuz integration.
+  - New: `lib/tidal.js`; routes `/api/tidal/{new-releases,featured,search,artist-albums,favorite,unfavorite}` and `/api/settings/tidal{,/start,/status,/disconnect}` — browse responses share the exact shape of their Qobuz counterparts.
+- **Service-generic frontend browser** — the Qobuz overlay code was refactored into a single `initServiceBrowser(config)` factory that now drives both the Qobuz and Tidal overlays (one implementation, two instances; Qobuz behaviour byte-identical, verified by a dedicated regression review). The backend favourite-ids cache (60 s, in-flight dedup, stale ceiling) and featured-list cache (10 min) were likewise generalized into shared factories used by both services.
+
+### Fixed (found by the multi-agent pre-commit review of this feature)
+- **Device-flow robustness** — Tidal's schemeless authorization links are now prefixed with `https://` (a raw `link.tidal.com/XXXXX` href resolved relative to the extension and 404'd); RFC 8628 `slow_down` stretches the poll interval instead of killing the login; transient network blips during the server-side poll retry 3× instead of failing the login one-strike; concurrent Connect taps are generation-guarded so the shown code always matches the polled device code.
+- **Token lifecycle** — access-token refreshes are single-flight (parallel route calls no longer race refresh-token rotation); a revoked/expired refresh token (`invalid_grant`) now degrades cleanly to "Not connected" (clearing the stored connection and hiding the top-bar button) instead of returning 502 forever; a disconnect racing an in-flight refresh can no longer silently re-connect the account.
+- **Featured tabs resilience** — Tidal's `/featured` groups are matched by id, name, or path (exact, then prefix) and an unmatched group is no longer cached as empty for 10 minutes; the group-list response tolerates `items`/`rows`/bare-array shapes.
+- **Settings truthfulness** — a login failure that happens while Settings is closed is now surfaced on reopen ("Not connected — last login attempt failed: …") instead of being silently swallowed; the transient error toast no longer gets clobbered by the status refresh.
+- **Error class:** most fixes are *optimistic single-shot handling of a multi-step external protocol* — treating recoverable OAuth poll states (slow_down, network blips, races) as terminal. Resolved by classifying outcomes (structured OAuth error = terminal, everything else = retryable) and guarding every await-gap against supersession.
+
 ## [1.5.96] — 2026-07-02
 
 ### Fixed
