@@ -2,6 +2,12 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.103] — 2026-07-03
+
+### Fixed
+- **Blank screen on load (startup crash).** `let albumCount = computeAlbumCount()` runs during the app's initialisation, but `computeAlbumCount` references the `const PHONE_WALL` that was declared *after* it — a temporal dead zone. On phones this threw `ReferenceError: Cannot access 'PHONE_WALL' before initialization`, which aborted the whole app IIFE, so nothing rendered (blank page, not even the "Waiting for Roon" banner). Moved the `PHONE_WALL` declaration above its first use. (Latent since v1.5.101; exposed once the Home view depended on the same init path completing.)
+- **Error class:** the v1.5.66 "declaration-after-use temporal-dead-zone" startup-crash class. `node --check` can't catch it (it's valid syntax), and there's no browser in the build environment to run the load-time check. Added a DOM-stub smoke harness (`scratchpad/smoke.js`) that executes the app's top-level IIFEs under a stubbed `window`/`document` and fails on any synchronous startup throw — it reproduces this exact error on the broken build and passes on the fix.
+
 ## [1.5.102] — 2026-07-03
 
 ### Added — Home redesign (phase 1)

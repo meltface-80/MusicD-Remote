@@ -41,6 +41,21 @@
   let currentAlbum = null;         // {offset,title,subtitle,image_key}
   let zones = [];
   let selectedZoneId = null;
+
+  // Phone wall geometry (used by measurePhoneWall/computeAlbumCount below).
+  // Declared BEFORE the computeAlbumCount() call on the next line — it's a
+  // const, so referencing it from that call while it is still in its temporal
+  // dead zone would throw and abort the whole app (blank screen). TEXT_BLOCK/
+  // gaps mirror the .album-grid.phone-fit and phone .album-meta CSS.
+  const PHONE_WALL = {
+    COLS: 3,
+    ROW_GAP: 10,     // .album-grid.phone-fit row-gap
+    COL_GAP: 8,      // .album-grid.phone-fit column-gap
+    TEXT_BLOCK: 51,  // worst case: 5px meta margin + 2 title lines (12×1.25=30) + 1px gap + artist (~15) = 51
+                     // sized for the 2-line-title max so 4 rows never overflow into a scroll
+    MIN_ART: 96,     // don't shrink art below this — drop a row instead
+    TARGET_ROWS: 4
+  };
   let albumCount = computeAlbumCount();
   let labelsActive = false;        // viewing the record-label browser?
   let albumSelectMode = false;
@@ -88,17 +103,6 @@
   //   Tablet portrait  → 5×4  = 20
   //   Tablet landscape → 7×3  = 21
   //   Desktop          → 9×5  = 45
-  // Phone wall geometry. TEXT_BLOCK/gaps mirror the .album-grid.phone-fit and
-  // phone .album-meta rules in style.css — keep them in sync.
-  const PHONE_WALL = {
-    COLS: 3,
-    ROW_GAP: 10,     // .album-grid.phone-fit row-gap
-    COL_GAP: 8,      // .album-grid.phone-fit column-gap
-    TEXT_BLOCK: 51,  // worst case: 5px meta margin + 2 title lines (12×1.25=30) + 1px gap + artist (~15) = 51
-                     // sized for the 2-line-title max so 4 rows never overflow into a scroll
-    MIN_ART: 96,     // don't shrink art below this — drop a row instead
-    TARGET_ROWS: 4
-  };
 
   // Measure the phone wall: return { rows, art } — the largest square art size
   // that lets `rows` rows fit the visible content box without scrolling. When
