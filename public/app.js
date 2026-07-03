@@ -77,11 +77,14 @@
   function filterQSOf(f) {
     if (!f) return "";
     return "&filter_type=" + encodeURIComponent(f.type) +
-           "&filter_value=" + encodeURIComponent(f.value);
+           "&filter_value=" + encodeURIComponent(f.value) +
+           (f.parent ? "&filter_parent=" + encodeURIComponent(f.parent) : "");
   }
   function filterQS() { return filterQSOf(activeFilter); }
   function filterCacheKey() {
-    return activeFilter ? activeFilter.type + ":" + activeFilter.value : "all";
+    return activeFilter
+      ? activeFilter.type + ":" + (activeFilter.parent ? activeFilter.parent + ">" : "") + activeFilter.value
+      : "all";
   }
 
   // ----- Theme -----
@@ -300,37 +303,68 @@
     }
   }
 
+  // Weighted-random pick from a list of { title, count }.
+  function pickWeightedSub(items) {
+    let total = 0;
+    for (const it of items) total += Math.max(1, it.count || 1);
+    let r = Math.random() * total;
+    for (const it of items) { r -= Math.max(1, it.count || 1); if (r <= 0) return it; }
+    return items[items.length - 1];
+  }
+
   async function loadHomeGenres() {
     if (!homeGenres) return;
     homeGenres.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
     try {
-      const r = await fetch("/api/filters/genres");
-      const j = await r.json();
-      const all = (j && j.genres) || [];
-      const genres = all.slice(0, 10);   // top 10 parent genres, biggest first
-      // Swap R&B out for Metal (per request). Replace the R&B card in place with
-      // the library's Metal genre if it exists; otherwise just drop R&B.
-      const rbIdx = genres.findIndex(g => /r&b|rhythm\s*&\s*blues/i.test(g.title));
-      if (rbIdx !== -1) {
-        const metal = all.find(g => /metal/i.test(g.title) &&
-                                    !genres.some(x => x.title === g.title));
-        if (metal) genres[rbIdx] = metal;
-        else genres.splice(rbIdx, 1);
+      const [genresJ, groupsJ] = await Promise.all([
+        fetch("/api/filters/genres").then(r => r.json()).catch(() => ({})),
+        fetch("/api/home/genre-groups").then(r => r.json()).catch(() => ({}))
+      ]);
+      const top = ((genresJ && genresJ.genres) || []).slice(0, 10); // top 10, biggest first
+      const groups = groupsJ || {};
+      const parent = groups.parent;
+
+      // Build card descriptors. The "Pop/Rock" parent is split into two buttons:
+      // "Rock/Metal" (sub-genres without "pop") and "Pop" (sub-genres with "pop").
+      const cards = [];
+      for (const g of top) {
+        if (parent && /pop\s*\/\s*rock/i.test(g.title)) {
+          if (groups.rockmetal && groups.rockmetal.length) {
+            cards.push({ label: "Rock/Metal", group: groups.rockmetal, parent });
+          }
+          if (groups.pop && groups.pop.length) {
+            cards.push({ label: "Pop", group: groups.pop, parent });
+          }
+          if (!(groups.rockmetal || []).length && !(groups.pop || []).length) {
+            cards.push({ label: g.title, genre: g.title }); // fallback: keep Pop/Rock
+          }
+        } else {
+          cards.push({ label: g.title, genre: g.title });
+        }
       }
+
       homeGenres.innerHTML = "";
-      if (!genres.length) {
+      if (!cards.length) {
         homeGenres.innerHTML = '<div class="home-carousel-empty">No genres found.</div>';
         return;
       }
       const frag = document.createDocumentFragment();
-      for (const g of genres) {
+      for (const c of cards) {
         const card = document.createElement("button");
         card.type = "button";
         card.className = "home-genre-card";
-        card.textContent = g.title;
+        card.textContent = c.label;
         card.addEventListener("click", () => {
-          // applyFilter reveals the wall and loads the genre grid.
-          if (window.__applyFilter) window.__applyFilter({ type: "genre", value: g.title });
+          if (!window.__applyFilter) return;
+          if (c.group) {
+            // Pick a random sub-genre from the group; the breadcrumb keeps the
+            // group label (e.g. "Rock/Metal"). Refreshing the grid reshuffles
+            // that sub-genre; re-tapping the button picks a new one.
+            const sub = pickWeightedSub(c.group);
+            window.__applyFilter({ type: "genre", value: sub.title, parent: c.parent, label: c.label });
+          } else {
+            window.__applyFilter({ type: "genre", value: c.genre });
+          }
         });
         frag.appendChild(card);
       }
@@ -518,7 +552,7 @@
     if (!el) return;
     if (labelsActive) return;   // labels browser manages its own header text
     if (activeFilter) {
-      el.textContent = activeFilter.value;
+      el.textContent = activeFilter.label || activeFilter.value;   // group label (e.g. "Rock/Metal") if set
       el.classList.remove("hidden");
     } else {
       el.textContent = "";
@@ -1153,8 +1187,9 @@
           offset: currentAlbum.offset,
           zone_or_output_id: selectedZoneId,
           kind,
-          filter_type:  currentDetailFilter ? currentDetailFilter.type  : "",
-          filter_value: currentDetailFilter ? currentDetailFilter.value : ""
+          filter_type:   currentDetailFilter ? currentDetailFilter.type   : "",
+          filter_value:  currentDetailFilter ? currentDetailFilter.value  : "",
+          filter_parent: currentDetailFilter && currentDetailFilter.parent ? currentDetailFilter.parent : ""
         })
       });
       const j = await r.json().catch(() => ({}));
@@ -2039,8 +2074,9 @@
           offsets: albumSelected.map(a => a.offset),
           zone_or_output_id: selectedZoneId,
           kind,
-          filter_type:  activeFilter ? activeFilter.type  : "",
-          filter_value: activeFilter ? activeFilter.value : ""
+          filter_type:   activeFilter ? activeFilter.type   : "",
+          filter_value:  activeFilter ? activeFilter.value  : "",
+          filter_parent: activeFilter && activeFilter.parent ? activeFilter.parent : ""
         })
       });
       const j = await r.json().catch(() => ({}));

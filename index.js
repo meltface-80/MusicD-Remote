@@ -338,6 +338,13 @@ async function navigateToAlbumList(sessionKey, filter) {
   if (filter.type === "genre") {
     const hierarchy = "genres";
     await browse({ hierarchy, pop_all: true, multi_session_key: sessionKey });
+    // Optional parent: drill into the parent genre first, then find the
+    // sub-genre by title inside it (e.g. Pop/Rock → Heavy Metal).
+    if (filter.parent) {
+      const parent = await findItemByTitle(sessionKey, hierarchy, filter.parent);
+      if (!parent) throw new Error(`Parent genre "${filter.parent}" not found`);
+      await browse({ hierarchy, item_key: parent.item_key, multi_session_key: sessionKey });
+    }
     const genre = await findItemByTitle(sessionKey, hierarchy, filter.value);
     if (!genre) throw new Error(`Genre "${filter.value}" not found`);
     await browse({ hierarchy, item_key: genre.item_key, multi_session_key: sessionKey });
@@ -2907,12 +2914,17 @@ app.get("/api/zones", (req, res) => {
 });
 
 // Read an optional genre/tag filter from query params (or POST body).
+// `filter_parent` (genre only) selects a SUB-genre nested under a parent genre
+// — e.g. parent "Pop/Rock", value "Heavy Metal".
 function parseFilter(src) {
-  const type  = (src.filter_type  || "").trim();
-  const value = (src.filter_value || "").trim();
+  const type   = (src.filter_type   || "").trim();
+  const value  = (src.filter_value  || "").trim();
+  const parent = (src.filter_parent || "").trim();
   if (!type || !value) return null;
   if (type !== "genre" && type !== "tag" && type !== "label" && type !== "decade") return null;
-  return { type, value };
+  const f = { type, value };
+  if (type === "genre" && parent) f.parent = parent;
+  return f;
 }
 
 // Decades that actually have albums, from the per-album years collected during
@@ -3032,6 +3044,47 @@ app.get("/api/home/album-of-the-day", async (req, res) => {
     }
     if (played) return res.json({ album: null, played: true });
     res.json({ album: { offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null } });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Home "Browse by genre": split the "Pop/Rock" parent genre into two buttons.
+// Sub-genres whose name contains "pop" → the Pop group; everything else under
+// Pop/Rock → the Rock/Metal group. The frontend picks a random sub-genre from
+// the chosen group and applies it as a nested genre filter. Cached 30 min
+// (sub-genre lists change only on library edits).
+let genreGroupsCache = { at: 0, data: null };
+app.get("/api/home/genre-groups", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  if (genreGroupsCache.data && (Date.now() - genreGroupsCache.at) < 30 * 60 * 1000) {
+    return res.json(genreGroupsCache.data);
+  }
+  const sessionKey = "rra_grp_" + Math.random().toString(36).slice(2, 10);
+  try {
+    await browse({ hierarchy: "genres", pop_all: true, multi_session_key: sessionKey });
+    // Find the Pop/Rock parent (tolerant of spacing/naming).
+    const top = await loadLevel(sessionKey, "genres", 1000);
+    const parentItem = top.items.find(i => /pop\s*\/\s*rock/i.test((i.title || "").trim()));
+    if (!parentItem) return res.json({ parent: null, pop: [], rockmetal: [] });
+    const parentTitle = parentItem.title.trim();
+    await browse({ hierarchy: "genres", item_key: parentItem.item_key, multi_session_key: sessionKey });
+    const lvl = await loadLevel(sessionKey, "genres", 1000);
+    const pop = [], rockmetal = [];
+    for (const it of lvl.items) {
+      const title = (it.title || "").trim();
+      if (!title || it.hint === "header") continue;
+      if (/^albums$/i.test(title)) continue;          // the "Albums" child, not a sub-genre
+      const m = /(\d[\d,]*)\s*albums?/i.exec(it.subtitle || "");
+      const entry = { title, count: m ? parseInt(m[1].replace(/,/g, ""), 10) : 0 };
+      if (/pop/i.test(title)) pop.push(entry);
+      else rockmetal.push(entry);
+    }
+    const byCount = (a, b) => (b.count || 0) - (a.count || 0);
+    pop.sort(byCount); rockmetal.sort(byCount);
+    const data = { parent: parentTitle, pop, rockmetal };
+    genreGroupsCache = { at: Date.now(), data };
+    res.json(data);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

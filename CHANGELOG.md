@@ -2,6 +2,12 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.106] — 2026-07-03
+
+### Changed
+- **"Browse by genre": the Pop/Rock parent is split into "Rock/Metal" and "Pop" buttons.** Roon files rock, metal, punk, indie, etc. as sub-genres under a single "Pop/Rock" parent. The Home genre buttons now split it: sub-genres whose name contains "pop" form the **Pop** button, everything else forms the **Rock/Metal** button. Tapping a button picks a random sub-genre from that group (weighted by album count) and shows its albums; the top-bar breadcrumb shows the group name. This replaces the earlier R&B→Metal swap (Metal is a Pop/Rock sub-genre, now reachable via Rock/Metal).
+- **Nested genre filter** — the genre filter now supports a parent (`filter_parent`), so a sub-genre nested under a parent genre resolves correctly across browse, album detail, and play. New endpoint `GET /api/home/genre-groups` enumerates and classifies the Pop/Rock sub-genres (cached 30 min).
+
 ## [1.5.105] — 2026-07-03 — Home redesign (phase 2 fixes)
 
 ### Fixed
