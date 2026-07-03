@@ -288,22 +288,30 @@
   }
 
   // ----- Random albums fetch -----
-  // ----- Library album count (header readout) -----
+  // ----- Library album count -----
+  // The topbar no longer shows a persistent "N albums" readout — it crowded
+  // the controls on phones. The library total now lives in Settings; the
+  // topbar element is reused only for transient CONTEXT (the active filter
+  // value and the labels-browser breadcrumb) and is hidden on the plain wall.
   let libraryAlbumTotal = null;
   async function loadAlbumCount() {
-    const el = document.getElementById("album-count");
-    if (!el) return;
     try {
       const r = await fetch("/api/library-stats");
       if (!r.ok) return;
       const j = await r.json();
       if (typeof j.albums === "number" && j.albums > 0) {
         libraryAlbumTotal = j.albums;
-        updateCountReadout(null);
+        updateSettingsAlbumCount();
       }
-    } catch (e) { /* non-fatal — album count header stays blank until next refresh */ }
+    } catch (e) { /* non-fatal — the Settings count line just stays blank */ }
   }
-  // Set the header readout text directly (used by the labels browser).
+  // Library total, shown in the Settings sheet (not the topbar).
+  function updateSettingsAlbumCount() {
+    const el = document.getElementById("settings-album-count");
+    if (!el || libraryAlbumTotal == null) return;
+    el.textContent = libraryAlbumTotal.toLocaleString() + " albums in the library";
+  }
+  // Set the topbar context text directly (used by the labels browser).
   function setCountText(text) {
     const el = document.getElementById("album-count");
     if (!el) return;
@@ -321,9 +329,9 @@
     } else if (activeFilter) {
       el.textContent = activeFilter.value;
       el.classList.remove("hidden");
-    } else if (libraryAlbumTotal != null) {
-      el.textContent = libraryAlbumTotal.toLocaleString() + " albums";
-      el.classList.remove("hidden");
+    } else {
+      el.textContent = "";
+      el.classList.add("hidden");   // plain wall: free the row for the controls
     }
   }
 

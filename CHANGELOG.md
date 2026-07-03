@@ -2,6 +2,12 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.100] — 2026-07-02
+
+### Changed
+- **Bigger top-bar buttons on phones** — the persistent "N albums" count has been removed from the top bar (it crowded the controls and forced tiny 34px buttons). The buttons now grow to 40px on typical phones, sized down in tiers (37px / 33px) only on narrower widths so all controls still fit one row without overflow down to 320px. The library album total moved to the Settings sheet ("N albums in the library"). The top-bar readout is kept only for transient context — the active filter value and the labels-browser breadcrumb — and is hidden on the plain wall.
+- **Qobuz/Tidal overlay close button on the title row** — the × now sits top-right on the same line as the "Qobuz"/"Tidal" heading instead of wrapping onto its own line below it. Scoped to those two overlays; the Settings and Filter sheets are unchanged.
+
 ## [1.5.99] — 2026-07-02
 
 ### Fixed
