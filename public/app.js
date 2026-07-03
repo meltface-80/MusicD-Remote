@@ -202,25 +202,37 @@
   const homeGenres   = document.getElementById("home-genres");
   const topbarBack   = document.getElementById("topbar-back");
   const topbarRefresh = document.getElementById("topbar-refresh");
+  const topbarSearch  = document.getElementById("topbar-search");
   let homeSectionsLoaded = false;
 
-  // Topbar navigation: a Back-to-Home button (shown off Home) and a Refresh
-  // button (shown only on the random / genre album grids).
-  function setTopbarNav(back, refresh) {
+  // Topbar chrome per view: Back button (off Home), Refresh button (random /
+  // genre grids), and the Search box (Home only, beside the hamburger).
+  function setTopbarNav(back, refresh, search) {
     if (topbarBack)    topbarBack.classList.toggle("hidden", !back);
     if (topbarRefresh) topbarRefresh.classList.toggle("hidden", !refresh);
+    if (topbarSearch)  topbarSearch.classList.toggle("hidden", !search);
   }
 
   // Show the Home landing (hide the wall). The wall loads lazily when entered.
   function showHome() {
     if (window.__exitLabels) window.__exitLabels();   // leave the labels browser if active
+    // Home is unfiltered — clear any active genre/tag filter so the breadcrumb
+    // title goes away AND Home's full-library tiles resolve correctly.
+    if (activeFilter) {
+      activeFilter = null;
+      try { localStorage.removeItem("rra-filter"); } catch (e) {}
+    }
+    updateCountReadout(null);   // hide the genre/label breadcrumb
     if (homeView) homeView.classList.remove("hidden");
     if (homeSections) homeSections.classList.remove("hidden");  // in case a search hid them
     grid.classList.add("hidden");
-    setTopbarNav(false, false);
+    setTopbarNav(false, false, true);   // Home: search box, no Back/Refresh
     const m = document.querySelector("main");
     if (m) m.scrollTop = 0;
-    if (!homeSectionsLoaded) { homeSectionsLoaded = true; loadHomeUnplayed(); loadHomeGenres(); }
+    // Reload the unplayed row (+ album-of-the-day) every visit so a just-played
+    // album-of-the-day disappears; the genre list is static, so load it once.
+    loadHomeUnplayed();
+    if (!homeSectionsLoaded) { homeSectionsLoaded = true; loadHomeGenres(); }
   }
   // Reveal the album wall. opts.loadIfEmpty loads a fresh wall only when it has
   // no content yet (so passive reveals — opening an overlay from the menu —
@@ -230,7 +242,7 @@
     if (window.__clearSearchIfActive) window.__clearSearchIfActive();  // drop stale search results
     if (homeView) homeView.classList.add("hidden");
     grid.classList.remove("hidden");
-    setTopbarNav(true, true);   // random / genre grid: Back + Refresh
+    setTopbarNav(true, true, false);   // random / genre grid: Back + Refresh, no search
     if (opts && opts.loadIfEmpty && !labelsActive && !grid.children.length) loadRandom();
   }
   window.__showHome = showHome;
@@ -242,20 +254,46 @@
   if (topbarBack)    topbarBack.addEventListener("click", showHome);
   if (topbarRefresh) topbarRefresh.addEventListener("click", () => loadRandom());
 
+  // Build a Home tile that always opens full-library (filter: null) so its
+  // offset resolves even when a genre filter was last active.
+  function homeTile(a, extraClass) {
+    const tile = buildAlbumTile(a, () => openAlbum(a, { source: "home", filter: null }));
+    if (extraClass) tile.classList.add(extraClass);
+    return tile;
+  }
+
   async function loadHomeUnplayed() {
     if (!homeUnplayed) return;
     homeUnplayed.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
+    // Album of the day (completely random; hidden once played today) sits first.
+    let aotd = null;
+    try {
+      const ar = await fetch("/api/home/album-of-the-day");
+      const aj = await ar.json();
+      if (aj && aj.album) aotd = aj.album;
+    } catch (e) { /* non-fatal — just no album-of-the-day */ }
     try {
       const r = await fetch("/api/home/unplayed?months=6&count=30");
       const j = await r.json();
       const albums = (j && j.albums) || [];
       homeUnplayed.innerHTML = "";
-      if (!albums.length) {
+      if (!albums.length && !aotd) {
         homeUnplayed.innerHTML = '<div class="home-carousel-empty">Nothing here yet — play some music and check back.</div>';
         return;
       }
       const frag = document.createDocumentFragment();
-      for (const a of albums) frag.appendChild(buildAlbumTile(a, () => openAlbum(a)));
+      if (aotd) {
+        const tile = homeTile(aotd, "home-aotd");
+        const wrap = tile.querySelector(".album-art-wrap");
+        if (wrap) {
+          const badge = document.createElement("span");
+          badge.className = "aotd-badge";
+          badge.textContent = "★ Today";
+          wrap.appendChild(badge);
+        }
+        frag.appendChild(tile);
+      }
+      for (const a of albums) frag.appendChild(homeTile(a));
       homeUnplayed.appendChild(frag);
     } catch (e) {
       homeUnplayed.innerHTML = '<div class="home-carousel-empty">Couldn’t load.</div>';
@@ -268,7 +306,17 @@
     try {
       const r = await fetch("/api/filters/genres");
       const j = await r.json();
-      const genres = ((j && j.genres) || []).slice(0, 10);   // top 10 parent genres, biggest first
+      const all = (j && j.genres) || [];
+      const genres = all.slice(0, 10);   // top 10 parent genres, biggest first
+      // Swap R&B out for Metal (per request). Replace the R&B card in place with
+      // the library's Metal genre if it exists; otherwise just drop R&B.
+      const rbIdx = genres.findIndex(g => /r&b|rhythm\s*&\s*blues/i.test(g.title));
+      if (rbIdx !== -1) {
+        const metal = all.find(g => /metal/i.test(g.title) &&
+                                    !genres.some(x => x.title === g.title));
+        if (metal) genres[rbIdx] = metal;
+        else genres.splice(rbIdx, 1);
+      }
       homeGenres.innerHTML = "";
       if (!genres.length) {
         homeGenres.innerHTML = '<div class="home-carousel-empty">No genres found.</div>';
@@ -700,7 +748,10 @@
     window.__currentAlbum = album;
     currentSource = opts.source || "random";
     currentSourceZoneId = opts.zoneId || null;
-    currentDetailFilter = opts.filter || activeFilter;
+    // An explicit opts.filter (incl. null) wins over the active filter — Home
+    // tiles carry full-library offsets and must resolve unfiltered even if a
+    // genre filter is still active.
+    currentDetailFilter = ("filter" in opts) ? opts.filter : activeFilter;
 
     // Persist so the modal survives a Safari reload after tapping an external link
     try {
@@ -1721,7 +1772,7 @@
       clearWallGridSizing();   // labels grid uses its own layout, not the wall's phone-fit
       { const _hv = document.getElementById("home-view"); if (_hv) _hv.classList.add("hidden"); }
       grid.classList.remove("hidden");
-      if (window.__setTopbarNav) window.__setTopbarNav(true, false);   // Back (to Home), no Refresh
+      if (window.__setTopbarNav) window.__setTopbarNav(true, false, false);   // Back (to Home), no Refresh, no search
       labelsBtn.classList.add("is-active");
       if (labelsBar) labelsBar.classList.add("hidden");
       setBanner(null);
@@ -1898,7 +1949,7 @@
       clearWallGridSizing();   // label-album grid uses its own layout, not the wall's phone-fit
       { const _hv = document.getElementById("home-view"); if (_hv) _hv.classList.add("hidden"); }
       grid.classList.remove("hidden");
-      if (window.__setTopbarNav) window.__setTopbarNav(true, false);   // Back (to Home), no Refresh
+      if (window.__setTopbarNav) window.__setTopbarNav(true, false, false);   // Back (to Home), no Refresh, no search
       labelsBtn.classList.add("is-active");
       if (labelsBar)   labelsBar.classList.remove("hidden");
       if (labelsTitle) labelsTitle.textContent = name;

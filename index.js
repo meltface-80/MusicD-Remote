@@ -3003,6 +3003,40 @@ app.get("/api/home/unplayed", async (req, res) => {
   }
 });
 
+// Home section: "album of the day" — one completely random album, chosen
+// deterministically from today's date so it's stable all day and changes each
+// day. Once it has been played today (a play row with that title since local
+// midnight) it's withheld ({ album: null, played: true }) until tomorrow.
+app.get("/api/home/album-of-the-day", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  try {
+    await ensureAlbumIndex();
+    const albums = albumIndex.albums;
+    if (!albums.length) return res.json({ album: null });
+    // Deterministic index from the local date (YYYY-MM-DD).
+    const now = new Date();
+    const dstr = now.getFullYear() + "-" + (now.getMonth() + 1) + "-" + now.getDate();
+    let h = 2166136261;
+    for (let i = 0; i < dstr.length; i++) { h ^= dstr.charCodeAt(i); h = Math.imul(h, 16777619); }
+    const al = albums[(h >>> 0) % albums.length];
+    // Played today? (plays table records the album title.)
+    let played = false;
+    if (labelsDb) {
+      const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+      try {
+        const row = labelsDb.prepare(
+          "SELECT 1 FROM plays WHERE lower(trim(album)) = ? AND ts >= ? LIMIT 1"
+        ).get((al.title || "").toLowerCase().trim(), midnight.getTime());
+        played = !!row;
+      } catch (e) { played = false; /* DB unavailable — show it */ }
+    }
+    if (played) return res.json({ album: null, played: true });
+    res.json({ album: { offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null } });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Available genres (top level of the "genres" hierarchy).
 app.get("/api/filters/genres", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });

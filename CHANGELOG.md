@@ -2,6 +2,18 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.105] — 2026-07-03 — Home redesign (phase 2 fixes)
+
+### Fixed
+- **"Album not found at offset …" when opening a Home tile after viewing a genre** — and the related **genre name lingering in the top bar back on Home**. Both had the same cause: the active genre filter wasn't cleared when returning to Home, so Home's full-library album offsets were resolved against the (smaller) genre-filtered list and fell out of range. Returning to Home now clears the filter (and its breadcrumb), and Home tiles always open unfiltered regardless of any active filter.
+
+### Changed
+- **Search box moved into the top bar**, beside the hamburger (both visible), on the Home screen — instead of sitting in the Home content.
+- **"Browse by genre": R&B replaced with Metal** — the R&B card is swapped for the library's Metal genre (or dropped if there's no Metal genre).
+
+### Added
+- **Album of the day** — one completely random album shown first in the "Not played in 6 months" row, chosen fresh each day (stable through the day). On iPad/desktop it appears once, top-left. Once you've played it, it disappears until tomorrow's pick. New endpoint `GET /api/home/album-of-the-day`.
+
 ## [1.5.104] — 2026-07-03 — Home redesign (phase 2)
 
 ### Changed

@@ -2328,3 +2328,21 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 }
 .home-genre-card:hover  { border-color: var(--accent); background: var(--bg-elev-2); }
 .home-genre-card:active { transform: scale(.98); }
+
+/* Search box relocated into the top bar (Home only). */
+#topbar-search { flex: 1 1 auto; min-width: 0; }
+#topbar-search.hidden { display: none; }
+#topbar-search .search-row { margin: 0; }
+#topbar-search .search-row.open { animation: none; }   /* no reveal jump in the bar */
+.search-status-hidden { display: none; }
+
+/* Album-of-the-day badge on the first "Not played" tile. */
+.home-aotd .album-art-wrap { position: relative; }
+.aotd-badge {
+  position: absolute; top: 6px; left: 6px; z-index: 2;
+  background: var(--accent); color: #04121a;
+  font-size: 10px; font-weight: 800; letter-spacing: .02em;
+  padding: 2px 7px; border-radius: 999px;
+  box-shadow: 0 1px 4px rgba(0,0,0,.4);
+}
+[data-theme="light"] .aotd-badge { color: #ffffff; }
