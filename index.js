@@ -3049,6 +3049,56 @@ app.get("/api/home/album-of-the-day", async (req, res) => {
   }
 });
 
+// Home section: "label of the week" — one record label featured for the whole
+// ISO week (Mon–Sun), chosen deterministically from the week key so it's stable
+// all week and rotates weekly. Label albums already carry full-hierarchy offsets
+// (see /api/label-albums), so tiles open/play via filter:null like the other
+// Home rows. Cached ~1h; recomputed when the week changes or the index grew.
+function isoWeekKey(d = new Date()) {
+  const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  // ISO week: Thursday determines the week-year; week 1 holds Jan 4th.
+  t.setUTCDate(t.getUTCDate() + 4 - (t.getUTCDay() || 7));
+  const yStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  const wk = Math.ceil(((t - yStart) / 86400000 + 1) / 7);
+  return t.getUTCFullYear() + "-W" + wk;
+}
+let lotwCache = { weekKey: "", at: 0, count: -1, data: null };
+app.get("/api/home/label-of-the-week", (req, res) => {
+  try {
+    const wk = isoWeekKey();
+    // Reuse the cached pick within the same week/hour unless the index grew
+    // (a fresh scan can add labels and would otherwise shift the deterministic
+    // pick mid-week — recompute so the whole week stays consistent afterward).
+    if (lotwCache.data && lotwCache.weekKey === wk &&
+        lotwCache.count === labelsIndex.map.size &&
+        (Date.now() - lotwCache.at) < 60 * 60 * 1000) {
+      return res.json(lotwCache.data);
+    }
+    // Only feature labels with a reasonable catalogue (>= 3 albums). Sort the
+    // keys so the pick is stable regardless of Map insertion order.
+    const keys = [...labelsIndex.map.entries()]
+      .filter(([, e]) => e.albums && e.albums.length >= 3)
+      .map(([k]) => k)
+      .sort();
+    if (!keys.length) {
+      const empty = { label: null, albums: [] };
+      lotwCache = { weekKey: wk, at: Date.now(), count: labelsIndex.map.size, data: empty };
+      return res.json(empty);
+    }
+    let h = 2166136261;
+    for (let i = 0; i < wk.length; i++) { h ^= wk.charCodeAt(i); h = Math.imul(h, 16777619); }
+    const entry = labelsIndex.map.get(keys[(h >>> 0) % keys.length]);
+    const albums = entry.albums.slice(0, 24).map(a => ({
+      offset: a.offset, title: a.title || "", subtitle: a.subtitle || "", image_key: a.image_key || null
+    }));
+    const data = { label: entry.display, albums };
+    lotwCache = { weekKey: wk, at: Date.now(), count: labelsIndex.map.size, data };
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Home "Browse by genre": split the "Pop/Rock" parent genre into two buttons.
 // Sub-genres whose name contains "pop" → the Pop group; everything else under
 // Pop/Rock → the Rock/Metal group. The frontend picks a random sub-genre from
@@ -3070,6 +3120,15 @@ app.get("/api/home/genre-groups", async (req, res) => {
     const parentTitle = parentItem.title.trim();
     await browse({ hierarchy: "genres", item_key: parentItem.item_key, multi_session_key: sessionKey });
     const lvl = await loadLevel(sessionKey, "genres", 1000);
+    // Curated allow-lists over Roon's (AllMusic/Rovi) Pop/Rock sub-genre names.
+    // Test rock/metal FIRST so "Pop-Punk", "Power Pop", "Pop/Rock" land in
+    // Rock/Metal; unmatched styles (Singer/Songwriter, Adult Contemporary,
+    // Easy Listening, New Age, Soft Rock's "adult" strays) are EXCLUDED rather
+    // than dumped into Rock/Metal — that's what caused pop/indie leakage.
+    const METAL_RE = /\b(metal|metalcore|deathcore|grindcore|djent|doom|thrash|black\s*metal|death\s*metal|nu[\s-]?metal|power\s*metal|sludge|hardcore)\b/i;
+    const ROCK_RE  = /\b(rock|punk|grunge|emo|garage|shoegaze|psychedel|prog|krautrock|post[\s-]?rock|noise\s*rock|stoner|surf|rockabilly|glam|new\s*wave|post[\s-]?punk|britpop|math\s*rock|space\s*rock|jam\s*band)\b/i;
+    const INDIE_ROCK_RE = /\bindie\b(?!\s*pop)|alternative\/indie/i;   // Indie Rock yes, Indie Pop no
+    const POP_RE   = /\bpop\b/i;
     const pop = [], rockmetal = [];
     for (const it of lvl.items) {
       const title = (it.title || "").trim();
@@ -3077,8 +3136,9 @@ app.get("/api/home/genre-groups", async (req, res) => {
       if (/^albums$/i.test(title)) continue;          // the "Albums" child, not a sub-genre
       const m = /(\d[\d,]*)\s*albums?/i.exec(it.subtitle || "");
       const entry = { title, count: m ? parseInt(m[1].replace(/,/g, ""), 10) : 0 };
-      if (/pop/i.test(title)) pop.push(entry);
-      else rockmetal.push(entry);
+      if (METAL_RE.test(title) || ROCK_RE.test(title) || INDIE_ROCK_RE.test(title)) rockmetal.push(entry);
+      else if (POP_RE.test(title)) pop.push(entry);
+      // else: excluded (singer/songwriter, adult contemporary, easy listening, …)
     }
     const byCount = (a, b) => (b.count || 0) - (a.count || 0);
     pop.sort(byCount); rockmetal.sort(byCount);

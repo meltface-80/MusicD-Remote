@@ -2287,6 +2287,13 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 .home-search { margin: 2px 0 18px; }
 .home-section { margin: 0 0 22px; }
 .home-section-title { font-size: 16px; font-weight: 700; color: var(--text); margin: 0 0 12px; }
+/* Clickable section headers (Random albums, Label of the week) — the title
+   doubles as a link into the full view. A trailing chevron hints it's tappable. */
+.home-section-link { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.home-section-link::after { content: "›"; font-size: 20px; line-height: 1; color: var(--text-faint); transition: transform .15s ease; }
+.home-section-link:hover { color: var(--accent, var(--text)); }
+.home-section-link:hover::after { transform: translateX(3px); }
+.home-section-link:focus-visible { outline: 2px solid var(--accent, #4a90d9); outline-offset: 3px; border-radius: 4px; }
 
 /* "Not played in 6 months" stands out with a coloured panel: pale grey in
    dark mode, a soft blue in light mode. */
@@ -2315,9 +2322,12 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
   .home-carousel { grid-template-rows: repeat(3, auto); }
 }
 .home-carousel-empty { color: var(--text-faint); font-size: 13px; padding: 8px 2px; }
+/* 12 genre buttons divide evenly into 2 / 3 / 4 / 6 columns, so every screen
+   width shows full rows with no lone trailing card. */
 .home-genre-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
 @media (min-width: 560px)  { .home-genre-grid { grid-template-columns: repeat(3, 1fr); } }
-@media (min-width: 900px)  { .home-genre-grid { grid-template-columns: repeat(5, 1fr); } }
+@media (min-width: 900px)  { .home-genre-grid { grid-template-columns: repeat(4, 1fr); } }
+@media (min-width: 1200px) { .home-genre-grid { grid-template-columns: repeat(6, 1fr); } }
 .home-genre-card {
   padding: 18px 14px; border-radius: 12px; min-height: 58px;
   background: var(--bg-elev); border: 1px solid var(--border);

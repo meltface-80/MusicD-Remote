@@ -2,6 +2,17 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.107] — 2026-07-03
+
+### Added
+- **"Random albums" on the Home screen** — the random-albums shuffle (previously only in the side menu) now also appears as a Home carousel of 24 random albums, refreshed on every Home visit so it's always freshly random. Tapping the **Random albums ›** header opens the full random wall. Reuses the existing `/api/random-albums` endpoint (no new backend).
+- **"Label of the week" on the Home screen** — one record label is featured for the whole ISO week (Mon–Sun), chosen deterministically so it's stable all week and rotates every Monday. Shows a carousel of that label's albums; tapping the **Label of the week: … ›** header opens the full label view. New endpoint `GET /api/home/label-of-the-week` (labels with ≥ 3 albums, deterministic per-week pick, cached ~1h). The section stays hidden until the background labels scan has produced a qualifying label, then retries each visit until it populates.
+- Both new sections reuse the responsive `.home-carousel` layout: single row on phones, 2 rows on landscape tablets, 3 rows on desktops.
+
+### Changed
+- **Better separation of Rock/Metal from Pop in "Browse by genre"** — the old rule ("any Pop/Rock sub-genre without 'pop' in its name → Rock/Metal") swept in indie-pop, singer/songwriter and adult-contemporary styles. The classifier now uses curated allow-lists: rock/metal sub-genres (metal, punk, grunge, prog, shoegaze, indie rock, …) go to **Rock/Metal**, pop sub-genres go to **Pop**, and unrelated styles (Singer/Songwriter, Adult Contemporary, Easy Listening, …) are excluded rather than dumped into Rock/Metal.
+- **"Browse by genre" now shows an even 12 buttons** so the grid rows are balanced on every screen. Rock/Metal and Pop are guaranteed slots; the rest are the library's biggest genres. Column counts adjusted (2 / 3 / 4 / 6) so 12 buttons always fill full rows with no lone trailing card.
+
 ## [1.5.106] — 2026-07-03
 
 ### Changed

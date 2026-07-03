@@ -202,11 +202,14 @@
   const homeView     = document.getElementById("home-view");
   const homeSections = document.getElementById("home-sections");
   const homeUnplayed = document.getElementById("home-unplayed");
+  const homeRandom   = document.getElementById("home-random");
+  const homeLotw     = document.getElementById("home-lotw");
   const homeGenres   = document.getElementById("home-genres");
   const topbarBack   = document.getElementById("topbar-back");
   const topbarRefresh = document.getElementById("topbar-refresh");
   const topbarSearch  = document.getElementById("topbar-search");
   let homeSectionsLoaded = false;
+  let homeLotwLoaded = false;   // set once the label-of-the-week row populates
 
   // Topbar chrome per view: Back button (off Home), Refresh button (random /
   // genre grids), and the Search box (Home only, beside the hamburger).
@@ -232,9 +235,14 @@
     setTopbarNav(false, false, true);   // Home: search box, no Back/Refresh
     const m = document.querySelector("main");
     if (m) m.scrollTop = 0;
-    // Reload the unplayed row (+ album-of-the-day) every visit so a just-played
-    // album-of-the-day disappears; the genre list is static, so load it once.
+    // Reload the unplayed row (+ album-of-the-day) and the random row every
+    // visit so they're freshly random; the genre list and the weekly label are
+    // stable, so load those once.
     loadHomeUnplayed();
+    loadHomeRandom();
+    // Label of the week depends on the background labels scan, which may not be
+    // ready on the first visit — retry each visit until it populates, then stop.
+    if (!homeLotwLoaded) loadHomeLabelOfWeek();
     if (!homeSectionsLoaded) { homeSectionsLoaded = true; loadHomeGenres(); }
   }
   // Reveal the album wall. opts.loadIfEmpty loads a fresh wall only when it has
@@ -303,6 +311,86 @@
     }
   }
 
+  // Random-albums row (reuses /api/random-albums, no filter → full library).
+  // Reloaded on every Home visit so it's freshly random; tapping the header
+  // opens the full random wall (same as the hamburger "Random albums").
+  async function loadHomeRandom() {
+    if (!homeRandom) return;
+    homeRandom.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
+    try {
+      const r = await fetch("/api/random-albums?count=24");
+      const j = await r.json();
+      const albums = (j && j.albums) || [];
+      homeRandom.innerHTML = "";
+      if (!albums.length) {
+        homeRandom.innerHTML = '<div class="home-carousel-empty">No albums.</div>';
+        return;
+      }
+      const frag = document.createDocumentFragment();
+      for (const a of albums) frag.appendChild(homeTile(a));   // filter:null → offsets resolve
+      homeRandom.appendChild(frag);
+    } catch (e) {
+      homeRandom.innerHTML = '<div class="home-carousel-empty">Couldn’t load.</div>';
+    }
+  }
+
+  // Label of the week — one label featured for the whole ISO week (backend
+  // picks deterministically). Retried each Home visit until it populates (the
+  // labels scan runs in the background), then left alone. Tapping the header
+  // opens the full label view.
+  async function loadHomeLabelOfWeek() {
+    if (!homeLotw) return;
+    const titleEl = document.getElementById("home-lotw-title");
+    homeLotw.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
+    try {
+      const r = await fetch("/api/home/label-of-the-week");
+      const j = await r.json();
+      const albums = (j && j.albums) || [];
+      if (!j || !j.label || !albums.length) {
+        // No qualifying label yet (labels still scanning / library too small):
+        // hide the whole section rather than show an empty row.
+        const sec = homeLotw.closest(".home-section");
+        if (sec) sec.classList.add("hidden");
+        return;
+      }
+      if (titleEl) titleEl.textContent = "Label of the week: " + j.label;
+      homeLotw.dataset.label = j.label;
+      const sec = homeLotw.closest(".home-section");
+      if (sec) sec.classList.remove("hidden");   // un-hide if a prior attempt hid it
+      homeLotw.innerHTML = "";
+      const frag = document.createDocumentFragment();
+      for (const a of albums) frag.appendChild(homeTile(a));   // full-hierarchy offsets → filter:null
+      homeLotw.appendChild(frag);
+      homeLotwLoaded = true;   // populated — stop retrying on future visits
+    } catch (e) {
+      const sec = homeLotw.closest(".home-section");
+      if (sec) sec.classList.add("hidden");
+    }
+  }
+
+  // Header taps: Random albums → full random wall; Label of the week → label view.
+  {
+    const randTitle = document.getElementById("home-random-title");
+    if (randTitle) {
+      const goRandom = () => { if (window.__applyFilter) window.__applyFilter(null); };
+      randTitle.addEventListener("click", goRandom);
+      randTitle.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goRandom(); }
+      });
+    }
+    const lotwTitle = document.getElementById("home-lotw-title");
+    if (lotwTitle) {
+      const goLabel = () => {
+        const name = homeLotw && homeLotw.dataset.label;
+        if (name && window.__showLabelAlbums) window.__showLabelAlbums(name);
+      };
+      lotwTitle.addEventListener("click", goLabel);
+      lotwTitle.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goLabel(); }
+      });
+    }
+  }
+
   // Weighted-random pick from a list of { title, count }.
   function pickWeightedSub(items) {
     let total = 0;
@@ -320,28 +408,34 @@
         fetch("/api/filters/genres").then(r => r.json()).catch(() => ({})),
         fetch("/api/home/genre-groups").then(r => r.json()).catch(() => ({}))
       ]);
-      const top = ((genresJ && genresJ.genres) || []).slice(0, 10); // top 10, biggest first
+      // Pull extra genres up front — splitting Pop/Rock adds a card, and we trim
+      // down to an even count afterwards so the 2-column grid has full rows.
+      const top = ((genresJ && genresJ.genres) || []).slice(0, 16); // biggest first
       const groups = groupsJ || {};
       const parent = groups.parent;
 
       // Build card descriptors. The "Pop/Rock" parent is split into two buttons:
-      // "Rock/Metal" (sub-genres without "pop") and "Pop" (sub-genres with "pop").
+      // "Rock/Metal" (curated rock/metal sub-genres) and "Pop" (pop sub-genres).
+      // Rock/Metal and Pop are pushed FIRST so they always survive the trim.
       const cards = [];
-      for (const g of top) {
-        if (parent && /pop\s*\/\s*rock/i.test(g.title)) {
-          if (groups.rockmetal && groups.rockmetal.length) {
-            cards.push({ label: "Rock/Metal", group: groups.rockmetal, parent });
-          }
-          if (groups.pop && groups.pop.length) {
-            cards.push({ label: "Pop", group: groups.pop, parent });
-          }
-          if (!(groups.rockmetal || []).length && !(groups.pop || []).length) {
-            cards.push({ label: g.title, genre: g.title }); // fallback: keep Pop/Rock
-          }
-        } else {
-          cards.push({ label: g.title, genre: g.title });
-        }
+      const haveRockMetal = groups.rockmetal && groups.rockmetal.length;
+      const havePop = groups.pop && groups.pop.length;
+      if (parent && (haveRockMetal || havePop)) {
+        if (haveRockMetal) cards.push({ label: "Rock/Metal", group: groups.rockmetal, parent });
+        if (havePop) cards.push({ label: "Pop", group: groups.pop, parent });
       }
+      for (const g of top) {
+        // Drop the raw Pop/Rock parent — it's represented by the split buttons.
+        if (parent && /pop\s*\/\s*rock/i.test(g.title)) continue;
+        cards.push({ label: g.title, genre: g.title });
+      }
+
+      // Target an even 12 buttons so the grid rows are balanced on every screen.
+      // If we have more, keep the first 12 (biggest, Rock/Metal + Pop first); if
+      // fewer, drop the last one when the count is odd.
+      const MAX_CARDS = 12;
+      if (cards.length > MAX_CARDS) cards.length = MAX_CARDS;
+      if (cards.length % 2 === 1) cards.length -= 1;
 
       homeGenres.innerHTML = "";
       if (!cards.length) {
