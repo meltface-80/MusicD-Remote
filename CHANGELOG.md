@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.5.111] — 2026-07-04
+
+### Added
+- **Faint themed artwork on the "Not played in 6 months" panel** — a subtle line-art clock watermark (time gone by) now sits behind that section's coloured panel, reflecting its theme. It's a self-contained inline SVG (no external requests), theme-aware (light art on the dark panel, dark art on the light panel), clipped to the rounded panel, and sits behind the tiles at very low opacity so it never obscures album art or intercepts taps. First of the coloured sections to get themed art.
+
 ## [1.5.110] — 2026-07-04
 
 ### Fixed

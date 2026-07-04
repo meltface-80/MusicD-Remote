@@ -2315,6 +2315,29 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 .home-section-random   { background: var(--home-random-bg); }
 .home-section-lotw     { background: var(--home-lotw-bg); }
 .home-section-genres   { background: var(--home-genres-bg); }
+
+/* Faint themed watermark behind a section's panel. "Not played in 6 months"
+   gets a clock (time gone by). The art sits behind the title + carousel, is
+   clipped to the rounded panel, and never intercepts taps. */
+.home-section-unplayed { position: relative; overflow: hidden; }
+.home-section-unplayed > * { position: relative; z-index: 1; }
+.home-section-unplayed::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: -18px;
+  transform: translateY(-50%);
+  width: 190px;
+  height: 190px;
+  background: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20120%20120%22%20fill%3D%22none%22%20stroke%3D%22%23ffffff%22%20stroke-width%3D%223%22%20stroke-linecap%3D%22round%22%3E%3Ccircle%20cx%3D%2260%22%20cy%3D%2260%22%20r%3D%2250%22%2F%3E%3Cline%20x1%3D%2260%22%20y1%3D%2213%22%20x2%3D%2260%22%20y2%3D%2222%22%2F%3E%3Cline%20x1%3D%22107%22%20y1%3D%2260%22%20x2%3D%2298%22%20y2%3D%2260%22%2F%3E%3Cline%20x1%3D%2260%22%20y1%3D%22107%22%20x2%3D%2260%22%20y2%3D%2298%22%2F%3E%3Cline%20x1%3D%2213%22%20y1%3D%2260%22%20x2%3D%2222%22%20y2%3D%2260%22%2F%3E%3Cline%20x1%3D%2260%22%20y1%3D%2260%22%20x2%3D%2260%22%20y2%3D%2233%22%2F%3E%3Cline%20x1%3D%2260%22%20y1%3D%2260%22%20x2%3D%2281%22%20y2%3D%2271%22%2F%3E%3Ccircle%20cx%3D%2260%22%20cy%3D%2260%22%20r%3D%223%22%20fill%3D%22%23ffffff%22%20stroke%3D%22none%22%2F%3E%3C%2Fsvg%3E") center / contain no-repeat;
+  opacity: .06;
+  pointer-events: none;
+  z-index: 0;
+}
+[data-theme="light"] .home-section-unplayed::before {
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20120%20120%22%20fill%3D%22none%22%20stroke%3D%22%231a2740%22%20stroke-width%3D%223%22%20stroke-linecap%3D%22round%22%3E%3Ccircle%20cx%3D%2260%22%20cy%3D%2260%22%20r%3D%2250%22%2F%3E%3Cline%20x1%3D%2260%22%20y1%3D%2213%22%20x2%3D%2260%22%20y2%3D%2222%22%2F%3E%3Cline%20x1%3D%22107%22%20y1%3D%2260%22%20x2%3D%2298%22%20y2%3D%2260%22%2F%3E%3Cline%20x1%3D%2260%22%20y1%3D%22107%22%20x2%3D%2260%22%20y2%3D%2298%22%2F%3E%3Cline%20x1%3D%2213%22%20y1%3D%2260%22%20x2%3D%2222%22%20y2%3D%2260%22%2F%3E%3Cline%20x1%3D%2260%22%20y1%3D%2260%22%20x2%3D%2260%22%20y2%3D%2233%22%2F%3E%3Cline%20x1%3D%2260%22%20y1%3D%2260%22%20x2%3D%2281%22%20y2%3D%2271%22%2F%3E%3Ccircle%20cx%3D%2260%22%20cy%3D%2260%22%20r%3D%223%22%20fill%3D%22%231a2740%22%20stroke%3D%22none%22%2F%3E%3C%2Fsvg%3E");
+  opacity: .09;
+}
 .home-carousel {
   display: grid;
   grid-auto-flow: column;
