@@ -5081,33 +5081,42 @@ app.post("/api/volume", (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/play-unheard — play a random album not yet in the plays table.
+// "Play something unheard" — picks a random album not played in the last
+// UNHEARD_MONTHS months (which trivially includes albums never played at
+// all). Falls back to pure random once the whole library qualifies as
+// recently heard. "Heard" is entirely self-tracked (see scrobbleUpdate) —
+// Roon's extension API has no endpoint that reports a library-wide last-
+// played date, so this only knows about plays observed while this extension
+// was running and connected; listening from before that, or during any
+// downtime, isn't reflected here.
+const UNHEARD_MONTHS = 12;
+async function pickUnheardAlbum() {
+  let pick = null;
+  if (labelsDb) {
+    const cutoff = Date.now() - UNHEARD_MONTHS * 30 * 24 * 60 * 60 * 1000;
+    const heard = getPlayedTitlesSince(cutoff);
+    for (let attempt = 0; attempt < 10 && !pick; attempt++) {
+      const candidates = (await pickRandomAlbums(10)).albums;
+      const fresh = candidates.filter(a => !heard.has((a.title || "").toLowerCase().trim()));
+      if (fresh.length) pick = fresh[0];
+    }
+  }
+  if (!pick) {
+    const picks = (await pickRandomAlbums(1)).albums;
+    pick = picks[0] || null;
+  }
+  return pick;
+}
+
+// POST /api/play-unheard — play a random unheard album (see pickUnheardAlbum).
 // Body: { zone: "<zone_id or display_name>" }
-// Falls back to pure random if everything has been heard.
 // ---------------------------------------------------------------------------
 app.post("/api/play-unheard", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Roon not connected" });
   const zoneId = (req.body && req.body.zone) || null;
   if (!zoneId) return res.status(400).json({ error: "zone required" });
   try {
-    let pick = null;
-    if (labelsDb) {
-      let heard;
-      try {
-        heard = new Set(
-          labelsDb.prepare("SELECT DISTINCT lower(trim(album)) as a FROM plays WHERE album != ''").all().map(r => r.a)
-        );
-      } catch (e) { heard = new Set(); /* DB unavailable — degrade to pure-random */ }
-      for (let attempt = 0; attempt < 10 && !pick; attempt++) {
-        const candidates = (await pickRandomAlbums(10)).albums;
-        const fresh = candidates.filter(a => !heard.has((a.title || "").toLowerCase().trim()));
-        if (fresh.length) pick = fresh[0];
-      }
-    }
-    if (!pick) {
-      const picks = (await pickRandomAlbums(1)).albums;
-      pick = picks[0] || null;
-    }
+    const pick = await pickUnheardAlbum();
     if (!pick) return res.status(503).json({ error: "No albums available" });
     await openAlbumByOffset(pick.offset, zoneId, "play_now");
     res.json({ ok: true, album: pick.title, artist: pick.subtitle });
@@ -5163,24 +5172,7 @@ app.get("/api/shortcut/play-unheard", async (req, res) => {
     });
   }
   try {
-    let pick = null;
-    if (labelsDb) {
-      let heard;
-      try {
-        heard = new Set(
-          labelsDb.prepare("SELECT DISTINCT lower(trim(album)) as a FROM plays WHERE album != ''").all().map(r => r.a)
-        );
-      } catch (e) { heard = new Set(); /* DB unavailable — degrade to pure-random */ }
-      for (let attempt = 0; attempt < 10 && !pick; attempt++) {
-        const candidates = (await pickRandomAlbums(10)).albums;
-        const fresh = candidates.filter(a => !heard.has((a.title || "").toLowerCase().trim()));
-        if (fresh.length) pick = fresh[0];
-      }
-    }
-    if (!pick) {
-      const picks = (await pickRandomAlbums(1)).albums;
-      pick = picks[0] || null;
-    }
+    const pick = await pickUnheardAlbum();
     if (!pick) return res.status(503).json({ error: "No albums available" });
     await openAlbumByOffset(pick.offset, zone.zone_id, "play_now");
     res.json({ ok: true, album: pick.title, artist: pick.subtitle, zone: zone.display_name });
