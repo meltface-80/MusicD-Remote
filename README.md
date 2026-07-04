@@ -4,7 +4,7 @@
 
 </div>
 
-# Random Albums + Labels — a Roon extension v1.5.98
+# Random Albums + Labels — a Roon extension v1.6.0
 
 A web UI that shows a screenful of random albums from your Roon library, with instant whole-library search, playback actions targeting any zone, and more.
 
@@ -14,13 +14,13 @@ A web UI that shows a screenful of random albums from your Roon library, with in
 
 ## Features
 
-- **Random album grid** — fills your screen with random picks from your full library, refreshed on demand
-- **Instant search** — whole-library search with results split into Artists, Labels, and Albums sections; tap an artist or label chip to navigate directly
+- **Home** — lands on curated rows instead of a single grid: albums you haven't played in 6 months (with a daily Album of the Day pick), a fresh random shuffle, the Label of the Week, and a Browse by Genre grid; tap any row's header to open its full-screen view, or jump to the classic random album wall any time from the menu
+- **Instant search** — always available from the Home top bar; whole-library search with results split into Artists, Labels, and Albums sections; tap an artist or label chip to navigate directly
 - **Album detail** — full track listing, play/queue actions, release year, label link, editorial review, and artist bio; multiple artists are shown as individual tappable links
 - **Now Playing** — live panel showing the current track with album art and transport controls
 - **Play unheard** — one tap to find and play an album not in your listening history; falls back to anything not played in the last 30 days once your whole library has been heard
 - **Random Album Radio** — automatically queues a new random album when your queue runs dry, preferring albums not recently played
-- **Record labels** — browse your library by label, with logos from FanArt.tv and Discogs where available; includes Self-Released and Independent
+- **Record labels** — browse your library by label, with logos from FanArt.tv and Discogs where available; includes Self-Released and Independent, plus a featured Label of the Week on Home
 - **Label merge** — consolidate duplicate or variant label tiles into one; undo individual merges at any time
 - **Multi-select** — long-press to select multiple album tiles and play or queue them all at once
 - **Filters** — narrow the random pool by genre, decade, tag, or label
@@ -64,9 +64,9 @@ FanArt.tv provides high-quality label logos for labels that have a MusicBrainz M
 ```bash
 sudo mkdir -p /opt/roon-random-albums
 cd /opt/roon-random-albums
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/releases/download/v1.5.98/roon-random-albums-v1.5.98-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.98-docker.tar.gz
-docker build -t roon-random-albums:1.5.98 .
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/releases/download/v1.6.0/roon-random-albums-v1.6.0-docker.tar.gz
+tar -xzf roon-random-albums-v1.6.0-docker.tar.gz
+docker build -t roon-random-albums:1.6.0 .
 docker run -d \
   --name roon-random-albums \
   --restart unless-stopped \
@@ -74,7 +74,7 @@ docker run -d \
   -v roon-random-albums-data:/app/data \
 # remove the below line (and this line) if you only use Qobuz/Tidal
   -v /your/path/to/Music:/music:ro \
-  roon-random-albums:1.5.98
+  roon-random-albums:1.6.0
 ```
 
 `--network host` is required so the extension can discover your Roon Core on the local network. The `-v roon-random-albums-data` flag mounts a named Docker volume so that your Roon pairing, play history, and label cache survive container rebuilds. The `-v .../Music:/music:ro` flag mounts your music directory read-only so the extension can read label tags directly from your files — this is optional but gives the most accurate label data. Adjust the path to match your music library location.
@@ -125,11 +125,11 @@ sudo systemctl disable roon-random-albums
 # 2. Create the build directory and download the tarball
 sudo mkdir -p /opt/roon-random-albums
 cd /opt/roon-random-albums
-wget https://github.com/meltface-80/Roon-Random-Albums-Extension/releases/download/v1.5.98/roon-random-albums-v1.5.98-docker.tar.gz
-tar -xzf roon-random-albums-v1.5.98-docker.tar.gz
+wget https://github.com/meltface-80/Roon-Random-Albums-Extension/releases/download/v1.6.0/roon-random-albums-v1.6.0-docker.tar.gz
+tar -xzf roon-random-albums-v1.6.0-docker.tar.gz
 
 # 3. Build and run
-docker build -t roon-random-albums:1.5.98 .
+docker build -t roon-random-albums:1.6.0 .
 docker run -d \
   --name roon-random-albums \
   --restart unless-stopped \
@@ -137,7 +137,7 @@ docker run -d \
   -v roon-random-albums-data:/app/data \
 # remove the below line (and this line) if you only use Qobuz/Tidal
   -v /your/path/to/Music:/music:ro \
-  roon-random-albums:1.5.98
+  roon-random-albums:1.6.0
 ```
 
 Confirm the extension appears in **Roon → Settings → Extensions** before removing the old install.
@@ -167,7 +167,7 @@ Your Roon pairing, listening history, and label cache are all safe — they live
 Pass extra env vars with `-e` in the `docker run` command:
 
 ```bash
-docker run -d ... -e RRA_DEBUG=1 roon-random-albums:1.5.96
+docker run -d ... -e RRA_DEBUG=1 roon-random-albums:1.6.0
 ```
 
 ### Album metadata sources

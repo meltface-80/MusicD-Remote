@@ -172,7 +172,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
 - The README contains version references (install commands, tarball URLs, `docker build` tags).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.5.98** (until the user says otherwise).
+- Current stable version in the README: **v1.6.0** (until the user says otherwise).
 
 ---
 
@@ -243,7 +243,9 @@ docker run -d \
 | v1.5.81 | superseded | Qobuz: un-favourite (two-way toggle) |
 | v1.5.82 | superseded | Qobuz: tap a release → review detail view |
 | v1.5.83 | superseded | Qobuz overlay history-aware back (detail→list→closed) |
-| v1.5.84 | **Latest (stable)** | Decade filter (per-album years collected during scan) — README points here |
+| v1.5.84 | stable (superseded) | Decade filter (per-album years collected during scan) |
 | v1.5.70 | superseded | Code review fixes: scan lockout, CDN redirect, auth guards |
 | v1.5.71 | superseded | Label scan/logo pipeline fixes (8-angle code review) |
-| v1.5.72 | current    | Label pipeline correctness, FanArt merge-redirect, Discogs retry fix |
+| v1.5.72 | superseded | Label pipeline correctness, FanArt merge-redirect, Discogs retry fix |
+| v1.5.94–v1.5.116 | superseded | Home landing redesign (Not played / Random / Label of the week / Browse by genre rows, watermarks) |
+| v1.6.0  | **Latest (stable)** | Home redesign stability pass — 8-angle review fixes (filter persistence, Roon-disconnect messaging, artist-view state, resize/search edge cases, perf) — README points here |
