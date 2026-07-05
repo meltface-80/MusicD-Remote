@@ -2502,6 +2502,33 @@ async function fetchWikipedia(title, artist) {
   return result;
 }
 
+// Shared extractor for a Pitchfork review PAGE: the review body from the JSON-LD
+// Review block, plus the score / Best-New-Music flag from the inline preloaded
+// state. Used by BOTH the album-modal scraper (fetchPitchfork) and the magazine's
+// by-URL scraper (fetchPitchforkReviewByUrl) so the two can't drift apart. The
+// body is stripped of HTML but NOT entity-decoded here — fetchPitchfork's
+// consumer decodes downstream; fetchPitchforkReviewByUrl decodes its own copy.
+function parsePitchforkReviewHtml(html) {
+  let description = null;
+  const ldRe = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m;
+  while ((m = ldRe.exec(html)) !== null) {
+    try {
+      const obj = JSON.parse(m[1]);
+      if (obj["@type"] === "Review" && obj.reviewBody) {
+        description = stripHtml(obj.reviewBody).trim() || null;
+        break;
+      }
+    } catch (e) { /* malformed JSON-LD block — try the next one; loop continues */ }
+  }
+  let score = null, isBestNewMusic = false;
+  const scoreM = html.match(/"musicRating"\s*:\s*\{[^}]*?"score"\s*:\s*(\d+(?:\.\d+)?)/);
+  if (scoreM) score = parseFloat(scoreM[1]);
+  const bnmM = html.match(/"isBestNewMusic"\s*:\s*(true|false)/);
+  if (bnmM) isBestNewMusic = bnmM[1] === "true";
+  return { description, score: Number.isFinite(score) ? score : null, isBestNewMusic };
+}
+
 async function fetchPitchfork(title, artist) {
   const key = normalize(title) + "||" + normalize(artist || "");
   if (pitchforkCache.has(key)) return pitchforkCache.get(key);
@@ -2517,26 +2544,7 @@ async function fetchPitchfork(title, artist) {
     await pitchforkWait();
     const html = await httpText(url, { "User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9" }, 15000);
 
-    // Extract review body from JSON-LD (schema.org Review type)
-    let description = null;
-    const ldRe = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-    let m;
-    while ((m = ldRe.exec(html)) !== null) {
-      try {
-        const obj = JSON.parse(m[1]);
-        if (obj["@type"] === "Review" && obj.reviewBody) {
-          description = stripHtml(obj.reviewBody).trim() || null;
-          break;
-        }
-      } catch (e) { /* malformed JSON-LD block — try next tag; silence safe as loop continues */ }
-    }
-
-    // Extract score and BNM flag from inline __PRELOADED_STATE__ via targeted regex
-    let score = null, isBestNewMusic = false;
-    const scoreM = html.match(/"musicRating"\s*:\s*\{[^}]*?"score"\s*:\s*(\d+(?:\.\d+)?)/);
-    if (scoreM) score = parseFloat(scoreM[1]);
-    const bnmM = html.match(/"isBestNewMusic"\s*:\s*(true|false)/);
-    if (bnmM) isBestNewMusic = bnmM[1] === "true";
+    const { description, score, isBestNewMusic } = parsePitchforkReviewHtml(html);
 
     if (!description && score === null) { pitchforkCache.set(key, null); return null; }
 
@@ -2914,6 +2922,275 @@ function searchAlbums(query, limit) {
     image_key: al.image_key,
     score
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Pitchfork magazine — browsable listings of recent album reviews and Best New
+// Music (the side-menu "Pitchfork" page). Two data paths, merged:
+//   • RSS feed (pitchfork.com/feed/feed-album-reviews/rss) — reliable album
+//     title, cover art, date and blurb for the LATEST reviews.
+//   • Listing-page __PRELOADED_STATE__ (/reviews/albums/, /reviews/best/albums/)
+//     — adds the artist name, numeric score and Best-New-Music flag.
+// The Latest tab uses RSS as the backbone (reliable covers) enriched by the
+// listing parse joined on review URL; Best New Music comes from the best-albums
+// listing alone. Cached 6h — Pitchfork publishes only a few reviews a day.
+// Reuses the same spoofed browser UA + 1 req/s throttle as the single-review
+// scraper (fetchPitchfork). The listing JSON shape is undocumented, so the
+// parse matches on shape (a /reviews/albums/ URL + title) rather than a fixed
+// path and degrades to an empty list rather than throwing.
+// ---------------------------------------------------------------------------
+const PITCHFORK_LIST_TTL   = 6 * 60 * 60 * 1000;
+// Per-tab listing cache. Deliberately NOT makeTtlCache: we must NOT cache an
+// EMPTY result (a parse miss or a served-but-unparseable page), or a recovery
+// would be blocked for the whole TTL. Only non-empty results are stored.
+const pitchforkLists       = new Map();  // type → { at, items }
+const pitchforkReviewCache = new Map();  // review URL → { description, score, isBestNewMusic } (successes only)
+const PF_HEADERS = { "User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9" };
+
+// Canonical join key for a review URL (strip query/hash AND trailing slash, so
+// the RSS "…/album/" and listing-state "…/album" forms match on merge).
+function pfUrlKey(u) { return String(u || "").split(/[?#]/)[0].replace(/\/+$/, ""); }
+
+function unCdata(s) {
+  return s == null ? s : String(s).replace(/^\s*<!\[CDATA\[/, "").replace(/\]\]>\s*$/, "").trim();
+}
+
+// Best-effort artist name from a review URL when the listing parse didn't give
+// a clean one: the slug is "<artist>-<album>", so strip the known album-slug
+// suffix and title-case what's left. Fallback only — casing is approximate.
+function artistFromReviewUrl(url, albumTitle) {
+  const m = /\/reviews\/albums\/([^\/?#]+)/.exec(url || "");
+  if (!m) return null;
+  let artistSlug = m[1];
+  const albumSlug = slugifyForPitchfork(albumTitle || "");
+  if (albumSlug && artistSlug.endsWith("-" + albumSlug)) {
+    artistSlug = artistSlug.slice(0, artistSlug.length - albumSlug.length - 1);
+  }
+  const words = artistSlug.split("-").filter(Boolean);
+  if (!words.length) return null;
+  return words.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+}
+
+// Parse the RSS album-reviews feed → [{ url, album, cover, date, blurb }].
+async function fetchPitchforkRss() {
+  await pitchforkWait();
+  const xml = await httpText("https://pitchfork.com/feed/feed-album-reviews/rss", PF_HEADERS, 15000);
+  const items = [];
+  const itemRe = /<item\b[\s\S]*?<\/item>/gi;
+  let im;
+  while ((im = itemRe.exec(xml)) !== null) {
+    const block = im[0];
+    const pick = (re) => { const x = re.exec(block); return x ? unCdata(x[1]) : null; };
+    const link = pick(/<link>([\s\S]*?)<\/link>/i);
+    if (!link || !/\/reviews\/albums\//.test(link)) continue;
+    const album = stripHtml(decodeEntities(pick(/<title>([\s\S]*?)<\/title>/i) || "")).trim();
+    const cover = (/<media:thumbnail[^>]*\burl=["']([^"']+)["']/i.exec(block) || [])[1] || null;
+    const date  = pick(/<pubDate>([\s\S]*?)<\/pubDate>/i);
+    const blurb = stripHtml(decodeEntities(pick(/<description>([\s\S]*?)<\/description>/i) || "")).trim() || null;
+    if (album) items.push({ url: link.split(/[?#]/)[0], album, cover, date, blurb });
+  }
+  return items;
+}
+
+// Extract window.__PRELOADED_STATE__ = {...} via brace-matching (a greedy regex
+// can't balance braces reliably on a ~2 MB page).
+function extractPreloadedState(html) {
+  const marker = html.indexOf("__PRELOADED_STATE__");
+  if (marker === -1) return null;
+  const start = html.indexOf("{", marker);
+  if (start === -1) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < html.length; i++) {
+    const c = html[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+    } else if (c === '"') inStr = true;
+    else if (c === "{") depth++;
+    else if (c === "}") { if (--depth === 0) return html.slice(start, i + 1); }
+  }
+  return null;
+}
+
+// Best-effort cover-art URL from a listing item object (field name varies).
+function pfCover(node) {
+  const c = node.image || node.photoData || node.tout || node.leadArt || node.coverArt || node.thumbnail;
+  if (!c) return null;
+  if (typeof c === "string") return c || null;
+  if (typeof c.url === "string") return c.url;
+  if (typeof c.src === "string") return c.src;
+  if (Array.isArray(c.sources) && c.sources[0]) return c.sources[0].url || c.sources[0].src || null;
+  if (c.sizes && typeof c.sizes === "object") {
+    const v = Object.values(c.sizes)[0];
+    return typeof v === "string" ? v : (v && v.url) || null;
+  }
+  return null;
+}
+
+// Walk the preloaded state and collect review-item-shaped objects. Matches on
+// shape (a /reviews/albums/ URL + a title) rather than a documented path, and
+// reads artist/score/BNM/cover from any of several candidate field names.
+function collectReviewItems(state) {
+  const out = [];
+  const seen = new Set();
+  const stack = [state];
+  let guard = 0;
+  while (stack.length && guard++ < 500000) {
+    const node = stack.pop();
+    if (!node || typeof node !== "object") continue;
+    if (Array.isArray(node)) { for (const x of node) if (x && typeof x === "object") stack.push(x); continue; }
+    const url   = node.url || node.uri || node.permalink || node.canonicalUrl;
+    const title = node.hed || node.title || node.headline || node.name;
+    if (typeof url === "string" && /\/reviews\/albums\/[^\/?#]/.test(url) && title) {
+      const full = (url.startsWith("http") ? url : "https://pitchfork.com" + url).split(/[?#]/)[0];
+      if (!seen.has(full)) {
+        seen.add(full);
+        const rating = node.ratingValue || node.rating || node.musicRating || null;
+        let score = null, bnm = false;
+        if (rating && typeof rating === "object") {
+          if (rating.score != null && rating.score !== "") score = parseFloat(rating.score);
+          bnm = !!(rating.isBestNewMusic || rating.isBestNewReissue);
+        }
+        const artist = (node.subHed && (node.subHed.name || (typeof node.subHed === "string" ? node.subHed : null)))
+          || (Array.isArray(node.artists) && node.artists[0] && node.artists[0].name)
+          || null;
+        out.push({
+          url:            full,
+          title:          stripHtml(String(title)).trim(),
+          artist:         artist ? stripHtml(String(artist)).trim() : null,
+          score:          Number.isFinite(score) ? score : null,
+          isBestNewMusic: bnm,
+          cover:          pfCover(node)
+        });
+      }
+    }
+    for (const k in node) { const v = node[k]; if (v && typeof v === "object") stack.push(v); }
+  }
+  return out;
+}
+
+async function fetchPitchforkListing(path) {
+  await pitchforkWait();
+  const html = await httpText("https://pitchfork.com" + path, PF_HEADERS, 15000);
+  const raw = extractPreloadedState(html);
+  if (!raw) { if (DEBUG) console.error("[pitchfork] no preloaded state in", path); return []; }
+  let state;
+  try { state = JSON.parse(raw); }
+  catch (e) { if (DEBUG) console.error("[pitchfork] state parse failed:", e.message); return []; }
+  return collectReviewItems(state);
+}
+
+function pfItemOut(x) {
+  return {
+    url:            x.url,
+    album:          x.album || x.title || "",
+    artist:         x.artist || null,
+    cover:          x.cover || null,
+    score:          x.score != null ? x.score : null,
+    isBestNewMusic: !!x.isBestNewMusic,
+    date:           x.date || null,
+    blurb:          x.blurb || null
+  };
+}
+
+async function buildPitchforkList(type) {
+  if (type === "best") {
+    const listing = await fetchPitchforkListing("/reviews/best/albums/");
+    return listing
+      .map(x => pfItemOut({ ...x, album: x.title, artist: x.artist || artistFromReviewUrl(x.url, x.title), isBestNewMusic: true }))
+      .filter(it => it.album);
+  }
+  // Latest: RSS backbone (reliable covers) enriched by the listing parse
+  // (artist/score/BNM) joined on canonical review URL. Each source is tolerated
+  // independently, but if BOTH fail we surface an error (so the UI shows
+  // "couldn't load", not an empty list).
+  const [rssR, listR] = await Promise.allSettled([
+    fetchPitchforkRss(),
+    fetchPitchforkListing("/reviews/albums/")
+  ]);
+  if (rssR.status === "rejected" && listR.status === "rejected") {
+    throw new Error((rssR.reason && rssR.reason.message) || "Pitchfork unavailable");
+  }
+  const rss     = rssR.status  === "fulfilled" ? rssR.value  : [];
+  const listing = listR.status === "fulfilled" ? listR.value : [];
+  if (DEBUG && rssR.status === "rejected")  console.error("[pitchfork] rss failed:", rssR.reason && rssR.reason.message);
+  if (DEBUG && listR.status === "rejected") console.error("[pitchfork] listing failed:", listR.reason && listR.reason.message);
+  const byUrl = new Map(listing.map(x => [pfUrlKey(x.url), x]));
+  if (rss.length) {
+    return rss.map(r => {
+      const l = byUrl.get(pfUrlKey(r.url)) || {};
+      return pfItemOut({
+        url:            r.url,
+        album:          r.album || l.title,
+        artist:         l.artist || artistFromReviewUrl(r.url, r.album),
+        cover:          r.cover || l.cover,
+        score:          l.score,
+        isBestNewMusic: l.isBestNewMusic,
+        date:           r.date,
+        blurb:          r.blurb
+      });
+    }).filter(it => it.album);
+  }
+  // RSS unavailable — listing alone (artist from parse or slug fallback).
+  return listing
+    .map(x => pfItemOut({ ...x, album: x.title, artist: x.artist || artistFromReviewUrl(x.url, x.title) }))
+    .filter(it => it.album);
+}
+
+async function getPitchforkReviews(type) {
+  const hit = pitchforkLists.get(type);
+  if (hit && (Date.now() - hit.at) < PITCHFORK_LIST_TTL) return hit.items;
+  const items = await buildPitchforkList(type);
+  // Cache only a non-empty result — an empty list means a parse miss or a
+  // served-but-unparseable page, which we want to retry (not lock in for 6h).
+  if (items.length) pitchforkLists.set(type, { at: Date.now(), items });
+  return items;
+}
+
+// Scrape one review page by its known canonical URL (from a listing card) for
+// the full body + score + BNM. Unlike fetchPitchfork(), the URL is authoritative
+// here (no slug guessing, no artist guard).
+async function fetchPitchforkReviewByUrl(url) {
+  if (pitchforkReviewCache.has(url)) return pitchforkReviewCache.get(url);
+  try {
+    await pitchforkWait();
+    const html = await httpText(url, PF_HEADERS, 15000);
+    const parsed = parsePitchforkReviewHtml(html);
+    // The frontend renders the body as textContent, so decode entities here
+    // (the shared helper leaves it encoded for fetchPitchfork's own pipeline).
+    const out = {
+      description:    parsed.description ? decodeEntities(parsed.description).trim() || null : null,
+      score:          parsed.score,
+      isBestNewMusic: parsed.isBestNewMusic
+    };
+    pitchforkReviewCache.set(url, out);   // cache successes only
+    return out;
+  } catch (e) {
+    // Do NOT cache a transient failure (403 / timeout) — otherwise a momentary
+    // block would poison this review's detail for the whole process lifetime.
+    if (DEBUG) console.error("[pitchfork] review fetch:", e.message);
+    return null;
+  }
+}
+
+// Confident library match for a review's album/artist, or null. Uses the same
+// in-memory search as the search box, but only accepts the top hit when the
+// album title matches closely (normalized equality or a prefix) so a "Play"
+// button never points at the wrong album.
+function matchLibraryAlbum(album, artist) {
+  if (!album || !albumIndex.albums.length) return null;
+  const hits = searchAlbums((artist ? artist + " " : "") + album, 3);
+  const want = normalize(album);
+  if (!want) return null;   // a punctuation-only title normalizes to "" — never match
+  for (const h of hits) {
+    const got = normalize(h.title);
+    if (!got) continue;     // guard: "".startsWith("") etc. would false-match
+    if (got === want || got.startsWith(want) || want.startsWith(got)) {
+      return { offset: h.offset, title: h.title, subtitle: h.subtitle, image_key: h.image_key };
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -4640,6 +4917,35 @@ app.get("/api/album/extras", async (req, res) => {
       album:  bios ? bios.album  : null,
       artist: bios ? bios.artist : null
     });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Pitchfork magazine — a browsable listing of recent album reviews or Best New
+// Music (?type=latest|best). See getPitchforkReviews for the data sources.
+app.get("/api/pitchfork/reviews", async (req, res) => {
+  const type = req.query.type === "best" ? "best" : "latest";
+  try {
+    const items = await getPitchforkReviews(type);
+    res.json({ type, items });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Full review body for one listing card, plus a confident library match (so the
+// card's detail view can offer to play it if the album is in the library).
+app.get("/api/pitchfork/review", async (req, res) => {
+  let u;
+  try { u = new URL(String(req.query.url || "")); } catch (e) { return res.status(400).json({ error: "Invalid url" }); }
+  if (u.hostname !== "pitchfork.com" || !u.pathname.startsWith("/reviews/albums/")) {
+    return res.status(400).json({ error: "Not a Pitchfork album-review URL" });
+  }
+  try {
+    const review = await fetchPitchforkReviewByUrl("https://pitchfork.com" + u.pathname);
+    const match  = matchLibraryAlbum(String(req.query.album || ""), String(req.query.artist || ""));
+    res.json({ review, match });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

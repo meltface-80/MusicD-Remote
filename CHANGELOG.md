@@ -2,6 +2,22 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.1] — 2026-07-05
+
+### Added
+- **Pitchfork page** — a new full-page, magazine-style browser reached from the side menu (**≡ → Pitchfork**). Two tabs: **Latest Reviews** and **Best New Music**, shown as a responsive grid of cover-art cards with the Pitchfork score overlaid and a Best New Music badge. Tap a card to open a detail view with the full review, then act on it:
+  - **▶ Open in your library** — appears when the album is matched in your Roon library; opens the existing album modal (play/queue from there).
+  - **Find on Qobuz / Find on Tidal** — jumps to that streaming browser pre-seeded with a search for the album (Tidal shown only when connected), so you can favourite it (which is what makes it appear in Roon).
+  - **View on Pitchfork** — opens the original review.
+  - Data comes from Pitchfork's public RSS album-reviews feed (reliable cover art) enriched by the review-listing pages for the score, Best-New-Music flag and artist name; cached ~6h (Pitchfork publishes only a few reviews a day). No API key. The single-review scraper that already powered the album modal's editorial review is reused, and the review-body extraction is now a shared helper so the two paths can't drift apart. The magazine is theme-aware and the page's back button (and Android/browser Back) behaves naturally.
+
+### Fixed (found by the 8-angle pre-commit review of this feature)
+- Switching tabs while reading a review could leave a phantom navigation entry (Back landed on the wrong list); the tab chips are now hidden inside a review, so you return to the list first.
+- The "Find on Qobuz/Tidal" hand-off now waits for the Pitchfork overlay to actually close before opening the streaming browser, instead of relying on a timer — fixes a potential race (notably on iOS Safari) that could make the streaming overlay immediately close itself.
+- A transient Pitchfork block/timeout is no longer cached: a failed review body, and an unparseable listing page, both retry on the next visit instead of being stuck for the 6h cache window.
+- The RSS↔listing merge now joins on a trailing-slash-normalized URL so scores/Best-New-Music/artist reliably attach to the Latest cards.
+- Guarded a punctuation-only album title from false-matching a library album; added the missing cover-art fallback to the review detail head; and made the review listing survive a Roon-disconnect / block with an honest "couldn't load" state rather than an empty page.
+
 ## [1.6.0] — 2026-07-04
 
 ### Fixed (found by an 8-angle multi-agent review of the v1.5.101–116 Home redesign)

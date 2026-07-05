@@ -2030,9 +2030,10 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
    frame stays put while results load/clear (no bottom-sheet "ducking" on
    mobile while typing). Scoped to the Qobuz overlay only — the base
    .settings-overlay/.settings-sheet rules used by Settings are untouched. */
-#qobuz-overlay, #tidal-overlay { align-items: stretch; }
+#qobuz-overlay, #tidal-overlay, #pitchfork-overlay { align-items: stretch; }
 #qobuz-overlay .qobuz-sheet,
-#tidal-overlay .qobuz-sheet {
+#tidal-overlay .qobuz-sheet,
+#pitchfork-overlay .qobuz-sheet {
   height: 100vh;   /* fallback for browsers without dvh support */
   height: 100dvh;
   max-height: none;
@@ -2047,7 +2048,8 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
    margin collapsing out of the wrapper, so the background covers the full
    pinned area. */
 #qobuz-overlay .qobuz-pin,
-#tidal-overlay .qobuz-pin {
+#tidal-overlay .qobuz-pin,
+#pitchfork-overlay .qobuz-pin {
   position: sticky;
   top: 0;
   z-index: 5;
@@ -2185,6 +2187,102 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 }
 #qobuz-load-more:active, #tidal-load-more:active { border-color: var(--accent); }
 #qobuz-load-more:disabled, #tidal-load-more:disabled { cursor: default; opacity: 0.7; }
+
+/* ---- Pitchfork magazine page (uses CSS vars, so it's theme-aware) ---- */
+/* Responsive card grid: 2 cols on phones, more on wider screens. */
+.pf-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+  overflow-y: auto;
+  padding: 6px 0 12px;
+}
+@media (min-width: 560px)  { .pf-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (min-width: 860px)  { .pf-grid { grid-template-columns: repeat(4, 1fr); } }
+@media (min-width: 1200px) { .pf-grid { grid-template-columns: repeat(5, 1fr); } }
+
+.pf-card {
+  display: flex; flex-direction: column; gap: 8px;
+  background: none; border: none; padding: 0; margin: 0;
+  cursor: pointer; text-align: left; color: var(--text); font-family: inherit;
+}
+.pf-card:active { transform: scale(.98); }
+.pf-card-art {
+  position: relative; width: 100%; aspect-ratio: 1 / 1;
+  border-radius: 10px; overflow: hidden; background: var(--bg-elev-2);
+}
+.pf-card-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Square fallback for old Safari (no aspect-ratio) — padding-top hack. */
+@supports not (aspect-ratio: 1 / 1) {
+  .pf-card-art { height: 0; padding-top: 100%; }
+  .pf-card-art img { position: absolute; top: 0; left: 0; }
+}
+.pf-art-fallback::after {
+  content: "♪"; position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 32px; color: var(--text-faint); opacity: .5;
+}
+/* Score chip + BNM badge overlaid on the cover. */
+.pf-score {
+  position: absolute; left: 6px; bottom: 6px;
+  min-width: 30px; padding: 2px 7px; border-radius: 999px;
+  background: rgba(0,0,0,.72); color: #fff;
+  font-size: 13px; font-weight: 700; text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.pf-score-bnm { background: #d4a017; color: #1a1000; }
+.pf-bnm {
+  position: absolute; right: 6px; top: 6px;
+  padding: 2px 6px; border-radius: 6px;
+  background: #d4a017; color: #1a1000;
+  font-size: 10px; font-weight: 800; letter-spacing: .04em;
+}
+.pf-card-meta { min-width: 0; }
+.pf-card-album  { font-size: 14px; font-weight: 600; line-height: 1.25;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.pf-card-artist { font-size: 12px; color: var(--text-dim); margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.pf-empty, .pf-loading {
+  grid-column: 1 / -1; color: var(--text-faint); font-size: 14px;
+  padding: 24px 8px; text-align: center;
+}
+
+/* Detail (single review) view */
+.pf-detail { display: flex; flex-direction: column; gap: 14px; overflow-y: auto; padding: 4px 0 16px; }
+.pf-back {
+  align-self: flex-start; cursor: pointer;
+  background: none; border: none; color: var(--accent);
+  font-size: 15px; padding: 4px 2px; font-family: inherit;
+}
+.pf-detail-head { display: flex; gap: 14px; align-items: flex-start; }
+.pf-detail-art {
+  position: relative; flex-shrink: 0; width: 120px; height: 120px;
+  border-radius: 10px; object-fit: cover; background: var(--bg-elev-2);
+}
+.pf-detail-headmeta { flex: 1; min-width: 0; }
+.pf-detail-album  { font-weight: 700; font-size: 20px; line-height: 1.2; }
+.pf-detail-artist { font-size: 15px; color: var(--text-dim); margin-top: 3px; }
+.pf-detail-scorerow { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+/* In the detail head the score/BNM sit inline (not overlaid), so clear the
+   absolute positioning the card variants use. */
+.pf-detail-scorerow .pf-score,
+.pf-detail-scorerow .pf-bnm { position: static; }
+.pf-detail-scorerow .pf-score { font-size: 15px; padding: 3px 10px; }
+.pf-detail-body { font-size: 15px; line-height: 1.6; }
+.pf-detail-body p { margin: 0 0 12px; }
+.pf-detail-note { color: var(--text-dim); font-style: italic; }
+.pf-detail-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.pf-action {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 11px 14px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--bg-elev-2);
+  color: var(--text); font-size: 15px; font-family: inherit; cursor: pointer;
+  text-decoration: none;
+}
+.pf-action:active { border-color: var(--accent); }
+.pf-action-primary { background: var(--accent); border-color: var(--accent); color: #04121a; font-weight: 600; }
+.pf-action-link { color: var(--accent); background: none; border-color: transparent; }
 
 
 /* Tidal device-authorization pending block (settings sheet) */

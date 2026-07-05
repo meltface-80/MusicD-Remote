@@ -108,6 +108,15 @@
           </svg>
         </button>
 
+        <!-- Hidden trigger for the side-menu "Pitchfork" item (topbar-controls is display:none) -->
+        <button id="pitchfork-toggle" class="icon-btn" aria-label="Pitchfork" title="Pitchfork">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2 5h7a3 3 0 0 1 3 3v11a2.5 2.5 0 0 0-2.5-2.5H2z"/>
+            <path d="M22 5h-7a3 3 0 0 0-3 3v11a2.5 2.5 0 0 1 2.5-2.5H22z"/>
+          </svg>
+        </button>
+
         <button id="play-unheard-topbar" class="icon-btn" aria-label="Play something unheard">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -191,6 +200,10 @@
         <button class="menu-item hidden" type="button" data-target="tidal-toggle" id="menu-item-tidal">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 9l3-3 3 3-3 3z"/><path d="M9 9l3-3 3 3-3 3z"/><path d="M16 9l3-3 3 3-3 3z"/><path d="M9 16l3-3 3 3-3 3z"/></svg>
           <span>Tidal</span>
+        </button>
+        <button class="menu-item" type="button" data-target="pitchfork-toggle">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5h7a3 3 0 0 1 3 3v11a2.5 2.5 0 0 0-2.5-2.5H2z"/><path d="M22 5h-7a3 3 0 0 0-3 3v11a2.5 2.5 0 0 1 2.5-2.5H22z"/></svg>
+          <span>Pitchfork</span>
         </button>
         <button class="menu-item" type="button" data-target="play-unheard-topbar">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
@@ -642,6 +655,35 @@ sudo systemctl disable roon-random-albums</pre>
       <div id="tidal-nr-list" class="qobuz-nr-list"></div>
       <button id="tidal-load-more" class="hidden" type="button">Load more</button>
       <div id="tidal-nr-detail" class="qobuz-nr-detail hidden"></div>
+    </div>
+  </div>
+
+  <!-- Pitchfork magazine overlay — reuses the settings-sheet / qobuz-pin / qobuz-tab
+       chrome; the magazine grid + detail use dedicated pf-* classes. Driven by
+       initPitchfork() in app.js (its own module — does NOT touch the Qobuz/Tidal
+       initServiceBrowser factory). -->
+  <div id="pitchfork-overlay" class="settings-overlay hidden" role="dialog" aria-modal="true" aria-label="Pitchfork">
+    <div class="settings-backdrop" data-pitchfork-close></div>
+    <div class="settings-sheet qobuz-sheet pitchfork-sheet">
+      <div class="qobuz-pin">
+        <div class="settings-grip"></div>
+        <div class="settings-head">
+          <h2>Pitchfork</h2>
+          <button id="pitchfork-overlay-close" class="icon-btn" type="button" aria-label="Close" data-pitchfork-close>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <div id="pitchfork-tabs" role="tablist" aria-label="Pitchfork sections">
+          <button class="qobuz-tab is-active" type="button" role="tab" data-pftab="latest">Latest Reviews</button>
+          <button class="qobuz-tab" type="button" role="tab" data-pftab="best">Best New Music</button>
+        </div>
+      </div>
+      <div id="pitchfork-status" class="settings-token-status"></div>
+      <div id="pitchfork-list" class="pf-grid"></div>
+      <div id="pitchfork-detail" class="pf-detail hidden"></div>
     </div>
   </div>
 
