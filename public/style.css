@@ -274,7 +274,12 @@ button { font-family: inherit; }
   padding-bottom: 6px;
 }
 /* Global-search external rows (Qobuz / Tidal / Pitchfork sections). Full-width
-   rows inside the results grid, matching the streaming browsers' row style. */
+   rows inside the results grid, matching the streaming browsers' row style.
+   The wrapper is display:contents so the grid lays out its children directly —
+   it exists only so a slow library render can re-attach all external sections
+   as one node. (Pre-11.1 Safari treats it as a block: rows stack full-width
+   inside one grid cell — acceptable degradation.) */
+.ext-search-wrap { display: contents; }
 .ext-search-row {
   grid-column: 1 / -1;
   display: flex; align-items: center; gap: 12px;

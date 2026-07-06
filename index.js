@@ -4064,11 +4064,36 @@ app.post("/api/settings/label-folder-depth", (req, res) => {
 // ---------------------------------------------------------------------------
 
 // Re-login with the stored username + md5 password, refreshing the token.
-async function qobuzRelogin() {
-  const r = await qobuz.login(qobuzUsername, qobuzPasswordMd5, true);
-  qobuzToken = r.token;
-  qobuzDisplayName = r.displayName;
-  savePersistedSettings({ qobuzToken, qobuzDisplayName });
+// In-flight dedup + failure backoff: the global search made this path implicit
+// (typed queries, possibly overlapping) — with STALE stored credentials it
+// would otherwise fire a doomed login POST per search. Concurrent callers
+// share one attempt; after a failure, attempts are refused for 60s with a
+// "not connected" error (mapped to 400 by serviceErrorStatus) instead of
+// hammering Qobuz's login endpoint. The Settings "save credentials" flow
+// calls qobuz.login directly, so an explicit user retry is never blocked.
+let qobuzLoginPending  = null;
+let qobuzLoginFailedAt = 0;
+function qobuzRelogin() {
+  if (Date.now() - qobuzLoginFailedAt < 60 * 1000) {
+    return Promise.reject(new Error("Qobuz not connected — recent login attempt failed, retrying shortly"));
+  }
+  if (!qobuzLoginPending) {
+    qobuzLoginPending = (async () => {
+      try {
+        const r = await qobuz.login(qobuzUsername, qobuzPasswordMd5, true);
+        qobuzToken = r.token;
+        qobuzDisplayName = r.displayName;
+        qobuzLoginFailedAt = 0;
+        savePersistedSettings({ qobuzToken, qobuzDisplayName });
+      } catch (e) {
+        qobuzLoginFailedAt = Date.now();
+        throw e;
+      } finally {
+        qobuzLoginPending = null;
+      }
+    })();
+  }
+  return qobuzLoginPending;
 }
 
 // Run an authenticated Qobuz call; on a 401 (expired token), re-login once and
@@ -4733,24 +4758,37 @@ app.get("/api/search", async (req, res) => {
 // independently tolerated: not-connected / blocked / failed → null (qobuz,
 // tidal) or [] (pitchfork), never an error for the whole route. Deliberately
 // NO `core` gate — none of these sources need Roon.
+// Per-source deadline for the aggregator below: each source's HTTP calls carry
+// their own timeouts, but chained steps (login + search + retry; multi-page
+// scrape at 1 req/s) can stack — one slow source must not hold the whole
+// search response. The underlying work keeps running and lands in its cache.
+function withDeadline(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("source deadline")), ms))
+  ]);
+}
+
 app.get("/api/search/external", async (req, res) => {
   const q = String(req.query.q || "").trim();
   const LIM = 6;
+  const DEADLINE_MS = 10000;
   if (!q) return res.json({ query: q, qobuz: null, tidal: null, pitchfork: [] });
   const [qb, td, pf] = await Promise.all([
     (async () => {
       try {
-        const r = await qobuzWithToken(t => qobuz.searchCatalog(t, q, LIM, 0));
+        const r = await withDeadline(qobuzWithToken(t => qobuz.searchCatalog(t, q, LIM, 0)), DEADLINE_MS);
         return normalizeQobuzAlbums(r.albums.items.slice(0, LIM), new Set());
-      } catch (e) { return null; /* not connected / blocked — section simply absent */ }
+      } catch (e) { return null; /* not connected / blocked / slow — section simply absent */ }
     })(),
     (async () => {
       try {
-        const page = await tidalWithToken((t, cc) => tidal.searchAlbums(t, cc, q, LIM, 0));
+        const page = await withDeadline(tidalWithToken((t, cc) => tidal.searchAlbums(t, cc, q, LIM, 0)), DEADLINE_MS);
         return normalizeTidalAlbums(page.items.slice(0, LIM), new Set());
-      } catch (e) { return null; /* not connected / blocked — section simply absent */ }
+      } catch (e) { return null; /* not connected / blocked / slow — section simply absent */ }
     })(),
-    searchPitchforkReviews(q, LIM).catch(() => [])
+    withDeadline(searchPitchforkReviews(q, LIM), DEADLINE_MS)
+      .catch(() => [] /* blocked / slow — section simply absent; retries next search */)
   ]);
   res.json({ query: q, qobuz: qb, tidal: td, pitchfork: pf });
 });

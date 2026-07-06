@@ -2,6 +2,16 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.4] — 2026-07-06
+
+### Added
+- **Global search** — the Home search box now searches everything, not just the Roon library. Below the instant library results (Artists / Labels / Albums), three new sections appear as they load: **Qobuz** and **Tidal** catalogue matches (only when that service is connected; tapping a result opens that service's browser pre-seeded with a search for the album, ready to favourite), and **Pitchfork reviews** (matches from the review lists, with score/BNM chip; tapping one jumps straight to the full review). External sources ride a longer debounce than the local search (600ms — they're rate-limit-sensitive network calls), are each failure-tolerant (a blocked or disconnected source simply contributes no section), share one 10s deadline so a slow source can't stall the response, and can surface matches even when the library has none.
+- New endpoint `GET /api/search/external` (no Roon required); Pitchfork review-list builds now dedupe concurrent callers (a search racing the Pitchfork page opening no longer scrapes twice), and repeated failed Qobuz re-logins from stale saved credentials are deduped + backed off for 60s instead of retrying on every search (an explicit Settings save is never blocked).
+
+### Fixed
+- **Pitchfork page × now sits top-right on the title row**, matching the Qobuz/Tidal browsers — it previously wrapped below the title (the v1.5.100 title-row rule was scoped to only those two overlays).
+- From the pre-commit review of this feature: opening an artist from an album modal mid-search no longer lets late-arriving external results append under the artist view; a library search failure can no longer mix the previous query's results with the new query's external sections, and external arrivals no longer wipe the Roon-disconnect/error banner (only the "No matches" one); external sections now survive a slower-than-external library response; external cover art gets a clean placeholder on a dead URL; and an empty Pitchfork tab response is no longer pinned for the session (retries next visit, matching the backend rule).
+
 ## [1.6.3] — 2026-07-05
 
 ### Fixed (found by a 3-agent, 8-angle review of the v1.6.2 parser/mosaic changes)

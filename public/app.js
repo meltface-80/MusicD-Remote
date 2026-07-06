@@ -1396,6 +1396,7 @@
       if (abort) { try { abort.abort(); } catch (e) {} abort = null; }
       clearTimeout(retryTimer);
       clearTimeout(extTimer);
+      extWrap = null; extWrapSeq = -1;         // release the rendered external sections
       setStatus("");
       setBanner(null);
       grid.innerHTML = "";
@@ -1416,12 +1417,17 @@
       // library search errors or has zero matches.
       clearTimeout(extTimer);
       extTimer = setTimeout(() => runExternal(q, mySeq), 600);
+      extAllowBannerClear = false;
       try {
         const r = await fetch(`/api/search?q=${encodeURIComponent(q)}&limit=60`,
                               { signal: abort.signal, cache: "no-store" });
         if (mySeq !== seq) return;                       // superseded by a newer keystroke
-        if (r.status === 503) { setBanner("Waiting for Roon Core…", true); return; }
-        if (!r.ok) { setStatus("search error"); return; }
+        // Library-search failures clear the grid: leaving the PREVIOUS query's
+        // results would let this query's external sections append beneath them
+        // (a mixed-query page). The banner/status explains what's missing, and
+        // extAllowBannerClear stays false so arriving externals can't wipe it.
+        if (r.status === 503) { grid.innerHTML = ""; extReappend(mySeq); setBanner("Waiting for Roon Core…", true); return; }
+        if (!r.ok) { grid.innerHTML = ""; extReappend(mySeq); setStatus("search error"); return; }
         const j = await r.json();
         if (mySeq !== seq) return;
 
@@ -1430,6 +1436,7 @@
           const pct = Math.round((j.progress || 0) * 100);
           setStatus(`Building index… ${pct}%`);
           grid.innerHTML = "";
+          extReappend(mySeq);
           retryTimer = setTimeout(() => {
             if (active && input.value.trim() === q) run(q);
           }, 350);
@@ -1442,7 +1449,11 @@
         if (!results.length && !labels.length && !artists.length) {
           grid.innerHTML = "";
           setStatus("");
-          setBanner(`No matches for \u201C${q}\u201D.`, false);
+          // Externals can still match \u2014 if some already landed, keep them and
+          // skip the banner; otherwise show it and let a later external
+          // arrival clear it (extAllowBannerClear).
+          extAllowBannerClear = true;
+          if (!extReappend(mySeq)) setBanner(`No matches for \u201C${q}\u201D.`, false);
           return;
         }
         setBanner(null);
@@ -1501,6 +1512,9 @@
         }
 
         grid.appendChild(frag);
+        // A slow library response can land AFTER this query's external sections
+        // rendered — the innerHTML reset above destroyed them, so re-attach.
+        extReappend(mySeq);
       } catch (e) {
         if (e && e.name === "AbortError") return;        // expected when typing fast
         if (mySeq === seq) setStatus("search error");
@@ -1510,20 +1524,39 @@
     // ---- Global search: external sources (Qobuz / Tidal / Pitchfork) ----
     // Best-effort and additive: sections are appended below the library results
     // when they arrive; any failure just means that section doesn't appear.
+    // All sections live in ONE wrapper (display:contents, so the grid lays out
+    // its children directly) — run(q)'s innerHTML resets would otherwise
+    // destroy already-rendered externals; extReappend re-attaches the wrapper.
+    let extWrap = null;              // rendered external sections for extWrapSeq
+    let extWrapSeq = -1;
+    let extAllowBannerClear = false; // only the "No matches" banner may be cleared
+
+    function extReappend(mySeq) {
+      if (extWrapSeq !== mySeq || !extWrap || !extWrap.childNodes.length) return false;
+      grid.appendChild(extWrap);     // appendChild MOVES it if already attached
+      return true;
+    }
+
     async function runExternal(q, mySeq) {
       try {
         const r = await fetch(`/api/search/external?q=${encodeURIComponent(q)}`, { cache: "no-store" });
         if (mySeq !== seq || !r.ok) return;
         const j = await r.json();
         if (mySeq !== seq) return;
-        const frag = document.createDocumentFragment();
+        const wrap = document.createElement("div");
+        wrap.className = "ext-search-wrap";
         let added = 0;
-        added += extServiceSection(frag, "Qobuz", j.qobuz, "qobuz-toggle", "qobuz-search-input");
-        added += extServiceSection(frag, "Tidal", j.tidal, "tidal-toggle", "tidal-search-input");
-        added += extPitchforkSection(frag, j.pitchfork);
+        added += extServiceSection(wrap, "Qobuz", j.qobuz, "qobuz-toggle", "qobuz-search-input");
+        added += extServiceSection(wrap, "Tidal", j.tidal, "tidal-toggle", "tidal-search-input");
+        added += extPitchforkSection(wrap, j.pitchfork);
         if (!added) return;
-        setBanner(null);   // externals can match even when the library had none
-        grid.appendChild(frag);
+        extWrap = wrap;
+        extWrapSeq = mySeq;
+        // Externals may arrive while a "No matches for X" banner shows —
+        // clear THAT banner (there are matches after all), but never the
+        // Roon-disconnect/error banners, which explain the missing library rows.
+        if (extAllowBannerClear) setBanner(null);
+        grid.appendChild(wrap);
       } catch (e) { /* best-effort — external sections just don't appear */ }
     }
 
@@ -1540,7 +1573,13 @@
       btn.className = "ext-search-row";
       const img = document.createElement("img");
       img.className = "ext-search-art"; img.loading = "lazy"; img.alt = "";
-      if (cover) img.src = cover; else img.style.visibility = "hidden";
+      if (cover) {
+        img.src = cover;
+        // Dead cover URL → blank placeholder box, not the broken-image glyph.
+        img.addEventListener("error", () => { img.removeAttribute("src"); img.style.visibility = "hidden"; });
+      } else {
+        img.style.visibility = "hidden";
+      }
       const tx = document.createElement("div"); tx.className = "ext-search-meta";
       const t  = document.createElement("div"); t.className = "ext-search-title"; t.textContent = title;
       const s  = document.createElement("div"); s.className = "ext-search-sub";   s.textContent = sub || "";
@@ -4981,6 +5020,11 @@ initServiceBrowser({
 
   async function showArtistAlbums(artistName) {
     if (!artistName) return;
+    // Drop any active/pending search (incl. the delayed external-sources fetch)
+    // — reachable from the album-modal artist link with a search still live,
+    // which would otherwise append external rows under this view's grid. The
+    // search artist-chip stops the search itself; this covers every other path.
+    if (window.__clearSearchIfActive) window.__clearSearchIfActive();
     if (artistViewActive) exitArtistView();
     // Snapshot the screen we're leaving (Home landing or an album wall) so the
     // "← Back" button restores it exactly.
