@@ -273,6 +273,37 @@ button { font-family: inherit; }
   display: flex; flex-wrap: wrap; gap: 8px;
   padding-bottom: 6px;
 }
+/* Global-search external rows (Qobuz / Tidal / Pitchfork sections). Full-width
+   rows inside the results grid, matching the streaming browsers' row style.
+   The wrapper is display:contents so the grid lays out its children directly —
+   it exists only so a slow library render can re-attach all external sections
+   as one node. (Pre-11.1 Safari treats it as a block: rows stack full-width
+   inside one grid cell — acceptable degradation.) */
+.ext-search-wrap { display: contents; }
+.ext-search-row {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px; border-radius: 10px;
+  background: var(--bg-elev-2); border: none;
+  cursor: pointer; text-align: left;
+  color: var(--text); font-family: inherit; font-size: 14px;
+}
+.ext-search-row:active { background: var(--bg-elev); }
+.ext-search-art {
+  flex-shrink: 0; width: 48px; height: 48px; border-radius: 6px;
+  object-fit: cover; background: var(--bg-elev);
+}
+.ext-search-meta  { flex: 1; min-width: 0; }
+.ext-search-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ext-search-sub   { font-size: 12px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ext-search-score {
+  flex-shrink: 0; min-width: 30px; padding: 2px 7px; border-radius: 999px;
+  background: rgba(0,0,0,.72); color: #fff;
+  font-size: 12px; font-weight: 700; text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.ext-search-score.is-bnm { background: #d4a017; color: #1a1000; }
+
 .search-chip {
   display: inline-flex; align-items: center;
   padding: 6px 14px;
@@ -1663,11 +1694,12 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 .settings-grip { width: 40px; height: 4px; border-radius: 999px; background: var(--border); margin: 4px auto 14px; }
 .settings-head { margin-bottom: 18px; }
 .settings-head h2 { margin: 0; font-size: 22px; font-weight: 700; color: var(--text); }
-/* Service browser overlays (Qobuz/Tidal) put the close button on the same row
-   as the title, pinned top-right. Scoped to those two overlays so the plain
-   Settings/Filter heads (title only, no button) are unaffected. */
+/* Full-page browser overlays (Qobuz/Tidal/Pitchfork) put the close button on
+   the same row as the title, pinned top-right. Scoped to these overlays so the
+   plain Settings/Filter heads (title only, no button) are unaffected. */
 #qobuz-overlay .settings-head,
-#tidal-overlay .settings-head {
+#tidal-overlay .settings-head,
+#pitchfork-overlay .settings-head {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
 }
 .settings-sub { font-size: 13px; color: var(--text-faint); }
@@ -2030,9 +2062,10 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
    frame stays put while results load/clear (no bottom-sheet "ducking" on
    mobile while typing). Scoped to the Qobuz overlay only — the base
    .settings-overlay/.settings-sheet rules used by Settings are untouched. */
-#qobuz-overlay, #tidal-overlay { align-items: stretch; }
+#qobuz-overlay, #tidal-overlay, #pitchfork-overlay { align-items: stretch; }
 #qobuz-overlay .qobuz-sheet,
-#tidal-overlay .qobuz-sheet {
+#tidal-overlay .qobuz-sheet,
+#pitchfork-overlay .qobuz-sheet {
   height: 100vh;   /* fallback for browsers without dvh support */
   height: 100dvh;
   max-height: none;
@@ -2047,7 +2080,8 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
    margin collapsing out of the wrapper, so the background covers the full
    pinned area. */
 #qobuz-overlay .qobuz-pin,
-#tidal-overlay .qobuz-pin {
+#tidal-overlay .qobuz-pin,
+#pitchfork-overlay .qobuz-pin {
   position: sticky;
   top: 0;
   z-index: 5;
@@ -2185,6 +2219,130 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 }
 #qobuz-load-more:active, #tidal-load-more:active { border-color: var(--accent); }
 #qobuz-load-more:disabled, #tidal-load-more:disabled { cursor: default; opacity: 0.7; }
+
+/* ---- Pitchfork magazine page (uses CSS vars, so it's theme-aware) ---- */
+/* Woven mosaic: a 3-column grid where every third tile is a 2×2 "large" square
+   and the large one alternates sides row to row, so two small squares always
+   stack beside each large — a deliberate big/small rhythm down the columns.
+   Album/artist text is overlaid on the cover (bottom gradient) so the squares
+   pack with no below-tile text breaking the grid. grid-auto-flow: dense lets
+   the small tiles backfill the cells the large ones don't occupy. Row height is
+   driven by each tile's own aspect-ratio:1/1 (small = one column wide → square;
+   large spans 2 cols + 2 rows → a square twice the size). */
+.pf-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-auto-flow: row dense;
+  gap: 8px;
+  overflow-y: auto;
+  padding: 6px 0 12px;
+}
+.pf-card {
+  background: none; border: none; padding: 0; margin: 0;
+  cursor: pointer; text-align: left; color: var(--text); font-family: inherit;
+}
+.pf-card:active { transform: scale(.98); }
+/* Large tiles: every 3rd item is 2×2; consecutive larges alternate left/right
+   (6n+1 → left column, 6n+4 → starts at column 2 → right). Together 6n+1 and
+   6n+4 cover every 3n+1 position. */
+.pf-card:nth-child(6n+1) { grid-column: 1 / span 2; grid-row: span 2; }
+.pf-card:nth-child(6n+4) { grid-column: 2 / span 2; grid-row: span 2; }
+
+.pf-card-art {
+  position: relative; width: 100%; aspect-ratio: 1 / 1;
+  border-radius: 10px; overflow: hidden; background: var(--bg-elev-2);
+}
+/* Absolutely-positioned cover so a non-square source image can never inflate
+   the tile past its forced square (the accidental little/large before this).
+   Longhand top/left, NOT the inset shorthand — Safari ≤14 lacks inset AND
+   aspect-ratio, so on the padding-top fallback path an inset-only img gets
+   all-auto offsets and is clipped to a blank tile (the v1.5.99 lesson). */
+.pf-card-art img { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+@supports not (aspect-ratio: 1 / 1) {
+  .pf-card-art { height: 0; padding-top: 100%; }
+}
+.pf-art-fallback::after {
+  content: "♪"; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 32px; color: var(--text-faint); opacity: .5;
+}
+/* Score chip (top-left) + BNM badge (top-right) — text overlay owns the bottom. */
+.pf-score {
+  position: absolute; left: 6px; top: 6px;
+  min-width: 30px; padding: 2px 7px; border-radius: 999px;
+  background: rgba(0,0,0,.72); color: #fff;
+  font-size: 12px; font-weight: 700; text-align: center;
+  font-variant-numeric: tabular-nums; z-index: 2;
+}
+.pf-card:nth-child(6n+1) .pf-score,
+.pf-card:nth-child(6n+4) .pf-score { font-size: 15px; padding: 3px 10px; }
+.pf-score-bnm { background: #d4a017; color: #1a1000; }
+.pf-bnm {
+  position: absolute; right: 6px; top: 6px; z-index: 2;
+  padding: 2px 6px; border-radius: 6px;
+  background: #d4a017; color: #1a1000;
+  font-size: 10px; font-weight: 800; letter-spacing: .04em;
+}
+/* Album/artist overlaid on the bottom of the cover. */
+.pf-card-meta {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 1;
+  padding: 16px 8px 7px;
+  /* Strong enough at ~35% height that the first (highest) title line stays
+     legible on light covers; still fades fully out above the text block. */
+  background: linear-gradient(to top, rgba(0,0,0,.88) 30%, rgba(0,0,0,.62) 65%, rgba(0,0,0,0));
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,.6);
+}
+.pf-card-album  { font-size: 12.5px; font-weight: 700; line-height: 1.2;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.pf-card-artist { font-size: 11px; opacity: .85; margin-top: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Larger text on the big tiles (they have the room). */
+.pf-card:nth-child(6n+1) .pf-card-album,
+.pf-card:nth-child(6n+4) .pf-card-album { font-size: 16px; }
+.pf-card:nth-child(6n+1) .pf-card-artist,
+.pf-card:nth-child(6n+4) .pf-card-artist { font-size: 12.5px; }
+
+.pf-empty, .pf-loading {
+  grid-column: 1 / -1; color: var(--text-faint); font-size: 14px;
+  padding: 24px 8px; text-align: center;
+}
+
+/* Detail (single review) view */
+.pf-detail { display: flex; flex-direction: column; gap: 14px; overflow-y: auto; padding: 4px 0 16px; }
+.pf-back {
+  align-self: flex-start; cursor: pointer;
+  background: none; border: none; color: var(--accent);
+  font-size: 15px; padding: 4px 2px; font-family: inherit;
+}
+.pf-detail-head { display: flex; gap: 14px; align-items: flex-start; }
+.pf-detail-art {
+  position: relative; flex-shrink: 0; width: 120px; height: 120px;
+  border-radius: 10px; object-fit: cover; background: var(--bg-elev-2);
+}
+.pf-detail-headmeta { flex: 1; min-width: 0; }
+.pf-detail-album  { font-weight: 700; font-size: 20px; line-height: 1.2; }
+.pf-detail-artist { font-size: 15px; color: var(--text-dim); margin-top: 3px; }
+.pf-detail-scorerow { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+/* In the detail head the score/BNM sit inline (not overlaid), so clear the
+   absolute positioning the card variants use. */
+.pf-detail-scorerow .pf-score,
+.pf-detail-scorerow .pf-bnm { position: static; }
+.pf-detail-scorerow .pf-score { font-size: 15px; padding: 3px 10px; }
+.pf-detail-body { font-size: 15px; line-height: 1.6; }
+.pf-detail-body p { margin: 0 0 12px; }
+.pf-detail-note { color: var(--text-dim); font-style: italic; }
+.pf-detail-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.pf-action {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 11px 14px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--bg-elev-2);
+  color: var(--text); font-size: 15px; font-family: inherit; cursor: pointer;
+  text-decoration: none;
+}
+.pf-action:active { border-color: var(--accent); }
+.pf-action-primary { background: var(--accent); border-color: var(--accent); color: #04121a; font-weight: 600; }
+.pf-action-link { color: var(--accent); background: none; border-color: transparent; }
 
 
 /* Tidal device-authorization pending block (settings sheet) */

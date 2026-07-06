@@ -2,6 +2,50 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.4] — 2026-07-06
+
+### Added
+- **Global search** — the Home search box now searches everything, not just the Roon library. Below the instant library results (Artists / Labels / Albums), three new sections appear as they load: **Qobuz** and **Tidal** catalogue matches (only when that service is connected; tapping a result opens that service's browser pre-seeded with a search for the album, ready to favourite), and **Pitchfork reviews** (matches from the review lists, with score/BNM chip; tapping one jumps straight to the full review). External sources ride a longer debounce than the local search (600ms — they're rate-limit-sensitive network calls), are each failure-tolerant (a blocked or disconnected source simply contributes no section), share one 10s deadline so a slow source can't stall the response, and can surface matches even when the library has none.
+- New endpoint `GET /api/search/external` (no Roon required); Pitchfork review-list builds now dedupe concurrent callers (a search racing the Pitchfork page opening no longer scrapes twice), and repeated failed Qobuz re-logins from stale saved credentials are deduped + backed off for 60s instead of retrying on every search (an explicit Settings save is never blocked).
+
+### Fixed
+- **Pitchfork page × now sits top-right on the title row**, matching the Qobuz/Tidal browsers — it previously wrapped below the title (the v1.5.100 title-row rule was scoped to only those two overlays).
+- From the pre-commit review of this feature: opening an artist from an album modal mid-search no longer lets late-arriving external results append under the artist view; a library search failure can no longer mix the previous query's results with the new query's external sections, and external arrivals no longer wipe the Roon-disconnect/error banner (only the "No matches" one); external sections now survive a slower-than-external library response; external cover art gets a clean placeholder on a dead URL; and an empty Pitchfork tab response is no longer pinned for the session (retries next visit, matching the backend rule).
+
+## [1.6.3] — 2026-07-05
+
+### Fixed (found by a 3-agent, 8-angle review of the v1.6.2 parser/mosaic changes)
+- **Both Pitchfork tabs were rendering oldest-first.** The state-walk's traversal order is the reverse of the page's display order (verified against the live pages: 95/95 and 29/29 pairs ascending), so month-old reviews appeared at the top. Listings are now sorted newest-first by pubDate; verified end-to-end through the real route against the captured live pages (Latest topped by its newest review, Best New Music topped by Pitchfork's current Best New Album).
+- **The Latest tab's RSS fallback never ran on the most likely failure** — a network error/403 from the listing page threw before the fallback was reached (only an *unparseable* page fell back). A blocked listing now falls back to RSS, and only when both sources are down does the page show "couldn't load" (all three paths covered by tests).
+- **Old-Safari (≤14) covers rendered as blank tiles** — the cover image used the `inset` shorthand, which that Safari doesn't support, exactly the `aspect-ratio`/`inset` fallback class documented in v1.5.99. Converted to longhand `top/left` (also on the ♪ fallback glyph).
+- **Card-title legibility**: the gradient scrim under the overlaid album/artist text was near-transparent where the first title line sits on small tiles; strengthened plus a subtle text shadow, so titles stay readable on light covers.
+- Hardened the title extraction (an empty-after-stripping `dangerousHed` now consults the `source.hed` fallback; non-string fields can no longer render as "[object Object]"), removed a redundant entity-decode pass (and a decode-before-strip order bug in the RSS parser), dropped the unused `blurb` payload field, and rewrote the stale "two data paths, merged" architecture comment to describe the current single-source-plus-fallback design.
+
+## [1.6.2] — 2026-07-05
+
+### Fixed
+- **Best New Music tab now populates, and Latest reviews now show their scores.** The listing-page parser was matching against a guessed JSON shape and finding nothing (so Best New Music was empty and Latest had no score badges). Rewritten against the real Pitchfork page structure — each review item is read from `contentType:"review"` objects (`dangerousHed` title, `subHed.name` artist, `ratingValue.score`/`isBestNewMusic`, square `image.sources` covers) — verified against the live pages (96 latest / 30 best, every item with score, cover and artist).
+- Because the listing now reliably carries square cover art + all fields, it's the primary source for both tabs; the RSS feed is kept only as a Latest-tab fallback if the listing shape ever changes again. This removes the earlier RSS↔listing URL-join entirely.
+
+### Changed
+- **Deliberate "woven" mosaic layout** — the tiles now alternate one large square with two small squares stacked beside it, the large one switching sides row to row, for a magazine feel. Album/artist sit in a gradient overlay on each cover, and every tile is force-squared (an absolutely-positioned cover) so an off-square source image can no longer make tiles uneven — the accidental little/large sizing in the first build.
+
+## [1.6.1] — 2026-07-05
+
+### Added
+- **Pitchfork page** — a new full-page, magazine-style browser reached from the side menu (**≡ → Pitchfork**). Two tabs: **Latest Reviews** and **Best New Music**, shown as a responsive grid of cover-art cards with the Pitchfork score overlaid and a Best New Music badge. Tap a card to open a detail view with the full review, then act on it:
+  - **▶ Open in your library** — appears when the album is matched in your Roon library; opens the existing album modal (play/queue from there).
+  - **Find on Qobuz / Find on Tidal** — jumps to that streaming browser pre-seeded with a search for the album (Tidal shown only when connected), so you can favourite it (which is what makes it appear in Roon).
+  - **View on Pitchfork** — opens the original review.
+  - Data comes from Pitchfork's public RSS album-reviews feed (reliable cover art) enriched by the review-listing pages for the score, Best-New-Music flag and artist name; cached ~6h (Pitchfork publishes only a few reviews a day). No API key. The single-review scraper that already powered the album modal's editorial review is reused, and the review-body extraction is now a shared helper so the two paths can't drift apart. The magazine is theme-aware and the page's back button (and Android/browser Back) behaves naturally.
+
+### Fixed (found by the 8-angle pre-commit review of this feature)
+- Switching tabs while reading a review could leave a phantom navigation entry (Back landed on the wrong list); the tab chips are now hidden inside a review, so you return to the list first.
+- The "Find on Qobuz/Tidal" hand-off now waits for the Pitchfork overlay to actually close before opening the streaming browser, instead of relying on a timer — fixes a potential race (notably on iOS Safari) that could make the streaming overlay immediately close itself.
+- A transient Pitchfork block/timeout is no longer cached: a failed review body, and an unparseable listing page, both retry on the next visit instead of being stuck for the 6h cache window.
+- The RSS↔listing merge now joins on a trailing-slash-normalized URL so scores/Best-New-Music/artist reliably attach to the Latest cards.
+- Guarded a punctuation-only album title from false-matching a library album; added the missing cover-art fallback to the review detail head; and made the review listing survive a Roon-disconnect / block with an honest "couldn't load" state rather than an empty page.
+
 ## [1.6.0] — 2026-07-04
 
 ### Fixed (found by an 8-angle multi-agent review of the v1.5.101–116 Home redesign)
