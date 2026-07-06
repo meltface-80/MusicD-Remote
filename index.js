@@ -3137,14 +3137,49 @@ function sortPfNewestFirst(items) {
   return items.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
 }
 
+const pitchforkListPending = new Map();   // type → in-flight build Promise
 async function getPitchforkReviews(type) {
   const hit = pitchforkLists.get(type);
   if (hit && (Date.now() - hit.at) < PITCHFORK_LIST_TTL) return hit.items;
-  const items = await buildPitchforkList(type);
-  // Cache only a non-empty result — an empty list means a parse miss or a
-  // served-but-unparseable page, which we want to retry (not lock in for 6h).
-  if (items.length) pitchforkLists.set(type, { at: Date.now(), items });
-  return items;
+  // In-flight dedup: concurrent cache misses (a tab open racing a global
+  // search, or two searches) share one scrape instead of each hitting Pitchfork.
+  if (pitchforkListPending.has(type)) return pitchforkListPending.get(type);
+  const pending = (async () => {
+    try {
+      const items = await buildPitchforkList(type);
+      // Cache only a non-empty result — an empty list means a parse miss or a
+      // served-but-unparseable page, which we want to retry (not lock in for 6h).
+      if (items.length) pitchforkLists.set(type, { at: Date.now(), items });
+      return items;
+    } finally {
+      pitchforkListPending.delete(type);
+    }
+  })();
+  pitchforkListPending.set(type, pending);
+  return pending;
+}
+
+// Match the query against the cached review lists (both tabs, deduped by URL).
+// Cold cache triggers ONE shared scrape via the dedup above; a blocked/failed
+// source just yields no Pitchfork section rather than failing the search.
+async function searchPitchforkReviews(q, limit) {
+  const nq = normalize(q);
+  if (!nq) return [];
+  const [latest, best] = await Promise.all([
+    getPitchforkReviews("latest").catch(() => []),
+    getPitchforkReviews("best").catch(() => [])
+  ]);
+  const seen = new Set();
+  const out = [];
+  for (const it of [...latest, ...best]) {
+    if (seen.has(it.url)) continue;
+    seen.add(it.url);
+    if (normalize(it.album).includes(nq) || normalize(it.artist || "").includes(nq)) {
+      out.push(it);
+      if (out.length >= limit) break;
+    }
+  }
+  return out;
 }
 
 // Scrape one review page by its known canonical URL (from a listing card) for
@@ -4689,6 +4724,35 @@ app.get("/api/search", async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// Global search, external sources — Qobuz + Tidal catalogues (when connected)
+// and Pitchfork's cached review lists. Fired by the Home search box AFTER the
+// instant library results, on its own longer debounce (streaming searches are
+// rate-limit-sensitive; the library one is a local index scan). Each source is
+// independently tolerated: not-connected / blocked / failed → null (qobuz,
+// tidal) or [] (pitchfork), never an error for the whole route. Deliberately
+// NO `core` gate — none of these sources need Roon.
+app.get("/api/search/external", async (req, res) => {
+  const q = String(req.query.q || "").trim();
+  const LIM = 6;
+  if (!q) return res.json({ query: q, qobuz: null, tidal: null, pitchfork: [] });
+  const [qb, td, pf] = await Promise.all([
+    (async () => {
+      try {
+        const r = await qobuzWithToken(t => qobuz.searchCatalog(t, q, LIM, 0));
+        return normalizeQobuzAlbums(r.albums.items.slice(0, LIM), new Set());
+      } catch (e) { return null; /* not connected / blocked — section simply absent */ }
+    })(),
+    (async () => {
+      try {
+        const page = await tidalWithToken((t, cc) => tidal.searchAlbums(t, cc, q, LIM, 0));
+        return normalizeTidalAlbums(page.items.slice(0, LIM), new Set());
+      } catch (e) { return null; /* not connected / blocked — section simply absent */ }
+    })(),
+    searchPitchforkReviews(q, LIM).catch(() => [])
+  ]);
+  res.json({ query: q, qobuz: qb, tidal: td, pitchfork: pf });
 });
 
 // Force a rebuild (e.g. after importing music). Returns when done.

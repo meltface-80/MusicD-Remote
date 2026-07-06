@@ -273,6 +273,32 @@ button { font-family: inherit; }
   display: flex; flex-wrap: wrap; gap: 8px;
   padding-bottom: 6px;
 }
+/* Global-search external rows (Qobuz / Tidal / Pitchfork sections). Full-width
+   rows inside the results grid, matching the streaming browsers' row style. */
+.ext-search-row {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px; border-radius: 10px;
+  background: var(--bg-elev-2); border: none;
+  cursor: pointer; text-align: left;
+  color: var(--text); font-family: inherit; font-size: 14px;
+}
+.ext-search-row:active { background: var(--bg-elev); }
+.ext-search-art {
+  flex-shrink: 0; width: 48px; height: 48px; border-radius: 6px;
+  object-fit: cover; background: var(--bg-elev);
+}
+.ext-search-meta  { flex: 1; min-width: 0; }
+.ext-search-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ext-search-sub   { font-size: 12px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ext-search-score {
+  flex-shrink: 0; min-width: 30px; padding: 2px 7px; border-radius: 999px;
+  background: rgba(0,0,0,.72); color: #fff;
+  font-size: 12px; font-weight: 700; text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.ext-search-score.is-bnm { background: #d4a017; color: #1a1000; }
+
 .search-chip {
   display: inline-flex; align-items: center;
   padding: 6px 14px;
@@ -1663,11 +1689,12 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 .settings-grip { width: 40px; height: 4px; border-radius: 999px; background: var(--border); margin: 4px auto 14px; }
 .settings-head { margin-bottom: 18px; }
 .settings-head h2 { margin: 0; font-size: 22px; font-weight: 700; color: var(--text); }
-/* Service browser overlays (Qobuz/Tidal) put the close button on the same row
-   as the title, pinned top-right. Scoped to those two overlays so the plain
-   Settings/Filter heads (title only, no button) are unaffected. */
+/* Full-page browser overlays (Qobuz/Tidal/Pitchfork) put the close button on
+   the same row as the title, pinned top-right. Scoped to these overlays so the
+   plain Settings/Filter heads (title only, no button) are unaffected. */
 #qobuz-overlay .settings-head,
-#tidal-overlay .settings-head {
+#tidal-overlay .settings-head,
+#pitchfork-overlay .settings-head {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
 }
 .settings-sub { font-size: 13px; color: var(--text-faint); }

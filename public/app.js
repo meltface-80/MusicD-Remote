@@ -1381,6 +1381,7 @@
     let abort         = null;  // in-flight fetch controller
     let debounceTimer = null;
     let retryTimer    = null;
+    let extTimer      = null;  // delayed external (Qobuz/Tidal/Pitchfork) search
     let active        = false; // currently showing search results?
 
     function setStatus(msg) { statusEl.textContent = msg || ""; }
@@ -1394,6 +1395,7 @@
       seq++;                                   // invalidate any pending response
       if (abort) { try { abort.abort(); } catch (e) {} abort = null; }
       clearTimeout(retryTimer);
+      clearTimeout(extTimer);
       setStatus("");
       setBanner(null);
       grid.innerHTML = "";
@@ -1407,6 +1409,13 @@
       if (abort) { try { abort.abort(); } catch (e) {} }
       abort = new AbortController();
       clearTimeout(retryTimer);
+      // Global search: the external sources (Qobuz/Tidal catalogues, Pitchfork
+      // reviews) ride a LONGER debounce than the instant local-index search —
+      // they're network calls against rate-limit-sensitive APIs. Scheduled
+      // before the library fetch so external results appear even when the
+      // library search errors or has zero matches.
+      clearTimeout(extTimer);
+      extTimer = setTimeout(() => runExternal(q, mySeq), 600);
       try {
         const r = await fetch(`/api/search?q=${encodeURIComponent(q)}&limit=60`,
                               { signal: abort.signal, cache: "no-store" });
@@ -1496,6 +1505,89 @@
         if (e && e.name === "AbortError") return;        // expected when typing fast
         if (mySeq === seq) setStatus("search error");
       }
+    }
+
+    // ---- Global search: external sources (Qobuz / Tidal / Pitchfork) ----
+    // Best-effort and additive: sections are appended below the library results
+    // when they arrive; any failure just means that section doesn't appear.
+    async function runExternal(q, mySeq) {
+      try {
+        const r = await fetch(`/api/search/external?q=${encodeURIComponent(q)}`, { cache: "no-store" });
+        if (mySeq !== seq || !r.ok) return;
+        const j = await r.json();
+        if (mySeq !== seq) return;
+        const frag = document.createDocumentFragment();
+        let added = 0;
+        added += extServiceSection(frag, "Qobuz", j.qobuz, "qobuz-toggle", "qobuz-search-input");
+        added += extServiceSection(frag, "Tidal", j.tidal, "tidal-toggle", "tidal-search-input");
+        added += extPitchforkSection(frag, j.pitchfork);
+        if (!added) return;
+        setBanner(null);   // externals can match even when the library had none
+        grid.appendChild(frag);
+      } catch (e) { /* best-effort — external sections just don't appear */ }
+    }
+
+    function extHeader(frag, label) {
+      const hdr = document.createElement("div");
+      hdr.className = "search-section-header";
+      hdr.textContent = label;
+      frag.appendChild(hdr);
+    }
+
+    function extRow(cover, title, sub, onClick) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "ext-search-row";
+      const img = document.createElement("img");
+      img.className = "ext-search-art"; img.loading = "lazy"; img.alt = "";
+      if (cover) img.src = cover; else img.style.visibility = "hidden";
+      const tx = document.createElement("div"); tx.className = "ext-search-meta";
+      const t  = document.createElement("div"); t.className = "ext-search-title"; t.textContent = title;
+      const s  = document.createElement("div"); s.className = "ext-search-sub";   s.textContent = sub || "";
+      tx.appendChild(t); tx.appendChild(s);
+      btn.appendChild(img); btn.appendChild(tx);
+      btn.addEventListener("click", onClick);
+      return btn;
+    }
+
+    // Qobuz/Tidal section: tapping a result opens that service's browser seeded
+    // with a search for the album (same hand-off the Pitchfork detail uses) —
+    // favourite it there to make it appear in Roon.
+    function extServiceSection(frag, label, albums, toggleId, inputId) {
+      if (!albums || !albums.length) return 0;
+      extHeader(frag, label);
+      for (const a of albums) {
+        frag.appendChild(extRow(a.image, a.title, a.artist, () => {
+          stopSearch();
+          const t = document.getElementById(toggleId);
+          if (!t) return;
+          t.click();
+          const si = document.getElementById(inputId);
+          const seedQ = ((a.artist || "") + " " + (a.title || "")).trim();
+          if (si && seedQ) { si.value = seedQ; si.dispatchEvent(new Event("input", { bubbles: true })); }
+        }));
+      }
+      return albums.length;
+    }
+
+    // Pitchfork section: tapping a review deep-links to its detail view.
+    function extPitchforkSection(frag, items) {
+      if (!items || !items.length) return 0;
+      extHeader(frag, "Pitchfork reviews");
+      for (const it of items) {
+        const row = extRow(it.cover, it.album, it.artist, () => {
+          stopSearch();
+          if (window.__openPitchforkReview) window.__openPitchforkReview(it);
+        });
+        if (it.score != null) {
+          const sc = document.createElement("span");
+          sc.className = "ext-search-score" + (it.isBestNewMusic ? " is-bnm" : "");
+          sc.textContent = Number(it.score).toFixed(1);
+          row.appendChild(sc);
+        }
+        frag.appendChild(row);
+      }
+      return items.length;
     }
 
     function onInput() {
@@ -4478,11 +4570,14 @@ initServiceBrowser({
     viewStack.length = depth;
     if (!viewStack.length) { hideOverlay(); return; }
     // Leaving the detail: the list underneath is still in the DOM (detail only
-    // hid it), so just restore it — no refetch.
+    // hid it), so just restore it — no refetch. Exception: a detail opened as a
+    // DEEP LINK (global search result) never rendered its list, so the grid is
+    // empty — render it now instead of unhiding a blank page.
     if (popped && popped.kind === "detail") {
       reqSeq++;                          // orphan the detail's in-flight fetch, if any
       detailEl.classList.add("hidden");
       detailEl.innerHTML = "";
+      if (!listEl.children.length) { render(currentView()); return; }
       listEl.classList.remove("hidden");
       if (tabsEl) tabsEl.classList.remove("hidden");   // tabs return with the list
       updateTabActive();
@@ -4549,6 +4644,21 @@ initServiceBrowser({
     render(currentView());
   });
 
+  // Deep link from the global search: open the overlay straight to one review's
+  // detail. Seeds the root list frame WITHOUT rendering it (rendering would be
+  // orphaned by the detail's reqSeq bump anyway); the popstate leaving-detail
+  // branch self-heals the empty list by rendering it on Back.
+  window.__openPitchforkReview = (item) => {
+    if (!item || !item.url) return;
+    if (!visible()) {
+      activeTab = "latest";
+      viewStack = [{ kind: "tab", tab: "latest" }];
+      history.pushState({ [HKEY]: 1 }, "");
+      overlay.classList.remove("hidden");
+    }
+    pushView({ kind: "detail", item });
+  };
+
   function render(view) {
     if (!view) return;
     if (view.kind === "detail") renderDetail(view.item);
@@ -4578,8 +4688,12 @@ initServiceBrowser({
       return;
     }
     if (mySeq !== reqSeq) return;
-    listCache[tab] = data.items || [];     // cache only on success → a failure retries next visit
-    paintList(listCache[tab]);
+    const items = data.items || [];
+    // Session-cache only a NON-EMPTY success (mirrors the backend's rule):
+    // an empty response is a parse miss upstream — retry it next visit rather
+    // than pinning "No reviews" for the whole session.
+    if (items.length) listCache[tab] = items;
+    paintList(items);
   }
 
   function paintList(items) {
