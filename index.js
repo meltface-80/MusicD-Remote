@@ -2926,18 +2926,27 @@ function searchAlbums(query, limit) {
 
 // ---------------------------------------------------------------------------
 // Pitchfork magazine — browsable listings of recent album reviews and Best New
-// Music (the side-menu "Pitchfork" page). Two data paths, merged:
-//   • RSS feed (pitchfork.com/feed/feed-album-reviews/rss) — reliable album
-//     title, cover art, date and blurb for the LATEST reviews.
-//   • Listing-page __PRELOADED_STATE__ (/reviews/albums/, /reviews/best/albums/)
-//     — adds the artist name, numeric score and Best-New-Music flag.
-// The Latest tab uses RSS as the backbone (reliable covers) enriched by the
-// listing parse joined on review URL; Best New Music comes from the best-albums
-// listing alone. Cached 6h — Pitchfork publishes only a few reviews a day.
-// Reuses the same spoofed browser UA + 1 req/s throttle as the single-review
-// scraper (fetchPitchfork). The listing JSON shape is undocumented, so the
-// parse matches on shape (a /reviews/albums/ URL + title) rather than a fixed
-// path and degrades to an empty list rather than throwing.
+// Music (the side-menu "Pitchfork" page).
+//
+// PRIMARY source (both tabs): the listing pages' server-rendered
+// window.__PRELOADED_STATE__ (/reviews/albums/, /reviews/best/albums/), whose
+// review items carry everything a card needs — title (dangerousHed), artist
+// (subHed.name), numeric score + Best-New-Music flag (ratingValue), square
+// cover art (image.sources) and pubDate. The parse matches items on shape
+// (contentType "review" + ratingValue + url), not a fixed JSON path, so a
+// container reshuffle degrades to an empty list rather than crashing; results
+// are sorted newest-first by pubDate (the walk's traversal order is not the
+// page's display order).
+//
+// FALLBACK (Latest tab only): the RSS album-reviews feed — title/cover/date
+// but no score or artist (artist is derived from the URL slug). Used when the
+// listing yields nothing (blocked or reshaped page). Best New Music has no
+// equivalent feed. If every source fails, the route errors so the UI shows an
+// honest "couldn't load" instead of an empty page.
+//
+// Cached 6h per tab, non-empty results only — Pitchfork publishes only a few
+// reviews a day. Reuses the same spoofed browser UA + 1 req/s throttle as the
+// single-review scraper (fetchPitchfork).
 // ---------------------------------------------------------------------------
 const PITCHFORK_LIST_TTL   = 6 * 60 * 60 * 1000;
 // Per-tab listing cache. Deliberately NOT makeTtlCache: we must NOT cache an
@@ -2967,7 +2976,7 @@ function artistFromReviewUrl(url, albumTitle) {
   return words.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
 }
 
-// Parse the RSS album-reviews feed → [{ url, album, cover, date, blurb }].
+// Parse the RSS album-reviews feed → [{ url, album, cover, date }].
 async function fetchPitchforkRss() {
   await pitchforkWait();
   const xml = await httpText("https://pitchfork.com/feed/feed-album-reviews/rss", PF_HEADERS, 15000);
@@ -2979,11 +2988,12 @@ async function fetchPitchforkRss() {
     const pick = (re) => { const x = re.exec(block); return x ? unCdata(x[1]) : null; };
     const link = pick(/<link>([\s\S]*?)<\/link>/i);
     if (!link || !/\/reviews\/albums\//.test(link)) continue;
-    const album = stripHtml(decodeEntities(pick(/<title>([\s\S]*?)<\/title>/i) || "")).trim();
+    // stripHtml entity-decodes internally; decoding FIRST would let an escaped
+    // "&lt;em&gt;" in a title turn into a strippable tag and lose literal text.
+    const album = stripHtml(pick(/<title>([\s\S]*?)<\/title>/i) || "").trim();
     const cover = (/<media:thumbnail[^>]*\burl=["']([^"']+)["']/i.exec(block) || [])[1] || null;
     const date  = pick(/<pubDate>([\s\S]*?)<\/pubDate>/i);
-    const blurb = stripHtml(decodeEntities(pick(/<description>([\s\S]*?)<\/description>/i) || "")).trim() || null;
-    if (album) items.push({ url: link.split(/[?#]/)[0], album, cover, date, blurb });
+    if (album) items.push({ url: link.split(/[?#]/)[0], album, cover, date });
   }
   return items;
 }
@@ -3009,7 +3019,9 @@ function extractPreloadedState(html) {
   return null;
 }
 
-// Square cover URL from a listing item's image.sources (prefer larger sizes).
+// Square cover URL from a listing item's image.sources. lg (~1280px) first —
+// plenty for the biggest mosaic tile without pulling the oversized xxl; then
+// xxl, md, sm as availability fallbacks.
 function pfListingCover(node) {
   const s = node.image && node.image.sources;
   if (!s || typeof s !== "object") return null;
@@ -3035,11 +3047,18 @@ function collectReviewItems(state) {
       const full = (node.url.startsWith("http") ? node.url : "https://pitchfork.com" + node.url).split(/[?#]/)[0];
       if (!seen.has(full)) {
         seen.add(full);
-        const album = node.dangerousHed
-          ? decodeEntities(stripHtml(String(node.dangerousHed))).trim()
-          : (node.source && node.source.hed ? String(node.source.hed).replace(/\*/g, "").trim() : "");
-        const artist = (node.subHed && node.subHed.name) ? String(node.subHed.name).trim() : null;
-        const rv = node.ratingValue || {};
+        // Title: dangerousHed (HTML), falling back to source.hed (markdown-ish
+        // asterisks) — tested AFTER stripping, so an empty/HTML-only
+        // dangerousHed still consults the fallback. Non-strings are ignored
+        // rather than stringified ("[object Object]" must never render).
+        // stripHtml already entity-decodes, so no extra decode pass.
+        let album = "";
+        if (typeof node.dangerousHed === "string") album = stripHtml(node.dangerousHed).trim();
+        if (!album && node.source && typeof node.source.hed === "string") {
+          album = node.source.hed.replace(/\*/g, "").trim();
+        }
+        const artist = (node.subHed && typeof node.subHed.name === "string") ? node.subHed.name.trim() : null;
+        const rv = node.ratingValue;
         const score = (rv.score != null && rv.score !== "") ? parseFloat(rv.score) : null;
         out.push({
           url:            full,
@@ -3076,30 +3095,46 @@ function pfItemOut(x) {
     cover:          x.cover || null,
     score:          x.score != null ? x.score : null,
     isBestNewMusic: !!x.isBestNewMusic,
-    date:           x.date || null,
-    blurb:          x.blurb || null
+    date:           x.date || null
   };
 }
 
 // The listing page carries everything we need (title, artist, score, BNM,
-// square cover), so it's the primary source for both tabs. For the Latest tab
-// only, if the listing parse ever yields nothing (Pitchfork reshapes the page
-// again), fall back to the RSS feed — covers + title, artist derived from the
-// slug, no score — so the page degrades instead of going blank. Best New Music
-// has no equivalent feed. A hard fetch failure throws → the route 500s → the
-// UI shows "couldn't load".
+// square cover), so it's the primary source for both tabs, sorted newest-first
+// by pubDate (the state walk's traversal order is oldest-first — verified
+// against the live pages). For the Latest tab only, if the listing FAILS —
+// network error/403 (the realistic scraper-block case) or a parse that yields
+// nothing — fall back to the RSS feed: covers + title, artist derived from the
+// slug, no score. Best New Music has no equivalent feed. Only when every
+// available source has failed does this throw, so the route 500s and the UI
+// shows an honest "couldn't load" instead of an empty page.
 async function buildPitchforkList(type) {
-  const path = type === "best" ? "/reviews/best/albums/" : "/reviews/albums/";
-  const items = (await fetchPitchforkListing(path)).map(pfItemOut).filter(it => it.album);
-  if (items.length || type === "best") return items;
+  if (type === "best") {
+    return sortPfNewestFirst(
+      (await fetchPitchforkListing("/reviews/best/albums/")).map(pfItemOut).filter(it => it.album));
+  }
+  let listErr = null;
+  let items = [];
+  try {
+    items = (await fetchPitchforkListing("/reviews/albums/")).map(pfItemOut).filter(it => it.album);
+  } catch (e) { listErr = e; /* fall through to the RSS fallback below */ }
+  if (items.length) return sortPfNewestFirst(items);
   const rss = await fetchPitchforkRss().catch(e => {
     if (DEBUG) console.error("[pitchfork] rss fallback failed:", e.message);
     return [];
   });
-  return rss
+  const out = rss
     .map(r => pfItemOut({ url: r.url, album: r.album, artist: artistFromReviewUrl(r.url, r.album),
-                          cover: r.cover, date: r.date, blurb: r.blurb }))
+                          cover: r.cover, date: r.date }))
     .filter(it => it.album);
+  if (!out.length && listErr) throw listErr;   // both sources down — surface the error
+  return out;   // RSS document order is already newest-first
+}
+
+// Stable newest-first sort on ISO pubDate (lexicographic compare is correct
+// for ISO-8601); undated items keep their relative order at the end.
+function sortPfNewestFirst(items) {
+  return items.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
 }
 
 async function getPitchforkReviews(type) {

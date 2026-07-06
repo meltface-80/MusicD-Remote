@@ -2,6 +2,15 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.3] — 2026-07-05
+
+### Fixed (found by a 3-agent, 8-angle review of the v1.6.2 parser/mosaic changes)
+- **Both Pitchfork tabs were rendering oldest-first.** The state-walk's traversal order is the reverse of the page's display order (verified against the live pages: 95/95 and 29/29 pairs ascending), so month-old reviews appeared at the top. Listings are now sorted newest-first by pubDate; verified end-to-end through the real route against the captured live pages (Latest topped by its newest review, Best New Music topped by Pitchfork's current Best New Album).
+- **The Latest tab's RSS fallback never ran on the most likely failure** — a network error/403 from the listing page threw before the fallback was reached (only an *unparseable* page fell back). A blocked listing now falls back to RSS, and only when both sources are down does the page show "couldn't load" (all three paths covered by tests).
+- **Old-Safari (≤14) covers rendered as blank tiles** — the cover image used the `inset` shorthand, which that Safari doesn't support, exactly the `aspect-ratio`/`inset` fallback class documented in v1.5.99. Converted to longhand `top/left` (also on the ♪ fallback glyph).
+- **Card-title legibility**: the gradient scrim under the overlaid album/artist text was near-transparent where the first title line sits on small tiles; strengthened plus a subtle text shadow, so titles stay readable on light covers.
+- Hardened the title extraction (an empty-after-stripping `dangerousHed` now consults the `source.hed` fallback; non-string fields can no longer render as "[object Object]"), removed a redundant entity-decode pass (and a decode-before-strip order bug in the RSS parser), dropped the unused `blurb` payload field, and rewrote the stale "two data paths, merged" architecture comment to describe the current single-source-plus-fallback design.
+
 ## [1.6.2] — 2026-07-05
 
 ### Fixed
