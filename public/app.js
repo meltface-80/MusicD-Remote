@@ -920,6 +920,10 @@
       modalAmbient.classList.add("hidden");
     }
   }
+  // The transport poll (separate closure) re-points the big art when the
+  // playing track changes album; it uses this bridge to keep the Queue tab's
+  // ambient glow on the same album.
+  window.__setModalAmbient = setModalAmbient;
 
   function setModalArtist(subtitle) {
     modalSub.innerHTML = "";
@@ -2629,19 +2633,28 @@
 
   // Populate the Roon-style now-playing screen from the live zone state.
   function updateNpScreen() {
-    if (!npTrack || !onNowPlayingScreen()) return;
+    // Big art + ambient glow track the playing album on BOTH np-mode tabs —
+    // the Queue tab hides the art but shows the glow — so update them BEFORE
+    // the tab-album gate below (onNowPlayingScreen() is false on tab-queue,
+    // which would otherwise leave the glow stale across album changes).
     const np = currentZone && currentZone.now_playing;
+    const npModeVisible = modalEl
+      && !modalEl.classList.contains("hidden")
+      && modalEl.classList.contains("np-mode");
+    if (npModeVisible && bigArt && np && np.image_key && np.image_key !== lastNpImgKey) {
+      bigArt.src = "/api/image/" + encodeURIComponent(np.image_key) + "?size=800";
+      lastNpImgKey = np.image_key;
+      // Same URL as the big art, so the browser serves it from cache.
+      if (window.__setModalAmbient) window.__setModalAmbient(bigArt.src);
+    }
+
+    if (!npTrack || !onNowPlayingScreen()) return;
     if (!np) { npTrack.textContent = "—"; npArtist.textContent = ""; npAlbum.textContent = ""; return; }
 
     npTrack.textContent  = np.line1 || "—";
     npArtist.textContent = np.line2 || "";
     npAlbum.textContent  = np.line3 || "";
     if (npAlbum) npAlbum.setAttribute("aria-label", "Open album: " + (np.line3 || ""));
-
-    if (bigArt && np.image_key && np.image_key !== lastNpImgKey) {
-      bigArt.src = "/api/image/" + encodeURIComponent(np.image_key) + "?size=800";
-      lastNpImgKey = np.image_key;
-    }
 
     const playing = currentZone.state === "playing" || currentZone.state === "loading";
     npIconPlay .classList.toggle("hidden",  playing);

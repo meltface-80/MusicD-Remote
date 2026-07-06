@@ -2,6 +2,18 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.7] — 2026-07-06
+
+### Changed
+- **Queue tab refresh — the Now-playing Queue screen now speaks the same Home visual language as the album view.**
+  - The whole Queue pane (track count summary + list) sits in a Home-style tinted rounded panel — the Not-played blue-grey — with a new cut-off "play queue" watermark motif (stacked list bars + play triangle), sharing the exact panel/watermark CSS recipe with the Home sections and the v1.6.6 album-view panels.
+  - The ambient blurred-cover glow is enabled on the Queue tab (it stays off on the Now playing tab, which keeps its clean Roon-style look): the playing album softly tints the area behind the tab chips. The transport poll keeps the glow (and the big art) in sync when playback crosses an album boundary — via a small bridge between the modal and transport code, since they live in separate closures.
+  - Queue rows use the same translucent hairline separators as the album view's Tracks panel (now a shared `--panel-hairline` variable so the two lists can't drift apart), with the now-playing row highlight, divider, and tap-to-play behaviour unchanged.
+
+### Fixed
+- **Code-review finding (unreachable sync)** — the first draft put the glow-sync call inside the now-playing screen updater, which early-returns unless the *Now playing* tab is active; the glow would have gone stale on the exact tab where it is visible. The art/ambient update now runs before that gate whenever the np-mode modal is open, and the fix is verified end-to-end headlessly (album change while sitting on the Queue tab updates both). Error class: new code placed behind a pre-existing guard that excludes the state it serves — caught by two independent review angles before commit.
+- **Code-review finding (:active flash lost)** — the Queue tab's new id-scoped `:hover` background out-ranked the base `:active` accent flash on tappable rows during a press; the accent flash is restated at higher specificity so tap feedback is preserved in both themes.
+
 ## [1.6.6] — 2026-07-06
 
 ### Changed

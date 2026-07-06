@@ -22,6 +22,7 @@
   --home-random-bg:   #24322e;   /* teal-grey panel on dark */
   --home-lotw-bg:     #2f2a38;   /* violet-grey panel on dark */
   --home-genres-bg:   #33301f;   /* amber-grey panel on dark */
+  --panel-hairline: rgba(255,255,255,.07);  /* row separators on tinted panels */
   --shadow-card:  0 2px 6px rgba(0,0,0,.45), 0 10px 24px rgba(0,0,0,.35);
   --shadow-modal: 0 24px 64px rgba(0,0,0,.6);
 }
@@ -40,6 +41,7 @@
   --home-random-bg:   #d6f0e4;   /* soft teal panel on light */
   --home-lotw-bg:     #ece0f7;   /* soft violet panel on light */
   --home-genres-bg:   #f6ecd3;   /* soft amber panel on light */
+  --panel-hairline: rgba(26,39,64,.12);     /* row separators on tinted panels */
   --danger:       #c0392b;
   --shadow-card:  0 1px 2px rgba(0,0,0,.06), 0 6px 16px rgba(0,0,0,.08);
   --shadow-modal: 0 24px 64px rgba(0,0,0,.18);
@@ -2463,17 +2465,18 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 /* Each Home section sits in its own softly-tinted panel so the rows read as
    distinct blocks: grey (unplayed), teal (random), violet (label of the week),
    amber (genres) — muted in dark mode, pastel in light mode.
-   The album modal's Tracks (.track-list-wrap) and About (#album-bio-section)
-   panels share this exact recipe (shell, watermark placement, theme flip) so
-   the two screens stay in sync — their deltas (tint choice, lower watermark
-   opacity for text-heavy panels) live in the "Album detail refresh" section
-   at the end of this file. */
+   The album modal's Tracks (.track-list-wrap), About (#album-bio-section)
+   and Queue (#tab-queue) panels share this exact recipe (shell, watermark
+   placement, theme flip) so the screens stay in sync — their deltas (tint
+   choice, lower watermark opacity for text-heavy panels) live in the
+   "Album detail refresh" section at the end of this file. */
 .home-section-unplayed,
 .home-section-random,
 .home-section-lotw,
 .home-section-genres,
 .track-list-wrap,
-#album-bio-section {
+#album-bio-section,
+#tab-queue {
   border-radius: 16px;
   padding: 14px 14px 12px;
 }
@@ -2500,19 +2503,22 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 .home-section-lotw,
 .home-section-genres,
 .track-list-wrap,
-#album-bio-section { position: relative; overflow: hidden; }
+#album-bio-section,
+#tab-queue { position: relative; overflow: hidden; }
 .home-section-unplayed > *,
 .home-section-random > *,
 .home-section-lotw > *,
 .home-section-genres > *,
 .track-list-wrap > *,
-#album-bio-section > * { position: relative; z-index: 1; }
+#album-bio-section > *,
+#tab-queue > * { position: relative; z-index: 1; }
 .home-section-unplayed::before,
 .home-section-random::before,
 .home-section-lotw::before,
 .home-section-genres::before,
 .track-list-wrap::before,
-#album-bio-section::before {
+#album-bio-section::before,
+#tab-queue::before {
   content: "";
   position: absolute;
   top: -92px;
@@ -2533,7 +2539,8 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 [data-theme="light"] .home-section-lotw::before,
 [data-theme="light"] .home-section-genres::before,
 [data-theme="light"] .track-list-wrap::before,
-[data-theme="light"] #album-bio-section::before {
+[data-theme="light"] #album-bio-section::before,
+[data-theme="light"] #tab-queue::before {
   opacity: .14;
   background-color: #1a2740;
 }
@@ -2620,12 +2627,13 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 [data-theme="light"] .aotd-badge { color: #ffffff; }
 
 /* ------------------------------------------------------------------ */
-/*  Album detail refresh — Home-language styling (v1.6.6)              */
+/*  Album detail refresh — Home-language styling (v1.6.6 + v1.6.7)     */
 /*  The detail modal borrows the Home screen's visual language:        */
 /*  1. an ambient blurred-cover glow washing the top of the panel,     */
 /*  2. Tracks + "About this album" as tinted 16px panels with the      */
 /*     Home cut-off watermark treatment (vinyl / quote marks),         */
-/*  3. softer hairline track separators tuned for tinted panels.       */
+/*  3. softer hairline track separators tuned for tinted panels,       */
+/*  4. the np-mode Queue tab as the same panel (queue motif + glow).   */
 /*  Deliberately quiet: low opacities, existing Home tint variables.   */
 /* ------------------------------------------------------------------ */
 
@@ -2650,24 +2658,32 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 /* Light theme: a blurred cover over a white panel reads stronger than the
    same opacity over near-black, so pull it back further. */
 [data-theme="light"] .modal-ambient { opacity: .14; }
-/* The Roon-style Now playing screen keeps its own clean look. */
+/* The Roon-style Now playing screen keeps its own clean look — but the Queue
+   tab opts back in: its big art is hidden there, so the glow (kept in sync
+   with the playing track by the transport poll) is what ties the list back
+   to the current album. */
 .modal.np-mode .modal-ambient { display: none; }
+.modal.np-mode.tab-queue .modal-ambient { display: block; }
 
 /* 2 — Home-style tinted panels. The panel shell, watermark placement, theme
    flip, and the Tracks panel's vinyl motif are all SHARED with the Home
    section rules (grouped selectors around line 2460) — only the deltas live
    here. Tracks reuses the Random-albums teal (vinyl motif matches it);
-   About this album reuses the Label-of-the-week violet. */
+   About this album reuses the Label-of-the-week violet; the Queue tab
+   reuses the Not-played blue-grey. */
 .track-list-wrap    { background: var(--home-random-bg); }
 #album-bio-section  { background: var(--home-lotw-bg); }
+#tab-queue          { background: var(--home-unplayed-bg); }
 
 /* Watermarks sit under dense text here (unlike Home's tile rows), so run
    them fainter than Home's .11 dark / .14 light. Same specificity as the
    shared rules, later in the file — these win by source order. */
 .track-list-wrap::before,
-#album-bio-section::before { opacity: .07; }
+#album-bio-section::before,
+#tab-queue::before { opacity: .07; }
 [data-theme="light"] .track-list-wrap::before,
-[data-theme="light"] #album-bio-section::before { opacity: .08; }
+[data-theme="light"] #album-bio-section::before,
+[data-theme="light"] #tab-queue::before { opacity: .08; }
 
 /* About this album — oversized quotation marks (editorial voice). */
 #album-bio-section::before {
@@ -2680,7 +2696,30 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
    panel itself now frames the list. Last row keeps the panel's bottom
    padding clean. */
 .track-list-wrap .track-list { border-top: 0; }
-.track-list-wrap .track-list li { border-bottom: 1px solid rgba(255,255,255,.07); }
+.track-list-wrap .track-list li { border-bottom: 1px solid var(--panel-hairline); }
 .track-list-wrap .track-list li:last-child { border-bottom: 0; }
-[data-theme="light"] .track-list-wrap .track-list li { border-bottom: 1px solid rgba(26,39,64,.12); }
-[data-theme="light"] .track-list-wrap .track-list li:last-child { border-bottom: 0; }
+
+/* 4 — Queue tab (np-mode): same panel language as the Tracks/About panels.
+   Motif: a play queue — stacked list bars with a play triangle. */
+#tab-queue::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Crect%20x%3D'28'%20y%3D'46'%20width%3D'144'%20height%3D'16'%20rx%3D'8'%2F%3E%3Crect%20x%3D'28'%20y%3D'90'%20width%3D'144'%20height%3D'16'%20rx%3D'8'%2F%3E%3Crect%20x%3D'28'%20y%3D'134'%20width%3D'76'%20height%3D'16'%20rx%3D'8'%2F%3E%3Cpath%20d%3D'M128%20118%20L174%20143%20L128%20168%20Z'%2F%3E%3C%2Fsvg%3E");
+          mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Crect%20x%3D'28'%20y%3D'46'%20width%3D'144'%20height%3D'16'%20rx%3D'8'%2F%3E%3Crect%20x%3D'28'%20y%3D'90'%20width%3D'144'%20height%3D'16'%20rx%3D'8'%2F%3E%3Crect%20x%3D'28'%20y%3D'134'%20width%3D'76'%20height%3D'16'%20rx%3D'8'%2F%3E%3Cpath%20d%3D'M128%20118%20L174%20143%20L128%20168%20Z'%2F%3E%3C%2Fsvg%3E");
+}
+/* Queue rows: the same translucent hairlines as the Tracks panel, replacing
+   the solid --border that fights the tint. The id selector (1,1,1) outguns
+   `.queue-list li.is-now` (0,2,1), so the now-playing row's transparent
+   border is restated below it. (The q-divider row needs no restatement:
+   its border-bottom-STYLE stays `none` from the base rule — a color on a
+   none-style border paints nothing.) */
+#tab-queue .queue-list li { border-bottom-color: var(--panel-hairline); }
+#tab-queue .queue-list li.is-now { border-bottom-color: transparent; }
+#tab-queue .q-divider-line { background: rgba(255,255,255,.10); }
+#tab-queue .queue-list li.is-tappable:hover { background: rgba(255,255,255,.05); }
+/* :active must be restated after :hover — during a press both match, and the
+   id-scoped hover rule (1,3,1) would otherwise out-rank the base accent
+   flash `.queue-list li.is-tappable:active` (0,3,1). --accent-soft is
+   themed, so one rule covers both themes. */
+#tab-queue .queue-list li.is-tappable:active { background: var(--accent-soft); }
+[data-theme="light"] #tab-queue .q-divider-line { background: rgba(26,39,64,.15); }
+[data-theme="light"] #tab-queue .queue-list li.is-tappable:hover { background: rgba(26,39,64,.06); }
+[data-theme="light"] #tab-queue .queue-list li.is-tappable:active { background: var(--accent-soft); }
