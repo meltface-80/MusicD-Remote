@@ -2,6 +2,14 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.5] — 2026-07-06
+
+### Fixed
+- **Clean `docker build` — the npm install warnings and both audit vulnerabilities are gone.**
+  - **`2 vulnerabilities (1 moderate, 1 high)`** — both were ASF-parser infinite-loop advisories in `music-metadata@7` and its bundled `file-type` (GHSA-v6c2-xwv6-8xf7, GHSA-5v7r-6r5c-r473), used by the file-tag label scan. Upgraded to `music-metadata@11.13.0`; the scan already loaded it via dynamic `import()` with a shape-tolerant shim (and already handled v11's object-style comment tags), so the parsing code needed no changes — verified against every tag field the scan reads (label, organization, album, albumartist, year/dates, Bandcamp comment URLs). `npm audit`: **0 vulnerabilities**.
+  - **`npm warn deprecated node-uuid@1.4.8`** — pulled in by Roon's own `node-roon-api`, which uses it only for `uuid.v4()`. An npm override now substitutes the maintained `uuid@11` (a drop-in for that call), so the deprecated package isn't installed at all; verified the Roon discovery layer (sood.js) boots and generates ids through the alias.
+  - **`npm warn deprecated prebuild-install`** — comes from `better-sqlite3`, and even its newest release still depends on it, so it can't be fixed by upgrading. The Dockerfile's install now runs `--loglevel=error` (with `--omit=dev --no-audit --no-fund` and the update-notifier off), so the unavoidable warning — plus the audit/funding/new-npm-version chatter — no longer clutters the build output, while real errors still print.
+
 ## [1.6.4] — 2026-07-06
 
 ### Added

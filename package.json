@@ -1,6 +1,6 @@
 {
   "name": "roon-random-albums",
-  "version": "1.6.4",
+  "version": "1.6.5",
   "description": "Display a screenful of random albums from your Roon library, with instant whole-library search, Play / Queue actions, and in-app self-update from GitHub.",
   "license": "MIT",
   "author": "Lewis Menzies (Music Duck / MusicD)",
@@ -17,12 +17,17 @@
   "dependencies": {
     "better-sqlite3": "^9.6.0",
     "express": "^4.19.2",
-    "music-metadata": "^7.14.0",
+    "music-metadata": "^11.13.0",
     "node-roon-api": "github:RoonLabs/node-roon-api",
     "node-roon-api-browse": "github:RoonLabs/node-roon-api-browse",
     "node-roon-api-image": "github:RoonLabs/node-roon-api-image",
     "node-roon-api-settings": "github:RoonLabs/node-roon-api-settings",
     "node-roon-api-status": "github:RoonLabs/node-roon-api-status",
     "node-roon-api-transport": "github:RoonLabs/node-roon-api-transport"
+  },
+  "overrides": {
+    "node-roon-api": {
+      "node-uuid": "npm:uuid@^11.1.0"
+    }
   }
 }
