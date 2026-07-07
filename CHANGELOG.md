@@ -2,6 +2,70 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.12] — 2026-07-07
+
+### Changed
+- **Now playing screen reverted to the Roon-style look** (undoes v1.6.9's redesign of that screen only): the amber panel, its equaliser watermark, and the ambient glow on the Now playing tab are gone; the screen is again the clean full-bleed layout with the track title directly under the art. Everything else from recent builds is retained — the album view's blurred-cover backdrop, the Queue tab's tinted panel and glow, and the selectable track rows are all untouched (verified by the full headless regression suite).
+
+## [1.6.11] — 2026-07-07
+
+### Changed
+- **Pitchfork written reviews are no longer displayed anywhere in the app (UK-law compliance).** Scores and Best New Music badges stay everywhere they appeared; in place of the review text the app now links to the review on pitchfork.com:
+  - **Pitchfork magazine page** — a review's detail view keeps the cover, artist/title, score and BNM badge, shows a short notice, and leads its actions with **"Read on Pitchfork ↗"** (followed by Open in your library / Find on Qobuz / Find on Tidal as before).
+  - **Album view "About this album"** — when the review source is Pitchfork, the panel shows no text but keeps the score/BNM in the title line and a **"Read the full review on Pitchfork"** link. Qobuz and Wikipedia editorial descriptions are unaffected and still display in full.
+  - **Qobuz/Tidal browser review section** — same treatment; the source link now renders even when there is no displayable text (previously it hid with the text).
+  - Enforced **server-side at every response boundary**: `/api/album/extras` emits no description for Pitchfork-sourced entries, and `/api/pitchfork/review` no longer serves (or even fetches) the review page at all — it returns only the local library match, since scores/BNM already ship with the listing items. An exhaustive audit traced every producer and consumer of review text to confirm no path remains; the search results, mosaic cards, Home rows, and share card never carried review text to begin with.
+- Side benefits from the review of this change: opening a review's detail no longer performs a throttled full-page scrape of pitchfork.com (the "Read on Pitchfork" link and streaming actions now paint instantly, with the library-match button arriving right after), and the now-dead by-URL scraper and its cache were removed.
+
+## [1.6.10] — 2026-07-07
+
+### Added
+- **Selectable tracks in the album view.** Tapping any track row expands it in place with two actions — **Play now** and **Queue** — for that single track (one row open at a time; tap again to collapse). Actions target the selected zone, work with genre/decade/tag/label filters active, and show the usual confirmation toast. Under the hood a new `/api/play-track` endpoint re-resolves the album by offset, finds the tapped track with the same filter the track listing uses (so indexes always align), verifies the track title before firing — if the library changed since the modal opened the tap is re-matched by title, and if the track is gone the app says so instead of playing the wrong thing — then drills into Roon's per-track action menu.
+- The shared album drill-in was extracted into one helper used by both album-level and per-track actions (`loadAlbumSession` + `drillActionMenu`), byte-equivalent to the previous behaviour for every existing play path (verified against the old code in review).
+
+### Fixed
+- Code-review findings, all fixed pre-commit: the per-track action buttons reuse the standard `.action-btn` recipe at a proper 38px tap target (the first draft's pills were ~31px, below the app's own touch norm); the track-drill response is now sanity-checked so a non-list reply errors instead of reporting false success; the track index is validated as an integer; and `fetchAlbumDetail` now bails if the modal moved to a different album while the response was in flight — previously a cosmetic race, but with live tap handlers on the rows it could have fired a track action against the wrong album.
+
+## [1.6.9] — 2026-07-07
+
+### Changed
+- **Album view — the cover now visibly glows under the art.** The ambient backdrop introduced in v1.6.6 was a heavy 48px blur that read as a colour wash; it is now a lighter 30px blur at slightly higher opacity and taller reach, so a faint but recognisable image of the album cover sits beneath the artwork, fading out down the panel. Tuned separately for dark and light themes.
+- **Now playing screen — separated from Roon's look, now in the extension's own visual language.** The track title, artist, album link, progress bar and transport controls sit in a Home-style tinted rounded panel (the amber tint — completing all four Home tints inside the modal) with a new cut-off equaliser-bars watermark. The ambient cover glow now shows on the Now playing tab too (previously it was deliberately suppressed there to preserve the Roon-style look). The device and volume controls stay outside the panel so their pop-up menus are never clipped by the panel's watermark cropping. No JS changes — the live transport wiring is untouched.
+
+### Fixed
+- **Code-review finding (hover regression)** — the new panel-scoped translucent hover fill out-ranked the play/pause button's solid hover fill, which would have left its icon nearly invisible on desktop hover. The rule now excludes the play/pause button (`:not(.np-playpause)`), and the retired base hover rule that all three transport buttons no longer reach was removed rather than shadowed. Error class: a broad descendant rule silently out-ranking a sibling component's state style — caught by the simplification/removed-behaviour review angles before commit.
+
+## [1.6.8] — 2026-07-07
+
+### Fixed
+- **Settings "Check for updates" said "tap Update below" — but there was no button.** The real Update button lives in the in-page update banner, which (a) sits *behind* the full-screen Settings sheet, (b) isn't re-checked when you tap the Settings button (it refreshes on a 15-minute timer), and (c) stays hidden for the session if you ever dismissed it with "Later" — so the promised button was invisible or absent. Now the Settings button itself becomes the action: after a check finds an update it turns into an accent-highlighted **"Update to vX"** (or "Roll back to vX") button with the release notes shown beneath; tapping it closes Settings and installs through the existing banner, whose download/unpack/restart progress is then visible. Error class: UI copy referencing a control in a different component without verifying it is reachable — the fix reuses the banner's single apply/progress implementation rather than duplicating it.
+- **Code-review finding (stranded button)** — the first draft left the Settings button disabled at "Updating…" with no reset path, so if the install failed the button was dead for the session. It now resets to "Check for updates" at hand-off; the banner owns all progress, error, and retry state.
+
+## [1.6.7] — 2026-07-06
+
+### Changed
+- **Queue tab refresh — the Now-playing Queue screen now speaks the same Home visual language as the album view.**
+  - The whole Queue pane (track count summary + list) sits in a Home-style tinted rounded panel — the Not-played blue-grey — with a new cut-off "play queue" watermark motif (stacked list bars + play triangle), sharing the exact panel/watermark CSS recipe with the Home sections and the v1.6.6 album-view panels.
+  - The ambient blurred-cover glow is enabled on the Queue tab (it stays off on the Now playing tab, which keeps its clean Roon-style look): the playing album softly tints the area behind the tab chips. The transport poll keeps the glow (and the big art) in sync when playback crosses an album boundary — via a small bridge between the modal and transport code, since they live in separate closures.
+  - Queue rows use the same translucent hairline separators as the album view's Tracks panel (now a shared `--panel-hairline` variable so the two lists can't drift apart), with the now-playing row highlight, divider, and tap-to-play behaviour unchanged.
+
+### Fixed
+- **Code-review finding (unreachable sync)** — the first draft put the glow-sync call inside the now-playing screen updater, which early-returns unless the *Now playing* tab is active; the glow would have gone stale on the exact tab where it is visible. The art/ambient update now runs before that gate whenever the np-mode modal is open, and the fix is verified end-to-end headlessly (album change while sitting on the Queue tab updates both). Error class: new code placed behind a pre-existing guard that excludes the state it serves — caught by two independent review angles before commit.
+- **Code-review finding (:active flash lost)** — the Queue tab's new id-scoped `:hover` background out-ranked the base `:active` accent flash on tappable rows during a press; the accent flash is restated at higher specificity so tap feedback is preserved in both themes.
+
+## [1.6.6] — 2026-07-06
+
+### Changed
+- **Album detail refresh — the album view now speaks the Home screen's visual language.**
+  - **Ambient cover glow** — the album's own artwork, heavily blurred and faded, washes the top of the detail panel so every album subtly tints its own view (dark and light theme tuned separately; decorative only — never intercepts taps, hidden when the album has no art, and reuses the exact same image URL as the cover so no extra download happens).
+  - **Home-style panels** — the Tracks list and "About this album" sections now sit in the same softly-tinted rounded panels as the Home rows, complete with the cut-off corner watermark treatment: the vinyl-record motif (shared with Home's Random albums row) on Tracks, and a new oversized quotation-marks motif on the review panel. Watermarks run fainter than Home's because these panels carry dense text.
+  - **Softer track rows** — translucent hairline separators replace the solid border colour, which fought the tinted background; the list's framing top border is gone since the panel itself now frames it.
+  - The Now playing screen (transport-bar view) and Queue tab are deliberately untouched.
+- **Shared panel infrastructure** — the modal panels reuse the Home sections' CSS rules (shell, watermark placement, theme flip, vinyl mask) rather than duplicating them, so future tweaks to the Home panel recipe automatically stay in sync with the album view. (Code-review finding: an earlier draft duplicated the ~500-char SVG mask data-URI and the placement block verbatim.)
+
+### Fixed
+- **Code-review finding (stacking context)** — an early draft gave the modal's scrolling body `z-index: 1`, which would have trapped the now-playing device/volume popovers *below* the pinned close/share buttons on short viewports. The body is now positioned without a z-index (paints above the glow by DOM order, creates no stacking context), preserving the popovers' original paint order. Error class: CSS stacking-context introduced on a shared container — caught by the cross-file tracer angle before commit.
+
 ## [1.6.5] — 2026-07-06
 
 ### Fixed

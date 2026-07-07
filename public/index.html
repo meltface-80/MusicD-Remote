@@ -361,6 +361,10 @@ sudo systemctl disable roon-random-albums</pre>
   <div id="album-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div class="modal-backdrop" data-close></div>
     <div class="modal-panel">
+      <!-- Ambient glow: the album cover, heavily blurred and faded, washes the
+           top of the panel so each album tints its own detail view (decorative
+           only — hidden from AT, never intercepts taps). -->
+      <img id="modal-ambient" class="modal-ambient hidden" alt="" aria-hidden="true">
       <button class="modal-close icon-btn" data-close aria-label="Close">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

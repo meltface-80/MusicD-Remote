@@ -906,6 +906,25 @@
   let currentSource = "random";
   let currentSourceZoneId = null;
 
+  // Ambient glow layer behind the modal header — mirrors the cover image so
+  // the blur always matches the art shown. Same URL as #modal-img, so the
+  // browser serves it from cache (no second fetch). Pass null to hide.
+  const modalAmbient = document.getElementById("modal-ambient");
+  function setModalAmbient(url) {
+    if (!modalAmbient) return;
+    if (url) {
+      modalAmbient.src = url;
+      modalAmbient.classList.remove("hidden");
+    } else {
+      modalAmbient.removeAttribute("src");
+      modalAmbient.classList.add("hidden");
+    }
+  }
+  // The transport poll (separate closure) re-points the big art when the
+  // playing track changes album; it uses this bridge to keep the Queue tab's
+  // ambient glow on the same album.
+  window.__setModalAmbient = setModalAmbient;
+
   function setModalArtist(subtitle) {
     modalSub.innerHTML = "";
     if (!subtitle) return;
@@ -971,9 +990,11 @@
     if (album.image_key) {
       modalImg.src = `/api/image/${encodeURIComponent(album.image_key)}?size=800`;
       modalImg.style.display = "";
+      setModalAmbient(modalImg.src);
     } else {
       modalImg.removeAttribute("src");
       modalImg.style.display = "none";
+      setModalAmbient(null);
     }
     modal.classList.remove("hidden");
     document.body.style.overflow = "hidden";
@@ -1029,6 +1050,7 @@
       if (j.album.subtitle) setModalArtist(j.album.subtitle);
       if (j.album.image_key) {
         modalImg.src = `/api/image/${encodeURIComponent(j.album.image_key)}?size=800`;
+        setModalAmbient(modalImg.src);
       }
     }
     const wrap = document.querySelector(".track-list-wrap");
@@ -1164,6 +1186,11 @@
     }
     const j = await r.json();
 
+    // Modal may have been closed/reopened on a different album while we
+    // waited — bail rather than render album A's rows (whose tap handlers
+    // would fire against album B's offset). Same guard as fetchAlbumExtras.
+    if (album !== currentAlbum) return;
+
     // Only accept server title if it matches what we expected — guards against
     // stale index offsets returning a completely different album after a library change.
     if (j.album && j.album.title) {
@@ -1206,7 +1233,8 @@
         `<div class="modal-error">No playback actions available for this album.</div>`;
     }
 
-    // Tracks
+    // Tracks — each row is tappable and reveals Play now / Queue for that
+    // track (one open row at a time; tapping again collapses it).
     const trackWrap = document.querySelector(".track-list-wrap");
     modalTracks.innerHTML = "";
     const trackList = j.tracks || [];
@@ -1214,15 +1242,80 @@
       trackWrap.classList.add("hidden");
     } else {
       trackWrap.classList.remove("hidden");
-      for (const t of trackList) {
+      trackList.forEach((t, idx) => {
         const li = document.createElement("li");
+        li.className = "t-row";
         const ti = document.createElement("span"); ti.className = "t-title";
         ti.textContent = t.title || "";
         const su = document.createElement("span"); su.className = "t-sub";
         su.textContent = t.subtitle || "";
         li.appendChild(ti); li.appendChild(su);
+        li.addEventListener("click", (e) => {
+          if (e.target.closest(".t-actions")) return;   // taps on the buttons themselves
+          toggleTrackActions(li, t, idx);
+        });
         modalTracks.appendChild(li);
-      }
+      });
+    }
+  }
+
+  // Expand/collapse the per-track action row. Only one row is open at a time.
+  function closeTrackRow(li) {
+    li.classList.remove("is-open");
+    const row = li.querySelector(".t-actions");
+    if (row) row.remove();
+  }
+  function toggleTrackActions(li, track, index) {
+    const wasOpen = li.classList.contains("is-open");
+    const open = modalTracks.querySelector("li.is-open");
+    if (open) closeTrackRow(open);
+    if (wasOpen) return;
+
+    li.classList.add("is-open");
+    const row = document.createElement("div");
+    row.className = "t-actions";
+    const mk = (label, kind, primary) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "action-btn t-act" + (primary ? " primary" : "");
+      b.textContent = label;
+      b.addEventListener("click", () => invokeTrack(kind, b, track, index, li));
+      return b;
+    };
+    row.appendChild(mk("Play now", "play_now", true));
+    row.appendChild(mk("Queue", "queue", false));
+    li.appendChild(row);
+  }
+
+  // Mirrors invoke() for a single track (same zone + filter handling).
+  async function invokeTrack(kind, btn, track, index, li) {
+    if (!currentAlbum) return;
+    if (!selectedZoneId) { showToast("Pick a zone first", "error"); return; }
+    const orig = btn.textContent;
+    btn.disabled = true; btn.textContent = "…";
+    try {
+      const r = await fetch("/api/play-track", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          offset: currentAlbum.offset,
+          track:  index,
+          title:  track.title || "",
+          zone_or_output_id: selectedZoneId,
+          kind,
+          filter_type:   currentDetailFilter ? currentDetailFilter.type   : "",
+          filter_value:  currentDetailFilter ? currentDetailFilter.value  : "",
+          filter_parent: currentDetailFilter && currentDetailFilter.parent ? currentDetailFilter.parent : ""
+        })
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      showToast(`${j.action || orig}: ${track.title} → ${zoneName(selectedZoneId)}`);
+      // Success — collapse the action row; the user stays on the album.
+      closeTrackRow(li);
+    } catch (e) {
+      showToast(e.message, "error");
+      btn.disabled = false; btn.textContent = orig;
     }
   }
 
@@ -1297,7 +1390,11 @@
 
       if (extras.album.url && extras.album.source) {
         srcLink.href = extras.album.url;
-        srcLink.textContent = "View on " + extras.album.source;
+        // Pitchfork review text is never shown (UK-law compliance) — the
+        // link is the way to read it, so say so explicitly.
+        srcLink.textContent = extras.album.source === "Pitchfork"
+          ? "Read the full review on Pitchfork"
+          : "View on " + extras.album.source;
         srcLink.classList.remove("hidden");
       } else {
         srcLink.classList.add("hidden");
@@ -2611,19 +2708,28 @@
 
   // Populate the Roon-style now-playing screen from the live zone state.
   function updateNpScreen() {
-    if (!npTrack || !onNowPlayingScreen()) return;
+    // Big art + ambient glow track the playing album on BOTH np-mode tabs —
+    // the Queue tab hides the art but shows the glow — so update them BEFORE
+    // the tab-album gate below (onNowPlayingScreen() is false on tab-queue,
+    // which would otherwise leave the glow stale across album changes).
     const np = currentZone && currentZone.now_playing;
+    const npModeVisible = modalEl
+      && !modalEl.classList.contains("hidden")
+      && modalEl.classList.contains("np-mode");
+    if (npModeVisible && bigArt && np && np.image_key && np.image_key !== lastNpImgKey) {
+      bigArt.src = "/api/image/" + encodeURIComponent(np.image_key) + "?size=800";
+      lastNpImgKey = np.image_key;
+      // Same URL as the big art, so the browser serves it from cache.
+      if (window.__setModalAmbient) window.__setModalAmbient(bigArt.src);
+    }
+
+    if (!npTrack || !onNowPlayingScreen()) return;
     if (!np) { npTrack.textContent = "—"; npArtist.textContent = ""; npAlbum.textContent = ""; return; }
 
     npTrack.textContent  = np.line1 || "—";
     npArtist.textContent = np.line2 || "";
     npAlbum.textContent  = np.line3 || "";
     if (npAlbum) npAlbum.setAttribute("aria-label", "Open album: " + (np.line3 || ""));
-
-    if (bigArt && np.image_key && np.image_key !== lastNpImgKey) {
-      bigArt.src = "/api/image/" + encodeURIComponent(np.image_key) + "?size=800";
-      lastNpImgKey = np.image_key;
-    }
 
     const playing = currentZone.state === "playing" || currentZone.state === "loading";
     npIconPlay .classList.toggle("hidden",  playing);
@@ -3332,6 +3438,13 @@
     } catch (e) {} // network error dismissing update — banner stays hidden, safe to ignore
     hide();
   });
+
+  // Settings' "Check for updates" flow hands off here after its own check:
+  // applying through the banner keeps a single implementation of the
+  // download/unpack/restart progress UI (the banner sits behind the Settings
+  // sheet, so the caller closes Settings first). Clearing the "Later"
+  // dismissal lets the banner's error/retry states show normally afterwards.
+  window.__applyUpdateNow = () => { setDismissed(""); btnNow.click(); };
 
   check();
   setInterval(check, 15 * 60 * 1000);
@@ -4279,19 +4392,27 @@ function initServiceBrowser(cfg) {
       const desc = alb && alb.description;
       review.innerHTML = "";
       if (desc) {
+        // desc is only ever Qobuz/Wikipedia editorial now — Pitchfork review
+        // text is stripped server-side (UK-law compliance).
         const p = document.createElement("div");
         p.className = "qobuz-nr-review-text";
         p.textContent = desc;
         review.appendChild(p);
-        if (alb.url && alb.source) {
-          const link = document.createElement("a");
-          link.className = "qobuz-nr-review-src";
-          link.href = alb.url; link.target = "_blank"; link.rel = "noopener";
-          link.textContent = "View on " + alb.source;
-          review.appendChild(link);
-        }
+      } else if (alb && alb.source === "Pitchfork" && alb.url) {
+        review.textContent = "Pitchfork reviewed this release — read it on pitchfork.com.";
       } else {
         review.textContent = "No review available for this release.";
+      }
+      // The source link renders with OR without text — with Pitchfork the
+      // link IS the review access, so it must not hide behind if(desc).
+      if (alb && alb.url && alb.source) {
+        const link = document.createElement("a");
+        link.className = "qobuz-nr-review-src";
+        link.href = alb.url; link.target = "_blank"; link.rel = "noopener";
+        link.textContent = alb.source === "Pitchfork"
+          ? "Read the review on Pitchfork"
+          : "View on " + alb.source;
+        review.appendChild(link);
       }
     } catch (e) {
       if (detailEl.dataset.albumId === String(album.id)) review.textContent = "Couldn't load review.";
@@ -4827,39 +4948,38 @@ initServiceBrowser({
     const bodyEl = detailEl.querySelector(".pf-detail-body");
     const actEl  = detailEl.querySelector(".pf-detail-actions");
 
-    let data;
+    // COMPLIANCE (UK law): the written review is never displayed in-app.
+    // Paint the note and the actions (led by "Read on Pitchfork") IMMEDIATELY
+    // — nothing they need is remote. The only async piece is the library
+    // match, fetched after, which just upgrades the actions with an
+    // "Open in your library" button when it lands.
+    bodyEl.innerHTML =
+      '<p class="pf-detail-note">The written review can’t be shown here — ' +
+      'tap <strong>Read on Pitchfork</strong> to read it on pitchfork.com.</p>';
+    buildActions(actEl, it, null);
+
     try {
       const qs = "?url=" + encodeURIComponent(it.url) +
                  "&album="  + encodeURIComponent(it.album  || "") +
                  "&artist=" + encodeURIComponent(it.artist || "");
       const r = await fetch("/api/pitchfork/review" + qs);
       if (mySeq !== reqSeq) return;
-      data = await r.json();
-      if (!r.ok) throw new Error(data.error || ("HTTP " + r.status));
-    } catch (e) {
-      if (mySeq !== reqSeq) return;
-      bodyEl.innerHTML = '<p class="pf-detail-note">Couldn’t load the full review.</p>';
-      buildActions(actEl, it, null);
-      return;
-    }
-    if (mySeq !== reqSeq) return;
-
-    const desc = data.review && data.review.description;
-    bodyEl.innerHTML = "";
-    if (desc) {
-      desc.split(/\n{2,}|\n/).map(s => s.trim()).filter(Boolean).forEach(par => {
-        const p = document.createElement("p");
-        p.textContent = par;
-        bodyEl.appendChild(p);
-      });
-    } else {
-      bodyEl.innerHTML = '<p class="pf-detail-note">Full review not available here — read it on Pitchfork.</p>';
-    }
-    buildActions(actEl, it, data.match);
+      const data = await r.json();
+      if (r.ok && data.match) buildActions(actEl, it, data.match);
+    } catch (e) { /* library match is optional — the actions already shown work */ }
   }
 
   function buildActions(container, it, match) {
     container.innerHTML = "";
+
+    // Reading happens on pitchfork.com now — make that the first action.
+    const link = document.createElement("a");
+    link.className = "pf-action pf-action-link";
+    link.href = it.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = "Read on Pitchfork ↗";
+    container.appendChild(link);
 
     // Owned? → open the existing album modal (play/queue live there).
     if (match) {
@@ -4883,15 +5003,6 @@ initServiceBrowser({
     if (tBtn && !tBtn.classList.contains("hidden")) {
       container.appendChild(makeFindBtn("Find on Tidal", tBtn, "tidal-search-input", query));
     }
-
-    // Always: read the source.
-    const link = document.createElement("a");
-    link.className = "pf-action pf-action-link";
-    link.href = it.url;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    link.textContent = "View on Pitchfork ↗";
-    container.appendChild(link);
   }
 
   function makeFindBtn(label, toggleBtn, searchInputId, query) {
@@ -4920,8 +5031,30 @@ initServiceBrowser({
   const btn      = document.getElementById("check-update-btn");
   const notesDiv = document.getElementById("settings-release-notes");
   if (!btn) return;
+  // After a check finds an update, the button itself becomes the install
+  // action (the old copy said "tap Update below", but the update banner sits
+  // BEHIND the Settings sheet — there was no visible button to tap).
+  let pendingUpdate = false;
+
   btn.addEventListener("click", async () => {
     if (btn.disabled) return;
+
+    if (pendingUpdate) {
+      // Second tap: install. Close Settings so the update banner (which owns
+      // the download/unpack/restart progress UI) is visible, then hand off.
+      pendingUpdate = false;
+      btn.classList.remove("is-update-ready");
+      const closer = document.querySelector("#settings-overlay [data-settings-close]");
+      if (closer) closer.click();
+      if (window.__applyUpdateNow) window.__applyUpdateNow();
+      // The banner owns all progress/error/retry state from here — reset this
+      // button so a reopened Settings offers a fresh check (on success the
+      // page reloads anyway; on failure the banner shows the retry, and a
+      // disabled "Updating…" here would strand with no reset path).
+      btn.textContent = "Check for updates";
+      return;
+    }
+
     btn.disabled = true;
     btn.textContent = "Checking…";
     if (notesDiv) notesDiv.classList.add("hidden");
@@ -4930,10 +5063,12 @@ initServiceBrowser({
       const r = await fetch("/api/update/status", { cache: "no-store" });
       const s = await r.json();
       if (s && s.available && s.latest) {
-        const label = s.isDowngrade
-          ? "Rollback to v" + s.latest + " available"
-          : "v" + s.latest + " available";
-        btn.textContent = label + " — tap Update below";
+        pendingUpdate = true;
+        btn.disabled = false;
+        btn.classList.add("is-update-ready");
+        btn.textContent = s.isDowngrade
+          ? "Roll back to v" + s.latest
+          : "Update to v" + s.latest;
         if (notesDiv && s.notes) {
           notesDiv.textContent = s.notes;
           notesDiv.classList.remove("hidden");
