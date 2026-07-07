@@ -2,6 +2,12 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.8] — 2026-07-07
+
+### Fixed
+- **Settings "Check for updates" said "tap Update below" — but there was no button.** The real Update button lives in the in-page update banner, which (a) sits *behind* the full-screen Settings sheet, (b) isn't re-checked when you tap the Settings button (it refreshes on a 15-minute timer), and (c) stays hidden for the session if you ever dismissed it with "Later" — so the promised button was invisible or absent. Now the Settings button itself becomes the action: after a check finds an update it turns into an accent-highlighted **"Update to vX"** (or "Roll back to vX") button with the release notes shown beneath; tapping it closes Settings and installs through the existing banner, whose download/unpack/restart progress is then visible. Error class: UI copy referencing a control in a different component without verifying it is reachable — the fix reuses the banner's single apply/progress implementation rather than duplicating it.
+- **Code-review finding (stranded button)** — the first draft left the Settings button disabled at "Updating…" with no reset path, so if the install failed the button was dead for the session. It now resets to "Check for updates" at hand-off; the banner owns all progress, error, and retry state.
+
 ## [1.6.7] — 2026-07-06
 
 ### Changed

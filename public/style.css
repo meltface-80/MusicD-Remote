@@ -1797,6 +1797,14 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 }
 .settings-update-btn:hover:not(:disabled) { color: var(--text); background: var(--bg-elev); }
 .settings-update-btn:disabled { opacity: .6; cursor: default; }
+/* When a check has found an update, the button IS the install action —
+   accent it so it reads as tappable. The :hover restatement out-ranks the
+   generic hover rule above (0,3,0 beats 0,2,0) so the accent text survives
+   desktop hover. */
+.settings-update-btn.is-update-ready {
+  color: var(--accent); border-color: var(--accent); font-weight: 600;
+}
+.settings-update-btn.is-update-ready:hover:not(:disabled) { color: var(--accent); }
 .settings-token-row {
   display: flex; gap: 8px; align-items: center; margin-top: 6px;
 }

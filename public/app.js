@@ -3364,6 +3364,13 @@
     hide();
   });
 
+  // Settings' "Check for updates" flow hands off here after its own check:
+  // applying through the banner keeps a single implementation of the
+  // download/unpack/restart progress UI (the banner sits behind the Settings
+  // sheet, so the caller closes Settings first). Clearing the "Later"
+  // dismissal lets the banner's error/retry states show normally afterwards.
+  window.__applyUpdateNow = () => { setDismissed(""); btnNow.click(); };
+
   check();
   setInterval(check, 15 * 60 * 1000);
 })();
@@ -4951,8 +4958,30 @@ initServiceBrowser({
   const btn      = document.getElementById("check-update-btn");
   const notesDiv = document.getElementById("settings-release-notes");
   if (!btn) return;
+  // After a check finds an update, the button itself becomes the install
+  // action (the old copy said "tap Update below", but the update banner sits
+  // BEHIND the Settings sheet — there was no visible button to tap).
+  let pendingUpdate = false;
+
   btn.addEventListener("click", async () => {
     if (btn.disabled) return;
+
+    if (pendingUpdate) {
+      // Second tap: install. Close Settings so the update banner (which owns
+      // the download/unpack/restart progress UI) is visible, then hand off.
+      pendingUpdate = false;
+      btn.classList.remove("is-update-ready");
+      const closer = document.querySelector("#settings-overlay [data-settings-close]");
+      if (closer) closer.click();
+      if (window.__applyUpdateNow) window.__applyUpdateNow();
+      // The banner owns all progress/error/retry state from here — reset this
+      // button so a reopened Settings offers a fresh check (on success the
+      // page reloads anyway; on failure the banner shows the retry, and a
+      // disabled "Updating…" here would strand with no reset path).
+      btn.textContent = "Check for updates";
+      return;
+    }
+
     btn.disabled = true;
     btn.textContent = "Checking…";
     if (notesDiv) notesDiv.classList.add("hidden");
@@ -4961,10 +4990,12 @@ initServiceBrowser({
       const r = await fetch("/api/update/status", { cache: "no-store" });
       const s = await r.json();
       if (s && s.available && s.latest) {
-        const label = s.isDowngrade
-          ? "Rollback to v" + s.latest + " available"
-          : "v" + s.latest + " available";
-        btn.textContent = label + " — tap Update below";
+        pendingUpdate = true;
+        btn.disabled = false;
+        btn.classList.add("is-update-ready");
+        btn.textContent = s.isDowngrade
+          ? "Roll back to v" + s.latest
+          : "Update to v" + s.latest;
         if (notesDiv && s.notes) {
           notesDiv.textContent = s.notes;
           notesDiv.classList.remove("hidden");
