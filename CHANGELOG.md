@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.12] — 2026-07-07
+
+### Changed
+- **Now playing screen reverted to the Roon-style look** (undoes v1.6.9's redesign of that screen only): the amber panel, its equaliser watermark, and the ambient glow on the Now playing tab are gone; the screen is again the clean full-bleed layout with the track title directly under the art. Everything else from recent builds is retained — the album view's blurred-cover backdrop, the Queue tab's tinted panel and glow, and the selectable track rows are all untouched (verified by the full headless regression suite).
+
 ## [1.6.11] — 2026-07-07
 
 ### Changed

@@ -395,11 +395,6 @@ sudo systemctl disable roon-random-albums</pre>
           <div class="modal-tab-pane" id="tab-album">
 
           <div id="np-screen" class="np-screen hidden">
-            <!-- Track info + transport live in a Home-style tinted panel (the
-                 extension's own visual language). The device/volume row stays
-                 OUTSIDE the panel: the panel crops its watermark with
-                 overflow:hidden, which would clip the pop-up menus. -->
-            <div class="np-panel">
             <div class="np-track" id="np-track">—</div>
             <div class="np-artist" id="np-artist">—</div>
             <button class="np-album" id="np-album" type="button" aria-label="Open album detail"></button>
@@ -433,7 +428,6 @@ sudo systemctl disable roon-random-albums</pre>
                 </svg>
               </button>
             </div>
-            </div><!-- /.np-panel -->
 
             <div class="np-secondary">
               <!-- Device / zone picker -->

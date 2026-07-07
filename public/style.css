@@ -1211,10 +1211,8 @@ main {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Now-playing screen — the "Now playing" tab when the modal is       */
-/*  opened from the transport bar (np-mode). Originally Roon-style;    */
-/*  since v1.6.9 it uses the extension's own panel language (the       */
-/*  .np-panel rules live with the other modal panels near EOF).        */
+/*  Now-playing screen (Roon-style) — the "Now playing" tab when the   */
+/*  modal is opened from the transport bar (np-mode).                  */
 /* ------------------------------------------------------------------ */
 
 /* Hide the album-centric header + album extras on the Now playing tab;
@@ -1249,6 +1247,7 @@ main {
   align-items: center;
   text-align: center;
   gap: 0;
+  padding-top: 6px;
 }
 .np-screen.hidden { display: none; }
 
@@ -1315,8 +1314,7 @@ main {
   border: 0; border-radius: 50%; cursor: pointer;
   transition: background .15s ease, color .15s ease, transform .08s ease;
 }
-/* (No base .np-btn:hover — all transport buttons sit in .np-panel, which
-   scopes its own translucent hover below.) */
+.np-btn:hover { background: var(--bg-elev-2); }
 .np-btn:active { transform: scale(.94); }
 .np-btn:disabled { color: var(--text-faint); cursor: not-allowed; }
 .np-btn:disabled:hover { background: transparent; }
@@ -2486,8 +2484,7 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 .home-section-genres,
 .track-list-wrap,
 #album-bio-section,
-#tab-queue,
-.np-panel {
+#tab-queue {
   border-radius: 16px;
   padding: 14px 14px 12px;
 }
@@ -2515,24 +2512,21 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 .home-section-genres,
 .track-list-wrap,
 #album-bio-section,
-#tab-queue,
-.np-panel { position: relative; overflow: hidden; }
+#tab-queue { position: relative; overflow: hidden; }
 .home-section-unplayed > *,
 .home-section-random > *,
 .home-section-lotw > *,
 .home-section-genres > *,
 .track-list-wrap > *,
 #album-bio-section > *,
-#tab-queue > *,
-.np-panel > * { position: relative; z-index: 1; }
+#tab-queue > * { position: relative; z-index: 1; }
 .home-section-unplayed::before,
 .home-section-random::before,
 .home-section-lotw::before,
 .home-section-genres::before,
 .track-list-wrap::before,
 #album-bio-section::before,
-#tab-queue::before,
-.np-panel::before {
+#tab-queue::before {
   content: "";
   position: absolute;
   top: -92px;
@@ -2554,8 +2548,7 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 [data-theme="light"] .home-section-genres::before,
 [data-theme="light"] .track-list-wrap::before,
 [data-theme="light"] #album-bio-section::before,
-[data-theme="light"] #tab-queue::before,
-[data-theme="light"] .np-panel::before {
+[data-theme="light"] #tab-queue::before {
   opacity: .14;
   background-color: #1a2740;
 }
@@ -2642,16 +2635,16 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 [data-theme="light"] .aotd-badge { color: #ffffff; }
 
 /* ------------------------------------------------------------------ */
-/*  Album detail refresh — Home-language styling (v1.6.6 – v1.6.9)     */
+/*  Album detail refresh — Home-language styling (v1.6.6 onward)       */
 /*  The detail modal borrows the Home screen's visual language:        */
 /*  1. an ambient blurred-cover glow washing the top of the panel,     */
 /*  2. Tracks + "About this album" as tinted 16px panels with the      */
 /*     Home cut-off watermark treatment (vinyl / quote marks),         */
 /*  3. softer hairline track separators tuned for tinted panels,       */
 /*  4. the np-mode Queue tab as the same panel (queue motif + glow),   */
-/*  5. the Now playing screen as an amber panel (equaliser motif) with  */
-/*     the glow now on in every modal state,                            */
-/*  6. tappable track rows with per-track Play now / Queue actions.     */
+/*  5. tappable track rows with per-track Play now / Queue actions.     */
+/*  (A v1.6.9 Now-playing panel was tried and reverted in v1.6.12 —     */
+/*  that screen is deliberately Roon-style.)                            */
 /*  Deliberately quiet: low opacities, existing Home tint variables.   */
 /* ------------------------------------------------------------------ */
 
@@ -2678,10 +2671,12 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 /* Light theme: a blurred cover over a white panel reads stronger than the
    same opacity over near-black, so pull it back further. */
 [data-theme="light"] .modal-ambient { opacity: .17; }
-/* The glow shows on every modal state — album detail, Now playing, and Queue.
-   (Now playing used to keep a bare Roon-style look; the screen now uses the
-   extension's own visual language, and the transport poll keeps the glow in
-   sync with the playing track on both np-mode tabs.) */
+/* The Roon-style Now playing screen keeps its own clean look — but the Queue
+   tab opts back in: its big art is hidden there, so the glow (kept in sync
+   with the playing track by the transport poll) is what ties the list back
+   to the current album. */
+.modal.np-mode .modal-ambient { display: none; }
+.modal.np-mode.tab-queue .modal-ambient { display: block; }
 
 /* 2 — Home-style tinted panels. The panel shell, watermark placement, theme
    flip, and the Tracks panel's vinyl motif are all SHARED with the Home
@@ -2698,12 +2693,10 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
    shared rules, later in the file — these win by source order. */
 .track-list-wrap::before,
 #album-bio-section::before,
-#tab-queue::before,
-.np-panel::before { opacity: .07; }
+#tab-queue::before { opacity: .07; }
 [data-theme="light"] .track-list-wrap::before,
 [data-theme="light"] #album-bio-section::before,
-[data-theme="light"] #tab-queue::before,
-[data-theme="light"] .np-panel::before { opacity: .08; }
+[data-theme="light"] #tab-queue::before { opacity: .08; }
 
 /* About this album — oversized quotation marks (editorial voice). */
 #album-bio-section::before {
@@ -2725,30 +2718,7 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Crect%20x%3D'28'%20y%3D'46'%20width%3D'144'%20height%3D'16'%20rx%3D'8'%2F%3E%3Crect%20x%3D'28'%20y%3D'90'%20width%3D'144'%20height%3D'16'%20rx%3D'8'%2F%3E%3Crect%20x%3D'28'%20y%3D'134'%20width%3D'76'%20height%3D'16'%20rx%3D'8'%2F%3E%3Cpath%20d%3D'M128%20118%20L174%20143%20L128%20168%20Z'%2F%3E%3C%2Fsvg%3E");
           mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Crect%20x%3D'28'%20y%3D'46'%20width%3D'144'%20height%3D'16'%20rx%3D'8'%2F%3E%3Crect%20x%3D'28'%20y%3D'90'%20width%3D'144'%20height%3D'16'%20rx%3D'8'%2F%3E%3Crect%20x%3D'28'%20y%3D'134'%20width%3D'76'%20height%3D'16'%20rx%3D'8'%2F%3E%3Cpath%20d%3D'M128%20118%20L174%20143%20L128%20168%20Z'%2F%3E%3C%2Fsvg%3E");
 }
-/* 5 — Now playing panel: the track info + transport sit in a Home-style
-   tinted panel (amber — completing the four Home tints in the modal) with an
-   equaliser-bars watermark. The device/volume row lives outside the panel so
-   its pop-up menus are never clipped by the watermark's overflow:hidden. */
-.np-panel {
-  background: var(--home-genres-bg);
-  width: 100%;
-  margin-top: 20px;
-  padding: 20px 16px 16px;
-}
-.np-panel::before {
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Crect%20x%3D'36'%20y%3D'96'%20width%3D'18'%20height%3D'58'%20rx%3D'9'%2F%3E%3Crect%20x%3D'76'%20y%3D'58'%20width%3D'18'%20height%3D'96'%20rx%3D'9'%2F%3E%3Crect%20x%3D'116'%20y%3D'76'%20width%3D'18'%20height%3D'78'%20rx%3D'9'%2F%3E%3Crect%20x%3D'156'%20y%3D'40'%20width%3D'18'%20height%3D'114'%20rx%3D'9'%2F%3E%3C%2Fsvg%3E");
-          mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Crect%20x%3D'36'%20y%3D'96'%20width%3D'18'%20height%3D'58'%20rx%3D'9'%2F%3E%3Crect%20x%3D'76'%20y%3D'58'%20width%3D'18'%20height%3D'96'%20rx%3D'9'%2F%3E%3Crect%20x%3D'116'%20y%3D'76'%20width%3D'18'%20height%3D'78'%20rx%3D'9'%2F%3E%3Crect%20x%3D'156'%20y%3D'40'%20width%3D'18'%20height%3D'114'%20rx%3D'9'%2F%3E%3C%2Fsvg%3E");
-}
-/* Transparent icon buttons sit on the tint now — swap their solid hover
-   fill for a translucent one (similar to, deliberately a touch stronger
-   than, the Queue rows' wash). :not(.np-playpause) keeps the play/pause
-   button's SOLID hover fill — this selector (0,4,0) would otherwise beat
-   .np-playpause:hover (0,2,0) and leave its bg-coloured icon invisible. */
-.np-panel .np-btn:not(.np-playpause):hover { background: rgba(255,255,255,.07); }
-[data-theme="light"] .np-panel .np-btn:not(.np-playpause):hover { background: rgba(26,39,64,.07); }
-.np-panel .np-btn:disabled:hover { background: transparent; }
-
-/* 6 — Selectable tracks (v1.6.10): each row in the Tracks panel expands on
+/* 5 — Selectable tracks (v1.6.10): each row in the Tracks panel expands on
    tap to reveal Play now / Queue for that single track. Hover/selection
    washes are translucent to sit on the tinted panel. The buttons ARE
    .action-btn (shared recipe: colors, primary, hover, disabled) with a
