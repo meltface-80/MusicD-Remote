@@ -172,7 +172,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
 - The README contains version references (install commands, tarball URLs, `docker build` tags).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.6.5** (until the user says otherwise).
+- Current stable version in the README: **v1.6.12** (until the user says otherwise).
 
 ---
 
@@ -251,4 +251,8 @@ docker run -d \
 | v1.6.0  | stable (superseded) | Home redesign stability pass — 8-angle review fixes; "Play something unheard" 12-month window |
 | v1.6.1–v1.6.3 | superseded | Pitchfork magazine page (listing scraper, woven mosaic, review fixes) |
 | v1.6.4  | stable (superseded) | Global search (library + Qobuz + Tidal + Pitchfork), Pitchfork × on title row |
-| v1.6.5  | **Latest (stable)** | Clean docker build — music-metadata 11 (0 audit vulns), node-uuid→uuid override, quiet npm install — README points here |
+| v1.6.5  | stable (superseded) | Clean docker build — music-metadata 11 (0 audit vulns), node-uuid→uuid override, quiet npm install |
+| v1.6.6–v1.6.9 | superseded | Album view + Queue tab Home-language refresh (ambient cover glow, tinted watermarked panels); Settings update button fix; v1.6.9's Now-playing panel later reverted |
+| v1.6.10 | superseded | Selectable tracks — per-track Play now / Queue in the album view |
+| v1.6.11 | superseded | Pitchfork reviews link to pitchfork.com (score + BNM kept in-app) |
+| v1.6.12 | **Latest (stable)** | Now playing screen back to Roon-style — README points here |
