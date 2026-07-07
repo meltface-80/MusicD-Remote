@@ -1174,6 +1174,13 @@
   modal.addEventListener("click", (e) => {
     if (e.target.closest && e.target.closest("[data-close]")) closeModal();
   });
+  // np-mode's top-left Home button (the × is hidden there): close the modal
+  // and land on the Home screen, leaving any labels/artist view behind.
+  const modalHomeBtn = document.getElementById("modal-home-btn");
+  if (modalHomeBtn) modalHomeBtn.addEventListener("click", () => {
+    closeModal();
+    showHome();   // showHome resets labels/artist/search state itself
+  });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !modal.classList.contains("hidden")) closeModal();
   });
@@ -2706,6 +2713,26 @@
     bar.classList.toggle("hidden", !hasNP || onNowPlayingScreen());
   }
 
+  // Track title with any trailing "(…)" detail broken onto its own line
+  // (e.g. "Hangover Sex (with Viktoria Tolstoy)" → main line + sub-line).
+  let lastNpTitle = null;
+  function setNpTrack(title) {
+    title = title || "—";
+    if (title === lastNpTitle) return;   // poll runs every 1.5s — skip rebuilds
+    lastNpTitle = title;
+    npTrack.textContent = "";
+    const m = /^(.*\S)\s*(\([^()]*\))$/.exec(title);
+    if (m) {
+      npTrack.append(m[1]);
+      const sub = document.createElement("div");
+      sub.className = "np-track-sub";
+      sub.textContent = m[2];
+      npTrack.appendChild(sub);
+    } else {
+      npTrack.textContent = title;
+    }
+  }
+
   // Populate the Roon-style now-playing screen from the live zone state.
   function updateNpScreen() {
     // Big art + ambient glow track the playing album on BOTH np-mode tabs —
@@ -2724,9 +2751,9 @@
     }
 
     if (!npTrack || !onNowPlayingScreen()) return;
-    if (!np) { npTrack.textContent = "—"; npArtist.textContent = ""; npAlbum.textContent = ""; return; }
+    if (!np) { setNpTrack(null); npArtist.textContent = ""; npAlbum.textContent = ""; return; }
 
-    npTrack.textContent  = np.line1 || "—";
+    setNpTrack(np.line1);
     npArtist.textContent = np.line2 || "";
     npAlbum.textContent  = np.line3 || "";
     if (npAlbum) npAlbum.setAttribute("aria-label", "Open album: " + (np.line3 || ""));

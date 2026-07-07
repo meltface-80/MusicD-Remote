@@ -2,6 +2,16 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.13] — 2026-07-07
+
+### Changed
+- **Now playing screen laid out to mirror Roon's spacing, and it no longer scrolls.** The tabs sit up top beside the corner buttons, the album art moves up directly beneath them and now sizes itself to the space available (bigger on tall phones, smaller on short ones — the whole screen always fits the viewport), and the track/artist/album block moves up under the art. A safeguard restores scrolling on very short desktop windows so the transport can never be clipped out of reach.
+- **Bracketed details in the track title get their own line** — e.g. "Hangover Sex (with Viktoria Tolstoy)" renders as the title with "(with Viktoria Tolstoy)" beneath it, smaller and dimmer.
+- **Corner buttons reworked on the Now playing screen:** the × is gone; **Share** now sits in its top-right spot, and a new **Home button** in the top-left closes the screen and lands on the Home screen. (Escape and the desktop backdrop still close it too. The album detail view keeps its × and Share unchanged.)
+
+### Fixed
+- Code-review findings fixed pre-commit: a no-scroll fallback for sub-480px-tall windows, the artwork's shadow no longer letterboxes off the art on narrow phones, an inert flex rule removed, a redundant state reset removed, and the track-title renderer skips DOM rebuilds on unchanged poll ticks.
+
 ## [1.6.12] — 2026-07-07
 
 ### Changed

@@ -1227,16 +1227,68 @@ main {
 .modal.np-mode .modal-body {
   flex-direction: column;
   align-items: center;
-  gap: 18px;
+  gap: 14px;
+  /* The tabs row sits up beside the corner buttons (Roon-style) instead of
+     below a tall reserved header band. */
+  padding-top: 14px;
 }
 .modal.np-mode .modal-info {
   width: 100%;
   max-width: 460px;
 }
-.modal.np-mode .modal-art {
-  max-width: 360px; width: 100%; margin: 0 auto; flex: 0 0 auto;
-}
 .modal.np-mode .modal-tabs { margin-top: 0; }
+
+/* Corner buttons in np-mode: no × — the top-left Home button leaves the
+   screen (to Home), and Share moves into the ×'s top-right spot. */
+.modal-home { display: none; }
+.modal.np-mode .modal-close { display: none; }
+.modal.np-mode .modal-share { right: 12px; }
+.modal.np-mode .modal-home {
+  display: inline-flex;
+  position: absolute; top: 12px; left: 12px; z-index: 2;
+}
+
+/* The Now playing tab must NEVER scroll (Roon parity): the body clips, the
+   fixed-height content (tabs, title block, seek, transport, device row)
+   takes its natural height, and the ARTWORK is the flexible piece — it
+   shrinks to whatever height is left. The mini transport is hidden on this
+   tab, so the big reserved bottom padding goes too. (The Queue tab keeps
+   the default scrolling body + transport padding.) */
+.modal.np-mode.tab-album .modal-body {
+  overflow: hidden;
+  padding-bottom: calc(14px + env(safe-area-inset-bottom));
+  /* Fill the panel's full height (the body normally sizes to content) —
+     without this the flexible artwork below collapses to zero. */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.modal.np-mode.tab-album .modal-art {
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%; max-width: none; margin: 0;
+  display: flex; align-items: center; justify-content: center;
+  /* the frame styling moves onto the img — the wrapper is now just a
+     flexible centring box */
+  background: transparent; box-shadow: none;
+  aspect-ratio: auto; border-radius: 0; overflow: visible;
+}
+.modal.np-mode.tab-album .modal-art img {
+  /* Height-driven: fills the leftover vertical space, capped at the usual
+     size; width follows the (square) cover's intrinsic ratio, so this needs
+     no aspect-ratio support. object-fit contain guards odd-shaped art. */
+  height: 100%;
+  max-height: min(400px, 92vw, calc(100vw - 36px));  /* never taller than the padded width — keeps shadow/radius on the art */
+  width: auto; max-width: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: var(--shadow-card);
+}
+/* Very short viewports (small desktop windows — phone landscape is already
+   blocked by the rotate overlay): let the body scroll again rather than
+   clip the transport controls unreachably. */
+@media (max-height: 480px) {
+  .modal.np-mode.tab-album .modal-body { overflow-y: auto; }
+}
 
 /* Queue tab: drop the big art so the list gets the full screen, like Roon. */
 .modal.np-mode.tab-queue .modal-art { display: none; }
@@ -1256,6 +1308,13 @@ main {
   letter-spacing: -.01em; color: var(--text);
   word-break: break-word;
 }
+/* A trailing "(…)" detail in the track title renders on its own line,
+   smaller and dimmer, so the main title stays clean (e.g. "Blues 365"
+   over "(Live)"). Populated by setNpTrack() in app.js. */
+.np-track-sub {
+  font-size: 17px; font-weight: 600; line-height: 1.25;
+  color: var(--text-dim); margin-top: 3px;
+}
 .np-artist { font-size: 18px; color: var(--text); margin-top: 8px; }
 .np-album {
   font-size: 14px; color: var(--text-dim); margin-top: 3px;
@@ -1266,7 +1325,7 @@ main {
 .np-album:hover, .np-album:focus-visible { color: var(--text); text-decoration: underline; }
 .np-album:empty { display: none; }
 
-.np-progress { width: 100%; margin-top: 24px; }
+.np-progress { width: 100%; margin-top: 18px; }
 .np-seek {
   -webkit-appearance: none; appearance: none;
   display: block;
@@ -1305,7 +1364,7 @@ main {
 
 .np-transport {
   display: flex; align-items: center; justify-content: center;
-  gap: 28px; margin-top: 16px;
+  gap: 28px; margin-top: 12px;
 }
 .np-btn {
   display: inline-flex; align-items: center; justify-content: center;
@@ -1328,7 +1387,7 @@ main {
 
 .np-secondary {
   display: flex; align-items: center; justify-content: space-between;
-  width: 100%; margin-top: 26px; gap: 14px;
+  width: 100%; margin-top: 14px; gap: 14px;
 }
 .np-vol { display: flex; align-items: center; gap: 10px; flex: 1; justify-content: flex-end; }
 .np-vol-slider { flex: 1; max-width: 150px; accent-color: var(--accent); cursor: pointer; }
@@ -2411,6 +2470,10 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
   .modal-art { position: relative; }
   .modal-art::before { content: ""; display: block; padding-top: 100%; }
   .modal-art img { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+  /* …except the Now-playing tab, where the art is height-driven flex (the
+     img keeps its intrinsic square ratio natively — no shim wanted). */
+  .modal.np-mode.tab-album .modal-art::before { content: none; }
+  .modal.np-mode.tab-album .modal-art img { position: static; width: auto; height: 100%; }
 }
 
 /* ------------------------------------------------------------------ */
