@@ -172,7 +172,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
 - The README contains version references (install commands, tarball URLs, `docker build` tags).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.6.13** (until the user says otherwise).
+- Current stable version in the README: **v1.6.15** (until the user says otherwise).
 
 ---
 
@@ -256,4 +256,6 @@ docker run -d \
 | v1.6.10 | superseded | Selectable tracks — per-track Play now / Queue in the album view |
 | v1.6.11 | superseded | Pitchfork reviews link to pitchfork.com (score + BNM kept in-app) |
 | v1.6.12 | stable (superseded) | Now playing screen back to Roon-style |
-| v1.6.13 | **Latest (stable)** | Now playing layout: Roon-parity spacing, no scroll, Home button, bracket sub-line — README points here |
+| v1.6.13 | stable (superseded) | Now playing layout: Roon-parity spacing, no scroll, Home button, bracket sub-line |
+| v1.6.14 | stable (superseded) | Landscape Now playing fix (tablet/desktop); adaptive share-card text (4 lines + auto-resize) |
+| v1.6.15 | **Latest (stable)** | Performance pass: server art cache, index-served randoms, gzip, no scroll-jank blur, Home row reuse — README points here |
