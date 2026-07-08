@@ -2,6 +2,14 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.20] — 2026-07-08
+
+### Fixed
+- **Wall display: videos from real artist channels now qualify.** The v1.6.19 scorer demanded "official video" in the title on top of the channel match — but genuine artist channels (e.g. Stereophonics) title their uploads plainly ("Artist – Track"), so nothing passed. The artist's own channel (including "Artist Music" / "Artist Official" / VEVO variants) is now trusted outright; the search query and category filter were also loosened so those uploads surface at all (the scorer still rejects Topic audio, teasers, interviews, chat shows, lyric videos, covers and bootlegs).
+
+### Added
+- **Wall display: on-screen mode controls.** Tap the screen (or move the mouse) to reveal a chip bar — **Auto** rotates everything; **Art / Photos / Bio / Review / Library / Video** pin that screen. Photos cycle within themselves when pinned; a pinned **Video plays through in full** (and loops) instead of rotating away after N seconds. Chips only appear for content that exists for the current album; a pinned choice survives album changes and re-applies whenever the new album has that content. Controls fade out after 5 seconds.
+
 ## [1.6.19] — 2026-07-08
 
 ### Changed

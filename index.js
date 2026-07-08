@@ -5271,19 +5271,24 @@ function scoreDisplayVideo(item, artistN, trackTokens) {
   const channelN = normalize(channel);
   // Hard rejects: auto-generated audio uploads and non-video content.
   if (/ - topic$/i.test(channel)) return -1;
-  if (/\b(audio|lyric|lyrics|visuali[sz]er|cover|reaction|remix|sped|slowed|8d|karaoke|instrumental|full album)\b/i.test(title)) return -1;
+  if (/\b(audio|lyric|lyrics|visuali[sz]er|cover|reaction|remix|sped|slowed|8d|karaoke|instrumental|full album|teaser|trailer|interview|behind the scenes|epk|shorts?)\b/i.test(title)) return -1;
   // Every significant token of the track name must appear in the video title.
   for (const t of trackTokens) if (titleN.indexOf(t) === -1) return -1;
   let score = 0;
+  // The artist's OWN channel (or their VEVO) is trusted outright: real artist
+  // channels (e.g. Stereophonics) title their uploads plainly — "Artist -
+  // Track" with no "official" suffix — and those ARE the official videos.
+  // The v1.6.19 scorer demanded the keyword on top and rejected them.
   const channelIsArtist = channelN === artistN || channelN === artistN + " vevo" ||
+                          channelN === artistN + " music" || channelN === artistN + " official" ||
                           channelN.replace(/\s+/g, "") === artistN.replace(/\s+/g, "") + "vevo";
-  if (channelIsArtist) score += 45;
-  else if (channelN.indexOf(artistN) !== -1) score += 25;
-  else score -= 40;                                       // kills chat shows / fan uploads
+  if (channelIsArtist) score += 70;
+  else if (channelN.indexOf(artistN) !== -1) score += 40; // artist-adjacent channel: needs the keyword too
+  else return -1;                                         // chat shows / fan uploads — reject outright
   if (/\bofficial (music )?video\b/i.test(title)) score += 30;
   else if (/\(official\b/i.test(title)) score += 20;
   if (/\blive\b/i.test(title)) {
-    if (score >= 45) score += 25;                         // live on the artist's own channel — welcome
+    if (score >= 70) score += 20;                         // live on the artist's own channel — welcome
     else return -1;                                       // random live bootleg — reject
   }
   return score;
@@ -5294,9 +5299,12 @@ async function fetchDisplayVideo(artistName, trackName) {
   if (displayVideoCache.has(key)) return displayVideoCache.get(key);
   let video = null;
   try {
-    const q = `${artistName} ${trackName} official`;
+    // Plain artist+track query, no category filter: recall is the search's
+    // job (artist channels titling uploads without "official" must surface);
+    // precision is the scorer's.
+    const q = `${artistName} ${trackName}`;
     const searchUrl = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video" +
-      "&videoCategoryId=10&videoEmbeddable=true&videoSyndicated=true&maxResults=10" +
+      "&videoEmbeddable=true&videoSyndicated=true&maxResults=10" +
       "&q=" + encodeURIComponent(q) + "&key=" + encodeURIComponent(youtubeKey);
     const json = await httpJson(searchUrl);
     const artistN = normalize(artistName);

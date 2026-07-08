@@ -39,7 +39,9 @@
   let np            = null;     // current now_playing
   let albumKey      = "";       // artist||album of the loaded content
   let slides        = [];       // [{kind, ...}]
-  let slideIdx      = -1;
+  let slideIdx      = -1;       // index into effectiveSlides()
+  let mode          = "auto";   // "auto" rotates everything; a slide kind pins that screen
+  let userMode      = "auto";   // the user's chosen mode — survives album changes
   let frontIsA      = false;    // which layer is currently visible
   let rotateTimer   = null;
   let seekBase      = 0;        // last polled seek position (s)
@@ -180,6 +182,10 @@
     }
     slides = base;
     slideIdx = -1;
+    // While the content fetch runs the pinned kind may not exist yet — show
+    // the art regardless so the new album is on screen immediately. userMode
+    // remembers the user's pick and is restored below once extras arrive.
+    mode = "auto";
     if (base.length) {
       nextSlide();   // show the art immediately — extras join when they arrive
     } else {
@@ -188,6 +194,7 @@
       slideA.classList.remove("visible");
       slideB.classList.remove("visible");
     }
+    buildControls();
     // Ask the server what else it can find (photos / review / video).
     try {
       const j = await jget("/api/display/content?zone=" + encodeURIComponent(zoneId));
@@ -208,11 +215,20 @@
       if (j.video && j.video.videoId && !deadVideos.has(j.video.videoId)) {
         extras.push({ kind: "video", videoId: j.video.videoId, embedUrl: j.video.embedUrl });
       }
-      if (!extras.length) return;
       slides = base.concat(extras);
-      if (!base.length) { slideIdx = -1; nextSlide(); }   // no art: first visual is an extra
+      if (!base.length && extras.length) { slideIdx = -1; nextSlide(); }   // no art: first visual is an extra
     } catch (e) { /* content is best-effort — art-only rotation is fine */ }
-    if (albumKey === myKey) startRotation();
+    if (albumKey !== myKey) return;
+    // Restore the user's pinned mode if the new album can honour it;
+    // otherwise rotate everything (the pin re-applies on a later album
+    // that has that content again).
+    if (userMode !== "auto" && slides.some(s => s.kind === userMode)) {
+      setMode(userMode);
+    } else {
+      mode = "auto";
+      buildControls();
+      startRotation();
+    }
   }
 
   function buildSlide(s) {
@@ -328,18 +344,27 @@
   const deadVideos = new Set();
   function dropVideo(videoId) {
     deadVideos.add(videoId);
-    const wasVisible = slides[slideIdx] && slides[slideIdx].kind === "video";
-    const before = slideIdx;
+    const eff = effectiveSlides();
+    const wasVisible = eff[slideIdx] && eff[slideIdx].kind === "video";
     slides = slides.filter(s => !(s.kind === "video" && s.videoId === videoId));
-    if (slideIdx >= slides.length) slideIdx = slides.length - 1;
-    if (wasVisible && slides.length) { slideIdx = Math.max(-1, before - 1); nextSlide(); }
-    if (slides.length <= 1) stopRotation();
+    if (mode === "video" && !slides.some(s => s.kind === "video")) mode = "auto";
+    buildControls();
+    slideIdx = Math.min(slideIdx, effectiveSlides().length - 1);
+    if (wasVisible) { slideIdx -= 1; nextSlide(); }
+    startRotation();
+  }
+
+  // The slides the current mode rotates through: everything on "auto",
+  // only the pinned kind otherwise (photos cycle within themselves).
+  function effectiveSlides() {
+    return mode === "auto" ? slides : slides.filter(s => s.kind === mode);
   }
 
   function nextSlide() {
-    if (!slides.length) return;
-    slideIdx = (slideIdx + 1) % slides.length;
-    const { node, full } = buildSlide(slides[slideIdx]);
+    const eff = effectiveSlides();
+    if (!eff.length) return;
+    slideIdx = (slideIdx + 1) % eff.length;
+    const { node, full } = buildSlide(eff[slideIdx]);
     const front = frontIsA ? slideA : slideB;
     const back  = frontIsA ? slideB : slideA;
     back.innerHTML = "";
@@ -362,11 +387,56 @@
 
   function startRotation() {
     stopRotation();
-    if (slides.length > 1) rotateTimer = setInterval(nextSlide, rotateSecs * 1000);
+    // A pinned video plays through in full (it loops); everything else
+    // rotates whenever there's more than one slide to rotate.
+    if (mode === "video") return;
+    if (effectiveSlides().length > 1) rotateTimer = setInterval(nextSlide, rotateSecs * 1000);
   }
   function stopRotation() {
     if (rotateTimer) { clearInterval(rotateTimer); rotateTimer = null; }
   }
+
+  // ---- Mode controls (tap to reveal, auto-hide) ---------------------------
+  const controlsEl = $("controls");
+  const MODE_LABELS = [
+    ["auto",   "Auto"],
+    ["art",    "Art"],
+    ["photo",  "Photos"],
+    ["bio",    "Bio"],
+    ["review", "Review"],
+    ["more",   "Library"],
+    ["video",  "Video"]
+  ];
+  function setMode(m) {
+    userMode = m;
+    mode = m;
+    slideIdx = -1;
+    nextSlide();
+    startRotation();
+    buildControls();
+  }
+  function buildControls() {
+    if (!controlsEl) return;
+    controlsEl.innerHTML = "";
+    const kinds = new Set(slides.map(s => s.kind));
+    for (const [m, label] of MODE_LABELS) {
+      if (m !== "auto" && !kinds.has(m)) continue;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "ctl-btn" + (mode === m ? " active" : "");
+      b.textContent = label;
+      b.addEventListener("click", (e) => { e.stopPropagation(); setMode(m); showUI(); });
+      controlsEl.appendChild(b);
+    }
+  }
+  let uiTimer = null;
+  function showUI() {
+    document.body.classList.add("show-ui");
+    clearTimeout(uiTimer);
+    uiTimer = setTimeout(() => document.body.classList.remove("show-ui"), 5000);
+  }
+  document.addEventListener("pointerdown", showUI);
+  document.addEventListener("pointermove", showUI);
 
   // ---- Boot ---------------------------------------------------------------
   checkSettings().then(() => { if (enabled) tick(); });

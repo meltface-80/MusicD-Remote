@@ -132,6 +132,34 @@ body {
 }
 .slide .video-wrap iframe { width: 100%; height: 100%; border: 0; pointer-events: none; }
 
+/* Mode controls — revealed on tap/pointer, fade out after a few seconds */
+.controls {
+  position: fixed;
+  top: max(16px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex; gap: 8px;
+  padding: 6px;
+  border-radius: 999px;
+  background: rgba(10,12,14,.72);
+  border: 1px solid rgba(255,255,255,.1);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .3s ease;
+  z-index: 10;
+}
+body.show-ui { cursor: default; }
+body.show-ui .controls { opacity: 1; pointer-events: auto; }
+.ctl-btn {
+  border: 0; border-radius: 999px;
+  padding: 10px 16px;
+  font: 600 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: transparent; color: #c3c8ce;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ctl-btn.active { background: #f2f3f5; color: #0e1012; }
+
 /* Idle / off messages */
 .center-msg {
   position: fixed; inset: 0;
