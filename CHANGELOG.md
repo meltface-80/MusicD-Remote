@@ -2,6 +2,28 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.15] — 2026-07-08
+
+### Changed — performance pass (the UI had grown sluggish since the Home redesign)
+
+Server:
+- **Cover art is now cached in memory on the server** (64 MB LRU) and served with long immutable browser-cache headers. Previously every art request — ~85 per Home render — was a live round-trip through the single Roon websocket, with the Core rescaling each image on demand; that connection also carries all browse/transport traffic, so everything queued behind everything else.
+- **The album index no longer rebuilds on nearly every Home visit.** Its staleness window was 10 minutes, so most visits kicked off a full library re-walk that competed with the very render it was serving. It's now a 6-hour safety net — the existing 5-minute count probe still rebuilds promptly when the library is actually edited.
+- **Random albums are picked from the in-memory index** (unfiltered requests): removes ~6 Roon browse round-trips + 30 single-item loads from every Home visit and wall refresh. Genre/tag/label-filtered picks still use live browse.
+- **Responses are gzip-compressed** (app.js ~75% smaller on the wire). The app's html/js/css deliberately stay revalidate-on-load (cheap ETag 304s) so a new build shows up immediately after an upgrade — no stale-app hard-refresh dance.
+
+Web UI:
+- **Home keeps its rows for 5 minutes.** Every Back tap used to rebuild the unplayed + random rows with a fresh random set — ~60 new cover fetches each time. Within the window the existing tiles (and the browser's image cache) are reused; after it they refresh as before.
+- **Backdrop blur removed from the bars that float over the scrolling page** (mini transport, filter bar, label-merge bar) — iOS Safari re-blurs everything beneath them on every scroll frame; they're now solid. This was the main scroll-jank source while music was playing.
+- **The album view's ambient glow uses a tiny 96px cover** instead of the 800px art (upscaling does the smoothing) — a fraction of the blurred-layer cost during modal scrolling.
+- **Tile art is sized to the screen** (devicePixelRatio-aware) instead of always 500px — iPads/desktops were fetching ~2.8× more pixels than they display.
+- **The 1.5s transport poll only touches the DOM and localStorage when something actually changed** (track/state/volume signature) instead of rewriting the bar every tick.
+- **Below-the-fold Home sections (label of the week, genres) skip rendering until scrolled near** (`content-visibility: auto`).
+- Album-of-the-day and the unplayed list now load in parallel instead of one after the other.
+
+### Not changed
+- **No rewrite needed:** profiling showed Node CPU is essentially idle — the time went to Roon Core round-trips, image bytes, and browser paint. A Rust port would wait on the same websocket at the same speed; the wins above are architectural and language-independent.
+
 ## [1.6.14] — 2026-07-07
 
 ### Fixed

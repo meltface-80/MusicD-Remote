@@ -7,6 +7,7 @@
 const path = require("path");
 const fs   = require("fs");
 const express = require("express");
+const compression = require("compression");
 
 const RoonApi          = require("node-roon-api");
 const RoonApiStatus    = require("node-roon-api-status");
@@ -450,6 +451,25 @@ async function pickRandomAlbums(count, filter) {
       return { offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null };
     });
     return { albums, total: matches.length };
+  }
+
+  // Unfiltered requests are served straight from the in-memory album index —
+  // the same {offset,title,subtitle,image_key} shape the browse path returns,
+  // with full-library offsets so open/play work unchanged (the Home unplayed
+  // row already serves from the index this way). This removes ~6 Roon browse
+  // round-trips + 30 single-item loads from every Home visit / wall refresh.
+  // Falls through to live browse only while the index is still empty (the
+  // first moments after pairing).
+  if (!filter && albumIndex.albums.length > 0) {
+    const pool = albumIndex.albums;
+    const want = Math.min(count, pool.length);
+    const picked = new Set();
+    while (picked.size < want) picked.add(Math.floor(Math.random() * pool.length));
+    const albums = [...picked].map(i => {
+      const al = pool[i];
+      return { offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null };
+    });
+    return { albums, total: pool.length };
   }
 
   const nav = await navigateToAlbumList(sessionKey, filter || null);
@@ -2726,8 +2746,15 @@ async function fetchAlbumBios(title, artist) {
 // playback code.
 // ---------------------------------------------------------------------------
 const SEARCH_PAGE      = 500;              // albums per Roon load() page
-const INDEX_MAX_AGE_MS = 10 * 60 * 1000;   // rebuild if older than this
-const INDEX_CHECK_MS   = 5  * 60 * 1000;   // how often to check for library edits
+// Staleness rebuild is a safety net (1h), NOT the freshness mechanism: the
+// 5-min maintenance probe below detects library edits (count change, or a
+// count-neutral reorder via the first album's identity) and rebuilds
+// immediately. The old 10-min max-age made nearly every Home visit kick off
+// a full library re-walk over the same single websocket that was serving the
+// render's browse + image traffic — a major sluggishness source after the
+// Home redesign.
+const INDEX_MAX_AGE_MS = 60 * 60 * 1000;   // rebuild if older than this (safety net)
+const INDEX_CHECK_MS   = 5 * 60 * 1000;    // how often to check for library edits
 
 const albumIndex = {
   albums:   [],     // [{ offset, title, subtitle, image_key, nTitle, nArtist, tTitle[], tArtist[], jTitle, jArtist }]
@@ -2825,8 +2852,15 @@ function startIndexMaintenance() {
       await browse({ hierarchy: "albums", pop_all: true, multi_session_key: sessionKey });
       const head = await load({ hierarchy: "albums", offset: 0, count: 1, multi_session_key: sessionKey });
       const total = head.list && head.list.count ? head.list.count : 0;
-      if (total !== albumIndex.count) {
-        if (DEBUG) console.log("[index] count changed", albumIndex.count, "->", total, "- rebuilding");
+      // A count-neutral edit (retag that reorders the list) shifts offsets
+      // without changing the total — compare the first album's identity too,
+      // since a reorder almost always changes who sorts first.
+      const first = head.items && head.items[0];
+      const firstNow = first ? (first.title || "") + "||" + (first.subtitle || "") : "";
+      const firstIdx = albumIndex.albums[0]
+        ? (albumIndex.albums[0].title || "") + "||" + (albumIndex.albums[0].subtitle || "") : "";
+      if (total !== albumIndex.count || (albumIndex.count > 0 && firstNow !== firstIdx)) {
+        if (DEBUG) console.log("[index] library changed (count", albumIndex.count, "->", total, ") - rebuilding");
         buildAlbumIndex().catch(() => { /* build error already logged by buildAlbumIndex */ });
       }
     } catch (e) { /* browse/load probe failed — next maintenance tick will retry */ }
@@ -3277,7 +3311,22 @@ function matchLibraryAlbum(album, artist) {
 // ---------------------------------------------------------------------------
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+// Gzip responses (app.js is ~230KB, style.css ~120KB — ~70% smaller on the
+// wire). Images are already binary (jpeg) so compression skips them.
+app.use(compression());
+// Static assets: html/js/css stay no-cache so every load revalidates (ETag
+// 304s make that one cheap request each) — this app is upgraded constantly,
+// and a time-based cache can serve NEW index.html with OLD app.js after an
+// upgrade (the exact element-ID mismatch class the pre-flight guards against).
+// Anything else (icons, fonts) may cache for an hour.
+app.use(express.static(path.join(__dirname, "public"), {
+  maxAge: "1h",
+  setHeaders(res, filePath) {
+    if (/\.(html|js|css)$/.test(filePath)) {
+      res.setHeader("Cache-Control", "no-cache");
+    }
+  }
+}));
 
 app.get("/api/status", (req, res) => {
   res.json({
@@ -3999,15 +4048,56 @@ app.get("/api/debug/browse-probe", async (req, res) => {
   }
 });
 
+// In-memory LRU for scaled cover art. Every art fetch used to be a live Roon
+// Core round-trip over the SINGLE multiplexed websocket (images, browse and
+// transport all head-of-line block each other), and the Core rescales the
+// image each time — with ~85 tiles per Home render that was the main source
+// of UI sluggishness. image_key changes when the art changes, so cached bytes
+// never go stale (hence immutable). Map preserves insertion order → delete +
+// re-set on hit gives LRU eviction.
+const IMAGE_CACHE_MAX_BYTES = 64 * 1024 * 1024;   // ~64 MB ≈ 1500+ thumbnails
+const imageCache = new Map();                     // "key@size" → { body, type, bytes }
+let imageCacheBytes = 0;
+function imageCacheGet(k) {
+  const hit = imageCache.get(k);
+  if (!hit) return null;
+  imageCache.delete(k); imageCache.set(k, hit);   // refresh LRU position
+  return hit;
+}
+function imageCachePut(k, entry) {
+  if (entry.bytes > IMAGE_CACHE_MAX_BYTES / 4) return;   // never let one image dominate
+  // Two concurrent misses for the same key both land here; set() replaces the
+  // entry, so subtract the old bytes first or the accounting drifts upward
+  // forever and eventually evicts the whole cache on every put.
+  const prev = imageCache.get(k);
+  if (prev) imageCacheBytes -= prev.bytes;
+  imageCacheBytes += entry.bytes;
+  imageCache.set(k, entry);
+  while (imageCacheBytes > IMAGE_CACHE_MAX_BYTES && imageCache.size) {
+    const oldest = imageCache.keys().next().value;
+    imageCacheBytes -= imageCache.get(oldest).bytes;
+    imageCache.delete(oldest);
+  }
+}
+
 app.get("/api/image/:image_key", async (req, res) => {
-  if (!core) return res.status(503).end();
   const size = Math.max(64, Math.min(1200, parseInt(req.query.size || "400", 10)));
+  const cacheKey = req.params.image_key + "@" + size;
+  const cached = imageCacheGet(cacheKey);
+  if (cached) {
+    res.set("Content-Type", cached.type);
+    res.set("Cache-Control", "public, max-age=604800, immutable");
+    return res.send(cached.body);
+  }
+  if (!core) return res.status(503).end();
   try {
     const { content_type, body } = await getImage(req.params.image_key, {
       scale: "fit", width: size, height: size, format: "image/jpeg"
     });
-    res.set("Content-Type", content_type || "image/jpeg");
-    res.set("Cache-Control", "public, max-age=86400");
+    const type = content_type || "image/jpeg";
+    imageCachePut(cacheKey, { body, type, bytes: body.length });
+    res.set("Content-Type", type);
+    res.set("Cache-Control", "public, max-age=604800, immutable");
     res.send(body);
   } catch (e) {
     res.status(404).end();

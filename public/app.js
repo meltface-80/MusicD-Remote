@@ -238,11 +238,20 @@
     setTopbarNav(false, false, true);   // Home: search box, no Back/Refresh
     const m = document.querySelector("main");
     if (m) m.scrollTop = 0;
-    // Reload the unplayed row (+ album-of-the-day) and the random row every
-    // visit so they're freshly random; the genre list and the weekly label are
-    // stable, so load those once.
-    loadHomeUnplayed();
-    loadHomeRandom();
+    // The unplayed + random rows keep their tiles for 5 minutes: every Back tap
+    // lands here, and rebuilding ~60 fresh-random tiles each time re-fetched
+    // ~60 cover images through the Roon Core — the single biggest repeated cost
+    // in the app. Within the TTL the existing DOM (and the browser's image
+    // cache) is reused; after it, or if a load failed, both rows reload fresh.
+    const rowsFresh = homeRowsLoadedAt &&
+      (Date.now() - homeRowsLoadedAt) < HOME_ROWS_TTL_MS &&
+      homeUnplayed && homeUnplayed.querySelector(".album") &&
+      homeRandom && homeRandom.querySelector(".album");
+    if (!rowsFresh) {
+      homeRowsLoadedAt = Date.now();
+      loadHomeUnplayed();
+      loadHomeRandom();
+    }
     // Label of the week depends on the background labels scan, which may not be
     // ready on the first visit — retry each visit until it populates, then stop.
     if (!homeLotwLoaded) loadHomeLabelOfWeek();
@@ -270,6 +279,11 @@
   if (topbarBack)    topbarBack.addEventListener("click", showHome);
   if (topbarRefresh) topbarRefresh.addEventListener("click", () => loadRandom());
 
+  // Home unplayed/random rows are reused within this TTL instead of being
+  // rebuilt (and re-randomised) on every visit — see showHome.
+  const HOME_ROWS_TTL_MS = 5 * 60 * 1000;
+  let homeRowsLoadedAt = 0;
+
   // Build a Home tile that always opens full-library (filter: null) so its
   // offset resolves even when a genre filter was last active.
   function homeTile(a, extraClass) {
@@ -281,17 +295,20 @@
   async function loadHomeUnplayed() {
     if (!homeUnplayed) return;
     homeUnplayed.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
-    // Album of the day (completely random; hidden once played today) sits first.
-    let aotd = null;
+    // Album of the day (completely random; hidden once played today) sits
+    // first. Fetched in PARALLEL with the unplayed list — they're independent,
+    // and awaiting them in sequence added a full round-trip to every reload.
+    const aotdPromise = fetch("/api/home/album-of-the-day")
+      .then(ar => ar.json()).catch(() => null);
+    const unplayedPromise = fetch("/api/home/unplayed?months=6&count=30");
+    unplayedPromise.catch(() => {});   // handled at the await below — this just silences the pre-await rejection warning
+    const aj = await aotdPromise;
+    const aotd = (aj && aj.album) ? aj.album : null;   // non-fatal — just no album-of-the-day
     try {
-      const ar = await fetch("/api/home/album-of-the-day");
-      const aj = await ar.json();
-      if (aj && aj.album) aotd = aj.album;
-    } catch (e) { /* non-fatal — just no album-of-the-day */ }
-    try {
-      const r = await fetch("/api/home/unplayed?months=6&count=30");
+      const r = await unplayedPromise;
       if (r.status === 503) {
         homeUnplayed.innerHTML = '<div class="home-carousel-empty">Waiting for Roon Core…</div>';
+        homeRowsLoadedAt = 0;   // retry on the next Home visit
         return;
       }
       const j = await r.json();
@@ -317,12 +334,13 @@
       homeUnplayed.appendChild(frag);
     } catch (e) {
       homeUnplayed.innerHTML = '<div class="home-carousel-empty">Couldn’t load.</div>';
+      homeRowsLoadedAt = 0;   // retry on the next Home visit
     }
   }
 
   // Random-albums row (reuses /api/random-albums, no filter → full library).
-  // Reloaded on every Home visit so it's freshly random; tapping the header
-  // opens the full random wall (same as the hamburger "Random albums").
+  // Reloaded when the Home rows go stale (see showHome's TTL); tapping the
+  // header opens the full random wall (same as the hamburger "Random albums").
   async function loadHomeRandom() {
     if (!homeRandom) return;
     homeRandom.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
@@ -330,6 +348,7 @@
       const r = await fetch("/api/random-albums?count=30");
       if (r.status === 503) {
         homeRandom.innerHTML = '<div class="home-carousel-empty">Waiting for Roon Core…</div>';
+        homeRowsLoadedAt = 0;   // retry on the next Home visit
         return;
       }
       const j = await r.json();
@@ -344,6 +363,7 @@
       homeRandom.appendChild(frag);
     } catch (e) {
       homeRandom.innerHTML = '<div class="home-carousel-empty">Couldn’t load.</div>';
+      homeRowsLoadedAt = 0;   // retry on the next Home visit
     }
   }
 
@@ -604,6 +624,13 @@
   }
 
   // ----- Render -----
+  // Tile art size matched to the display: tiles render at ~150-220px CSS, so
+  // 500px covers were ~2.8× oversized on DPR-2 iPads — each one an on-demand
+  // rescale by the Roon Core. Rounded to coarse steps so the whole session
+  // shares a handful of cache keys (server LRU + browser cache); the 300px
+  // floor keeps DPR-1 desktops sharp on wide walls where tiles exceed 200px.
+  const TILE_IMG_SIZE = Math.min(500, Math.max(300, Math.ceil((190 * (window.devicePixelRatio || 1)) / 100) * 100));
+
   // Build a single album tile. onClick defaults to opening the album modal,
   // but callers (e.g. the label browser) can override it to carry a filter.
   function buildAlbumTile(a, onClick) {
@@ -619,7 +646,7 @@
     if (a.image_key) {
       const img = document.createElement("img");
       img.loading = "lazy"; img.alt = "";
-      img.src = `/api/image/${encodeURIComponent(a.image_key)}?size=500`;
+      img.src = `/api/image/${encodeURIComponent(a.image_key)}?size=${TILE_IMG_SIZE}`;
       img.onerror = () => { artWrap.classList.add("no-image"); img.remove(); };
       artWrap.appendChild(img);
     } else {
@@ -913,7 +940,14 @@
   function setModalAmbient(url) {
     if (!modalAmbient) return;
     if (url) {
-      modalAmbient.src = url;
+      // The glow is blurred anyway, so feed it a TINY cover (96px) instead of
+      // the 800px big art: Safari otherwise keeps a full-size blurred layer
+      // composited behind the scrolling modal body. Upscaling the small image
+      // does most of the smoothing (the CSS blur radius is tuned to match).
+      // Only /api/image URLs carry a size param; anything else passes through.
+      modalAmbient.src = url.includes("/api/image/")
+        ? url.replace(/([?&])size=\d+/, "$1size=96")
+        : url;
       modalAmbient.classList.remove("hidden");
     } else {
       modalAmbient.removeAttribute("src");
@@ -2619,9 +2653,15 @@
     return sel && sel.value || null;
   }
 
+  let lastTransportSig = "";
   function saveTransportState(zone) {
     if (!zone || !zone.now_playing) return;
     const np = zone.now_playing;
+    // The 1.5s poll calls this every tick — synchronous localStorage writes
+    // are only worth paying when the persisted fields actually changed.
+    const sig = [np.line1, np.line2, np.line3, np.image_key, zone.state].join("|");
+    if (sig === lastTransportSig) return;
+    lastTransportSig = sig;
     try {
       localStorage.setItem("rra-transport", JSON.stringify({
         line1: np.line1 || "", line2: np.line2 || "", line3: np.line3 || "",
@@ -2666,36 +2706,46 @@
       return;
     }
 
-    // Title = track, subtitle = artist · album
-    titleEl.textContent  = np.line1 || "—";
-    const sub = [np.line2, np.line3].filter(Boolean).join(" · ");
-    artistEl.textContent = sub || "—";
-
-    // Play/pause state
-    const playing = zone.state === "playing" || zone.state === "loading";
-    iconPlay .classList.toggle("hidden",  playing);
-    iconPause.classList.toggle("hidden", !playing);
-    btnPP.setAttribute("aria-label", playing ? "Pause" : "Play");
-
-    // Volume: use the first output that has a volume control
+    // The static mini-bar bits (text, icons, volume) are skipped when nothing
+    // changed — this runs every 1.5s, and unconditional text-node replacement
+    // invalidated the fixed bar's paint on every tick even mid-scroll. The
+    // seek baseline below always resyncs (it moves every tick by design).
     const volOutput = (zone.outputs || []).find(o => o.volume);
-    if (volOutput) {
-      const v = volOutput.volume;
-      volSlider.min   = v.min   != null ? v.min  : 0;
-      volSlider.max   = v.max   != null ? v.max  : 100;
-      volSlider.step  = v.step  != null ? v.step : 1;
-      if (!userIsDraggingVolume) {
-        volSlider.value = v.value;
-        volVal.textContent = Math.round(v.value);
-      }
-      btnVol.disabled = false;
-    } else {
-      btnVol.disabled = true;
-    }
-
     const muted = (zone.outputs || []).some(o => o.is_muted);
-    iconVol .classList.toggle("hidden",  muted);
-    iconMute.classList.toggle("hidden", !muted);
+    const playing = zone.state === "playing" || zone.state === "loading";
+    const barSig = [np.line1, np.line2, np.line3, zone.state, muted,
+                    volOutput ? volOutput.volume.value : "novol"].join("|");
+    if (barSig !== lastBarSig) {
+      lastBarSig = barSig;
+
+      // Title = track, subtitle = artist · album
+      titleEl.textContent  = np.line1 || "—";
+      const sub = [np.line2, np.line3].filter(Boolean).join(" · ");
+      artistEl.textContent = sub || "—";
+
+      // Play/pause state
+      iconPlay .classList.toggle("hidden",  playing);
+      iconPause.classList.toggle("hidden", !playing);
+      btnPP.setAttribute("aria-label", playing ? "Pause" : "Play");
+
+      // Volume: use the first output that has a volume control
+      if (volOutput) {
+        const v = volOutput.volume;
+        volSlider.min   = v.min   != null ? v.min  : 0;
+        volSlider.max   = v.max   != null ? v.max  : 100;
+        volSlider.step  = v.step  != null ? v.step : 1;
+        if (!userIsDraggingVolume) {
+          volSlider.value = v.value;
+          volVal.textContent = Math.round(v.value);
+        }
+        btnVol.disabled = false;
+      } else {
+        btnVol.disabled = true;
+      }
+
+      iconVol .classList.toggle("hidden",  muted);
+      iconMute.classList.toggle("hidden", !muted);
+    }
 
     // Resync the local seek baseline used by the now-playing screen's ticker.
     npLen = np.length || 0;
@@ -2712,6 +2762,10 @@
     const hasNP = !!(currentZone && currentZone.now_playing);
     bar.classList.toggle("hidden", !hasNP || onNowPlayingScreen());
   }
+
+  // Last-rendered signature of the mini transport bar's static content —
+  // renderZone skips its DOM writes while this is unchanged.
+  let lastBarSig = "";
 
   // Track title with any trailing "(…)" detail broken onto its own line
   // (e.g. "Hangover Sex (with Viktoria Tolstoy)" → main line + sub-line).

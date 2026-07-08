@@ -884,10 +884,12 @@ main {
   gap: 10px;
   padding: 10px 12px;
   padding-bottom: calc(10px + env(safe-area-inset-bottom));
-  background: color-mix(in srgb, var(--bg-elev) 92%, transparent);
+  /* Solid, no backdrop blur: this bar floats over the scrolling <main>, and
+     iOS Safari re-samples + re-blurs the pixels beneath a backdrop-filter on
+     EVERY scroll frame — a major source of scroll jank whenever something is
+     playing. A solid elevated background reads near-identically. */
+  background: var(--bg-elev);
   border-top: 1px solid var(--border);
-  backdrop-filter: saturate(160%) blur(14px);
-  -webkit-backdrop-filter: saturate(160%) blur(14px);
   box-shadow: 0 -6px 24px rgba(0,0,0,.22);
 }
 
@@ -1560,9 +1562,10 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
   z-index: 15;
   margin: 0 -14px 16px;            /* bleed into main's horizontal padding */
   padding: 8px 14px 10px;
-  background: rgba(14,16,18,.85);
-  backdrop-filter: saturate(160%) blur(14px);
-  -webkit-backdrop-filter: saturate(160%) blur(14px);
+  /* Solid, no backdrop blur: content scrolls beneath this sticky bar, and
+     backdrop-filter forces iOS Safari to re-blur it every scroll frame.
+     var(--bg) is also theme-aware (the old hardcoded dark rgba wasn't). */
+  background: var(--bg);
   border-bottom: 1px solid var(--border);
 }
 .filter-pills {
@@ -2137,10 +2140,9 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 12px 16px;
   padding-bottom: calc(12px + env(safe-area-inset-bottom));
-  background: color-mix(in srgb, var(--bg-elev-2) 96%, transparent);
+  /* Solid, no backdrop blur — fixed bar over the scroller (see .mini-transport). */
+  background: var(--bg-elev-2);
   border-top: 1px solid var(--border);
-  backdrop-filter: saturate(160%) blur(14px);
-  -webkit-backdrop-filter: saturate(160%) blur(14px);
   box-shadow: 0 -4px 16px rgba(0,0,0,.22);
 }
 .label-merge-bar.hidden { display: none; }
@@ -2610,6 +2612,15 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 .home-section-random   { background: var(--home-random-bg); }
 .home-section-lotw     { background: var(--home-lotw-bg); }
 .home-section-genres   { background: var(--home-genres-bg); }
+/* The two below-the-fold sections skip rendering until scrolled near — on a
+   phone the first paint only lays out the unplayed + random rows. The
+   intrinsic size reserves roughly one carousel row so the scrollbar doesn't
+   jump. (Older Safari ignores content-visibility — harmless.) */
+.home-section-lotw,
+.home-section-genres {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}
 
 /* Faint themed watermark for a section's panel — a large, rotated, SOLID-fill
    line-art motif CROPPED by the panel's top-left corner (overflow:hidden) so it
@@ -2776,9 +2787,11 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
   width: 100%; height: 46%;
   max-height: 420px;
   object-fit: cover;
-  /* Blur is low enough that the cover stays recognisable — a faint image of
-     the album under the art, not just a colour wash. */
-  filter: blur(30px) saturate(1.1);
+  /* The source is a tiny 96px cover (see setModalAmbient) — upscaling it to
+     panel width does most of the smoothing, so a light blur finishes the job
+     at a fraction of the old 30px-on-800px raster cost while looking the
+     same: a faint image of the album under the art, not just a colour wash. */
+  filter: blur(12px) saturate(1.1);
   transform: scale(1.5);
   opacity: .26;
   -webkit-mask-image: linear-gradient(to bottom, black 0%, rgba(0,0,0,.6) 60%, transparent 100%);
