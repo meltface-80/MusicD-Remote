@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.16] — 2026-07-08
+
+### Fixed
+- **Updates no longer pile up duplicate entries in Roon's "Extension authorizations" list.** The Roon pairing token was stored in `config.json` in the container's working directory — wiped by every docker update — so each new build registered as a brand-new extension and Roon issued a fresh authorization, leaving the old ones behind as ghosts. The pairing state now lives on the persistent data volume (`data/roonstate.json`), with a one-time migration for a running install's existing token, so future updates reconnect with the same authorization. The stale duplicate entries need removing once by hand (Roon → Settings → Extensions → View extension authorizations → Remove the old builds).
+
 ## [1.6.15] — 2026-07-08
 
 ### Changed — performance pass (the UI had grown sluggish since the Home redesign)

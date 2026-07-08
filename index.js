@@ -55,6 +55,25 @@ let zones     = {};
 let outputs   = {};
 const scrobbleState = new Map();
 
+// Roon pairing state must survive container rebuilds. node-roon-api's default
+// persistence writes ./config.json relative to CWD (= /app, wiped by every
+// docker update), so each update registered as a brand-new extension: Roon
+// issued a fresh authorization every time and the old entries lingered as
+// ghosts in Settings → Extensions → View extension authorizations. Keep the
+// state on the mounted data volume instead, migrating any legacy token once
+// so a running install keeps its existing pairing.
+const ROON_STATE_FILE = path.join(__dirname, "data", "roonstate.json");
+try {
+  const legacyFile = path.join(__dirname, "config.json");
+  if (!fs.existsSync(ROON_STATE_FILE) && fs.existsSync(legacyFile)) {
+    const legacy = JSON.parse(fs.readFileSync(legacyFile, "utf8"));
+    if (legacy && legacy.roonstate) {
+      fs.mkdirSync(path.dirname(ROON_STATE_FILE), { recursive: true });
+      fs.writeFileSync(ROON_STATE_FILE, JSON.stringify(legacy.roonstate, null, 2));
+    }
+  }
+} catch (e) { /* unreadable legacy config — start unpaired; user authorises once */ }
+
 const roon = new RoonApi({
   extension_id:        "com.musicd.roon.random-albums",
   display_name:        "MusicD Random Albums v" + DISPLAY_SHORTVER,
@@ -62,6 +81,18 @@ const roon = new RoonApi({
   publisher:           "MusicD",
   email:               "hello@musicd.app",
   log_level:           "none",
+
+  // Pairing token persistence on the data volume (see ROON_STATE_FILE above).
+  get_persisted_state: () => {
+    try { return JSON.parse(fs.readFileSync(ROON_STATE_FILE, "utf8")) || {}; }
+    catch (e) { return {}; }   // missing/corrupt state file — register fresh
+  },
+  set_persisted_state: (state) => {
+    try {
+      fs.mkdirSync(path.dirname(ROON_STATE_FILE), { recursive: true });
+      fs.writeFileSync(ROON_STATE_FILE, JSON.stringify(state, null, 2));
+    } catch (e) { /* data volume unavailable — pairing lasts this run only */ }
+  },
 
   core_paired: function (c) {
     core = c;
