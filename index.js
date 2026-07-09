@@ -5384,6 +5384,7 @@ async function fetchDisplayVideo(artistName, trackName) {
 // the album-extras path caches per album+credit pair, which doesn't help the
 // display's per-member lookups across albums). Nulls cached too.
 const displayArtistBioCache = new Map();
+const DISPLAY_BIO_CACHE_MAX = 500;
 async function fetchDisplayArtistBio(name) {
   const key = normalize(name);
   if (!key) return null;
@@ -5391,6 +5392,12 @@ async function fetchDisplayArtistBio(name) {
   let bio = null;
   try { bio = await fetchWikiArtist(name); } catch (e) { /* best-effort — card is skipped */ }
   displayArtistBioCache.set(key, bio);
+  // Bounded like displayContentCache: on a streaming-heavy, never-restarted box
+  // the set of distinct artist/member names played would otherwise grow without
+  // limit. Evict the oldest once over the cap (Map preserves insertion order).
+  if (displayArtistBioCache.size > DISPLAY_BIO_CACHE_MAX) {
+    displayArtistBioCache.delete(displayArtistBioCache.keys().next().value);
+  }
   return bio;
 }
 

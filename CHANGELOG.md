@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.27] — 2026-07-09
+
+### Changed
+- **Wall display: bounded the artist-bio cache (`displayArtistBioCache`) at 500 entries**, matching the eviction its sibling `displayContentCache` already had. Found during a performance + code review of the display feature: it was the only cache that grew without a cap, so a streaming-heavy box that never restarts could accumulate one small entry per distinct artist/member name ever played. The review found no correctness bugs in the v1.6.22–v1.6.26 display changes; the O(n) per-request label scan is confirmed off the hot path (served from the 6 h content cache, keyed per track).
+
 ## [1.6.26] — 2026-07-09
 
 ### Fixed
