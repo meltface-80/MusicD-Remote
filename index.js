@@ -5296,7 +5296,13 @@ function scoreDisplayVideo(item, artistN, trackTokens) {
 async function fetchDisplayVideo(artistName, trackName) {
   if (!youtubeKey || !artistName || !trackName) return null;
   const key = normalize(artistName) + "||" + normalize(trackName);
-  if (displayVideoCache.has(key)) return displayVideoCache.get(key);
+  const hit = displayVideoCache.get(key);
+  if (hit) {
+    // Positive verdicts hold for the session; a "no video" verdict expires
+    // after 30 min so transient API failures don't blank a track for good.
+    if (hit.video || (Date.now() - hit.at) < 30 * 60 * 1000) return hit.video;
+    displayVideoCache.delete(key);
+  }
   let video = null;
   try {
     // Plain artist+track query, no category filter: recall is the search's
@@ -5340,7 +5346,7 @@ async function fetchDisplayVideo(artistName, trackName) {
   } catch (e) {
     if (DEBUG) console.error("[display:youtube]", e.message);
   }
-  displayVideoCache.set(key, video);
+  displayVideoCache.set(key, { at: Date.now(), video });
   return video;
 }
 
@@ -5397,7 +5403,7 @@ app.get("/api/display/content", async (req, res) => {
         const subN = normalize(al.subtitle || "");
         if (subN === artistN || subN.split(" / ").indexOf(artistN) !== -1 ||
             subN.startsWith(artistN + " /") || subN.indexOf(" / " + artistN) !== -1) {
-          moreArtist.push({ title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null });
+          moreArtist.push({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null });
         }
       }
     }
@@ -5407,7 +5413,7 @@ app.get("/api/display/content", async (req, res) => {
       const entry = labelsIndex.map.get(labelGroupKey(labelName));
       if (entry && entry.albums && entry.albums.length >= 4) {
         const picks = entry.albums.filter(a => normalize(a.title) !== npTitleN).slice(0, 12)
-          .map(a => ({ title: a.title || "", subtitle: a.subtitle || "", image_key: a.image_key || null }));
+          .map(a => ({ offset: a.offset, title: a.title || "", subtitle: a.subtitle || "", image_key: a.image_key || null }));
         if (picks.length >= 3) moreLabel = { name: entry.display || labelName, albums: picks };
       }
     }

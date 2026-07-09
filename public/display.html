@@ -40,6 +40,16 @@
        other chip pins that screen; Video plays the clip through in full. -->
   <div id="controls" class="controls" aria-label="Display mode"></div>
 
+  <!-- Tap-to-play panel for the library grids: pick Play now / Queue -->
+  <div id="playpanel" class="playpanel hidden">
+    <div id="pp-title" class="pp-title">—</div>
+    <div class="pp-actions">
+      <button id="pp-play"  class="pp-btn pp-primary" type="button">▶ Play now</button>
+      <button id="pp-queue" class="pp-btn" type="button">+ Queue</button>
+      <button id="pp-close" class="pp-btn pp-quiet" type="button">Cancel</button>
+    </div>
+  </div>
+
   <!-- Bottom progress strip (Nest-Hub style) -->
   <div id="bottombar" class="bottombar hidden">
     <div class="bb-text">

@@ -2,6 +2,19 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.21] — 2026-07-09
+
+### Fixed
+- **Wall display: skipping a track no longer keeps the previous track's video playing.** Content was reloaded per album; the video is per track, so a skip within the same album left the old clip running (the bug that needed a force-close). Content now reloads per track — the album-level parts (photos, review, bio, library grids) are served from cache so the refresh is instant.
+- **Wall display: the video starts at the track's live position** (best-effort sync — video edits rarely match track length exactly), instead of always starting from 0 while the song is mid-way.
+- A "no video found" verdict now expires after 30 minutes instead of sticking for the whole server session, so transient YouTube API failures don't blank a track's video for good.
+
+### Changed
+- **When a track has a video, the display opens straight to it and stays on it** — synced and playing through — unless a mode chip is tapped. Tracks without a video rotate as before. A manual pin still always wins.
+
+### Added
+- **Library grid albums are now tappable: Play now / Queue.** Tap a cover on the "More from <artist>" / "More on <label>" screens → a panel offers **▶ Play now** and **+ Queue** to the display's zone (same playback path as the album view). The panel auto-dismisses, and confirms with "Playing ✓ / Queued ✓".
+
 ## [1.6.20] — 2026-07-08
 
 ### Fixed

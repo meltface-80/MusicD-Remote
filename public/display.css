@@ -160,6 +160,35 @@ body.show-ui .controls { opacity: 1; pointer-events: auto; }
 }
 .ctl-btn.active { background: #f2f3f5; color: #0e1012; }
 
+/* Tap-to-play panel (library grids) */
+.playpanel {
+  position: fixed;
+  left: 50%; bottom: calc(120px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 20;
+  min-width: min(420px, 90vw);
+  padding: 18px 22px;
+  border-radius: 16px;
+  background: rgba(10,12,14,.92);
+  border: 1px solid rgba(255,255,255,.12);
+  box-shadow: 0 18px 60px rgba(0,0,0,.6);
+  text-align: center;
+}
+.playpanel.hidden { display: none; }
+.pp-title { font-size: 17px; font-weight: 700; margin-bottom: 14px;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pp-actions { display: flex; gap: 10px; justify-content: center; }
+.pp-btn {
+  border: 1px solid rgba(255,255,255,.16); border-radius: 999px;
+  padding: 12px 20px;
+  font: 600 15px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: rgba(255,255,255,.08); color: #f2f3f5;
+  cursor: pointer;
+}
+.pp-primary { background: #f2f3f5; color: #0e1012; border-color: transparent; }
+.pp-quiet   { background: transparent; color: #9aa0a7; }
+.more-cell { cursor: pointer; }
+
 /* Idle / off messages */
 .center-msg {
   position: fixed; inset: 0;

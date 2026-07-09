@@ -137,7 +137,12 @@
       seekBase   = np.seek_position || 0;
       seekBaseAt = Date.now();
 
-      const key = (np.line2 || "") + "||" + (np.line3 || "") + "||" + (np.image_key || "");
+      // Keyed per TRACK (line1), not just per album: the video is track-
+      // specific, so a skip within the same album must reload content —
+      // without this the previous track's video kept playing after a skip.
+      // Album-level parts (photos/review/bio/library grids) are cached
+      // server-side, so per-track refetches are cheap.
+      const key = (np.line1 || "") + "||" + (np.line2 || "") + "||" + (np.line3 || "") + "||" + (np.image_key || "");
       if (key !== albumKey) {
         albumKey = key;
         await loadContent();
@@ -172,6 +177,7 @@
     // previous album's photos/review would be woven into the new rotation.
     const myKey = albumKey;
     stopRotation();
+    closePlayPanel();   // a track change invalidates any pending pick
     const base = [];
     if (np && np.image_key) {
       base.push({ kind: "art", url: "/api/image/" + encodeURIComponent(np.image_key) + "?size=800" });
@@ -219,11 +225,18 @@
       if (!base.length && extras.length) { slideIdx = -1; nextSlide(); }   // no art: first visual is an extra
     } catch (e) { /* content is best-effort — art-only rotation is fine */ }
     if (albumKey !== myKey) return;
-    // Restore the user's pinned mode if the new album can honour it;
-    // otherwise rotate everything (the pin re-applies on a later album
-    // that has that content again).
+    // Restore the user's pinned mode if the new track can honour it. With no
+    // manual pin, a track that HAS a video opens straight to it and stays
+    // there (it plays through, synced to the music) — tapping a chip is the
+    // only way off it; everything else rotates as usual.
     if (userMode !== "auto" && slides.some(s => s.kind === userMode)) {
       setMode(userMode);
+    } else if (userMode === "auto" && slides.some(s => s.kind === "video")) {
+      mode = "video";        // auto-preference, not a user pin — userMode stays "auto"
+      slideIdx = -1;
+      nextSlide();
+      stopRotation();
+      buildControls();
     } else {
       mode = "auto";
       buildControls();
@@ -286,6 +299,7 @@
         t.className = "more-title";
         t.textContent = al.title;
         cell.appendChild(t);
+        cell.addEventListener("click", (e) => { e.stopPropagation(); openPlayPanel(al); });
         grid.appendChild(cell);
       }
       card.append(h, sub, grid);
@@ -302,11 +316,16 @@
       wrap.appendChild(holder);
       ensureYT().then((YT) => {
         if (!wrap.isConnected) return;   // slide already rotated away
+        // Start the clip at the track's live position so video and music line
+        // up (best-effort — video edits rarely match track length exactly).
+        const trackPos = Math.max(0, Math.round(
+          seekBase + (playing ? (Date.now() - seekBaseAt) / 1000 : 0)));
         const player = new YT.Player(holder, {
           videoId: s.videoId,
           host: "https://www.youtube-nocookie.com",
           playerVars: { autoplay: 1, mute: 1, controls: 0, modestbranding: 1,
-                        playsinline: 1, rel: 0, loop: 1, playlist: s.videoId },
+                        playsinline: 1, rel: 0, loop: 1, playlist: s.videoId,
+                        start: trackPos },
           events: {
             onReady: (e) => { try { e.target.mute(); e.target.playVideo(); } catch (_) {} },
             onError: () => dropVideo(s.videoId)
@@ -437,6 +456,57 @@
   }
   document.addEventListener("pointerdown", showUI);
   document.addEventListener("pointermove", showUI);
+
+  // ---- Tap-to-play panel (library grids) ----------------------------------
+  const playPanel = $("playpanel");
+  const ppTitle   = $("pp-title");
+  const ppPlay    = $("pp-play");
+  const ppQueue   = $("pp-queue");
+  const ppClose   = $("pp-close");
+  let ppAlbum     = null;
+  let ppTimer     = null;
+  function openPlayPanel(al) {
+    if (!playPanel || al.offset == null) return;
+    ppAlbum = al;
+    ppTitle.textContent = al.title + (al.subtitle ? " — " + al.subtitle : "");
+    ppPlay.textContent  = "▶ Play now";
+    ppQueue.textContent = "+ Queue";
+    ppPlay.disabled = ppQueue.disabled = false;
+    playPanel.classList.remove("hidden");
+    clearTimeout(ppTimer);
+    ppTimer = setTimeout(closePlayPanel, 8000);   // auto-dismiss if untouched
+  }
+  function closePlayPanel() {
+    if (playPanel) playPanel.classList.add("hidden");
+    ppAlbum = null;
+    clearTimeout(ppTimer);
+  }
+  async function ppAction(kind, btn) {
+    if (!ppAlbum || !zoneId) return;
+    ppPlay.disabled = ppQueue.disabled = true;
+    btn.textContent = kind === "queue" ? "Queueing…" : "Starting…";
+    try {
+      // Same request the album modal sends; grid offsets are full-library,
+      // so the filter fields stay empty (see /api/play).
+      const r = await fetch("/api/play", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          offset: ppAlbum.offset,
+          zone_or_output_id: zoneId,
+          kind,
+          filter_type: "", filter_value: "", filter_parent: ""
+        })
+      });
+      btn.textContent = r.ok ? (kind === "queue" ? "Queued ✓" : "Playing ✓") : "Failed";
+    } catch (e) {
+      btn.textContent = "Failed";
+    }
+    ppTimer = setTimeout(closePlayPanel, 1200);
+  }
+  if (ppPlay)  ppPlay.addEventListener("click",  () => ppAction("play_now", ppPlay));
+  if (ppQueue) ppQueue.addEventListener("click", () => ppAction("queue", ppQueue));
+  if (ppClose) ppClose.addEventListener("click", closePlayPanel);
 
   // ---- Boot ---------------------------------------------------------------
   checkSettings().then(() => { if (enabled) tick(); });
