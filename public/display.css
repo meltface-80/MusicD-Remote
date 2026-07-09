@@ -50,8 +50,15 @@ body {
   opacity: 0;
   transition: opacity .9s ease;
   padding: 4vh 4vw 14vh;              /* keep clear of the bottom strip */
+  /* Both layers cover the whole screen; opacity:0 does NOT stop hit-testing,
+     so the layer stacked on top (slide-b, later in the DOM) would swallow
+     every tap even while invisible/empty — leaving whichever grid sits on the
+     lower layer (slide-a) unable to receive taps (the "albums on the same
+     label aren't selectable" bug). Only the visible layer takes pointer
+     events, so taps always reach the grid that is actually on screen. */
+  pointer-events: none;
 }
-.slide.visible { opacity: 1; }
+.slide.visible { opacity: 1; pointer-events: auto; }
 
 /* Album art slide */
 .slide img.art {

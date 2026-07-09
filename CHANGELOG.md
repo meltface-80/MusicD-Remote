@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.26] — 2026-07-09
+
+### Fixed
+- **Wall display: the "More on <label>" grid covers are finally selectable — this was the real root cause.** The two crossfade layers (`slide-a`, `slide-b`) both cover the whole screen; the hidden layer only had `opacity: 0`, which does **not** stop it from receiving taps. Because `slide-b` sits on top, whenever a library grid rendered into the lower `slide-a` layer, the empty top layer silently swallowed every tap — so the artist grid (which happened to land on top) worked while the label grid (which landed underneath) did not, regardless of the album offsets being correct. The non-visible layer now has `pointer-events: none`, so taps always reach the grid actually on screen. Verified with a headless render test that taps a cell in both grids and confirms the Play now / Queue panel opens with the tapped album; the same test reproduces the failure when the fix is removed.
+
 ## [1.6.25] — 2026-07-09
 
 ### Fixed
