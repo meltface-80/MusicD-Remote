@@ -42,6 +42,7 @@
   let slideIdx      = -1;       // index into effectiveSlides()
   let mode          = "auto";   // "auto" rotates everything; a slide kind pins that screen
   let userMode      = "auto";   // the user's chosen mode — survives album changes
+  let bioCycle      = 0;        // which credited artist's bio shows next (see buildSlide)
   let frontIsA      = false;    // which layer is currently visible
   let rotateTimer   = null;
   let seekBase      = 0;        // last polled seek position (s)
@@ -208,7 +209,10 @@
       const extras = [];
       for (const u of (j.artistPhotos || []).slice(0, 4)) extras.push({ kind: "photo", url: u });
       if (j.review && j.review.text) extras.push({ kind: "review", review: j.review });
-      if (j.bio && j.bio.text) extras.push({ kind: "bio", bio: j.bio });
+      // One bio slide for however many credited artists have a bio; the card
+      // advances to the next member each time the slide comes around.
+      const bios = (j.bios && j.bios.length) ? j.bios : (j.bio && j.bio.text ? [j.bio] : []);
+      if (bios.length) { bioCycle = 0; extras.push({ kind: "bio", bios }); }
       const more = j.moreAlbums || {};
       if (more.artist && more.artist.albums && more.artist.albums.length) {
         extras.push({ kind: "more", heading: "More from " + more.artist.name,
@@ -260,7 +264,9 @@
       return { node: img, full: true };
     }
     if (s.kind === "review" || s.kind === "bio") {
-      const src = s.kind === "bio" ? s.bio : s.review;
+      // Bio cards alternate between the credited artists on successive
+      // rotations (band of two → member A this pass, member B the next).
+      const src = s.kind === "bio" ? s.bios[bioCycle++ % s.bios.length] : s.review;
       const card = document.createElement("div");
       card.className = "review-card";
       const h = document.createElement("h2");
@@ -407,9 +413,14 @@
   function startRotation() {
     stopRotation();
     // A pinned video plays through in full (it loops); everything else
-    // rotates whenever there's more than one slide to rotate.
+    // rotates whenever there's more than one slide to rotate — or a single
+    // bio card with several credited artists, which advances to the next
+    // member each tick (rebuilding it steps bioCycle).
     if (mode === "video") return;
-    if (effectiveSlides().length > 1) rotateTimer = setInterval(nextSlide, rotateSecs * 1000);
+    const eff = effectiveSlides();
+    const multi = eff.length > 1 ||
+      (eff.length === 1 && eff[0].kind === "bio" && eff[0].bios.length > 1);
+    if (multi) rotateTimer = setInterval(nextSlide, rotateSecs * 1000);
   }
   function stopRotation() {
     if (rotateTimer) { clearInterval(rotateTimer); rotateTimer = null; }

@@ -5350,6 +5350,20 @@ async function fetchDisplayVideo(artistName, trackName) {
   return video;
 }
 
+// Wikipedia bio per single artist NAME (fetchWikiArtist itself is uncached —
+// the album-extras path caches per album+credit pair, which doesn't help the
+// display's per-member lookups across albums). Nulls cached too.
+const displayArtistBioCache = new Map();
+async function fetchDisplayArtistBio(name) {
+  const key = normalize(name);
+  if (!key) return null;
+  if (displayArtistBioCache.has(key)) return displayArtistBioCache.get(key);
+  let bio = null;
+  try { bio = await fetchWikiArtist(name); } catch (e) { /* best-effort — card is skipped */ }
+  displayArtistBioCache.set(key, bio);
+  return bio;
+}
+
 // Assembled rotation content per album (photos + review + video), cached 6h.
 const displayContentCache = new Map();
 const DISPLAY_CONTENT_TTL_MS = 6 * 60 * 60 * 1000;
@@ -5384,12 +5398,21 @@ app.get("/api/display/content", async (req, res) => {
       review = { text: bios.album.description,
                  attribution: "About this album — " + (bios.album.source || "") };
     }
-    let bio = null;
-    if (bios && bios.artist && bios.artist.description) {
-      bio = { name: bios.artist.name || primaryArtist,
-              text: bios.artist.description,
-              attribution: "About " + (bios.artist.name || primaryArtist) + " — " + (bios.artist.source || "Wikipedia") };
-    }
+    // One bio per credited artist ("A / B / C" → up to 4), so the display's
+    // bio card can alternate members on successive rotations. Each lookup is
+    // cached by name; the first credit reuses fetchAlbumBios' artist result
+    // when it produced one.
+    const artistParts = artist.split(" / ").map(s => s.trim()).filter(Boolean).slice(0, 4);
+    const bioList = (await Promise.all(artistParts.map(async (name, i) => {
+      if (i === 0 && bios && bios.artist && bios.artist.description) {
+        return { name: bios.artist.name || name, text: bios.artist.description,
+                 attribution: "About " + (bios.artist.name || name) + " — " + (bios.artist.source || "Wikipedia") };
+      }
+      const w = await fetchDisplayArtistBio(name);
+      return w ? { name: w.name || name, text: w.description,
+                   attribution: "About " + (w.name || name) + " — Wikipedia" } : null;
+    }))).filter(Boolean);
+    const bio = bioList[0] || null;   // kept for any not-yet-refreshed display page
     // Library recommendations — instant, no API keys: other albums by this
     // artist from the in-memory album index, and label-mates from the labels
     // index. Both use the same tile shape the display renders as cover grids.
@@ -5418,7 +5441,7 @@ app.get("/api/display/content", async (req, res) => {
       }
     }
     const data = {
-      artistPhotos: photos, review, bio, video,
+      artistPhotos: photos, review, bio, bios: bioList, video,
       moreAlbums: {
         artist: moreArtist.length >= 3 ? { name: primaryArtist, albums: moreArtist } : null,
         label:  moreLabel

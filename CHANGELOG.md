@@ -2,6 +2,11 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.22] — 2026-07-09
+
+### Changed
+- **Wall display: the artist bio card now covers every credited artist.** For multi-artist credits (e.g. "Jeff Beck / Tony Hymas") a Wikipedia bio is fetched for each member (up to 4), and the bio card alternates to the next one on each rotation pass — pinning **Bio** cycles through the members too. Single-artist tracks behave as before.
+
 ## [1.6.21] — 2026-07-09
 
 ### Fixed
