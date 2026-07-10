@@ -171,11 +171,11 @@ rm -rf /path/to/old/roon-random-albums
 
 Your Roon pairing, listening history, and label cache are all safe — they live in the Docker volume (`roon-random-albums-data`).
 
-### MacOS installs as follows
+# MacOS installs as follows
 
 For macOS, the main requirement is to install Docker Desktop first, since Docker is not included with the operating system.
 
-# 1. Install Docker Desktop
+## 1. Install Docker Desktop
 • Download Docker Desktop for Mac from:
 https://www.docker.com/products/docker-desktop/
 (Ensure you’re installing the correct version for Mac or Intel chips)
@@ -193,7 +193,7 @@ docker compose version
 
 You should see version information for both commands.
 
-# 2. Download and build the extension
+## 2. Download and build the extension
 Open Terminal and run:
 
 ```
@@ -205,7 +205,7 @@ tar -xzf roon-random-albums-v1.6.29-docker.tar.gz
 docker build -t roon-random-albums:1.6.29 .
 ```
 
-# 3. Run the container
+## 3. Run the container
 If you use local music replace /Users/yourusername/Music with the folder containing your music library.
 
 ```
@@ -229,7 +229,7 @@ docker run -d \
   roon-random-albums:1.6.29
 ```
 
-# 4. Open the extension
+## 4. Open the extension
 In your browser, go to: (don’t forget to use your Roon server IP address)
 
 `http://<your.server.IP>:3399`
