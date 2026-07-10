@@ -284,6 +284,31 @@
   const HOME_ROWS_TTL_MS = 5 * 60 * 1000;
   let homeRowsLoadedAt = 0;
 
+  // --- Home content persistence (instant open) --------------------------
+  // The in-memory rows above live only as long as the page's JS context, so a
+  // cold PWA open (the process is torn down when the app is backgrounded) reset
+  // homeRowsLoadedAt to 0 and reloaded — and re-randomised — the entire Home
+  // screen every single time. Persist the last rendered rows to localStorage
+  // and repaint them instantly on open, then revalidate in the background
+  // (stale-while-revalidate). Covers come straight from the browser's HTTP
+  // cache (the server sends them immutable for a week), so it's a flash-free
+  // repaint, not a reload. Bumped the key suffix if the cached shape changes.
+  const HOME_CACHE_KEY = "rra-home-cache-v1";
+  function saveHomeCache(patch) {
+    try {
+      const cur = JSON.parse(localStorage.getItem(HOME_CACHE_KEY) || "{}") || {};
+      localStorage.setItem(HOME_CACHE_KEY, JSON.stringify(Object.assign(cur, patch)));
+    } catch (e) {} // localStorage optional / over quota — persistence is best-effort
+  }
+  function readHomeCache() {
+    try { return JSON.parse(localStorage.getItem(HOME_CACHE_KEY) || "null"); }
+    catch (e) { return null; } // corrupt cache — ignore and load fresh
+  }
+  // A row already carries real content (tiles or genre cards), so a background
+  // revalidation can swap fresh data in without first flashing "Loading…" over
+  // the cached content the user is already looking at.
+  const rowHasContent = (el) => !!(el && el.querySelector(".album, .home-genre-card"));
+
   // Build a Home tile that always opens full-library (filter: null) so its
   // offset resolves even when a genre filter was last active.
   function homeTile(a, extraClass) {
@@ -292,9 +317,35 @@
     return tile;
   }
 
+  // Render helper shared by the live loader and the instant-open cache repaint.
+  function renderHomeUnplayed(aotd, albums) {
+    albums = albums || [];
+    homeUnplayed.innerHTML = "";
+    if (!albums.length && !aotd) {
+      homeUnplayed.innerHTML = '<div class="home-carousel-empty">Nothing here yet — play some music and check back.</div>';
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    if (aotd) {
+      const tile = homeTile(aotd, "home-aotd");
+      const wrap = tile.querySelector(".album-art-wrap");
+      if (wrap) {
+        const badge = document.createElement("span");
+        badge.className = "aotd-badge";
+        badge.textContent = "★ Today";
+        wrap.appendChild(badge);
+      }
+      frag.appendChild(tile);
+    }
+    for (const a of albums) frag.appendChild(homeTile(a));
+    homeUnplayed.appendChild(frag);
+  }
+
   async function loadHomeUnplayed() {
     if (!homeUnplayed) return;
-    homeUnplayed.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
+    // Don't flash "Loading…" over cached tiles the user is already looking at —
+    // only when the row is genuinely empty (first ever load).
+    if (!rowHasContent(homeUnplayed)) homeUnplayed.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
     // Album of the day (completely random; hidden once played today) sits
     // first. Fetched in PARALLEL with the unplayed list — they're independent,
     // and awaiting them in sequence added a full round-trip to every reload.
@@ -307,33 +358,20 @@
     try {
       const r = await unplayedPromise;
       if (r.status === 503) {
-        homeUnplayed.innerHTML = '<div class="home-carousel-empty">Waiting for Roon Core…</div>';
+        if (!rowHasContent(homeUnplayed)) homeUnplayed.innerHTML = '<div class="home-carousel-empty">Waiting for Roon Core…</div>';
         homeRowsLoadedAt = 0;   // retry on the next Home visit
-        return;
+        return;   // keep any cached tiles + cache untouched while the index builds
       }
       const j = await r.json();
       const albums = (j && j.albums) || [];
-      homeUnplayed.innerHTML = "";
-      if (!albums.length && !aotd) {
-        homeUnplayed.innerHTML = '<div class="home-carousel-empty">Nothing here yet — play some music and check back.</div>';
-        return;
-      }
-      const frag = document.createDocumentFragment();
-      if (aotd) {
-        const tile = homeTile(aotd, "home-aotd");
-        const wrap = tile.querySelector(".album-art-wrap");
-        if (wrap) {
-          const badge = document.createElement("span");
-          badge.className = "aotd-badge";
-          badge.textContent = "★ Today";
-          wrap.appendChild(badge);
-        }
-        frag.appendChild(tile);
-      }
-      for (const a of albums) frag.appendChild(homeTile(a));
-      homeUnplayed.appendChild(frag);
+      renderHomeUnplayed(aotd, albums);
+      // Persist only a non-empty row (mirrors random/genres) so a legitimately
+      // empty response can't be cached and shown as "Nothing here yet" next
+      // open. Timestamp is per-row so a stale sibling can't ride a fresh one's
+      // freshness (see hydrateHomeFromCache).
+      if (albums.length || aotd) saveHomeCache({ unplayed: { aotd, albums }, unplayedAt: Date.now() });
     } catch (e) {
-      homeUnplayed.innerHTML = '<div class="home-carousel-empty">Couldn’t load.</div>';
+      if (!rowHasContent(homeUnplayed)) homeUnplayed.innerHTML = '<div class="home-carousel-empty">Couldn’t load.</div>';
       homeRowsLoadedAt = 0;   // retry on the next Home visit
     }
   }
@@ -341,28 +379,34 @@
   // Random-albums row (reuses /api/random-albums, no filter → full library).
   // Reloaded when the Home rows go stale (see showHome's TTL); tapping the
   // header opens the full random wall (same as the hamburger "Random albums").
+  function renderHomeRandom(albums) {
+    albums = albums || [];
+    homeRandom.innerHTML = "";
+    if (!albums.length) {
+      homeRandom.innerHTML = '<div class="home-carousel-empty">No albums.</div>';
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    for (const a of albums) frag.appendChild(homeTile(a));   // filter:null → offsets resolve
+    homeRandom.appendChild(frag);
+  }
+
   async function loadHomeRandom() {
     if (!homeRandom) return;
-    homeRandom.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
+    if (!rowHasContent(homeRandom)) homeRandom.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
     try {
       const r = await fetch("/api/random-albums?count=30");
       if (r.status === 503) {
-        homeRandom.innerHTML = '<div class="home-carousel-empty">Waiting for Roon Core…</div>';
+        if (!rowHasContent(homeRandom)) homeRandom.innerHTML = '<div class="home-carousel-empty">Waiting for Roon Core…</div>';
         homeRowsLoadedAt = 0;   // retry on the next Home visit
-        return;
+        return;   // keep any cached tiles while the index builds
       }
       const j = await r.json();
       const albums = (j && j.albums) || [];
-      homeRandom.innerHTML = "";
-      if (!albums.length) {
-        homeRandom.innerHTML = '<div class="home-carousel-empty">No albums.</div>';
-        return;
-      }
-      const frag = document.createDocumentFragment();
-      for (const a of albums) frag.appendChild(homeTile(a));   // filter:null → offsets resolve
-      homeRandom.appendChild(frag);
+      renderHomeRandom(albums);
+      if (albums.length) saveHomeCache({ random: albums, randomAt: Date.now() });
     } catch (e) {
-      homeRandom.innerHTML = '<div class="home-carousel-empty">Couldn’t load.</div>';
+      if (!rowHasContent(homeRandom)) homeRandom.innerHTML = '<div class="home-carousel-empty">Couldn’t load.</div>';
       homeRowsLoadedAt = 0;   // retry on the next Home visit
     }
   }
@@ -371,33 +415,51 @@
   // picks deterministically). Retried each Home visit until it populates (the
   // labels scan runs in the background), then left alone. Tapping the header
   // opens the full label view.
+  // Returns true when it painted a real row (a qualifying label with albums).
+  function renderHomeLotw(label, albums) {
+    const titleEl = document.getElementById("home-lotw-title");
+    albums = albums || [];
+    const sec = homeLotw.closest(".home-section");
+    if (!label || !albums.length) {
+      // No qualifying label yet (labels still scanning / library too small):
+      // hide the whole section rather than show an empty row.
+      if (sec) sec.classList.add("hidden");
+      return false;
+    }
+    if (titleEl) titleEl.textContent = "Label of the week: " + label;
+    homeLotw.dataset.label = label;
+    if (sec) sec.classList.remove("hidden");   // un-hide if a prior attempt hid it
+    homeLotw.innerHTML = "";
+    const frag = document.createDocumentFragment();
+    for (const a of albums) frag.appendChild(homeTile(a));   // full-hierarchy offsets → filter:null
+    homeLotw.appendChild(frag);
+    return true;
+  }
+
   async function loadHomeLabelOfWeek() {
     if (!homeLotw) return;
-    const titleEl = document.getElementById("home-lotw-title");
-    homeLotw.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
+    if (!rowHasContent(homeLotw)) homeLotw.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
     try {
       const r = await fetch("/api/home/label-of-the-week");
       const j = await r.json();
       const albums = (j && j.albums) || [];
-      if (!j || !j.label || !albums.length) {
-        // No qualifying label yet (labels still scanning / library too small):
-        // hide the whole section rather than show an empty row.
+      if (j && j.label && albums.length) {
+        renderHomeLotw(j.label, albums);
+        homeLotwLoaded = true;   // populated — stop retrying on future visits
+        saveHomeCache({ lotw: { label: j.label, albums } });
+      } else if (!rowHasContent(homeLotw)) {
+        // Empty 200 (labels index still building after a restart returns
+        // {label:null} — not a 503). Only hide the section when nothing is
+        // cached; otherwise keep the hydrated row rather than blanking it.
+        renderHomeLotw(null, []);
+      }
+    } catch (e) {
+      // Transient failure: keep any cached row rather than blanking it. Only
+      // hide the section when there's nothing cached to fall back on.
+      if (!rowHasContent(homeLotw)) {
         const sec = homeLotw.closest(".home-section");
         if (sec) sec.classList.add("hidden");
-        return;
       }
-      if (titleEl) titleEl.textContent = "Label of the week: " + j.label;
-      homeLotw.dataset.label = j.label;
-      const sec = homeLotw.closest(".home-section");
-      if (sec) sec.classList.remove("hidden");   // un-hide if a prior attempt hid it
-      homeLotw.innerHTML = "";
-      const frag = document.createDocumentFragment();
-      for (const a of albums) frag.appendChild(homeTile(a));   // full-hierarchy offsets → filter:null
-      homeLotw.appendChild(frag);
-      homeLotwLoaded = true;   // populated — stop retrying on future visits
-    } catch (e) {
-      const sec = homeLotw.closest(".home-section");
-      if (sec) sec.classList.add("hidden");
     }
   }
 
@@ -481,17 +543,50 @@
     return items[items.length - 1];
   }
 
+  // Render the genre buttons from card descriptors ({label, genre} or
+  // {label, group, parent}). Shared by the live loader and the cache repaint;
+  // the descriptors are plain data, so they persist and rebuild identically.
+  function renderHomeGenres(cards) {
+    cards = cards || [];
+    homeGenres.innerHTML = "";
+    if (!cards.length) {
+      homeGenres.innerHTML = '<div class="home-carousel-empty">No genres found.</div>';
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    for (const c of cards) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "home-genre-card";
+      card.textContent = c.label;
+      card.addEventListener("click", () => {
+        if (!window.__applyFilter) return;
+        if (c.group) {
+          // Pick a random sub-genre from the group; the breadcrumb keeps the
+          // group label (e.g. "Rock/Metal"). Refreshing the grid reshuffles
+          // that sub-genre; re-tapping the button picks a new one.
+          const sub = pickWeightedSub(c.group);
+          window.__applyFilter({ type: "genre", value: sub.title, parent: c.parent, label: c.label });
+        } else {
+          window.__applyFilter({ type: "genre", value: c.genre });
+        }
+      });
+      frag.appendChild(card);
+    }
+    homeGenres.appendChild(frag);
+  }
+
   async function loadHomeGenres() {
     if (!homeGenres) return;
-    homeGenres.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
+    if (!rowHasContent(homeGenres)) homeGenres.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
     try {
       const [genresRes, groupsRes] = await Promise.all([
         fetch("/api/filters/genres").catch(() => null),
         fetch("/api/home/genre-groups").catch(() => null)
       ]);
       if ((genresRes && genresRes.status === 503) || (groupsRes && groupsRes.status === 503)) {
-        homeGenres.innerHTML = '<div class="home-carousel-empty">Waiting for Roon Core…</div>';
-        return;
+        if (!rowHasContent(homeGenres)) homeGenres.innerHTML = '<div class="home-carousel-empty">Waiting for Roon Core…</div>';
+        return;   // keep any cached cards while the index builds
       }
       const genresJ = genresRes ? await genresRes.json().catch(() => ({})) : {};
       const groupsJ = groupsRes ? await groupsRes.json().catch(() => ({})) : {};
@@ -524,36 +619,49 @@
       if (cards.length > MAX_CARDS) cards.length = MAX_CARDS;
       if (cards.length % 2 === 1) cards.length -= 1;
 
-      homeGenres.innerHTML = "";
-      if (!cards.length) {
-        homeGenres.innerHTML = '<div class="home-carousel-empty">No genres found.</div>';
-        return;
+      if (cards.length) {
+        renderHomeGenres(cards);
+        homeSectionsLoaded = true;   // populated — stop retrying on future visits
+        saveHomeCache({ genres: cards });
+      } else if (!rowHasContent(homeGenres)) {
+        // Empty 200 (index still building after a restart) — keep the hydrated
+        // cards if we have them; only show "No genres found." when nothing is
+        // cached, rather than blanking a good cached row.
+        renderHomeGenres([]);
       }
-      homeSectionsLoaded = true;   // populated — stop retrying on future visits
-      const frag = document.createDocumentFragment();
-      for (const c of cards) {
-        const card = document.createElement("button");
-        card.type = "button";
-        card.className = "home-genre-card";
-        card.textContent = c.label;
-        card.addEventListener("click", () => {
-          if (!window.__applyFilter) return;
-          if (c.group) {
-            // Pick a random sub-genre from the group; the breadcrumb keeps the
-            // group label (e.g. "Rock/Metal"). Refreshing the grid reshuffles
-            // that sub-genre; re-tapping the button picks a new one.
-            const sub = pickWeightedSub(c.group);
-            window.__applyFilter({ type: "genre", value: sub.title, parent: c.parent, label: c.label });
-          } else {
-            window.__applyFilter({ type: "genre", value: c.genre });
-          }
-        });
-        frag.appendChild(card);
-      }
-      homeGenres.appendChild(frag);
     } catch (e) {
-      homeGenres.innerHTML = '<div class="home-carousel-empty">Couldn’t load genres.</div>';
+      if (!rowHasContent(homeGenres)) homeGenres.innerHTML = '<div class="home-carousel-empty">Couldn’t load genres.</div>';
     }
+  }
+
+  // Instant open: repaint the last persisted Home rows immediately, before we've
+  // even reconnected to Roon. Returns true if it painted the main content, so
+  // the boot path can reveal Home right away instead of a blank "Connecting…".
+  // The live loaders (called by showHome once paired) then revalidate silently,
+  // swapping fresh data in without a "Loading…" flash. Seeding homeRowsLoadedAt
+  // lets the existing 5-minute TTL skip the unplayed/random refetch entirely on
+  // a quick reopen — but only when BOTH rows are recent: it's seeded from the
+  // OLDER of the two per-row timestamps, so a stale sibling (e.g. unplayed kept
+  // an old cache while random refreshed) forces a silent revalidation instead
+  // of riding the fresh row's freshness.
+  function hydrateHomeFromCache() {
+    const c = readHomeCache();
+    if (!c) return false;
+    let painted = false;
+    if (c.unplayed && homeUnplayed) { renderHomeUnplayed(c.unplayed.aotd, c.unplayed.albums); painted = rowHasContent(homeUnplayed) || painted; }
+    if (c.random   && homeRandom)   { renderHomeRandom(c.random);                              painted = rowHasContent(homeRandom)   || painted; }
+    if (c.lotw     && homeLotw)     { renderHomeLotw(c.lotw.label, c.lotw.albums); }
+    if (c.genres   && homeGenres)   { renderHomeGenres(c.genres); }
+    if (!painted) return false;
+    if (typeof c.unplayedAt === "number" && typeof c.randomAt === "number") {
+      homeRowsLoadedAt = Math.min(c.unplayedAt, c.randomAt);   // honour the TTL across reopens
+    }
+    // Reveal Home so the cached content is actually on screen while we reconnect.
+    if (homeView)     homeView.classList.remove("hidden");
+    if (homeSections) homeSections.classList.remove("hidden");
+    grid.classList.add("hidden");
+    setTopbarNav(false, false, true);   // Home chrome: search box, no Back/Refresh
+    return true;
   }
 
   // ----- Toast / banner -----
@@ -2509,7 +2617,12 @@
   window.__showToast = (msg, kind) => showToast(msg, kind);
 
   async function bootstrap() {
-    setBanner("Connecting to Roon…");
+    // Instant open: paint the last Home from cache before we've reconnected, so
+    // reopening the PWA shows content immediately instead of reloading the whole
+    // screen. Skipped when a filtered wall is being restored (activeFilter), and
+    // when there's nothing cached (first-ever launch) we fall back to the banner.
+    const painted = !activeFilter && hydrateHomeFromCache();
+    if (!painted) setBanner("Connecting to Roon…");
     for (let i = 0; i < 30; i++) {
       try {
         const r = await fetch("/api/status");

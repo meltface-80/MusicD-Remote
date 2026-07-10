@@ -2,6 +2,15 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.28] — 2026-07-10
+
+### Changed
+- **Home screen opens instantly — it no longer reloads and re-randomises everything each time you open the PWA.** The in-memory freshness state was destroyed whenever the app was backgrounded, so every cold open rebuilt all four Home rows (Not played / Random / Label of the week / Browse by genre) from scratch behind "Loading…" placeholders. The last rendered rows are now persisted to `localStorage` and repainted the instant the app opens — before it has even reconnected to Roon — then revalidated quietly in the background with no "Loading…" flash. A reopen within 5 minutes does no refetching at all. Covers come straight from the browser's week-long HTTP cache, so it's a flash-free repaint, not a reload.
+- Root cause of the sluggish feel was confirmed (via a performance + code review) to be **client-side**, not the backend language: the server work is ~90–95% waiting on sequential Roon Core round-trips, which no rewrite (Rust/C++/.NET) would speed up. This change removes the most visible repeated cost — the full Home rebuild on every open.
+
+### Fixed
+- Instant-open review fixes: an empty `200` response while the index is still building right after a restart no longer blanks the hydrated Label-of-the-week / genre rows (the cached rows are kept until real data arrives); the unplayed and random rows now carry independent freshness timestamps so a stale row can't ride a fresh sibling's freshness; and a genuinely empty unplayed result is no longer persisted as cache.
+
 ## [1.6.27] — 2026-07-09
 
 ### Changed
