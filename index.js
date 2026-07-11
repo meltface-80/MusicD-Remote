@@ -2932,7 +2932,7 @@ const INDEX_MAX_AGE_MS = 60 * 60 * 1000;   // rebuild if older than this (safety
 const INDEX_CHECK_MS   = 5 * 60 * 1000;    // how often to check for library edits
 
 const albumIndex = {
-  albums:   [],     // [{ offset, title, subtitle, image_key, nTitle, nArtist, tTitle[], tArtist[], jTitle, jArtist }]
+  albums:   [],     // [{ offset, title, subtitle, image_key, nTitle, nArtist, tTitle[], tArtist[], jTitle, jArtist, artistNames[] }]
   count:    0,
   builtAt:  0,
   progress: 0,      // 0..1 while building
@@ -2953,8 +2953,25 @@ function indexRecord(item, offset) {
     tTitle:  nTitle  ? nTitle.split(" ")  : [],
     tArtist: nArtist ? nArtist.split(" ") : [],
     jTitle:  nTitle.replace(/ /g, ""),
-    jArtist: nArtist.replace(/ /g, "")
+    jArtist: nArtist.replace(/ /g, ""),
+    // Precomputed per-artist names for searchArtists: splitting on the
+    // multi-artist separators and normalizing each name is done once here at
+    // index-build time rather than on every keystroke. Each entry is
+    // { name, n } where `name` is the display form and `n` is normalized.
+    artistNames: splitArtistNames(subtitle)
   };
+}
+
+// Split a Roon subtitle into its individual artist names on the common
+// multi-artist separators. Shared by indexRecord (precompute) so the same
+// separator set is used everywhere. Returns [{ name, n }].
+function splitArtistNames(subtitle) {
+  if (!subtitle) return [];
+  return subtitle
+    .split(/ \/ | feat\.? | featuring | ft\.? /i)
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(name => ({ name, n: normalize(name) }));
 }
 
 // Walk the whole albums hierarchy once and cache a record per album.
@@ -3167,22 +3184,21 @@ function searchLabels(q) {
 
 function searchArtists(q) {
   if (!q || !albumIndex.albums.length) return [];
-  const seen = new Map(); // normalised name → { name, count }
+  const seen = new Map(); // normalised name → { name, n, count }
   for (const al of albumIndex.albums) {
-    if (!al.subtitle) continue;
-    // Split on common multi-artist separators so each name is matched individually.
-    const names = al.subtitle.split(/ \/ | feat\.? | featuring | ft\.? /i).map(n => n.trim()).filter(Boolean);
-    for (const name of names) {
-      const n = normalize(name);
+    // artistNames is precomputed at index-build time (split + normalized once).
+    const names = al.artistNames;
+    if (!names || !names.length) continue;
+    for (const { name, n } of names) {
       if (!n.includes(q)) continue;
       if (seen.has(n)) seen.get(n).count++;
-      else seen.set(n, { name, count: 1 });
+      else seen.set(n, { name, n, count: 1 });
     }
   }
   return [...seen.values()]
     .sort((a, b) => {
-      const aq = normalize(a.name).startsWith(q) ? 0 : 1;
-      const bq = normalize(b.name).startsWith(q) ? 0 : 1;
+      const aq = a.n.startsWith(q) ? 0 : 1;
+      const bq = b.n.startsWith(q) ? 0 : 1;
       return aq - bq || b.count - a.count;
     })
     .slice(0, 8);

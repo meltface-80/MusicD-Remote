@@ -4163,7 +4163,40 @@
   // without the user ever opening Settings.
   loadTidalStatus();
 
-  const open = () => { loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); loadDisplaySettings(); loadLabelFolderDepth(); loadQobuzStatus(); loadTidalStatus(); overlay.classList.remove("hidden"); };
+  // Settings is a two-level view: a category home list and one pane per
+  // category. Only one .settings-view is visible at a time. The controls and
+  // their IDs are unchanged — they just live inside panes now — so all the
+  // load*/save* wiring above still resolves against the same elements.
+  const sheet = overlay.querySelector(".settings-sheet");
+  const views = sheet ? sheet.querySelectorAll(".settings-view") : [];
+  const showView = (name) => {
+    let matched = false;
+    views.forEach(v => {
+      const isHome = v.getAttribute("data-view") === "home";
+      const key    = isHome ? "home" : v.getAttribute("data-pane");
+      const on     = key === name;
+      v.classList.toggle("hidden", !on);
+      if (on) matched = true;
+    });
+    // Fall back to home if an unknown pane was requested.
+    if (!matched) views.forEach(v => v.classList.toggle("hidden", v.getAttribute("data-view") !== "home"));
+    // Each level starts scrolled to the top, like a pushed page.
+    if (sheet) sheet.scrollTop = 0;
+  };
+  const atHome = () => {
+    const home = sheet && sheet.querySelector('.settings-view[data-view="home"]');
+    return !home || !home.classList.contains("hidden");
+  };
+
+  if (sheet) {
+    sheet.addEventListener("click", (e) => {
+      const nav = e.target.closest(".settings-nav-item");
+      if (nav) { showView(nav.getAttribute("data-pane")); return; }
+      if (e.target.closest("[data-settings-back]")) { showView("home"); return; }
+    });
+  }
+
+  const open = () => { showView("home"); loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); loadDisplaySettings(); loadLabelFolderDepth(); loadQobuzStatus(); loadTidalStatus(); overlay.classList.remove("hidden"); };
   const close = () => {
     overlay.classList.add("hidden");
     // Closing Settings ends the client side of any pending Tidal device flow
@@ -4176,7 +4209,10 @@
     if (e.target.hasAttribute("data-settings-close")) close();
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !overlay.classList.contains("hidden")) close();
+    if (e.key !== "Escape" || overlay.classList.contains("hidden")) return;
+    // Escape steps back one level: pane → home, home → closed.
+    if (atHome()) close();
+    else showView("home");
   });
 })();
 
