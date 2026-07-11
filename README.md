@@ -6,7 +6,7 @@
 
 # MusicD Companion for Roon - v1.6.30
 
-MusicD Companion for Roon is a feature-rich music discovery companion for Roon, helping you rediscover your library through album browsing in a random order, with rich metadata, beautiful wall displays and seamless playback. 
+MusicD Companion for Roon is a feature-rich music discovery companion for Roon, helping you rediscover your library through album browsing in a random order, with rich metadata, beautiful wall displays and seamless playback with Roon Server at the heart.
 
 ---
 
