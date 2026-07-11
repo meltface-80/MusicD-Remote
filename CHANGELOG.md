@@ -1,6 +1,12 @@
 # Changelog
 
-All notable changes to Roon Random Albums are documented here.
+All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
+
+## [1.6.31] — 2026-07-11
+
+### Changed
+- **The extension is now called MusicD Remote.** Display name in Roon ("MusicD Remote v1.6 (Build 31)"), the web app menu, and the Settings version line all renamed. The Roon `extension_id` is deliberately unchanged — no re-authorization needed; the zone/pairing carries over untouched.
+- **Update checks now survive a repository rename.** GitHub answers a renamed repo's old API URLs with a redirect, which the updater previously treated as "no update available" — silently stranding every installed copy. The update check now follows redirects (with the auth token withheld from any non-GitHub host). Install this version BEFORE the repository is renamed and the transition is seamless.
 
 ## [1.6.30] — 2026-07-11
 
