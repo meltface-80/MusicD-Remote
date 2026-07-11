@@ -2,6 +2,16 @@
 
 All notable changes to Roon Random Albums are documented here.
 
+## [1.6.30] — 2026-07-11
+
+### Fixed
+- **FanArt.tv label logos now self-heal when the API key is added or changed.** Previously, every label checked while the key was missing or broken got a permanent "no logo" verdict that survived restarts and even Force rescan — so a key added after the first scans could never produce logos (the exact cache-poisoning found on a live install: 1,040 blocked labels, 468 real FanArt logos underneath). Saving the key now purges those cached misses (real logos are kept), refetches immediately, and reports how many verdicts it cleared. The FanArt pass also writes its progress to the labels scan log like the Discogs pass ("fetching logos for N labels" / "done: X/N…"), so it is diagnosable without `RRA_DEBUG`.
+- **Wall-display artist bios no longer show the wrong artist.** The bio card is now sourced and validated in strict order:
+  1. **Qobuz, then Tidal** — when the playing album is found in the connected service's catalogue (album title AND artist must both match), the bio comes straight from that service's own artist page, pinning identity exactly. Tidal's `[wimpLink]` markup is stripped.
+  2. **Wikipedia, hardened** — the article title must *be* the artist (a single "(band)"/"(musician)" qualifier allowed), disambiguation pages are rejected outright, and the article must additionally be connected to the playing album (full-text cross-check covering discography sections). No confident match → no bio card, rather than a guess: previously any music-flavoured search result could win, so a generic name like "Camel" could surface a different musician's biography.
+  - Every credited artist on a multi-artist album goes through the same validated chain, attribution names the real source (Qobuz/Tidal/Wikipedia), and lookups are cached per artist+album.
+- Code-review findings fixed pre-commit: bare slashes in artist names (AC/DC) are no longer treated as multi-artist separators; Qobuz search items that carry `performer` instead of `artist` now match; a redundant entity-decode was removed.
+
 ## [1.6.29] — 2026-07-10
 
 ### Changed

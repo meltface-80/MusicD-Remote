@@ -1188,6 +1188,21 @@ function setLabelLogo(groupKey, logoUrl) {
   labelLogoCache.set(groupKey, logoUrl);
   if (labelsDb) stmtInsertLogo.run(groupKey, logoUrl);
 }
+// Remove every cached "no logo found" verdict (NULL rows) so FanArt can be
+// retried — used when the FanArt key is (re)saved, because misses recorded
+// while the key was absent/broken were kept forever, permanently blocking
+// FanArt for those labels. Real logos are untouched.
+function purgeFanartLogoMisses() {
+  let cleared = 0;
+  for (const [k, v] of labelLogoCache) {
+    if (v === null || v === undefined) { labelLogoCache.delete(k); cleared++; }
+  }
+  if (labelsDb) {
+    try { labelsDb.prepare("DELETE FROM label_logos WHERE logo_url IS NULL").run(); }
+    catch (e) { if (DEBUG) console.error("[labels:fanart] purge:", e.message); }
+  }
+  return cleared;
+}
 // Persist a release year for an album key (4-digit). Powers the Decade filter.
 function setAlbumYear(key, year) {
   const y = String(year || "").slice(0, 4);
@@ -2140,8 +2155,8 @@ setInterval(() => {
 // Fetch label logo from Fan Art TV for a single label group key.
 // Results (including "no logo found" = null) are persisted so we don't re-query.
 async function fetchFanArtLogo(groupKey, mbid) {
-  if (!mbid || !fanartKey) return;
-  if (labelLogoCache.has(groupKey)) return; // already tried
+  if (!mbid || !fanartKey) return "skip";
+  if (labelLogoCache.has(groupKey)) return "skip"; // already tried
   const url = `https://webservice.fanart.tv/v3/music/labels/${encodeURIComponent(mbid)}?api_key=${fanartKey}`;
   try {
     const json = await httpJson(url);
@@ -2154,14 +2169,17 @@ async function fetchFanArtLogo(groupKey, mbid) {
     const entry = labelsIndex.map.get(canonKey);
     if (entry) entry.logo_url = logoUrl;
     if (DEBUG) console.log("[labels:fanart]", groupKey, "→", logoUrl || "(no logo)");
+    return logoUrl ? "found" : "none";
   } catch (e) {
     // Don't cache on network error — retry next restart. 404 = no logo, cache null.
+    if (DEBUG) console.error("[labels:fanart]", groupKey, e.message);
     if (e.message && e.message.includes("404")) {
       const mergeTarget = labelMerges.get(groupKey);
       const canonKey = mergeTarget ? mergeTarget.targetKey : groupKey;
       setLabelLogo(canonKey, null);
+      return "none";
     }
-    if (DEBUG) console.error("[labels:fanart]", groupKey, e.message);
+    return "error";
   }
 }
 
@@ -2177,12 +2195,24 @@ async function kickFanArtFetches() {
   }
   if (!pending.length) return;
   if (DEBUG) console.log("[labels:fanart] fetching logos for", pending.length, "labels");
+  appendLabelsLog("[labels:fanart] fetching logos for " + pending.length + " labels");
+  let found = 0, none = 0, errors = 0;
   const BATCH = 5;
   for (let i = 0; i < pending.length; i += BATCH) {
-    await Promise.allSettled(
+    const results = await Promise.allSettled(
       pending.slice(i, i + BATCH).map(({ groupKey, mbid }) => fetchFanArtLogo(groupKey, mbid))
     );
+    for (const r of results) {
+      if (r.status !== "fulfilled" || r.value === "error") errors++;
+      else if (r.value === "found") found++;
+      else if (r.value === "none")  none++;
+    }
   }
+  const msg = "[labels:fanart] done: " + found + "/" + pending.length + " logos found" +
+    (none   ? ", " + none   + " without fanart artwork" : "") +
+    (errors ? ", " + errors + " errors (will retry)"    : "");
+  if (DEBUG) console.log(msg);
+  appendLabelsLog(msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -2656,16 +2686,57 @@ async function fetchWikiAlbum(title, artist) {
   }
   return null;
 }
-async function fetchWikiArtist(name) {
+// Strip ONE trailing parenthetical qualifier from a Wikipedia title:
+// "Camel (band)" → "Camel". Lets the title-identity check below accept
+// music qualifiers while still demanding the article IS the artist.
+function wikiTitleBase(t) {
+  return String(t || "").replace(/\s*\([^()]*\)\s*$/, "").trim();
+}
+// Loose-but-safe name identity: normalized equality, tolerating a
+// leading "the" on either side ("Verve" ↔ "The Verve").
+function namesEqualLoose(a, b) {
+  const strip = (x) => normalize(x || "").replace(/^the\s+/, "");
+  const na = strip(a), nb = strip(b);
+  return !!na && na === nb;
+}
+// Full-text confirmation that the candidate artist article is connected to
+// the album being played: Wikipedia's search index covers whole articles
+// (including discography sections), so searching `"artist" "album"` and
+// requiring the candidate among the hits confirms THIS article's subject
+// made THAT album. Errors count as NOT confirmed — for bios, wrong is
+// worse than missing.
+async function wikiArticleMentionsAlbum(pageTitle, artist, albumTitle) {
+  try {
+    const hits = await wikiSearch(`"${artist}" "${albumTitle}"`, 10);
+    const want = normalize(pageTitle);
+    return hits.some(h => normalize(h.title) === want);
+  } catch (e) {
+    if (DEBUG) console.error("[wiki:artist] album cross-check:", e.message);
+    return false;
+  }
+}
+
+async function fetchWikiArtist(name, albumTitle) {
   if (!name) return null;
-  const primary = name.split(",")[0].trim();
+  // Split multi-artist credits on Roon's spaced " / " separator (and commas).
+  // The slash must be spaced: bare slashes are part of names (AC/DC).
+  const primary = name.split(/\s+\/\s+|,/)[0].trim();
   const candidates = await wikiSearch(`${primary} band musician singer`);
   for (const c of candidates) {
     if (/\b(album|song|tour|discography)\b/i.test(c.title)) continue;
+    // The article title must BE the artist (one parenthetical qualifier like
+    // "(band)"/"(musician)" allowed) — near-name matches and disambiguation
+    // pages are rejected outright rather than risking someone else's bio.
+    if (/\(disambiguation\)/i.test(c.title)) continue;
+    if (!namesEqualLoose(wikiTitleBase(c.title), primary)) continue;
     const ext = await wikiExtract(c.title);
     if (!ext) continue;
+    if (/\bmay (also )?refer to\b/i.test(ext.description.slice(0, 200))) continue; // disambiguation body
     const head = ext.description.slice(0, 800);
     if (!/\b(band|musician|singer|songwriter|group|musical|guitarist|drummer|pianist|composer|rapper|vocalist|recording artist|duo|trio|quartet|ensemble|orchestra)\b/i.test(head)) continue;
+    // When the caller knows which album is playing, the article must also be
+    // connected to that album — the strongest identity signal available.
+    if (albumTitle && !(await wikiArticleMentionsAlbum(c.title, primary, albumTitle))) continue;
     return { ...ext, name: ext.title, source: "Wikipedia" };
   }
   return null;
@@ -2679,7 +2750,7 @@ async function fetchWikipedia(title, artist) {
   try {
     const [album, artistInfo] = await Promise.all([
       fetchWikiAlbum(title, artist).catch(() => null),
-      artist ? fetchWikiArtist(artist).catch(() => null) : Promise.resolve(null)
+      artist ? fetchWikiArtist(artist, title).catch(() => null) : Promise.resolve(null)
     ]);
     if (album || artistInfo) result = { album, artist: artistInfo };
   } catch (e) {
@@ -4274,8 +4345,18 @@ app.post("/api/settings/fanart-key", (req, res) => {
   if (!key) return res.status(400).json({ ok: false, error: "key is empty" });
   fanartKey = key;
   const saved = savePersistedSettings({ fanartKey: key });
-  console.log("[settings] fanart key set (" + key.length + " chars), persisted=" + saved);
-  res.json({ ok: true, saved });
+  // A key saved AFTER the first scans used to be dead on arrival: every label
+  // already carried a cached "no logo" verdict (recorded while the key was
+  // absent or broken) that was kept forever — even across Force rescan.
+  // Purge those misses and retry immediately; real logos are kept.
+  const purged = purgeFanartLogoMisses();
+  console.log("[settings] fanart key set (" + key.length + " chars), persisted=" + saved +
+              ", cleared " + purged + " cached no-logo verdicts");
+  appendLabelsLog("[labels:fanart] key saved — cleared " + purged + " cached misses, refetching");
+  kickFanArtFetches().then(() => kickDiscogsLogoFetches()).catch(e => {
+    if (DEBUG) console.error("[labels:fanart] post-save kick:", e.message);
+  });
+  res.json({ ok: true, saved, cleared: purged });
 });
 
 // Label-folder depth — for libraries organised in label folders. 0 = off (use
@@ -5420,17 +5501,79 @@ async function fetchDisplayVideo(artistName, trackName) {
   return video;
 }
 
-// Wikipedia bio per single artist NAME (fetchWikiArtist itself is uncached —
-// the album-extras path caches per album+credit pair, which doesn't help the
-// display's per-member lookups across albums). Nulls cached too.
+// Display artist bios (Qobuz/Tidal album-matched first, then Wikipedia),
+// cached per artist NAME + ALBUM — the album participates in matching, so
+// the same artist under a different album is a distinct lookup. Nulls
+// cached too (a confident "no bio" is a result).
 const displayArtistBioCache = new Map();
 const DISPLAY_BIO_CACHE_MAX = 500;
-async function fetchDisplayArtistBio(name) {
-  const key = normalize(name);
-  if (!key) return null;
+// Album titles vary by edition suffix across services ("X" vs "X (Remaster)")
+// — accept exact normalized equality or one being a word-prefix of the other.
+function albumTitleMatches(candidate, wanted) {
+  const c = normalize(candidate || ""), w = normalize(wanted || "");
+  if (!c || !w) return false;
+  return c === w || c.startsWith(w + " ") || w.startsWith(c + " ");
+}
+
+// Artist bio straight from the streaming service that carries the playing
+// album. When the album exists on Qobuz/Tidal their catalogues already hold
+// an editorial artist bio, and matching BY THE ALBUM pins the artist
+// identity exactly — no name disambiguation involved. Qobuz first, Tidal
+// second; each step is best-effort and falls through on any failure.
+async function fetchServiceArtistBio(name, albumTitle) {
+  const nameN = normalize(name || "");
+  if (!nameN || !albumTitle) return null;
+  if (qobuzToken || (qobuzUsername && qobuzPasswordMd5)) {
+    try {
+      const r = await qobuzWithToken(t => qobuz.searchCatalog(t, name + " " + albumTitle, 8, 0));
+      const items = (r && r.albums && r.albums.items) || [];
+      // Same artist-field fallback as normalizeQobuzAlbum: search items may
+      // carry `performer` instead of `artist`.
+      const qArtistOf = al => (al && al.artist) || (al && al.performer) || null;
+      const hit = items.find(al => {
+        const ar = qArtistOf(al);
+        return ar && namesEqualLoose(ar.name, name) && albumTitleMatches(al && al.title, albumTitle);
+      });
+      const hitArtist = qArtistOf(hit);
+      if (hitArtist && hitArtist.id != null) {
+        const a = await qobuzWithToken(t => qobuz.getArtist(t, String(hitArtist.id), 1, 0));
+        const text = a && a.biography ? stripHtml(String(a.biography)).trim() : "";
+        if (text) return { name: (a.artist && a.artist.name) || hitArtist.name || name, description: text, source: "Qobuz" };
+      }
+    } catch (e) { if (DEBUG) console.error("[display:bio:qobuz]", e.message); }
+  }
+  if (tidalRefreshToken) {
+    try {
+      const r = await tidalWithToken((t, cc) => tidal.searchAlbums(t, cc, name + " " + albumTitle, 8, 0));
+      const items = (r && r.items) || [];
+      const artistOf = al => (al && al.artist) || (al && Array.isArray(al.artists) && al.artists[0]) || null;
+      const hit = items.find(al => {
+        const ar = artistOf(al);
+        return ar && namesEqualLoose(ar.name, name) && albumTitleMatches(al && al.title, albumTitle);
+      });
+      const ar = artistOf(hit);
+      if (ar && ar.id != null) {
+        const raw = await tidalWithToken((t, cc) => tidal.getArtistBio(t, cc, String(ar.id)));
+        const text = raw ? stripHtml(String(raw)).trim() : "";
+        if (text) return { name: ar.name || name, description: text, source: "Tidal" };
+      }
+    } catch (e) { if (DEBUG) console.error("[display:bio:tidal]", e.message); }
+  }
+  return null;
+}
+
+async function fetchDisplayArtistBio(name, albumTitle) {
+  if (!normalize(name || "")) return null;
+  // Keyed by name + album: the album participates in matching (service album
+  // match, Wikipedia cross-check), so the same artist under a different
+  // album is a different lookup.
+  const key = normalize(name) + "||" + normalize(albumTitle || "");
   if (displayArtistBioCache.has(key)) return displayArtistBioCache.get(key);
   let bio = null;
-  try { bio = await fetchWikiArtist(name); } catch (e) { /* best-effort — card is skipped */ }
+  try {
+    bio = await fetchServiceArtistBio(name, albumTitle);
+    if (!bio) bio = await fetchWikiArtist(name, albumTitle);
+  } catch (e) { /* best-effort — card is skipped */ }
   displayArtistBioCache.set(key, bio);
   // Bounded like displayContentCache: on a streaming-heavy, never-restarted box
   // the set of distinct artist/member names played would otherwise grow without
@@ -5477,17 +5620,16 @@ app.get("/api/display/content", async (req, res) => {
     }
     // One bio per credited artist ("A / B / C" → up to 4), so the display's
     // bio card can alternate members on successive rotations. Each lookup is
-    // cached by name; the first credit reuses fetchAlbumBios' artist result
-    // when it produced one.
+    // cached by name+album (fetchDisplayArtistBio).
     const artistParts = artist.split(" / ").map(s => s.trim()).filter(Boolean).slice(0, 4);
-    const bioList = (await Promise.all(artistParts.map(async (name, i) => {
-      if (i === 0 && bios && bios.artist && bios.artist.description) {
-        return { name: bios.artist.name || name, text: bios.artist.description,
-                 attribution: "About " + (bios.artist.name || name) + " — " + (bios.artist.source || "Wikipedia") };
-      }
-      const w = await fetchDisplayArtistBio(name);
+    // Every credit goes through the validated chain (Qobuz/Tidal album-matched
+    // bio first, then album-cross-checked Wikipedia) — the old shortcut that
+    // reused fetchAlbumBios' Wikipedia artist result bypassed the streaming
+    // sources. A credit with no confident match shows no bio card at all.
+    const bioList = (await Promise.all(artistParts.map(async (name) => {
+      const w = await fetchDisplayArtistBio(name, album);
       return w ? { name: w.name || name, text: w.description,
-                   attribution: "About " + (w.name || name) + " — Wikipedia" } : null;
+                   attribution: "About " + (w.name || name) + " — " + (w.source || "Wikipedia") } : null;
     }))).filter(Boolean);
     const bio = bioList[0] || null;   // kept for any not-yet-refreshed display page
     // Library recommendations — instant, no API keys: other albums by this
