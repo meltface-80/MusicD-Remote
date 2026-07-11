@@ -4,7 +4,7 @@
 
 </div>
 
-# Random Albums + Labels — a Roon extension v1.6.30
+# MusicD Companion for Roon - v1.6.30
 
 A web UI that shows a screenful of random albums from your Roon library, with instant whole-library search, playback actions targeting any zone, and more.
 
