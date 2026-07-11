@@ -19,7 +19,7 @@ const RoonApiSettings  = require("node-roon-api-settings");
 const { createUpdater } = require("./lib/updater");
 const { radioDecision } = require("./lib/radio");
 const pkg = require("./package.json");
-// Parse "1.5.54" → display "MusicD Random Albums v1.5 (Build 54)"
+// Parse "1.6.31" → display "MusicD Companion v1.6 (Build 31)"
 const [_vmaj, _vmin, _vpatch] = (pkg.version || "0.0.0").split(".");
 const DISPLAY_SHORTVER = _vmaj + "." + _vmin;   // "1.5"
 const DISPLAY_BUILD    = _vpatch || "0";          // "54"
@@ -76,7 +76,10 @@ try {
 
 const roon = new RoonApi({
   extension_id:        "com.musicd.roon.random-albums",
-  display_name:        "MusicD Random Albums v" + DISPLAY_SHORTVER,
+  // The rename to "MusicD Companion" is display-only: extension_id stays
+  // unchanged on purpose — changing it would make Roon treat this as a brand
+  // new extension and force every user to re-authorize it.
+  display_name:        "MusicD Companion v" + DISPLAY_SHORTVER,
   display_version:     "Build " + DISPLAY_BUILD,
   publisher:           "MusicD",
   email:               "hello@musicd.app",
