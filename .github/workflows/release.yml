@@ -38,12 +38,13 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         run: |
           VERSION=${{ steps.version.outputs.version }}
-          TARBALL="/tmp/roon-random-albums-v${VERSION}-docker.tar.gz"
+          TARBALL="/tmp/MusicD-Remote-v${VERSION}.tar.gz"
           tar -czf "$TARBALL" \
             --exclude='./.git' \
             --exclude='./node_modules' \
             --exclude='./old' \
             --exclude='./data' \
+            --exclude='./*.tar.gz' \
             .
           echo "path=$TARBALL" >> $GITHUB_OUTPUT
 
@@ -64,12 +65,12 @@ jobs:
           TARBALL="${{ steps.tarball.outputs.path }}"
           if [ -n "$TARBALL" ] && [ -f "$TARBALL" ]; then
             gh release create "$TAG" "$TARBALL" \
-              --title "Random Albums $TAG" \
+              --title "MusicD Remote $TAG" \
               --notes "${{ steps.notes.outputs.notes }}" \
               --prerelease
           else
             gh release create "$TAG" \
-              --title "Random Albums $TAG" \
+              --title "MusicD Remote $TAG" \
               --notes "${{ steps.notes.outputs.notes }}" \
               --prerelease
           fi

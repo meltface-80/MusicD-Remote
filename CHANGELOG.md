@@ -2,6 +2,12 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.33] — 2026-07-11
+
+### Fixed
+- **Release automation now matches the MusicD-Remote naming.** The GitHub release workflow still built assets named `roon-random-albums-v…-docker.tar.gz` and titled releases "Random Albums" — so every release needed the asset re-uploaded by hand. It now builds `MusicD-Remote-v<version>.tar.gz`, titles the release "MusicD Remote", and excludes any committed `*.tar.gz` from the build so a root tarball can no longer be nested inside the release asset.
+- **Migration banner (shown to old native installs) pointed at a dead v1.5.9 URL on the pre-rename repo.** It now links to the current releases page with copy-ready `musicd-remote` Docker commands.
+
 ## [1.6.32] — 2026-07-11
 
 ### Changed
