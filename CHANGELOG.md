@@ -2,6 +2,14 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.34] — 2026-07-11
+
+### Changed
+- **Settings redesigned as a category list.** The single long-scrolling Settings sheet is now a home list of categories — Playback, Labels, Artwork & metadata, Streaming accounts, Wall display, Appearance, System — each opening its own focused pane with a back arrow. Every control keeps its exact behaviour; they are just grouped so the sheet is no longer one long scroll. Escape now steps back a level (pane → home → closed).
+
+### Fixed
+- **Artist search is faster.** Each album's individual artist names (split on `/`, `feat.`, `ft.` etc.) are now computed once when the library index is built rather than re-split and re-normalised on every keystroke of an artist search. Results and ordering are unchanged.
+
 ## [1.6.33] — 2026-07-11
 
 ### Fixed

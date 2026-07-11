@@ -705,206 +705,351 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
     <div class="settings-backdrop" data-settings-close></div>
     <div class="settings-sheet">
       <div class="settings-grip"></div>
-      <div class="settings-head">
-        <h2>Settings</h2>
-      </div>
 
-      <div class="settings-block">
-        <div class="settings-row">
-          <span class="settings-label">Zone / output <button class="settings-info-btn" data-info="Choose which Roon zone the Play, Queue and transport controls target." aria-label="Info">ⓘ</button></span>
-          <div class="settings-select-wrap">
-            <select id="zone-select" class="settings-select" aria-label="Output zone"></select>
-            <svg class="settings-caret" width="16" height="16" viewBox="0 0 24 24" fill="none"
-                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <polyline points="6 9 12 15 18 9"/>
-            </svg>
-          </div>
+      <!-- Settings home: category list. Each row opens a pane below. -->
+      <div class="settings-view" data-view="home">
+        <div class="settings-head">
+          <h2>Settings</h2>
         </div>
-      </div>
 
-      <div class="settings-divider"></div>
-
-      <div class="settings-block">
-        <div class="settings-row">
-          <span class="settings-label">Random album radio <button class="settings-info-btn" data-info="When this zone's queue ends and Roon Radio is off, keep playing whole random albums — a never-ending random album radio." aria-label="Info">ⓘ</button></span>
-          <label class="switch">
-            <input type="checkbox" id="radio-toggle" aria-label="Random album radio">
-            <span class="switch-track"><span class="switch-thumb"></span></span>
-          </label>
-        </div>
-      </div>
-
-      <div class="settings-divider"></div>
-
-      <div class="settings-block">
-        <div class="settings-row">
-          <span class="settings-label">Label album order <button class="settings-info-btn" data-info="When you open a record label, list its albums alphabetically or shuffle them." aria-label="Info">ⓘ</button></span>
-          <div class="settings-select-wrap">
-            <select id="label-order-select" class="settings-select" aria-label="Label album order">
-              <option value="alpha">Alphabetical</option>
-              <option value="random">Random</option>
-            </select>
-            <svg class="settings-caret" width="16" height="16" viewBox="0 0 24 24" fill="none"
-                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <polyline points="6 9 12 15 18 9"/>
-            </svg>
-          </div>
-        </div>
-      </div>
-
-      <div class="settings-block">
-        <div class="settings-row">
-          <span class="settings-label">Minimum albums per label <button class="settings-info-btn" data-info="Hide labels that have fewer albums than this threshold. Useful if the scanner picks up one-off compilations from unexpected labels." aria-label="Info">ⓘ</button></span>
-          <div class="settings-select-wrap">
-            <select id="label-min-select" class="settings-select" aria-label="Minimum albums per label">
-              <option value="1">Show all</option>
-              <option value="2">2 or more</option>
-              <option value="5">5 or more</option>
-              <option value="10">10 or more</option>
-            </select>
-            <svg class="settings-caret" width="16" height="16" viewBox="0 0 24 24" fill="none"
-                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <polyline points="6 9 12 15 18 9"/>
-            </svg>
-          </div>
-        </div>
-      </div>
-
-      <div class="settings-divider"></div>
-
-      <div class="settings-block">
-        <div class="settings-row">
-          <span class="settings-label">Label data <button class="settings-info-btn" data-info="Force a complete rescan of all label sources (iTunes, MusicBrainz, Discogs, file tags). Use this after importing new music or if label data looks wrong. This clears the label name cache — logos and MBIDs are kept." aria-label="Info">ⓘ</button></span>
-          <button id="force-rescan-btn" class="settings-update-btn" type="button">Force rescan</button>
-        </div>
-        <div id="force-rescan-status" class="settings-release-notes hidden"></div>
-      </div>
-
-      <div class="settings-divider"></div>
-
-      <div class="settings-block">
-        <div class="settings-row">
-          <span class="settings-label">Discogs token <button class="settings-info-btn" data-info="A personal access token from discogs.com/settings/developers. Enables logo fetching and searching for labels that the automatic scan can't find by name. Not required, but recommended." aria-label="Info">ⓘ</button></span>
-        </div>
-        <div class="settings-token-row">
-          <input id="discogs-token-input" type="text" class="settings-token-input" placeholder="Paste personal access token…" autocomplete="off" spellcheck="false">
-          <button id="discogs-token-save" class="settings-update-btn" type="button">Save</button>
-        </div>
-        <div id="discogs-token-status" class="settings-token-status"></div>
-      </div>
-
-      <div class="settings-block">
-        <div class="settings-row">
-          <span class="settings-label">FanArt.tv key <button class="settings-info-btn" data-info="A free API key from fanart.tv. Used to fetch label logo images. Get one at fanart.tv/get-an-api-key — free registration required." aria-label="Info">ⓘ</button></span>
-        </div>
-        <div class="settings-token-row">
-          <input id="fanart-key-input" type="text" class="settings-token-input" placeholder="Paste FanArt.tv API key…" autocomplete="off" spellcheck="false">
-          <button id="fanart-key-save" class="settings-update-btn" type="button">Save</button>
-        </div>
-        <div id="fanart-key-status" class="settings-token-status"></div>
-      </div>
-
-      <div class="settings-block">
-        <div class="settings-row">
-          <span class="settings-label">Label from folder depth <button class="settings-info-btn" data-info="For local libraries filed in label folders. 0 = off (use each file's own label tag, the default). Otherwise the label is taken from the folder at this depth under your music root — e.g. /music/Jazz/Blue Note Records/Album is depth 2. Fixes reissues being split off under their pressing label (e.g. an album in your Blue Note folder showing as EMI Finland). Saving re-runs the label scan." aria-label="Info">ⓘ</button></span>
-        </div>
-        <div class="settings-token-row">
-          <input id="label-folder-depth-input" type="number" min="0" max="6" class="settings-token-input" placeholder="0 = off (use file tag)">
-          <button id="label-folder-depth-save" class="settings-update-btn" type="button">Save</button>
-        </div>
-        <div id="label-folder-depth-status" class="settings-token-status"></div>
-      </div>
-
-      <div class="settings-divider"></div>
-
-      <div class="settings-block">
-        <div class="settings-row">
-          <span class="settings-label">Qobuz account <button class="settings-info-btn" data-info="Connects to Qobuz via the unofficial API (the Lyrion/LMS plugin's app id). Used only to browse and search the Qobuz catalogue and add albums to your Qobuz favourites/library — no streaming or downloading (Roon streams). Against Qobuz's Terms of Service and may break at any time. Your password is sent to Qobuz once to obtain a token; only the token is stored, never the plaintext password." aria-label="Info">ⓘ</button></span>
-        </div>
-        <div class="settings-token-row">
-          <input id="qobuz-username-input" type="email" class="settings-token-input" placeholder="Qobuz email…" autocomplete="off" spellcheck="false">
-        </div>
-        <div class="settings-token-row">
-          <input id="qobuz-password-input" type="password" class="settings-token-input" placeholder="Qobuz password…" autocomplete="off" spellcheck="false">
-          <button id="qobuz-connect" class="settings-update-btn" type="button">Connect</button>
-        </div>
-        <div id="qobuz-status" class="settings-token-status"></div>
-        <button id="qobuz-disconnect" class="settings-update-btn hidden" type="button">Disconnect</button>
-        <div class="settings-token-status" style="opacity:.6;font-size:11px;margin-top:6px;">Unofficial Qobuz API — against Qobuz ToS, may break, use at your own risk.</div>
-      </div>
-
-      <div class="settings-divider"></div>
-
-      <div class="settings-block">
-        <div class="settings-row">
-          <span class="settings-label">Tidal account <button class="settings-info-btn" data-info="Connects to Tidal via the unofficial API (the Lyrion/LMS Tidal plugin's client id). Used only to browse and search the Tidal catalogue and manage your Tidal favourites/library — no streaming or downloading (Roon streams). Against Tidal's Terms of Service and may break at any time. Login happens on Tidal's own device-authorization page — your password is never entered here; only tokens are stored." aria-label="Info">ⓘ</button></span>
-        </div>
-        <button id="tidal-connect" class="settings-update-btn" type="button">Connect Tidal…</button>
-        <div id="tidal-auth-pending" class="tidal-auth-pending hidden"></div>
-        <div id="tidal-status" class="settings-token-status"></div>
-        <button id="tidal-disconnect" class="settings-update-btn hidden" type="button">Disconnect</button>
-        <div class="settings-token-status" style="opacity:.6;font-size:11px;margin-top:6px;">Unofficial Tidal API — against Tidal ToS, may break, use at your own risk.</div>
-      </div>
-
-      <div class="settings-divider"></div>
-
-      <div class="settings-block">
-        <div class="settings-row">
-          <span class="settings-label">Appearance — dark / light</span>
-          <button id="theme-toggle" class="icon-btn" aria-label="Toggle theme" title="Toggle theme">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                 stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>
-            </svg>
+        <nav class="settings-nav" aria-label="Settings categories">
+          <button class="settings-nav-item" type="button" data-pane="playback">
+            <span class="settings-nav-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            </span>
+            <span class="settings-nav-txt">
+              <span class="settings-nav-title">Playback</span>
+              <span class="settings-nav-desc">Output zone &amp; random album radio</span>
+            </span>
+            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
+
+          <button class="settings-nav-item" type="button" data-pane="labels">
+            <span class="settings-nav-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 13.42 20.59a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+            </span>
+            <span class="settings-nav-txt">
+              <span class="settings-nav-title">Labels</span>
+              <span class="settings-nav-desc">Ordering, thresholds &amp; rescan</span>
+            </span>
+            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+
+          <button class="settings-nav-item" type="button" data-pane="metadata">
+            <span class="settings-nav-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+            </span>
+            <span class="settings-nav-txt">
+              <span class="settings-nav-title">Artwork &amp; metadata</span>
+              <span class="settings-nav-desc">Discogs &amp; FanArt.tv keys</span>
+            </span>
+            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+
+          <button class="settings-nav-item" type="button" data-pane="streaming">
+            <span class="settings-nav-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+            </span>
+            <span class="settings-nav-txt">
+              <span class="settings-nav-title">Streaming accounts</span>
+              <span class="settings-nav-desc">Qobuz &amp; Tidal</span>
+            </span>
+            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+
+          <button class="settings-nav-item" type="button" data-pane="display">
+            <span class="settings-nav-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            </span>
+            <span class="settings-nav-txt">
+              <span class="settings-nav-title">Wall display</span>
+              <span class="settings-nav-desc">Always-on screen &amp; video</span>
+            </span>
+            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+
+          <button class="settings-nav-item" type="button" data-pane="appearance">
+            <span class="settings-nav-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+            </span>
+            <span class="settings-nav-txt">
+              <span class="settings-nav-title">Appearance</span>
+              <span class="settings-nav-desc">Dark / light theme</span>
+            </span>
+            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+
+          <button class="settings-nav-item" type="button" data-pane="system">
+            <span class="settings-nav-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20v-6M6 20V10M18 20V4"/></svg>
+            </span>
+            <span class="settings-nav-txt">
+              <span class="settings-nav-title">System</span>
+              <span class="settings-nav-desc">Updates &amp; version</span>
+            </span>
+            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+        </nav>
+
+        <div class="settings-foot">
+          <span class="settings-version" id="settings-version">MusicD Remote</span>
+          <a class="settings-repo" id="settings-repo"
+             href="https://github.com/meltface-80/MusicD-Remote"
+             target="_blank" rel="noopener noreferrer">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49 0-.24-.01-.88-.01-1.73-2.78.62-3.37-1.37-3.37-1.37-.46-1.18-1.11-1.49-1.11-1.49-.91-.64.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.55-1.14-4.55-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.27 2.75 1.05a9.36 9.36 0 0 1 2.5-.35c.85 0 1.71.12 2.5.35 1.91-1.32 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68 1.9 0 1.37-.01 2.48-.01 2.82 0 .27.18.6.69.49A10.02 10.02 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"/>
+            </svg>
+            <span>View on GitHub</span>
+          </a>
         </div>
       </div>
 
-      <div class="settings-divider"></div>
+      <!-- Playback -->
+      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="playback">
+        <div class="settings-pane-head">
+          <button class="settings-back" type="button" data-settings-back aria-label="Back to settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h2>Playback</h2>
+        </div>
 
-      <div class="settings-block">
-        <div class="settings-row">
-          <span class="settings-label">Wall display <button class="settings-info-btn" data-info="A Roon-style always-on screen at http://<server-ip>:3399/display — point any tablet or TV browser at it. Rotates between album art, artist photos, an album review and a muted video clip (video needs a YouTube API key below), with a progress bar for the playing zone. When off, the page shows a notice and nothing is fetched." aria-label="Info">ⓘ</button></span>
-          <label class="switch">
-            <input type="checkbox" id="display-toggle" aria-label="Wall display">
-            <span class="switch-track"><span class="switch-thumb"></span></span>
-          </label>
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Zone / output <button class="settings-info-btn" data-info="Choose which Roon zone the Play, Queue and transport controls target." aria-label="Info">ⓘ</button></span>
+            <div class="settings-select-wrap">
+              <select id="zone-select" class="settings-select" aria-label="Output zone"></select>
+              <svg class="settings-caret" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </div>
+          </div>
         </div>
-        <div class="settings-row">
-          <span class="settings-label">Rotate every <span id="display-seconds-value">10s</span></span>
-          <input type="range" id="display-seconds" class="settings-range" min="5" max="60" step="1" value="10"
-                 aria-label="Display rotation interval in seconds">
+
+        <div class="settings-divider"></div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Random album radio <button class="settings-info-btn" data-info="When this zone's queue ends and Roon Radio is off, keep playing whole random albums — a never-ending random album radio." aria-label="Info">ⓘ</button></span>
+            <label class="switch">
+              <input type="checkbox" id="radio-toggle" aria-label="Random album radio">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
         </div>
-        <div class="settings-row">
-          <span class="settings-label">YouTube API key <button class="settings-info-btn" data-info="Optional — enables the display's muted video-clip slides. A free YouTube Data API v3 key from console.cloud.google.com. Without it, the display simply rotates without video." aria-label="Info">ⓘ</button></span>
-        </div>
-        <div class="settings-token-row">
-          <input id="youtube-key-input" type="text" class="settings-token-input" placeholder="Paste YouTube API key…" autocomplete="off" spellcheck="false">
-          <button id="youtube-key-save" class="settings-update-btn" type="button">Save</button>
-        </div>
-        <div id="youtube-key-status" class="settings-token-status"></div>
       </div>
 
-      <div class="settings-divider"></div>
-
-      <div class="settings-block">
-        <div class="settings-row">
-          <span class="settings-label">Updates</span>
-          <button id="check-update-btn" class="settings-update-btn" type="button">Check for updates</button>
+      <!-- Labels -->
+      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="labels">
+        <div class="settings-pane-head">
+          <button class="settings-back" type="button" data-settings-back aria-label="Back to settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h2>Labels</h2>
         </div>
-        <div id="settings-release-notes" class="settings-release-notes hidden"></div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Label album order <button class="settings-info-btn" data-info="When you open a record label, list its albums alphabetically or shuffle them." aria-label="Info">ⓘ</button></span>
+            <div class="settings-select-wrap">
+              <select id="label-order-select" class="settings-select" aria-label="Label album order">
+                <option value="alpha">Alphabetical</option>
+                <option value="random">Random</option>
+              </select>
+              <svg class="settings-caret" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Minimum albums per label <button class="settings-info-btn" data-info="Hide labels that have fewer albums than this threshold. Useful if the scanner picks up one-off compilations from unexpected labels." aria-label="Info">ⓘ</button></span>
+            <div class="settings-select-wrap">
+              <select id="label-min-select" class="settings-select" aria-label="Minimum albums per label">
+                <option value="1">Show all</option>
+                <option value="2">2 or more</option>
+                <option value="5">5 or more</option>
+                <option value="10">10 or more</option>
+              </select>
+              <svg class="settings-caret" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-divider"></div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Label data <button class="settings-info-btn" data-info="Force a complete rescan of all label sources (iTunes, MusicBrainz, Discogs, file tags). Use this after importing new music or if label data looks wrong. This clears the label name cache — logos and MBIDs are kept." aria-label="Info">ⓘ</button></span>
+            <button id="force-rescan-btn" class="settings-update-btn" type="button">Force rescan</button>
+          </div>
+          <div id="force-rescan-status" class="settings-release-notes hidden"></div>
+        </div>
+
+        <div class="settings-divider"></div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Label from folder depth <button class="settings-info-btn" data-info="For local libraries filed in label folders. 0 = off (use each file's own label tag, the default). Otherwise the label is taken from the folder at this depth under your music root — e.g. /music/Jazz/Blue Note Records/Album is depth 2. Fixes reissues being split off under their pressing label (e.g. an album in your Blue Note folder showing as EMI Finland). Saving re-runs the label scan." aria-label="Info">ⓘ</button></span>
+          </div>
+          <div class="settings-token-row">
+            <input id="label-folder-depth-input" type="number" min="0" max="6" class="settings-token-input" placeholder="0 = off (use file tag)">
+            <button id="label-folder-depth-save" class="settings-update-btn" type="button">Save</button>
+          </div>
+          <div id="label-folder-depth-status" class="settings-token-status"></div>
+        </div>
       </div>
 
-      <div class="settings-foot">
-        <span class="settings-version" id="settings-version">MusicD Remote</span>
-        <a class="settings-repo" id="settings-repo"
-           href="https://github.com/meltface-80/MusicD-Remote"
-           target="_blank" rel="noopener noreferrer">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-            <path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49 0-.24-.01-.88-.01-1.73-2.78.62-3.37-1.37-3.37-1.37-.46-1.18-1.11-1.49-1.11-1.49-.91-.64.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.55-1.14-4.55-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.27 2.75 1.05a9.36 9.36 0 0 1 2.5-.35c.85 0 1.71.12 2.5.35 1.91-1.32 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68 1.9 0 1.37-.01 2.48-.01 2.82 0 .27.18.6.69.49A10.02 10.02 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"/>
-          </svg>
-          <span>View on GitHub</span>
-        </a>
+      <!-- Artwork & metadata -->
+      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="metadata">
+        <div class="settings-pane-head">
+          <button class="settings-back" type="button" data-settings-back aria-label="Back to settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h2>Artwork &amp; metadata</h2>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Discogs token <button class="settings-info-btn" data-info="A personal access token from discogs.com/settings/developers. Enables logo fetching and searching for labels that the automatic scan can't find by name. Not required, but recommended." aria-label="Info">ⓘ</button></span>
+          </div>
+          <div class="settings-token-row">
+            <input id="discogs-token-input" type="text" class="settings-token-input" placeholder="Paste personal access token…" autocomplete="off" spellcheck="false">
+            <button id="discogs-token-save" class="settings-update-btn" type="button">Save</button>
+          </div>
+          <div id="discogs-token-status" class="settings-token-status"></div>
+        </div>
+
+        <div class="settings-divider"></div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">FanArt.tv key <button class="settings-info-btn" data-info="A free API key from fanart.tv. Used to fetch label logo images. Get one at fanart.tv/get-an-api-key — free registration required." aria-label="Info">ⓘ</button></span>
+          </div>
+          <div class="settings-token-row">
+            <input id="fanart-key-input" type="text" class="settings-token-input" placeholder="Paste FanArt.tv API key…" autocomplete="off" spellcheck="false">
+            <button id="fanart-key-save" class="settings-update-btn" type="button">Save</button>
+          </div>
+          <div id="fanart-key-status" class="settings-token-status"></div>
+        </div>
+      </div>
+
+      <!-- Streaming accounts -->
+      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="streaming">
+        <div class="settings-pane-head">
+          <button class="settings-back" type="button" data-settings-back aria-label="Back to settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h2>Streaming accounts</h2>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Qobuz account <button class="settings-info-btn" data-info="Connects to Qobuz via the unofficial API (the Lyrion/LMS plugin's app id). Used only to browse and search the Qobuz catalogue and add albums to your Qobuz favourites/library — no streaming or downloading (Roon streams). Against Qobuz's Terms of Service and may break at any time. Your password is sent to Qobuz once to obtain a token; only the token is stored, never the plaintext password." aria-label="Info">ⓘ</button></span>
+          </div>
+          <div class="settings-token-row">
+            <input id="qobuz-username-input" type="email" class="settings-token-input" placeholder="Qobuz email…" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="settings-token-row">
+            <input id="qobuz-password-input" type="password" class="settings-token-input" placeholder="Qobuz password…" autocomplete="off" spellcheck="false">
+            <button id="qobuz-connect" class="settings-update-btn" type="button">Connect</button>
+          </div>
+          <div id="qobuz-status" class="settings-token-status"></div>
+          <button id="qobuz-disconnect" class="settings-update-btn hidden" type="button">Disconnect</button>
+          <div class="settings-token-status" style="opacity:.6;font-size:11px;margin-top:6px;">Unofficial Qobuz API — against Qobuz ToS, may break, use at your own risk.</div>
+        </div>
+
+        <div class="settings-divider"></div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Tidal account <button class="settings-info-btn" data-info="Connects to Tidal via the unofficial API (the Lyrion/LMS Tidal plugin's client id). Used only to browse and search the Tidal catalogue and manage your Tidal favourites/library — no streaming or downloading (Roon streams). Against Tidal's Terms of Service and may break at any time. Login happens on Tidal's own device-authorization page — your password is never entered here; only tokens are stored." aria-label="Info">ⓘ</button></span>
+          </div>
+          <button id="tidal-connect" class="settings-update-btn" type="button">Connect Tidal…</button>
+          <div id="tidal-auth-pending" class="tidal-auth-pending hidden"></div>
+          <div id="tidal-status" class="settings-token-status"></div>
+          <button id="tidal-disconnect" class="settings-update-btn hidden" type="button">Disconnect</button>
+          <div class="settings-token-status" style="opacity:.6;font-size:11px;margin-top:6px;">Unofficial Tidal API — against Tidal ToS, may break, use at your own risk.</div>
+        </div>
+      </div>
+
+      <!-- Wall display -->
+      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="display">
+        <div class="settings-pane-head">
+          <button class="settings-back" type="button" data-settings-back aria-label="Back to settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h2>Wall display</h2>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Wall display <button class="settings-info-btn" data-info="A Roon-style always-on screen at http://<server-ip>:3399/display — point any tablet or TV browser at it. Rotates between album art, artist photos, an album review and a muted video clip (video needs a YouTube API key below), with a progress bar for the playing zone. When off, the page shows a notice and nothing is fetched." aria-label="Info">ⓘ</button></span>
+            <label class="switch">
+              <input type="checkbox" id="display-toggle" aria-label="Wall display">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Rotate every <span id="display-seconds-value">10s</span></span>
+            <input type="range" id="display-seconds" class="settings-range" min="5" max="60" step="1" value="10"
+                   aria-label="Display rotation interval in seconds">
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">YouTube API key <button class="settings-info-btn" data-info="Optional — enables the display's muted video-clip slides. A free YouTube Data API v3 key from console.cloud.google.com. Without it, the display simply rotates without video." aria-label="Info">ⓘ</button></span>
+          </div>
+          <div class="settings-token-row">
+            <input id="youtube-key-input" type="text" class="settings-token-input" placeholder="Paste YouTube API key…" autocomplete="off" spellcheck="false">
+            <button id="youtube-key-save" class="settings-update-btn" type="button">Save</button>
+          </div>
+          <div id="youtube-key-status" class="settings-token-status"></div>
+        </div>
+      </div>
+
+      <!-- Appearance -->
+      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="appearance">
+        <div class="settings-pane-head">
+          <button class="settings-back" type="button" data-settings-back aria-label="Back to settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h2>Appearance</h2>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Appearance — dark / light</span>
+            <button id="theme-toggle" class="icon-btn" aria-label="Toggle theme" title="Toggle theme">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- System -->
+      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="system">
+        <div class="settings-pane-head">
+          <button class="settings-back" type="button" data-settings-back aria-label="Back to settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h2>System</h2>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Updates</span>
+            <button id="check-update-btn" class="settings-update-btn" type="button">Check for updates</button>
+          </div>
+          <div id="settings-release-notes" class="settings-release-notes hidden"></div>
+        </div>
       </div>
     </div>
   </div>
