@@ -172,7 +172,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
 - The README contains version references (install commands, tarball URLs, `docker build` tags).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.6.32** (until the user says otherwise).
+- Current stable version in the README: **v1.6.35** (until the user says otherwise).
 - The extension is being renamed **MusicD Remote** ("for Roon" is descriptive, not part of the name). The Roon `extension_id` must NEVER change — it would force every user to re-authorize.
 
 ---
@@ -272,4 +272,7 @@ docker run -d \
 | v1.6.28–v1.6.29 | superseded | Instant Home reopen (PWA state kept); faster filtered-album playback |
 | v1.6.30 | superseded | FanArt key self-heal (purge cached misses on save); validated wall-display artist bios (Qobuz/Tidal-first, album cross-checked Wikipedia) |
 | v1.6.31 | stable (superseded) | Renamed to MusicD Remote in-app; updater follows GitHub repo-rename redirects |
-| v1.6.32 | **Latest (stable)** | Repo renamed to MusicD-Remote: new install paths/names, tarball renamed (docker suffix dropped), updater derives new repo — README points here |
+| v1.6.32 | stable (superseded) | Repo renamed to MusicD-Remote: new install paths/names, tarball renamed (docker suffix dropped), updater derives new repo |
+| v1.6.33 | superseded | Release automation naming fixed for MusicD-Remote; migration banner URL |
+| v1.6.34 | stable (superseded) | Settings category redesign; faster artist search |
+| v1.6.35 | **Latest (stable)** | Roon API hygiene: queue-subscription leak fixed, pooled browse sessions, re-pair probe instead of full rescan, play-multi throttled, roon API deps pinned — README points here |
