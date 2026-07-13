@@ -625,8 +625,9 @@ docker run -d \
     var v = state.version;
     var mac = state.mode === "macos";
     var y = [];
-    y.push("# docker-compose.yml — then:  docker compose up -d");
+    y.push("# create docker-compose.yml — then run:  docker compose up -d");
     y.push("# (builds straight from the GitHub release tag — no download step needed)");
+    y.push("cat > docker-compose.yml <<'EOF'")
     y.push("services:");
     y.push("  musicd-remote:");
     y.push("    build: https://github.com/" + REPO + ".git#v" + v);
