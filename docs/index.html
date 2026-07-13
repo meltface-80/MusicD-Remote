@@ -3,354 +3,406 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MusicD Remote for Roon — install &amp; setup</title>
-<meta name="description" content="MusicD Remote is a music discovery companion for Roon: random album browsing, rich metadata, wall displays and seamless playback. Build your Docker install command and set up API keys here.">
+<title>MusicD Remote — install &amp; docs</title>
+<meta name="description" content="MusicD Remote — a music-discovery companion and wall display for Roon. Docker install configurator, API key setup and docs.">
 <style>
   :root {
-    --bg:        #17181a;
-    --surface:   #1f2124;
-    --raised:    #26282c;
-    --inset:     #121315;
-    --border:    #33363b;
-    --border-soft: #2a2d31;
+    --bg:        #1b1d1f;   /* charcoal */
+    --bg-deep:   #141618;
+    --panel:     #232628;
+    --panel-2:   #2a2d30;
+    --line:      #35393d;
     --text:      #e8e6e3;
-    --muted:     #a09d96;
-    --faint:     #74716b;
-    --copper:    #c47f3f;
-    --copper-hi: #d9985f;
-    --copper-dim: rgba(196,127,63,.14);
-    --copper-line: rgba(196,127,63,.35);
-    --ok:        #7fb069;
+    --muted:     #a8a49e;
+    --copper:    #c47f4a;   /* subtle copper accent */
+    --copper-hi: #d99a66;
+    --copper-dim:#8a5a35;
+    --good:      #7fb47f;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
-  * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   body {
-    margin: 0;
     background: var(--bg);
     color: var(--text);
-    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-family: var(--sans);
+    line-height: 1.6;
     -webkit-font-smoothing: antialiased;
   }
   a { color: var(--copper-hi); text-decoration: none; }
   a:hover { text-decoration: underline; }
-  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 
-  .wrap { max-width: 960px; margin: 0 auto; padding: 0 20px; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px; }
 
-  /* ── top nav ─────────────────────────────────────── */
-  nav {
-    position: sticky; top: 0; z-index: 20;
-    background: rgba(23,24,26,.92);
+  /* ---------- top nav ---------- */
+  nav.topnav {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(20,22,24,.92);
     backdrop-filter: blur(8px);
-    border-bottom: 1px solid var(--border-soft);
+    border-bottom: 1px solid var(--line);
   }
-  nav .wrap { display: flex; align-items: center; gap: 18px; height: 52px; }
-  nav .brand { font-weight: 700; letter-spacing: .02em; color: var(--text); white-space: nowrap; }
-  nav .brand span { color: var(--copper-hi); }
-  nav .links { display: flex; gap: 16px; margin-left: auto; overflow-x: auto; }
-  nav .links a { color: var(--muted); font-size: 14px; white-space: nowrap; }
-  nav .links a:hover { color: var(--copper-hi); text-decoration: none; }
+  nav.topnav .wrap {
+    display: flex; align-items: center; gap: 18px;
+    height: 52px; overflow-x: auto; white-space: nowrap;
+  }
+  nav.topnav a {
+    color: var(--muted); font-size: 14px; font-weight: 500;
+  }
+  nav.topnav a:hover { color: var(--copper-hi); text-decoration: none; }
+  nav.topnav .brand { color: var(--text); font-weight: 700; letter-spacing: .02em; }
+  nav.topnav .brand span { color: var(--copper); }
+  nav.topnav .gh { margin-left: auto; }
 
-  /* ── header ──────────────────────────────────────── */
-  header { text-align: center; padding: 44px 0 34px; }
-  header .logo {
-    max-width: min(460px, 88%);
+  /* ---------- hero ---------- */
+  header.hero {
+    text-align: center;
+    padding: 48px 20px 40px;
+    background:
+      radial-gradient(ellipse 70% 55% at 50% -10%, rgba(196,127,74,.14), transparent 65%),
+      var(--bg-deep);
+    border-bottom: 1px solid var(--line);
+  }
+  header.hero img.logo {
+    max-width: min(560px, 88vw);
+    width: 100%; height: auto;
     border-radius: 14px;
-    border: 1px solid var(--border-soft);
-    box-shadow: 0 14px 40px rgba(0,0,0,.45);
-    display: block; margin: 0 auto 26px;
+    box-shadow: 0 10px 40px rgba(0,0,0,.45);
   }
-  header .wordmark {
-    display: none;
-    font-size: clamp(38px, 8vw, 60px);
-    font-weight: 800; letter-spacing: -.02em;
-    margin: 6px 0 22px;
-  }
-  header .wordmark b { color: var(--copper-hi); font-weight: 800; }
-  header h1 { font-size: clamp(24px, 4.6vw, 34px); margin: 0 0 10px; letter-spacing: -.01em; }
-  header h1 small { display: block; font-size: .55em; font-weight: 500; color: var(--muted); margin-top: 6px; }
-  header p.tag { color: var(--muted); max-width: 640px; margin: 12px auto 0; }
-  .badges { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 20px; }
+  header.hero .wordmark { display: none; font-size: 44px; font-weight: 800; letter-spacing: .03em; }
+  header.hero .wordmark span { color: var(--copper); }
+  header.hero.noimg img.logo { display: none; }
+  header.hero.noimg .wordmark { display: block; }
+  header.hero h1 { font-size: 30px; margin-top: 26px; font-weight: 700; }
+  header.hero p.tag { color: var(--muted); max-width: 640px; margin: 10px auto 0; font-size: 16px; }
+  .badges { margin-top: 18px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
   .badge {
-    font-size: 13px; padding: 5px 12px; border-radius: 999px;
-    border: 1px solid var(--border); color: var(--muted); background: var(--surface);
+    display: inline-block; font-size: 12.5px; font-weight: 600;
+    padding: 4px 12px; border-radius: 999px;
+    border: 1px solid var(--copper-dim); color: var(--copper-hi);
+    background: rgba(196,127,74,.08);
   }
-  .badge.copper { border-color: var(--copper-line); color: var(--copper-hi); background: var(--copper-dim); }
+  .badge.plain { border-color: var(--line); color: var(--muted); background: transparent; }
 
-  /* ── sections ────────────────────────────────────── */
-  section { padding: 30px 0 8px; }
-  section[id] { scroll-margin-top: 62px; }
-  h2 { font-size: 24px; margin: 18px 0 4px; letter-spacing: -.01em; }
-  h2::after {
-    content: ""; display: block; width: 52px; height: 2px;
-    background: linear-gradient(90deg, var(--copper), transparent);
-    margin-top: 10px; border-radius: 2px;
+  /* ---------- sections ---------- */
+  section { padding: 52px 0 8px; scroll-margin-top: 56px; }
+  section > .wrap > h2 {
+    font-size: 24px; font-weight: 700; margin-bottom: 6px;
+    padding-left: 14px; border-left: 3px solid var(--copper);
   }
-  .lede { color: var(--muted); margin: 12px 0 22px; max-width: 700px; }
+  section > .wrap > p.lead { color: var(--muted); margin-bottom: 26px; max-width: 720px; }
 
-  /* ── feature grid ────────────────────────────────── */
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 14px; }
+  /* ---------- feature grid ---------- */
+  .grid {
+    display: grid; gap: 14px;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  }
   .card {
-    background: var(--surface); border: 1px solid var(--border-soft);
-    border-radius: 12px; padding: 18px 18px 14px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 18px 18px 16px;
   }
-  .card h3 { margin: 0 0 8px; font-size: 16px; }
-  .card h3 .ico { margin-right: 8px; }
-  .card p { margin: 0; font-size: 14px; color: var(--muted); }
+  .card h3 { font-size: 15.5px; font-weight: 650; margin-bottom: 6px; }
+  .card h3 .em { margin-right: 8px; }
+  .card p { font-size: 13.5px; color: var(--muted); }
 
-  /* ── configurator ────────────────────────────────── */
-  .config {
-    background: var(--surface); border: 1px solid var(--border-soft);
-    border-radius: 14px; padding: 22px; margin-top: 8px;
+  /* ---------- configurator ---------- */
+  .cfg {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
   }
-  .step-label {
-    font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
-    color: var(--copper-hi); margin: 22px 0 10px;
+  .cfg-body { padding: 22px; display: grid; gap: 22px; }
+  @media (min-width: 860px) {
+    .cfg-body { grid-template-columns: 340px 1fr; align-items: start; }
   }
-  .step-label:first-child { margin-top: 0; }
-  .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
-  .choice {
-    position: relative; display: block; cursor: pointer;
-    background: var(--raised); border: 1px solid var(--border);
-    border-radius: 12px; padding: 14px 16px;
+
+  .modes { display: grid; gap: 10px; }
+  .mode {
+    display: block; cursor: pointer;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 14px;
     transition: border-color .15s, background .15s;
   }
-  .choice:hover { border-color: var(--copper-line); }
-  .choice input { position: absolute; opacity: 0; pointer-events: none; }
-  .choice .t { font-weight: 650; font-size: 15px; display: block; margin-bottom: 4px; }
-  .choice .d { font-size: 13px; color: var(--muted); display: block; }
-  .choice.selected { border-color: var(--copper); background: var(--copper-dim); }
-  .choice.selected .t { color: var(--copper-hi); }
+  .mode:hover { border-color: var(--copper-dim); }
+  .mode input { position: absolute; opacity: 0; pointer-events: none; }
+  .mode .m-title { font-weight: 650; font-size: 14.5px; display: flex; align-items: center; gap: 8px; }
+  .mode .m-title::before {
+    content: ""; width: 14px; height: 14px; flex: 0 0 14px;
+    border-radius: 50%; border: 2px solid var(--muted);
+  }
+  .mode .m-sub { font-size: 12.5px; color: var(--muted); margin-top: 3px; padding-left: 22px; }
+  .mode.sel { border-color: var(--copper); background: rgba(196,127,74,.07); }
+  .mode.sel .m-title::before { border-color: var(--copper); background: radial-gradient(circle at center, var(--copper) 0 45%, transparent 50%); }
 
-  .field { margin-top: 12px; }
-  .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .fields { display: grid; gap: 14px; }
+  .field label { display: block; font-size: 12.5px; font-weight: 600; color: var(--muted); margin-bottom: 5px; letter-spacing: .02em; }
+  .field label .req { color: var(--copper-hi); }
   .field input[type=text] {
-    width: 100%; padding: 10px 12px; border-radius: 9px;
-    border: 1px solid var(--border); background: var(--inset); color: var(--text);
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px;
+    width: 100%; padding: 9px 12px; font-size: 14px;
+    font-family: var(--mono);
+    color: var(--text); background: var(--bg-deep);
+    border: 1px solid var(--line); border-radius: 8px;
+    outline: none;
   }
-  .field input[type=text]:focus { outline: none; border-color: var(--copper); }
-  .hint { font-size: 12.5px; color: var(--faint); margin-top: 6px; }
+  .field input[type=text]:focus { border-color: var(--copper); }
+  .field .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .field.hidden { display: none; }
 
-  .switchrow { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; user-select: none; }
-  .switchrow input { position: absolute; opacity: 0; pointer-events: none; }
-  .switch {
-    flex: none; width: 42px; height: 24px; border-radius: 999px; margin-top: 2px;
-    background: var(--raised); border: 1px solid var(--border); position: relative;
-    transition: background .15s, border-color .15s;
+  .toggle-row {
+    display: flex; align-items: flex-start; gap: 10px;
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 10px; padding: 12px 14px; cursor: pointer;
   }
-  .switch::after {
-    content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px;
-    border-radius: 50%; background: var(--muted); transition: transform .15s, background .15s;
-  }
-  .switchrow input:checked + .switch { background: var(--copper); border-color: var(--copper); }
-  .switchrow input:checked + .switch::after { transform: translateX(18px); background: #fff; }
-  .switchrow .t { font-weight: 600; font-size: 15px; }
-  .switchrow .d { font-size: 13px; color: var(--muted); }
+  .toggle-row input { accent-color: var(--copper); margin-top: 3px; width: 16px; height: 16px; cursor: pointer; }
+  .toggle-row .t-title { font-weight: 650; font-size: 14px; }
+  .toggle-row .t-sub { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
 
-  .verline { margin-top: 20px; font-size: 13.5px; color: var(--muted); }
-  .verline b { color: var(--copper-hi); font-weight: 650; }
+  .subfields { display: grid; gap: 12px; border-left: 2px solid var(--copper-dim); margin-left: 6px; padding: 10px 0 2px 14px; }
+  .subfields.hidden { display: none; }
 
-  /* ── command output ──────────────────────────────── */
-  .cmdbox { position: relative; margin-top: 12px; }
-  .cmdbox pre {
-    background: var(--inset); border: 1px solid var(--border);
-    border-left: 3px solid var(--copper);
-    border-radius: 10px; padding: 18px 16px; overflow-x: auto;
-    font-size: 13.5px; line-height: 1.55; margin: 0; color: #dcd9d4;
-    -webkit-overflow-scrolling: touch;
+  .note {
+    font-size: 13px; color: var(--muted);
+    background: rgba(196,127,74,.06);
+    border: 1px solid var(--copper-dim);
+    border-radius: 10px; padding: 12px 14px;
   }
-  .cmdbox pre .c { color: var(--faint); }
-  .copybtn {
+  .note b { color: var(--copper-hi); }
+  .note.hidden { display: none; }
+
+  /* output panel */
+  .out { display: grid; gap: 12px; min-width: 0; }
+  /* grid items default to min-width:auto, so the unwrappable <pre> would force
+     the column (and every sibling) wider than a phone screen — let them shrink
+     and keep the scrolling inside the code box instead */
+  .out > * { min-width: 0; }
+  .out-tabs { display: flex; gap: 8px; }
+  .out-tabs button {
+    font: 600 13px var(--sans); cursor: pointer;
+    color: var(--muted); background: transparent;
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 14px;
+  }
+  .out-tabs button.sel { color: var(--copper-hi); border-color: var(--copper); background: rgba(196,127,74,.08); }
+  .codebox { position: relative; }
+  .codebox pre {
+    background: var(--bg-deep);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 18px; padding-top: 40px;
+    overflow-x: auto;
+    font: 13px/1.55 var(--mono);
+    color: #d8d4cf;
+    white-space: pre;
+  }
+  .codebox pre .k { color: var(--copper-hi); }     /* flags / keys */
+  .codebox pre .c { color: #77726c; }              /* comments */
+  .copy-btn {
     position: absolute; top: 10px; right: 10px;
-    background: var(--raised); color: var(--text);
-    border: 1px solid var(--border); border-radius: 8px;
-    padding: 6px 14px; font-size: 13px; cursor: pointer;
-    transition: border-color .15s, color .15s;
+    font: 600 12px var(--sans); cursor: pointer;
+    color: var(--text); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 7px;
+    padding: 6px 12px;
   }
-  .copybtn:hover { border-color: var(--copper); color: var(--copper-hi); }
-  .copybtn.done { border-color: var(--ok); color: var(--ok); }
-
-  .callout {
-    border: 1px solid var(--copper-line); background: var(--copper-dim);
-    border-radius: 12px; padding: 14px 18px; margin: 18px 0; font-size: 14.5px;
-  }
-  .callout b { color: var(--copper-hi); }
-  .callout.plain { border-color: var(--border); background: var(--surface); }
-
-  details {
-    background: var(--surface); border: 1px solid var(--border-soft);
-    border-radius: 12px; padding: 0 18px; margin: 12px 0;
-  }
-  details summary {
-    cursor: pointer; padding: 14px 0; font-weight: 600; list-style: none; position: relative;
-  }
-  details summary::-webkit-details-marker { display: none; }
-  details summary::after {
-    content: "+"; position: absolute; right: 2px; color: var(--copper-hi); font-weight: 400;
-  }
-  details[open] summary::after { content: "–"; }
-  details .body { padding: 2px 0 16px; font-size: 14.5px; color: var(--muted); }
-  details .body pre {
-    background: var(--inset); border: 1px solid var(--border); border-radius: 8px;
-    padding: 12px 14px; overflow-x: auto; font-size: 13px; color: #dcd9d4;
+  .copy-btn:hover { border-color: var(--copper); color: var(--copper-hi); }
+  .copy-btn.done { color: var(--good); border-color: var(--good); }
+  .after-note { font-size: 13.5px; color: var(--muted); }
+  .after-note code, p code, li code, td code {
+    font: 12.5px var(--mono);
+    background: var(--bg-deep);
+    border: 1px solid var(--line);
+    border-radius: 5px; padding: 1.5px 6px;
+    color: var(--copper-hi);
   }
 
-  /* ── API key cards ───────────────────────────────── */
-  .keycard {
-    background: var(--surface); border: 1px solid var(--border-soft);
-    border-radius: 12px; padding: 20px 22px; margin: 14px 0;
+  /* ---------- API key steps ---------- */
+  .api-cards { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); }
+  .api-card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 20px;
   }
-  .keycard h3 { margin: 0 0 4px; font-size: 17px; }
-  .keycard .why { font-size: 13.5px; color: var(--faint); margin: 0 0 12px; }
-  .keycard ol { margin: 0; padding-left: 22px; font-size: 14.5px; color: var(--muted); }
-  .keycard ol li { margin: 7px 0; }
-  .keycard ol li b { color: var(--text); font-weight: 600; }
-  .pill {
-    display: inline-block; font-size: 11.5px; font-weight: 700; letter-spacing: .06em;
-    text-transform: uppercase; border-radius: 999px; padding: 3px 10px;
-    background: var(--copper-dim); color: var(--copper-hi); border: 1px solid var(--copper-line);
-    margin-left: 8px; vertical-align: 2px;
-  }
-  .pill.opt { background: transparent; color: var(--faint); border-color: var(--border); }
+  .api-card h3 { font-size: 17px; margin-bottom: 4px; }
+  .api-card .free { font-size: 12px; font-weight: 700; color: var(--copper-hi); letter-spacing: .06em; text-transform: uppercase; }
+  .api-card p.what { font-size: 13.5px; color: var(--muted); margin: 8px 0 12px; }
+  .api-card ol { padding-left: 20px; font-size: 13.5px; display: grid; gap: 7px; }
+  .api-card ol li::marker { color: var(--copper); font-weight: 700; }
+  .api-card .fine { font-size: 12.5px; color: var(--muted); margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
 
-  /* ── after install steps ─────────────────────────── */
-  .steps { counter-reset: s; padding: 0; margin: 16px 0 0; list-style: none; }
-  .steps li {
-    counter-increment: s; position: relative;
-    padding: 0 0 18px 52px; font-size: 15px; color: var(--muted);
+  /* ---------- env table ---------- */
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  th { background: var(--panel-2); color: var(--copper-hi); font-size: 12.5px; letter-spacing: .04em; text-transform: uppercase; }
+  tr:last-child td { border-bottom: none; }
+  td:first-child { font-family: var(--mono); white-space: nowrap; }
+  td { color: var(--muted); }
+  td:first-child { color: var(--text); }
+
+  /* ---------- first run ---------- */
+  .firstrun {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 20px;
   }
-  .steps li b { color: var(--text); }
-  .steps li::before {
-    content: counter(s); position: absolute; left: 0; top: 0;
-    width: 32px; height: 32px; border-radius: 50%;
-    background: var(--copper-dim); border: 1px solid var(--copper-line);
-    color: var(--copper-hi); font-weight: 700; font-size: 15px;
-    display: flex; align-items: center; justify-content: center;
+  .firstrun ol { padding-left: 20px; font-size: 14px; display: grid; gap: 9px; color: var(--muted); }
+  .firstrun ol li::marker { color: var(--copper); font-weight: 700; }
+  .firstrun ol li b { color: var(--text); }
+
+  /* ---------- small screens (phones, portrait) ---------- */
+  @media (max-width: 600px) {
+    header.hero { padding: 32px 16px 30px; }
+    header.hero h1 { font-size: 24px; margin-top: 20px; }
+    header.hero .wordmark { font-size: 34px; }
+    section { padding: 40px 0 6px; }
+    section > .wrap > h2 { font-size: 21px; }
+    .cfg-body { padding: 16px; gap: 18px; }
+    .codebox pre { font-size: 12px; padding: 14px; padding-top: 40px; }
+    th, td { padding: 9px 10px; }
   }
 
   footer {
-    margin-top: 50px; border-top: 1px solid var(--border-soft);
-    padding: 26px 0 40px; font-size: 13.5px; color: var(--faint); text-align: center;
+    margin-top: 64px; padding: 28px 20px 40px;
+    border-top: 1px solid var(--line);
+    text-align: center; font-size: 13px; color: var(--muted);
   }
-  footer a { color: var(--muted); }
 </style>
 </head>
 <body>
 
-<nav>
+<nav class="topnav">
   <div class="wrap">
-    <span class="brand">Music<span>D</span> Remote</span>
-    <div class="links">
-      <a href="#features">Features</a>
-      <a href="#install">Install</a>
-      <a href="#api-keys">API keys</a>
-      <a href="#after-install">First run</a>
-      <a href="https://github.com/meltface-80/MusicD-Remote" rel="noopener">GitHub</a>
-    </div>
+    <a class="brand" href="#top">Music<span>D</span> Remote</a>
+    <a href="#features">Features</a>
+    <a href="#install">Install</a>
+    <a href="#apikeys">API keys</a>
+    <a href="#env">Environment</a>
+    <a href="#firstrun">First run</a>
+    <a class="gh" href="https://github.com/meltface-80/MusicD-Remote">GitHub&nbsp;→</a>
   </div>
 </nav>
 
-<header class="wrap">
-  <img class="logo" id="logo-img" alt="MusicD Remote logo"
-       src="https://github.com/user-attachments/assets/fc1dd26e-db7f-4e27-8f66-b0ab74db89e3">
-  <div class="wordmark" id="logo-fallback">Music<b>D</b> Remote</div>
-  <h1>MusicD Remote <small>a music discovery companion for Roon</small></h1>
-  <p class="tag">Rediscover your library through random album browsing with rich metadata,
-     beautiful wall displays and seamless playback — with Roon Server at the heart.</p>
+<header class="hero" id="top">
+  <img class="logo" src="https://github.com/user-attachments/assets/fc1dd26e-db7f-4e27-8f66-b0ab74db89e3"
+       alt="MusicD logo" onerror="this.closest('.hero').classList.add('noimg')">
+  <div class="wordmark">Music<span>D</span></div>
+  <h1>MusicD Remote</h1>
+  <p class="tag">A music-discovery companion and full-screen wall display for
+     <a href="https://roon.app">Roon</a> — random-album browsing, instant whole-library
+     search, rich label &amp; artist pages, and seamless playback with Roon Server at the heart.</p>
   <div class="badges">
-    <span class="badge copper" id="version-badge">v1.6.35</span>
-    <span class="badge">Docker install</span>
-    <span class="badge">MIT license</span>
-    <span class="badge"><a href="https://github.com/meltface-80/MusicD-Remote/releases" rel="noopener" style="color:inherit">Releases ↗</a></span>
+    <span class="badge" id="ver-badge">v1.6.35</span>
+    <span class="badge plain">Docker</span>
+    <span class="badge plain">MIT licence</span>
+    <span class="badge plain">Pairs with your Roon Core over the network</span>
   </div>
 </header>
 
-<main class="wrap">
-
-  <!-- ══════════════ FEATURES ══════════════ -->
-  <section id="features">
+<section id="features">
+  <div class="wrap">
     <h2>Features</h2>
-    <p class="lede">Designed for large libraries, and friendly on phones, tablets, desktops and TVs.</p>
+    <p class="lead">Everything talks to your existing Roon Core through the official extension
+       API — the app never touches your library files (except an optional read-only mount for
+       label-tag scanning).</p>
     <div class="grid">
-      <div class="card"><h3><span class="ico">🎵</span>Album discovery</h3>
-        <p>Random albums, Album of the day, Label of the week, unheard-album picks and recently-unplayed recommendations. Over time it learns what you've heard and surfaces the forgotten corners of your library.</p></div>
-      <div class="card"><h3><span class="ico">📚</span>Rich browsing</h3>
+      <div class="card"><h3><span class="em">🎵</span>Album discovery</h3>
+        <p>Random album selection with filtering, Album of the day, Label of the week, Play Unheard, and recently-unplayed recommendations. The database learns what you've heard and resurfaces forgotten albums.</p></div>
+      <div class="card"><h3><span class="em">📚</span>Rich library browsing</h3>
         <p>Browse by album, artist, genre, record label, decade or tag — and jump between related artists, albums and labels from anywhere.</p></div>
-      <div class="card"><h3><span class="ico">🔍</span>Powerful search</h3>
-        <p>Instant whole-library search, optionally extended to Qobuz and TIDAL. Browse the streaming catalogues and add favourites straight into your Roon library.</p></div>
-      <div class="card"><h3><span class="ico">▶️</span>Playback control</h3>
-        <p>Play or queue albums and individual tracks, multi-select, switch zones, and let Random Album Radio keep the music flowing when the queue runs out.</p></div>
-      <div class="card"><h3><span class="ico">📺</span>Wall display</h3>
-        <p>Turn a TV or tablet into a now-playing display: large artwork, artist photos and bios, reviews, related albums, label info and YouTube music videos, rotating automatically.</p></div>
-      <div class="card"><h3><span class="ico">🏷️</span>Label explorer</h3>
-        <p>Explore your collection by record label with artwork from Discogs and FanArt.tv, label merging, and every release from a chosen label one tap away.</p></div>
-      <div class="card"><h3><span class="ico">💿</span>Detailed album pages</h3>
-        <p>High-resolution artwork, track listing, release year, label, duration, multiple artists and Pitchfork reviews where available.</p></div>
-      <div class="card"><h3><span class="ico">🔄</span>Self-updating</h3>
-        <p>Built-in update checker with one-click updates from GitHub releases, plus share cards, dark/light themes and a clean album-first design.</p></div>
+      <div class="card"><h3><span class="em">🔍</span>Powerful search</h3>
+        <p>Instant whole-library search by album, artist or record label, with optional extension to Qobuz and TIDAL — browse the streaming catalogues and add favourites straight into your Roon library.</p></div>
+      <div class="card"><h3><span class="em">💿</span>Detailed album pages</h3>
+        <p>High-resolution artwork, track listing, release year, label, duration, multiple-artist support and Pitchfork reviews where available.</p></div>
+      <div class="card"><h3><span class="em">📺</span>Full-screen wall display</h3>
+        <p>Turn a TV or tablet into a now-playing display: big artwork, artist photography, biographies, reviews, related albums and YouTube music videos with automatic rotation.</p></div>
+      <div class="card"><h3><span class="em">🏷</span>Record label explorer</h3>
+        <p>Label of the week, label artwork via Discogs and FanArt.tv, label merging with undo, and every release from a selected label.</p></div>
+      <div class="card"><h3><span class="em">📻</span>Random Album Radio</h3>
+        <p>When the queue finishes, the app picks another album (avoiding recent plays) and keeps the music flowing indefinitely.</p></div>
+      <div class="card"><h3><span class="em">▶</span>Playback integration</h3>
+        <p>Play or queue albums and tracks, multi-select, zone switching, and automatic continue-playback when the queue ends.</p></div>
+      <div class="card"><h3><span class="em">🔄</span>Automatic updates</h3>
+        <p>Built-in update checker with one-click updates straight from GitHub releases.</p></div>
     </div>
-  </section>
+  </div>
+</section>
 
-  <!-- ══════════════ INSTALL CONFIGURATOR ══════════════ -->
-  <section id="install">
-    <h2>Install</h2>
-    <p class="lede">MusicD Remote runs as a small Docker container. Pick your setup below and the
-       install command is built for you — copy it, paste it into a terminal, done.</p>
+<section id="install">
+  <div class="wrap">
+    <h2>Install with Docker</h2>
+    <p class="lead">Pick where you're running the app, fill in the details, and copy the generated
+       command. On Linux the app uses host networking so it can <b>auto-discover your Roon Core</b>;
+       once it's running you enable it in <b>Roon&nbsp;→ Settings&nbsp;→ Extensions</b>.</p>
 
-    <div class="config">
-      <div class="step-label">1 · Where will it run?</div>
-      <div class="choices" id="target-choices">
-        <label class="choice selected">
-          <input type="radio" name="target" value="linux-same" checked>
-          <span class="t">Same machine as Roon Server</span>
-          <span class="d">A Linux box (DietPi, Debian, Ubuntu…) that also runs Roon Server. Uses host networking — Roon is discovered automatically.</span>
-        </label>
-        <label class="choice">
-          <input type="radio" name="target" value="linux-separate">
-          <span class="t">Separate machine on your network</span>
-          <span class="d">Any Linux machine (NAS, Pi, mini-PC…) on the same network as your Roon Core. Also uses host networking for automatic discovery.</span>
-        </label>
-        <label class="choice">
-          <input type="radio" name="target" value="macos">
-          <span class="t">macOS</span>
-          <span class="d">A Mac running Docker Desktop. Uses port mapping, so you point it at your Roon Core's IP address.</span>
-        </label>
-      </div>
+    <div class="cfg">
+      <div class="cfg-body">
+        <div>
+          <div class="modes" id="modes">
+            <label class="mode sel" data-mode="same">
+              <input type="radio" name="mode" value="same" checked>
+              <div class="m-title">Same machine as Roon Server</div>
+              <div class="m-sub">Linux host (DietPi, Debian, Ubuntu…) that also runs Roon Server. Host networking — the Core is auto-discovered.</div>
+            </label>
+            <label class="mode" data-mode="separate">
+              <input type="radio" name="mode" value="separate">
+              <div class="m-title">Separate machine from Roon</div>
+              <div class="m-sub">Another Linux server, NAS or Pi on the same network as your Roon Core. Also host networking with auto-discovery.</div>
+            </label>
+            <label class="mode" data-mode="macos">
+              <input type="radio" name="mode" value="macos">
+              <div class="m-title">macOS (Docker Desktop)</div>
+              <div class="m-sub">Host networking isn't available on macOS, so ports are published and the Roon Core address is set explicitly.</div>
+            </label>
+          </div>
 
-      <div id="mac-ip-field" class="field" hidden>
-        <label for="core-ip">Roon Core IP address</label>
-        <input type="text" id="core-ip" placeholder="192.168.1.50" autocomplete="off" spellcheck="false">
-        <div class="hint">Find it in Roon → Settings → General (or your router's device list). Left blank, the command keeps a placeholder to fill in later.</div>
-      </div>
+          <div class="fields" style="margin-top:18px">
+            <div class="field hidden" id="f-coreip">
+              <label for="coreip">Roon Core IP address <span class="req">*</span></label>
+              <input type="text" id="coreip" value="" placeholder="192.168.1.50" spellcheck="false">
+              <div class="hint">The address of the machine running Roon Server — find it in Roon → Settings → General.</div>
+            </div>
+            <div class="field hidden" id="f-appport">
+              <label for="appport">App port on this Mac</label>
+              <input type="text" id="appport" value="3399" spellcheck="false">
+              <div class="hint">The port you'll open in your browser.</div>
+            </div>
 
-      <div class="step-label">2 · Local music files</div>
-      <label class="switchrow">
-        <input type="checkbox" id="mount-music" checked>
-        <span class="switch"></span>
-        <span>
-          <span class="t">Mount my local music folder (read-only)</span><br>
-          <span class="d">Lets the extension read label tags directly from your files for the most accurate label data.
-          The folder is mounted <b>read-only</b> (<code>:ro</code>) — your files are never written to.
-          Turn this off if your library is Qobuz/TIDAL streaming only.</span>
-        </span>
-      </label>
-      <div id="music-path-field" class="field">
-        <label for="music-path">Path to your music folder</label>
-        <input type="text" id="music-path" value="" placeholder="/your/path/to/Music" autocomplete="off" spellcheck="false">
-        <div class="hint">The folder on the host that contains your music library. Leave it as shown to fill in later.</div>
-      </div>
+            <label class="toggle-row">
+              <input type="checkbox" id="mount" checked>
+              <div>
+                <div class="t-title">Mount local music library (read-only)</div>
+                <div class="t-sub">Optional. If this machine can see your music files, the label
+                     scan also reads label tags straight from them — the most accurate source.
+                     Mounted read-only (<code>:ro</code>); the app never writes to it. Turn off
+                     for Qobuz/TIDAL-only libraries.</div>
+              </div>
+            </label>
+            <div class="subfields" id="mount-fields">
+              <div class="field">
+                <label for="musicpath">Path to your music on this machine</label>
+                <input type="text" id="musicpath" value="" placeholder="/your/path/to/Music" spellcheck="false">
+              </div>
+            </div>
+          </div>
+        </div>
 
-      <div class="verline">Installing <b id="version-line">v1.6.35</b> <span id="version-note">(checking for the latest release…)</span></div>
-
-      <div class="step-label" style="margin-top:24px">3 · Copy &amp; run</div>
-      <div class="cmdbox">
-        <button class="copybtn" id="copy-cmd" type="button">Copy</button>
-        <pre id="cmd-output" aria-live="polite">sudo mkdir -p /opt/musicd-remote
+        <div class="out">
+          <div class="note" id="mode-note"></div>
+          <div class="out-tabs">
+            <button id="tab-run" class="sel" type="button">docker run</button>
+            <button id="tab-compose" type="button">docker compose</button>
+          </div>
+          <div class="codebox">
+            <button class="copy-btn" id="copy" type="button">Copy</button>
+            <pre id="cmd">sudo mkdir -p /opt/musicd-remote
 cd /opt/musicd-remote
 sudo wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.6.35/MusicD-Remote-v1.6.35.tar.gz
 sudo tar -xzf MusicD-Remote-v1.6.35.tar.gz
 docker build -t musicd-remote:1.6.35 .
+
+# Run it
 docker run -d \
   --name musicd-remote \
   --restart unless-stopped \
@@ -358,315 +410,375 @@ docker run -d \
   -v musicd-remote-data:/app/data \
   -v "/your/path/to/Music:/music:ro" \
   musicd-remote:1.6.35</pre>
+          </div>
+          <noscript><p class="after-note">JavaScript is off, so the configurator can't rebuild this
+             command — what's shown is the standard Linux install. The macOS and streaming-only
+             variants are in the <a href="https://github.com/meltface-80/MusicD-Remote#install-docker">README</a>.</p></noscript>
+          <p class="after-note" id="after-note"></p>
+          <p class="after-note">Installing <b id="ver-line">v1.6.35</b> <span id="ver-note">(checking for the latest release…)</span>.
+             If your user isn't in the <code>docker</code> group, prefix the <code>docker</code>
+             commands with <code>sudo</code>.</p>
+          <div class="note"><b>One volume to rule them all.</b> The <code>musicd-remote-data</code>
+             volume holds your Roon pairing, play history and label cache — <b>never rename it once
+             created</b>. A different name silently starts empty (Roon asks you to authorize again
+             and your history is gone). Upgrading from v1.6.31 or earlier? Move your data once with
+             the copy step in the
+             <a href="https://github.com/meltface-80/MusicD-Remote#updating">Updating guide</a>.</div>
+        </div>
       </div>
-      <noscript><div class="hint">JavaScript is off, so the configurator can't rebuild this command — what's shown is the standard
-      Linux install. The macOS and streaming-only variants are in the
-      <a href="https://github.com/meltface-80/MusicD-Remote#install-docker" rel="noopener">README</a>.</div></noscript>
-      <div class="hint">If your user isn't in the <code>docker</code> group, prefix the <code>docker</code> commands with <code>sudo</code>.</div>
     </div>
+  </div>
+</section>
 
-    <div class="callout">
-      <b>One volume to rule them all.</b> The <code>musicd-remote-data</code> volume holds your Roon pairing,
-      play history and label cache — <b>never rename it once created</b>. Point every future
-      <code>docker run</code> at the same name and everything carries over; a different name silently starts
-      empty (Roon asks you to authorize again and your history is gone).
-      Upgrading from v1.6.31 or earlier? Your data lives in the old <code>roon-random-albums-data</code>
-      volume — move it once with the copy step in the
-      <a href="https://github.com/meltface-80/MusicD-Remote#updating" rel="noopener">Updating guide</a>.
-    </div>
-
-    <details>
-      <summary>Docker isn't installed yet?</summary>
-      <div class="body">
-        <p><b>DietPi</b></p>
-        <pre>sudo dietpi-software install 162</pre>
-        <p><b>Debian / Ubuntu</b></p>
-        <pre>curl -sSL https://get.docker.com | sh</pre>
-        <p><b>macOS</b> — install <a href="https://www.docker.com/products/docker-desktop/" rel="noopener">Docker Desktop</a>
-        (pick the right build for Apple&nbsp;Silicon or Intel), launch it, and wait for the whale icon in the
-        menu bar to report <i>Engine running</i>. Then verify with <code>docker --version</code>.</p>
-      </div>
-    </details>
-
-    <details>
-      <summary>Updating an existing install</summary>
-      <div class="body">
-        <p>Stop and remove the old container, download the new tarball, rebuild and re-run —
-        keeping the same <code>musicd-remote-data</code> volume so pairing and history carry over.
-        The app also shows an in-app update button when a new release is available.
-        Full step-by-step commands are in the
-        <a href="https://github.com/meltface-80/MusicD-Remote#updating" rel="noopener">README Updating section</a>.</p>
-      </div>
-    </details>
-  </section>
-
-  <!-- ══════════════ API KEYS ══════════════ -->
-  <section id="api-keys">
+<section id="apikeys">
+  <div class="wrap">
     <h2>API keys</h2>
-    <p class="lede">No keys are required for basic operation — but two free keys dramatically improve
-       label logo coverage, and a third unlocks music videos on the wall display.
-       Each takes about two minutes. Paste them into the app under
-       <b>Settings (gear icon)</b> and tap <b>Save</b>.</p>
+    <p class="lead">All free, all optional — but they significantly improve artwork and label
+       coverage. Paste each one into the app under the <b>gear icon → Settings</b>, then Save.</p>
+    <div class="api-cards">
 
-    <div class="keycard">
-      <h3>FanArt.tv API key<span class="pill">Label logos</span></h3>
-      <p class="why">FanArt.tv provides high-quality record label logos for labels with a MusicBrainz MBID.</p>
-      <ol>
-        <li>Go to <a href="https://fanart.tv/get-an-api-key/#personal" rel="noopener"><b>fanart.tv/get-an-api-key</b></a> and register free (or log in).</li>
-        <li>Follow the on-screen prompts for a <b>personal API key</b> — it's shown on that same page once you're signed in.</li>
-        <li>Copy the key.</li>
-        <li>In MusicD Remote: <b>Settings (gear icon) → FanArt.tv key → Save</b>.</li>
-      </ol>
+      <div class="api-card">
+        <div class="free">Free</div>
+        <h3>FanArt.tv</h3>
+        <p class="what">High-quality record-label logos for labels that have a MusicBrainz MBID.</p>
+        <ol>
+          <li>Register (or sign in) at <a href="https://fanart.tv/get-an-api-key/#personal">fanart.tv/get-an-api-key</a> and request a <b>personal API key</b></li>
+          <li>Follow the on-screen prompts — the key is shown on that page once you're logged in</li>
+          <li>Copy the key</li>
+          <li>In the app: gear icon → paste into <b>FanArt.tv key</b> → <b>Save</b></li>
+        </ol>
+      </div>
+
+      <div class="api-card">
+        <div class="free">Free</div>
+        <h3>YouTube Data API v3</h3>
+        <p class="what">Music videos on the wall display. No billing account needed.</p>
+        <ol>
+          <li>Go to <a href="https://console.cloud.google.com">console.cloud.google.com</a> and sign in with any Google account</li>
+          <li>Project dropdown (top bar) → <b>New project</b> → name it anything (e.g. "MusicD Display") → <b>Create</b>, and make sure it's selected</li>
+          <li>Menu → <b>APIs &amp; Services → Library</b> → search "YouTube Data API v3" → <b>Enable</b></li>
+          <li><b>APIs &amp; Services → Credentials → + Create credentials → API key</b> — copy the key</li>
+          <li><i>Recommended:</i> Edit the key → <b>API restrictions → Restrict key</b> → tick only <b>YouTube Data API v3</b> → Save</li>
+          <li>In the app: gear icon → paste into <b>YouTube API key</b> → <b>Save</b></li>
+        </ol>
+        <p class="fine">The free quota (10,000 units/day) comfortably covers a home display —
+           roughly 90+ fresh tracks a day, and results are cached. If it's ever exhausted it
+           simply pauses until midnight Pacific, when the quota resets.</p>
+      </div>
+
+      <div class="api-card">
+        <div class="free">Free</div>
+        <h3>Discogs</h3>
+        <p class="what">Finds label names that iTunes and MusicBrainz miss, and fetches label logos.</p>
+        <ol>
+          <li>Sign in (or register) at <a href="https://www.discogs.com">discogs.com</a></li>
+          <li><b>Settings → Developers</b> → <b>Generate new token</b></li>
+          <li>Copy the token</li>
+          <li>In the app: gear icon → paste into <b>Discogs token</b> → <b>Save</b></li>
+        </ol>
+      </div>
+
     </div>
+  </div>
+</section>
 
-    <div class="keycard">
-      <h3>YouTube Data API v3 key<span class="pill">Wall display videos</span><span class="pill opt">Optional</span></h3>
-      <p class="why">Lets the wall display find and play matching music videos for the current track. Free — no billing account needed.</p>
-      <ol>
-        <li>Go to <a href="https://console.cloud.google.com" rel="noopener"><b>console.cloud.google.com</b></a> and sign in with any Google account.</li>
-        <li><b>Create a project</b>: project dropdown (top bar) → <b>New project</b> → name it anything (e.g. "MusicD Display") → <b>Create</b>, and make sure it's selected.</li>
-        <li><b>Enable the API</b>: menu → APIs &amp; Services → <b>Library</b> → search "YouTube Data API v3" → open it → <b>Enable</b>.</li>
-        <li><b>Create the key</b>: APIs &amp; Services → <b>Credentials</b> → + Create credentials → <b>API key</b>. Copy the key shown.</li>
-        <li><i>Recommended:</i> Edit the key → under <b>API restrictions</b> choose <b>Restrict key</b> → tick only <b>YouTube Data API v3</b> → Save. That makes the key useless for anything else if it ever leaks.</li>
-        <li>In MusicD Remote: <b>Settings → YouTube API key → Save</b>.</li>
-      </ol>
-      <p class="why" style="margin:12px 0 0">The free quota (10,000 units/day) comfortably covers a home display —
-      roughly 90+ fresh tracks a day, with results cached, before it would pause until the quota resets at midnight Pacific time.</p>
+<section id="env">
+  <div class="wrap">
+    <h2>Environment variables</h2>
+    <p class="lead">Everything the container understands — the configurator above sets the ones you need.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Variable</th><th>Default</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td>PORT</td><td><code>3399</code></td><td>HTTP port for this app</td></tr>
+          <tr><td>ROON_CORE_IP</td><td><i>(discover)</i></td><td>Roon Core address for setups where multicast discovery can't reach it (macOS / Docker Desktop)</td></tr>
+          <tr><td>MUSIC_DIR</td><td><code>/music</code></td><td>Where the optional read-only music mount lives inside the container (only used for file-tag label scanning)</td></tr>
+          <tr><td>RRA_DEBUG</td><td>–</td><td><code>1</code> for verbose logging</td></tr>
+        </tbody>
+      </table>
     </div>
+  </div>
+</section>
 
-    <div class="keycard">
-      <h3>Discogs personal access token<span class="pill">Label names + logos</span></h3>
-      <p class="why">Discogs fills in label names that iTunes and MusicBrainz miss, and is a second source of label logos.</p>
-      <ol>
-        <li>Sign in (or register free) at <a href="https://www.discogs.com" rel="noopener"><b>discogs.com</b></a>.</li>
-        <li>Go to <b>Settings → Developers</b> → click <b>Generate new token</b>.</li>
-        <li>Copy the token.</li>
-        <li>In MusicD Remote: <b>Settings (gear icon) → Discogs token → Save</b>.</li>
-      </ol>
-    </div>
-  </section>
-
-  <!-- ══════════════ AFTER INSTALL ══════════════ -->
-  <section id="after-install">
+<section id="firstrun">
+  <div class="wrap">
     <h2>First run</h2>
-    <ol class="steps">
-      <li><b>Enable the extension in Roon.</b> Open Roon → Settings → Extensions — <b>MusicD</b> appears there once the container is running. Click <b>Enable</b>.</li>
-      <li><b>Open the app.</b> Browse to <code>http://&lt;your-server-ip&gt;:3399</code> from any phone, tablet or desktop on your network (on a Mac install, <code>http://localhost:3399</code> works too). Add it to your home screen for an app-like experience.</li>
-      <li><b>Add your API keys.</b> Tap the gear icon and paste in the keys from the <a href="#api-keys">section above</a>, then let the label scan run.</li>
-      <li><b>Optional: wall display.</b> Point a TV or spare tablet at <code>http://&lt;your-server-ip&gt;:3399/display</code> and enjoy.</li>
-    </ol>
-    <div class="callout plain">
-      <b>Trouble?</b> The <a href="https://github.com/meltface-80/MusicD-Remote#troubleshooting" rel="noopener">README troubleshooting section</a>
-      covers the common cases — pairing that never completes, missing zones, and label logos not appearing.
-      Bugs and ideas are welcome on the <a href="https://github.com/meltface-80/MusicD-Remote/issues" rel="noopener">issue tracker</a>.
+    <p class="lead">The container is up — four steps and you're listening.</p>
+    <div class="firstrun">
+      <ol>
+        <li><b>Enable the extension in Roon.</b> Roon → Settings → Extensions — <b>MusicD</b> appears there once the container is running. Click <b>Enable</b>.</li>
+        <li><b>Open the app.</b> Browse to <code>http://&lt;your-server-ip&gt;:3399</code> from any phone, tablet or desktop on your network. Add it to your home screen for an app-like experience.</li>
+        <li><b>Add your API keys.</b> Gear icon → paste in the keys from <a href="#apikeys">above</a>, then let the label scan run.</li>
+        <li><b>Optional: wall display.</b> Point a TV or spare tablet at <code>http://&lt;your-server-ip&gt;:3399/display</code>.</li>
+      </ol>
     </div>
-  </section>
-
-</main>
+  </div>
+</section>
 
 <footer>
-  <div class="wrap">
-    MusicD Remote is released under the <a href="https://github.com/meltface-80/MusicD-Remote/blob/main/LICENSE" rel="noopener">MIT License</a>.
-    © 2026 Lewis Menzies (Music Duck / MusicD).<br>
-    Roon is a trademark of Roon Labs LLC. This is an independent extension, not affiliated with Roon Labs.
-  </div>
+  <p>MusicD Remote · MIT licence · © 2026 Lewis Menzies (Music Duck / MusicD) ·
+     <a href="https://github.com/meltface-80/MusicD-Remote">github.com/meltface-80/MusicD-Remote</a><br>
+     Roon is a trademark of Roon Labs LLC. This is an independent extension, not affiliated with Roon Labs.</p>
 </footer>
 
 <script>
 (function () {
   "use strict";
 
-  var FALLBACK_VERSION = "1.6.35"; // latest published release at the time this page was built
-  var REPO = "meltface-80/MusicD-Remote";
+  var IMAGE = "musicd-remote";
+  var REPO  = "meltface-80/MusicD-Remote";
+  var FALLBACK_VERSION = "1.6.35";   // latest published release when this page was built
 
-  var state = {
-    target: "linux-same",          // linux-same | linux-separate | macos
-    mountMusic: true,
-    version: FALLBACK_VERSION
+  var els = {
+    modes:      document.getElementById("modes"),
+    coreip:     document.getElementById("coreip"),
+    fCoreip:    document.getElementById("f-coreip"),
+    appport:    document.getElementById("appport"),
+    fAppport:   document.getElementById("f-appport"),
+    mount:      document.getElementById("mount"),
+    mountFields:document.getElementById("mount-fields"),
+    musicpath:  document.getElementById("musicpath"),
+    cmd:        document.getElementById("cmd"),
+    copy:       document.getElementById("copy"),
+    tabRun:     document.getElementById("tab-run"),
+    tabCompose: document.getElementById("tab-compose"),
+    modeNote:   document.getElementById("mode-note"),
+    afterNote:  document.getElementById("after-note"),
+    verBadge:   document.getElementById("ver-badge"),
+    verLine:    document.getElementById("ver-line"),
+    verNote:    document.getElementById("ver-note")
   };
 
-  var DEFAULT_PATHS = {
-    linux: "/your/path/to/Music",
-    macos: "/Users/yourusername/Music"
-  };
+  var state = { mode: "same", tab: "run", version: FALLBACK_VERSION };
+  var plainCmd = "";
 
-  // ── element handles ────────────────────────────────
-  var el = {
-    choices:      document.getElementById("target-choices"),
-    macIpField:   document.getElementById("mac-ip-field"),
-    coreIp:       document.getElementById("core-ip"),
-    mountMusic:   document.getElementById("mount-music"),
-    musicField:   document.getElementById("music-path-field"),
-    musicPath:    document.getElementById("music-path"),
-    cmd:          document.getElementById("cmd-output"),
-    copyBtn:      document.getElementById("copy-cmd"),
-    versionBadge: document.getElementById("version-badge"),
-    versionLine:  document.getElementById("version-line"),
-    versionNote:  document.getElementById("version-note"),
-    logoImg:      document.getElementById("logo-img"),
-    logoFallback: document.getElementById("logo-fallback")
-  };
-
-  // ── logo fallback ──────────────────────────────────
-  function showWordmark() {
-    el.logoImg.style.display = "none";
-    el.logoFallback.style.display = "block";
+  function esc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
-  el.logoImg.addEventListener("error", showWordmark);
-  if (el.logoImg.complete && el.logoImg.naturalWidth === 0) showWordmark();
-
-  // ── helpers ────────────────────────────────────────
-  function isMac() { return state.target === "macos"; }
-
-  function defaultPath() { return isMac() ? DEFAULT_PATHS.macos : DEFAULT_PATHS.linux; }
-
+  function val(el, fallback) {
+    var v = el.value.trim();
+    return v === "" ? fallback : v;
+  }
   // Quote a value for safe use inside a double-quoted shell string.
   function shq(v) { return '"' + v.replace(/(["\\$`])/g, "\\$1") + '"'; }
-
-  function musicPathValue() {
-    var v = el.musicPath.value.trim();
-    return v === "" ? defaultPath() : v;
-  }
-
-  function coreIpValue() {
-    // Keep only characters valid in an IP address or hostname so the
-    // generated shell line can never be broken by stray input.
-    var v = el.coreIp.value.trim().replace(/[^A-Za-z0-9.\-:]/g, "");
+  // Keep only characters valid in an IP address or hostname.
+  function ipVal() {
+    var v = els.coreip.value.trim().replace(/[^A-Za-z0-9.\-:]/g, "");
     return v === "" ? "<IP_OF_YOUR_ROON_CORE>" : v;
   }
+  function portVal() {
+    var v = val(els.appport, "3399").replace(/[^0-9]/g, "");
+    return v === "" ? "3399" : v;
+  }
+  function pathVal() {
+    var v = els.musicpath.value.trim();
+    if (v !== "") return v;
+    return state.mode === "macos" ? "/Users/yourusername/Music" : "/your/path/to/Music";
+  }
 
-  // ── command builder ────────────────────────────────
-  function buildCommand() {
+  var NOTES = {
+    same:     "Host networking lets the app <b>auto-discover your Roon Core</b> — no addresses to configure. Once it's running, enable it in <b>Roon → Settings → Extensions</b>.",
+    separate: "Still host networking — Roon's discovery works across the LAN, so just make sure this machine is on the <b>same network/subnet</b> as your Roon Core.",
+    macos:    "Docker Desktop on macOS can't use host networking, so the app <b>can't auto-discover the Core</b> — set your Roon Core's IP address here and the port is published instead."
+  };
+
+  // ---- command builders --------------------------------------------------
+  function buildRun() {
     var v = state.version;
     var tarball = "MusicD-Remote-v" + v + ".tar.gz";
     var url = "https://github.com/" + REPO + "/releases/download/v" + v + "/" + tarball;
-    var lines = [];
+    var mac = state.mode === "macos";
+    var out = [];
 
-    if (isMac()) {
-      lines.push("mkdir -p ~/musicd-remote");
-      lines.push("cd ~/musicd-remote");
-      lines.push("curl -L -o " + tarball + " \\");
-      lines.push("  " + url);
+    out.push({ t: "# Download the release and build the image", c: "c" });
+    if (mac) {
+      out.push({ t: "mkdir -p ~/musicd-remote\ncd ~/musicd-remote\ncurl -L -o " + tarball + " \\\n  " + url +
+                    "\ntar -xzf " + tarball + "\ndocker build -t " + IMAGE + ":" + v + " .", c: "" });
     } else {
-      lines.push("sudo mkdir -p /opt/musicd-remote");
-      lines.push("cd /opt/musicd-remote");
-      lines.push("sudo wget " + url);
+      out.push({ t: "sudo mkdir -p /opt/musicd-remote\ncd /opt/musicd-remote\nsudo wget " + url +
+                    "\nsudo tar -xzf " + tarball + "\ndocker build -t " + IMAGE + ":" + v + " .", c: "" });
     }
-    lines.push((isMac() ? "" : "sudo ") + "tar -xzf " + tarball);
-    lines.push("docker build -t musicd-remote:" + v + " .");
+    out.push({ t: "", c: "" });
+    out.push({ t: "# Run it", c: "c" });
 
-    lines.push("docker run -d \\");
-    lines.push("  --name musicd-remote \\");
-    lines.push("  --restart unless-stopped \\");
-    if (isMac()) {
-      lines.push("  -p 3399:3399 \\");
-      lines.push("  -e ROON_CORE_IP=" + coreIpValue() + " \\");
+    var cmd = ["docker run -d \\"];
+    cmd.push("  --name " + IMAGE + " \\");
+    cmd.push("  --restart unless-stopped \\");
+    if (mac) {
+      cmd.push("  -p " + portVal() + ":3399 \\");
+      cmd.push("  -e ROON_CORE_IP=" + ipVal() + " \\");
     } else {
-      lines.push("  --network host \\");
+      cmd.push("  --network host \\");
     }
-    lines.push("  -v musicd-remote-data:/app/data \\");
-    if (state.mountMusic) {
-      lines.push("  -v " + shq(musicPathValue() + ":/music:ro") + " \\");
+    cmd.push("  -v musicd-remote-data:/app/data \\");
+    if (els.mount.checked) {
+      cmd.push("  -v " + shq(pathVal() + ":/music:ro") + " \\");
     }
-    lines.push("  musicd-remote:" + v);
+    cmd.push("  " + IMAGE + ":" + v);
 
-    return lines.join("\n");
+    out.push({ t: cmd.join("\n"), c: "" });
+    return out;
+  }
+
+  function buildCompose() {
+    var v = state.version;
+    var mac = state.mode === "macos";
+    var y = [];
+    y.push("# docker-compose.yml — then:  docker compose up -d");
+    y.push("# (builds straight from the GitHub release tag — no download step needed)");
+    y.push("services:");
+    y.push("  musicd-remote:");
+    y.push("    build: https://github.com/" + REPO + ".git#v" + v);
+    y.push("    image: " + IMAGE + ":" + v);
+    y.push("    container_name: " + IMAGE);
+    y.push("    restart: unless-stopped");
+    if (mac) {
+      y.push("    ports:");
+      y.push("      - \"" + portVal() + ":3399\"");
+      y.push("    environment:");
+      y.push("      ROON_CORE_IP: \"" + ipVal() + "\"");
+    } else {
+      y.push("    network_mode: host   # Roon Core auto-discovery on the local network");
+    }
+    y.push("    volumes:");
+    y.push("      - musicd-remote-data:/app/data");
+    if (els.mount.checked) {
+      y.push("      - \"" + pathVal().replace(/\\/g, "\\\\").replace(/"/g, '\\"') + ":/music:ro\"   # read-only music mount");
+    }
+    y.push("");
+    y.push("volumes:");
+    y.push("  musicd-remote-data:");
+    y.push("    external: false   # keep this volume — it holds your Roon pairing + history");
+    return [{ t: y.join("\n"), c: "" }];
+  }
+
+  // very light highlighter for the pre block: comments, then flags/env keys
+  // (flags only at the start of a token so hyphenated names in URLs stay plain)
+  function highlight(text) {
+    return esc(text)
+      .replace(/^(#.*)$/gm, '<span class="c">$1</span>')
+      .replace(/(^|\s)(--?[a-z][a-zA-Z-]*)/g, '$1<span class="k">$2</span>')
+      .replace(/((?:ROON_CORE_IP|MUSIC_DIR|PORT|RRA_DEBUG)[=:])/g, '<span class="k">$1</span>');
   }
 
   function render() {
-    // show/hide conditional fields
-    el.macIpField.hidden = !isMac();
-    el.musicField.hidden = !state.mountMusic;
+    var parts = state.tab === "run" ? buildRun() : buildCompose();
+    plainCmd = parts.map(function (p) { return p.t; }).join("\n");
+    els.cmd.innerHTML = parts.map(function (p) {
+      return p.c === "c" ? '<span class="c">' + esc(p.t) + "</span>" : highlight(p.t);
+    }).join("\n");
 
-    // adapt the music-path placeholder to the platform; an empty field
-    // falls back to it, so what's shown always matches the command
-    el.musicPath.placeholder = defaultPath();
+    els.modeNote.innerHTML = NOTES[state.mode];
 
-    // selected styling on radio cards
-    var cards = el.choices.querySelectorAll(".choice");
-    for (var i = 0; i < cards.length; i++) {
-      var input = cards[i].querySelector("input");
-      cards[i].classList.toggle("selected", input.value === state.target);
-      input.checked = (input.value === state.target);
-    }
+    els.afterNote.innerHTML = state.mode === "macos"
+      ? "Then open <code>http://localhost:" + esc(portVal()) + "</code> on the Mac (or <code>http://&lt;this-Mac's-IP&gt;:" + esc(portVal()) + "</code> from another device) and enable <b>MusicD</b> in Roon → Settings → Extensions."
+      : "Then open <code>http://&lt;this-machine-IP&gt;:3399</code> and enable <b>MusicD</b> in Roon → Settings → Extensions.";
 
-    el.cmd.textContent = buildCommand();
+    syncUrl();
   }
 
-  // ── events ─────────────────────────────────────────
-  el.choices.addEventListener("change", function (e) {
-    if (e.target.name === "target") {
-      state.target = e.target.value;
-      render();
+  // keep the URL shareable: re-encode form state into the query string
+  function syncUrl() {
+    var p = new URLSearchParams();
+    if (state.mode !== "same") p.set("mode", state.mode);
+    if (els.coreip.value.trim()) p.set("core", els.coreip.value.trim());
+    if (portVal() !== "3399") p.set("port", portVal());
+    if (!els.mount.checked) p.set("mount", "0");
+    else if (els.musicpath.value.trim()) p.set("music", els.musicpath.value.trim());
+    var qs = p.toString();
+    history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash);
+  }
+
+  function setMode(mode) {
+    state.mode = mode;
+    var labels = els.modes.querySelectorAll(".mode");
+    for (var i = 0; i < labels.length; i++) {
+      var sel = labels[i].getAttribute("data-mode") === mode;
+      labels[i].classList.toggle("sel", sel);
+      labels[i].querySelector("input").checked = sel;
     }
+    var mac = mode === "macos";
+    els.fCoreip.classList.toggle("hidden", !mac);
+    els.fAppport.classList.toggle("hidden", !mac);
+    els.musicpath.placeholder = mac ? "/Users/yourusername/Music" : "/your/path/to/Music";
+    render();
+  }
+
+  function setTab(tab) {
+    state.tab = tab;
+    els.tabRun.classList.toggle("sel", tab === "run");
+    els.tabCompose.classList.toggle("sel", tab === "compose");
+    render();
+  }
+
+  // ---- wiring --------------------------------------------------------------
+  els.modes.addEventListener("change", function (e) {
+    if (e.target.name === "mode") setMode(e.target.value);
   });
-  el.mountMusic.addEventListener("change", function () {
-    state.mountMusic = el.mountMusic.checked;
+  els.tabRun.addEventListener("click", function () { setTab("run"); });
+  els.tabCompose.addEventListener("click", function () { setTab("compose"); });
+
+  els.mount.addEventListener("change", function () {
+    els.mountFields.classList.toggle("hidden", !els.mount.checked);
     render();
   });
-  el.musicPath.addEventListener("input", render);
-  el.coreIp.addEventListener("input", render);
 
-  // ── copy button ────────────────────────────────────
-  el.copyBtn.addEventListener("click", function () {
-    var text = el.cmd.textContent;
-    function done(ok) {
-      el.copyBtn.textContent = ok ? "Copied ✓" : "Copy failed";
-      el.copyBtn.classList.toggle("done", ok);
+  ["coreip", "appport", "musicpath"].forEach(function (id) {
+    els[id].addEventListener("input", render);
+  });
+
+  els.copy.addEventListener("click", function () {
+    function done() {
+      els.copy.textContent = "Copied ✓";
+      els.copy.classList.add("done");
       setTimeout(function () {
-        el.copyBtn.textContent = "Copy";
-        el.copyBtn.classList.remove("done");
-      }, 2000);
+        els.copy.textContent = "Copy";
+        els.copy.classList.remove("done");
+      }, 1600);
     }
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(function () { done(true); },
-                                               function () { legacyCopy(text, done); });
-    } else {
-      legacyCopy(text, done);
+      navigator.clipboard.writeText(plainCmd).then(done, fallbackCopy);
+    } else fallbackCopy();
+    function fallbackCopy() {
+      var ta = document.createElement("textarea");
+      ta.value = plainCmd;
+      ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { /* no clipboard available — user can select the text manually */ }
+      document.body.removeChild(ta);
     }
   });
 
-  function legacyCopy(text, done) {
-    var ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.position = "fixed";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
-    ta.select();
-    var ok = false;
-    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
-    document.body.removeChild(ta);
-    done(ok);
-  }
-
-  // ── latest release lookup ──────────────────────────
+  // ---- latest release lookup ----------------------------------------------
   function setVersion(v) {
     state.version = v;
-    el.versionBadge.textContent = "v" + v;
-    el.versionLine.textContent = "v" + v;
+    els.verBadge.textContent = "v" + v;
+    els.verLine.textContent = "v" + v;
     render();
   }
 
   fetch("https://api.github.com/repos/" + REPO + "/releases/latest")
     .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status)); })
     .then(function (data) {
-      var tag = String(data.tag_name || "");
-      var m = tag.match(/^v?(\d+\.\d+\.\d+)$/);
-      if (m) {
-        setVersion(m[1]);
-        el.versionNote.textContent = "(latest release)";
-      } else {
-        el.versionNote.textContent = "(latest known release)";
-      }
+      var m = String(data.tag_name || "").match(/^v?(\d+\.\d+\.\d+)$/);
+      if (m) { setVersion(m[1]); els.verNote.textContent = "(latest release)"; }
+      else { els.verNote.textContent = "(latest known release)"; }
     })
     .catch(function () {
       // GitHub API unreachable or rate-limited — the baked-in fallback version still works.
-      el.versionNote.textContent = "(latest known release)";
+      els.verNote.textContent = "(latest known release)";
     });
 
-  render();
+  // ---- URL query prefill (e.g. ?mode=macos&core=192.168.1.20&port=8080&music=/srv/music)
+  var q = new URLSearchParams(location.search);
+  if (q.get("core"))  els.coreip.value = q.get("core");
+  if (q.get("port"))  els.appport.value = q.get("port");
+  if (q.get("mount") === "0") { els.mount.checked = false; els.mountFields.classList.add("hidden"); }
+  if (q.get("music")) { els.mount.checked = true; els.mountFields.classList.remove("hidden"); els.musicpath.value = q.get("music"); }
+  var qm = q.get("mode");
+  setMode(qm === "separate" || qm === "macos" ? qm : "same");
 })();
 </script>
-
 </body>
 </html>

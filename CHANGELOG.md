@@ -2,20 +2,6 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
-## [1.6.36] — 2026-07-13
-
-### Added
-
-- **GitHub Pages site (`docs/index.html`)** — a standalone project page (charcoal theme with
-  copper accents, MusicD logo header) for publishing via GitHub Pages (`main` branch, `/docs`
-  folder). Includes a feature overview, an interactive Docker install-command configurator
-  (same machine as Roon Server / separate Linux machine / macOS via Docker Desktop, with an
-  optional read-only local-music mount and a Roon Core IP field for macOS), step-by-step
-  FanArt.tv, YouTube Data API v3 and Discogs key guides, first-run steps, and the
-  data-volume migration warning. The page auto-detects the latest GitHub release for its
-  install commands (falling back to the version baked in at build time). Docs-only change —
-  no extension code touched.
-
 ## [1.6.35] — 2026-07-11
 
 ### Fixed

@@ -117,6 +117,14 @@ Do not commit with known CONFIRMED or PLAUSIBLE bugs. Fix them all in the same v
 
 ## Every build — required steps (in order)
 
+**Docs-only exception:** a change that touches only `docs/` (the GitHub Pages site) and/or
+repo documentation (`README.md`, `CHANGELOG.md`, `CLAUDE.md`) is NOT a build. It skips the
+version bump, the CHANGELOG entry, the tarball rebuild, and the docker install command —
+`docs/` is excluded from the tarball and is never part of the running extension. Pre-flight
+steps 1–2 still run (they are cheap and index.js must stay untouched), and the change still
+gets a normal review before commit. The v1.6.36 bump for the original docs page was reverted
+for exactly this reason — do not repeat it.
+
 1. Make code changes
 2. Bump `package.json` version
 3. Add a CHANGELOG.md entry (see format below)
@@ -144,6 +152,7 @@ tar -czf "/tmp/${TARBALL}" \
   --exclude='./node_modules' \
   --exclude='./old' \
   --exclude='./data' \
+  --exclude='./docs' \
   --exclude='./*.tar.gz' \
   .
 cp "/tmp/${TARBALL}" "./${TARBALL}"
