@@ -3050,11 +3050,19 @@ const SEARCH_PAGE      = 500;              // albums per Roon load() page
 // Home redesign.
 const INDEX_MAX_AGE_MS = 60 * 60 * 1000;   // rebuild if older than this (safety net)
 const INDEX_CHECK_MS   = 5 * 60 * 1000;    // how often to check for library edits
+// A clean 5-min probe (count + first/last identity unchanged) now REFRESHES
+// freshness (verifiedAt below) instead of letting the 1h window lapse — the
+// lapse made every hour of active use kick off a full count:500 re-walk of a
+// provably unchanged library (the Roon-side JSON-serialization churn reported
+// against Build 1670). The probe can't see a mid-list count-neutral edit,
+// so a full walk still runs at most daily:
+const INDEX_HARD_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 const albumIndex = {
   albums:   [],     // [{ offset, title, subtitle, image_key, nTitle, nArtist, tTitle[], tArtist[], jTitle, jArtist, artistNames[] }]
   count:    0,
-  builtAt:  0,
+  builtAt:  0,      // last FULL walk of the library
+  verifiedAt: 0,    // last clean probe that confirmed the index still matches
   progress: 0,      // 0..1 while building
   building: null    // Promise while a build is in flight
 };
@@ -3123,6 +3131,7 @@ async function buildAlbumIndex() {
     albumIndex.albums   = albums.filter(Boolean);  // drop any holes
     albumIndex.count    = albumIndex.albums.length;
     albumIndex.builtAt  = Date.now();
+    albumIndex.verifiedAt = albumIndex.builtAt;
     albumIndex.progress = 1;
     if (DEBUG) console.log("[index] built", albumIndex.count, "albums");
     return albumIndex;
@@ -3139,8 +3148,13 @@ async function buildAlbumIndex() {
 // trigger) and startIndexMaintenance (re-pair probe-vs-rebuild choice) so the
 // two paths can never disagree about when a rebuild is due.
 function isIndexFresh() {
+  // Fresh = full walk OR clean probe within the 1h window, AND the last full
+  // walk is within the 24h hard cap (probes can't see mid-list count-neutral
+  // edits, so verification alone must not extend freshness forever).
+  const freshRef = Math.max(albumIndex.builtAt, albumIndex.verifiedAt);
   return albumIndex.count > 0 && albumIndex.builtAt > 0 &&
-         (Date.now() - albumIndex.builtAt) <= INDEX_MAX_AGE_MS;
+         (Date.now() - freshRef) <= INDEX_MAX_AGE_MS &&
+         (Date.now() - albumIndex.builtAt) <= INDEX_HARD_MAX_AGE_MS;
 }
 
 // Ensure a usable index exists; (re)build if empty or stale. Awaits only the
@@ -3183,20 +3197,29 @@ async function checkIndexChanged() {
         const last = tail.items && tail.items[0];
         lastChanged = identity(last) !== identity(albumIndex.albums[albumIndex.count - 1]);
       }
-      if (total !== albumIndex.count || (albumIndex.count > 0 && firstNow !== firstIdx) || lastChanged) {
-        if (DEBUG) console.log("[index] library changed (count", albumIndex.count, "->", total, ") - rebuilding");
-        // A library edit (add/remove/reorder) shifts the genre/label/tag list
-        // positions too, so drop the browse offset cache — stale entries would
-        // still be caught by the title verify, but clearing avoids the wasted
-        // verify round-trip on the first play of each filter after a change.
-        clearBrowseOffsetCache();
-        // Re-seed labelsIndex from the fresh album index too: its album offsets
-        // are a snapshot, and a rebuild (reorder/add/remove) leaves them
-        // pointing at the wrong albums for the labels browser + display grids.
-        buildAlbumIndex()
-          .then(() => rebuildLabelsMap())
-          .catch(() => { /* build error already logged by buildAlbumIndex */ });
+      const changed = total !== albumIndex.count ||
+                      (albumIndex.count > 0 && firstNow !== firstIdx) || lastChanged;
+      // Even when the probe is clean, honour the daily hard cap here too —
+      // on an idle box nothing else calls ensureAlbumIndex, so without this
+      // the offsets could drift past 24h with only probe-level verification.
+      const capExpired = albumIndex.builtAt > 0 &&
+                         (Date.now() - albumIndex.builtAt) > INDEX_HARD_MAX_AGE_MS;
+      if (!changed && !capExpired) {
+        albumIndex.verifiedAt = Date.now();
+        return;
       }
+      if (DEBUG) console.log("[index] library", changed ? "changed (count " + albumIndex.count + " -> " + total + ")" : "past the 24h full-walk cap", "- rebuilding");
+      // A library edit (add/remove/reorder) shifts the genre/label/tag list
+      // positions too, so drop the browse offset cache — stale entries would
+      // still be caught by the title verify, but clearing avoids the wasted
+      // verify round-trip on the first play of each filter after a change.
+      clearBrowseOffsetCache();
+      // Re-seed labelsIndex from the fresh album index too: its album offsets
+      // are a snapshot, and a rebuild (reorder/add/remove) leaves them
+      // pointing at the wrong albums for the labels browser + display grids.
+      buildAlbumIndex()
+        .then(() => rebuildLabelsMap())
+        .catch(() => { /* build error already logged by buildAlbumIndex */ });
     });
   } catch (e) { /* browse/load probe failed — next maintenance tick will retry */ }
 }
