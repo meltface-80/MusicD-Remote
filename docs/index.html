@@ -625,8 +625,12 @@ docker run -d \
     var v = state.version;
     var mac = state.mode === "macos";
     var y = [];
-    y.push("# create docker-compose.yml — then run:  docker compose up -d");
-    y.push("# (builds straight from the GitHub release tag — no download step needed)");
+    // Emit a paste-safe command: bare YAML pasted into a shell makes bash try
+    // to run every line ("services:: command not found"), so wrap the file
+    // contents in a heredoc and chain the up command.
+    y.push("# one paste: writes docker-compose.yml, then builds straight from");
+    y.push("# the GitHub release tag — no download step needed");
+    y.push("cat > docker-compose.yml <<'EOF'");
     y.push("services:");
     y.push("  musicd-remote:");
     y.push("    build: https://github.com/" + REPO + ".git#v" + v);
@@ -650,6 +654,8 @@ docker run -d \
     y.push("volumes:");
     y.push("  musicd-remote-data:");
     y.push("    external: false   # keep this volume — it holds your Roon pairing + history");
+    y.push("EOF");
+    y.push("docker compose up -d");
     return [{ t: y.join("\n"), c: "" }];
   }
 
