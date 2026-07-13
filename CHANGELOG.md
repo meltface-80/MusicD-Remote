@@ -2,6 +2,37 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.37] — 2026-07-13
+
+### Fixed
+
+- **Hourly full-library re-walks eliminated** (follow-up to a community report of Roon Server
+  Build 1670 heap/GC churn, investigated against two users' Roon Server logs). A clean
+  5-minute library probe (count + first/last album identity unchanged) did not refresh the
+  album index's 1-hour freshness window, so on an actively used system every hour of use
+  kicked off a full paginated re-walk (`load count:500` × the whole library) of a provably
+  unchanged library — the spiky large-payload JSON serialization visible in the reporter's
+  heap graphs. A clean probe now counts as verification and extends freshness; a full walk
+  still runs when the probe detects a change, and at most once every 24 hours regardless
+  (the probe can't see mid-list count-neutral edits, so verification alone must not extend
+  freshness forever — the daily cap is enforced by the probe itself, so it also holds on an
+  idle box). Worst case drops from ~24 full walks/day to 1.
+- Log-verified while investigating (no code change needed): the reporter's other findings
+  were already fixed or unfounded on current builds — the fresh random `multi_session_key`
+  per 5-min probe (~265 never-released Roon-side browse sessions/day) was fixed by v1.6.35's
+  pooled browse sessions; the web UI's 1.5s zone-state poll is served entirely from the
+  extension's in-memory zone map (zero Roon calls, and polling stops while the tab is
+  hidden); and Roon's `devicedb` traffic is the Core's own audio-device database refreshing
+  on a fixed ~4-hour timer, uncorrelated with extension activity.
+
+### Changed
+
+- **docker-compose.yml modernised**: it still referenced the pre-rename
+  `roon-random-albums` container and — dangerously — a `roon-data` volume, which would
+  start compose users with an empty data volume (re-pairing, lost history). It now builds
+  straight from the GitHub release tag (no container registry, no manual download), names
+  the container `musicd-remote`, and mounts the standard `musicd-remote-data` volume.
+
 ## [1.6.36] — 2026-07-13
 
 ### Fixed
