@@ -666,6 +666,12 @@
 
   // ----- Toast / banner -----
   let toastTimer = null;
+  function primaryTrackArtist(s) {
+    if (!s || typeof s !== "string") return "";
+    const i = s.indexOf(",");
+    return i === -1 ? s.trim() : s.slice(0, i).trim();
+  }
+
   function showToast(msg, kind) {
     toast.textContent = msg;
     toast.classList.remove("hidden", "error");
@@ -1204,7 +1210,7 @@
         const ti = document.createElement("span"); ti.className = "t-title";
         ti.textContent = t.title || "";
         const su = document.createElement("span"); su.className = "t-sub";
-        su.textContent = t.subtitle || "";
+        su.textContent = primaryTrackArtist(t.subtitle);
         li.appendChild(ti); li.appendChild(su);
         modalTracks.appendChild(li);
       }
@@ -1407,7 +1413,7 @@
         const ti = document.createElement("span"); ti.className = "t-title";
         ti.textContent = t.title || "";
         const su = document.createElement("span"); su.className = "t-sub";
-        su.textContent = t.subtitle || "";
+        su.textContent = primaryTrackArtist(t.subtitle);
         li.appendChild(ti); li.appendChild(su);
         li.addEventListener("click", (e) => {
           if (e.target.closest(".t-actions")) return;   // taps on the buttons themselves
