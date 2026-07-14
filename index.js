@@ -738,7 +738,7 @@ async function pickSmartAlbum() {
 // open it, and load its contents. item_keys are session-scoped, so every
 // request must rebuild this state from scratch. The caller owns the pooled
 // sessionKey (acquired via withBrowseSession) and releases it when done.
-async function loadAlbumSession(sessionKey, offset, filter) {
+async function loadAlbumSession(sessionKey, offset, filter, expect) {
   // 1) Navigate to the album list this offset belongs to (full library, or a
   //    genre/tag list when a filter is active — offsets are per-list). Decade
   //    offsets are full-library positions, so resolve them against the full
@@ -751,8 +751,40 @@ async function loadAlbumSession(sessionKey, offset, filter) {
   const albumLoad = await load({
     hierarchy, offset, count: 1, multi_session_key: sessionKey
   });
-  const albumItem = albumLoad.items && albumLoad.items[0];
+  let albumItem = albumLoad.items && albumLoad.items[0];
   if (!albumItem) throw new Error("Album not found at offset " + offset);
+
+  // 2b) Verify the item at the offset is the album the caller opened (see the
+  //     stale-offset defense block below). On drift, re-locate by identity in
+  //     the album index and retry ONCE at the fresh offset; if that also
+  //     misses (index itself mid-drift during a bulk import), fail loudly
+  //     rather than silently opening/playing whatever sits there now.
+  //     Relocation only applies to full-library offsets — a genre/tag/label
+  //     list has its own positions the album index can't provide.
+  if (!albumIdentityMatches(albumItem, expect)) {
+    scheduleStaleRecheck();
+    let relocated = null;
+    let relocatedOffset = -1;
+    if (!navFilter) {
+      relocatedOffset = relocateAlbumOffset(expect);
+      if (relocatedOffset >= 0 && relocatedOffset !== offset) {
+        const retry = await load({
+          hierarchy, offset: relocatedOffset, count: 1, multi_session_key: sessionKey
+        });
+        const retryItem = retry.items && retry.items[0];
+        if (albumIdentityMatches(retryItem, expect)) relocated = retryItem;
+      }
+    }
+    if (!relocated) {
+      const err = new Error("The library just changed and this album moved — close and reopen it.");
+      err.stale = true;
+      throw err;
+    }
+    if (DEBUG) console.log("[album] stale offset " + offset + " relocated to " + relocatedOffset +
+                           " for " + JSON.stringify(expect.title));
+    offset = relocatedOffset;
+    albumItem = relocated;
+  }
 
   // 3) Drill into the album
   const drill = await browse({
@@ -790,7 +822,9 @@ async function loadAlbumSession(sessionKey, offset, filter) {
        i.hint === "action_list" && !i.subtitle
   );
 
-  return { hierarchy, albumItem, items, playMenu };
+  // `offset` may have been corrected by the stale-offset relocation above —
+  // callers pass it back to the client so follow-up plays use the fresh one.
+  return { hierarchy, albumItem, items, playMenu, offset };
 }
 
 // A track = an item that isn't the play menu, a no-subtitle submenu
@@ -808,10 +842,56 @@ function stripTrackNumber(title) {
   return (title || "").replace(/^\d+\.\s+/, "");
 }
 
-async function openAlbumByOffset(offset, zoneOrOutputId, invokeKind, filter) {
+// ---- Stale-offset defense ---------------------------------------------------
+// Tiles carry an offset captured when the album index was built. A Roon
+// library edit (import, rescan) shifts those positions, so the album now
+// sitting at a tile's offset can be a different record entirely — and the
+// album view still LOOKS right because its header renders from the cached
+// tile, so "Play now" used to silently play the wrong album. The per-track
+// path has verified identity since v1.6.10; these give the album-level path
+// the same protection.
+function albumIdentityMatches(item, expect) {
+  if (!expect || !expect.title) return true;   // caller supplied no identity — legacy behavior
+  if (!item) return false;
+  if (normalize(item.title || "") !== normalize(expect.title)) return false;
+  // Subtitle is enforced only when supplied — some callers only know the title.
+  if (expect.subtitle && normalize(item.subtitle || "") !== normalize(expect.subtitle)) return false;
+  return true;
+}
+function relocateAlbumOffset(expect) {
+  const nT = normalize(expect.title || "");
+  if (!nT) return -1;
+  const nA = normalize(expect.subtitle || "");
+  const hit = albumIndex.albums.find(a => a.nTitle === nT && (!nA || a.nArtist === nA));
+  return hit ? hit.offset : -1;
+}
+// A verify-mismatch at open/play time is hard evidence the library shifted —
+// kick the change probe now instead of waiting up to 5 minutes for the next
+// scheduled one. checkIndexChanged no-ops while a build is in flight, so
+// chain behind the running build in that case. Two guards keep a bulk import
+// from amplifying: the pending flag clears only AFTER the probe completes
+// (never two concurrent play-driven probes), and a 30s floor stops mismatch
+// bursts from chaining probe→rebuild→probe continuously — worst case the
+// regular 5-minute tick still catches anything this floor skips.
+let _staleRecheckPending = false;
+let _staleRecheckLast = 0;
+function scheduleStaleRecheck() {
+  if (_staleRecheckPending) return;
+  if (Date.now() - _staleRecheckLast < 30 * 1000) return;
+  _staleRecheckPending = true;
+  const clear = () => { _staleRecheckPending = false; };
+  const run = () => {
+    _staleRecheckLast = Date.now();
+    Promise.resolve(checkIndexChanged()).then(clear, clear);
+  };
+  if (albumIndex.building) albumIndex.building.then(run, run);
+  else setTimeout(run, 0);
+}
+
+async function openAlbumByOffset(offset, zoneOrOutputId, invokeKind, filter, expect) {
   return withBrowseSession(async (sessionKey) => {
-    const { hierarchy, albumItem, items, playMenu } =
-      await loadAlbumSession(sessionKey, offset, filter);
+    const { hierarchy, albumItem, items, playMenu, offset: effectiveOffset } =
+      await loadAlbumSession(sessionKey, offset, filter, expect);
 
     const albumInfo = {
       title:     albumItem.title || "",
@@ -849,7 +929,7 @@ async function openAlbumByOffset(offset, zoneOrOutputId, invokeKind, filter) {
       invoked = action.title;
     }
 
-    return { album: albumInfo, tracks, actions, invoked };
+    return { album: albumInfo, tracks, actions, invoked, offset: effectiveOffset };
   });
 }
 
@@ -4490,15 +4570,21 @@ app.get("/api/album", async (req, res) => {
   if (!Number.isFinite(offset) || offset < 0) {
     return res.status(400).json({ error: "Valid offset query parameter required" });
   }
+  // Album identity travels with the request so a stale offset (library
+  // changed since the tile rendered) is detected and relocated server-side.
+  const expect = req.query.title
+    ? { title: String(req.query.title), subtitle: String(req.query.subtitle || "") }
+    : null;
   try {
-    const r = await openAlbumByOffset(offset, null, null, parseFilter(req.query));
+    const r = await openAlbumByOffset(offset, null, null, parseFilter(req.query), expect);
     res.json({
       album:  r.album,
       tracks: r.tracks,
-      actions: r.actions.map(a => ({ kind: a.kind, title: a.title }))
+      actions: r.actions.map(a => ({ kind: a.kind, title: a.title })),
+      offset: r.offset   // corrected when the stale-offset defense relocated
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.stale ? 409 : 500).json({ error: e.message });
   }
 });
 
@@ -5393,13 +5479,23 @@ async function radioTopUp(zoneId, mode) {
   try {
     const pick = await pickSmartAlbum();
     if (!pick) { st.active = false; return; }
-    await openAlbumByOffset(pick.offset, zoneId, mode === "play" ? "play_now" : "queue");
+    await openAlbumByOffset(pick.offset, zoneId, mode === "play" ? "play_now" : "queue", null,
+                            { title: pick.title || "", subtitle: pick.subtitle || "" });
     if (DEBUG) console.log("[radio] " + mode + " '" + pick.title + "' -> " + zoneId);
     // st.active clears when the queue grows (handleRadioZone sees remaining > 1)
     // or via the 30s timeout above if the queue never reflects the add.
   } catch (e) {
     if (DEBUG) console.error("[radio] top-up failed:", e.message);
-    st.active = false; // allow a retry on the next zone update
+    if (e && e.stale) {
+      // The pick's offset drifted mid-library-change (import/rescan). Zone
+      // events fire ~1/sec while a queue drains, so releasing the guard here
+      // would hammer the Core with a failing browse session per event for the
+      // whole import. Keep the 30s throttle armed; the retry after it lapses
+      // re-picks against the (by then likely rebuilt) index.
+      st.ts = Date.now();   // st.active stays true
+    } else {
+      st.active = false; // allow a retry on the next zone update
+    }
   }
 }
 
@@ -6038,16 +6134,18 @@ app.get("/api/debug/label-scan", async (req, res) => {
 // Play an album: body { offset, zone_or_output_id, kind }
 app.post("/api/play", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
-  const { offset, zone_or_output_id, kind } = req.body || {};
+  const { offset, zone_or_output_id, kind, title, subtitle } = req.body || {};
   const filter = parseFilter(req.body || {});
   if (!Number.isFinite(offset)) return res.status(400).json({ error: "offset required" });
   if (!zone_or_output_id)       return res.status(400).json({ error: "zone_or_output_id required" });
   if (!kind)                    return res.status(400).json({ error: "kind required" });
+  // Identity check: never play whatever happens to sit at a stale offset.
+  const expect = title ? { title: String(title), subtitle: String(subtitle || "") } : null;
   try {
-    await openAlbumByOffset(offset, zone_or_output_id, kind, filter);
-    res.json({ ok: true });
+    const r = await openAlbumByOffset(offset, zone_or_output_id, kind, filter, expect);
+    res.json({ ok: true, action: r.invoked, offset: r.offset });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(e.stale ? 409 : 500).json({ error: e.message });
   }
 });
 
@@ -6076,9 +6174,17 @@ app.post("/api/play-track", async (req, res) => {
 // body { offsets: [N, ...], zone_or_output_id, kind }
 app.post("/api/play-multi", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
-  const { offsets, zone_or_output_id, kind } = req.body || {};
+  const { offsets, items, zone_or_output_id, kind } = req.body || {};
   const filter = parseFilter(req.body || {});
-  if (!Array.isArray(offsets) || !offsets.length) return res.status(400).json({ error: "offsets required" });
+  // Prefer `items` ({offset,title,subtitle} each) so the stale-offset defense
+  // covers multi-select too; bare `offsets` kept for backward compatibility.
+  const list = Array.isArray(items) && items.length
+    ? items.map(it => ({
+        offset: it.offset,
+        expect: it.title ? { title: String(it.title), subtitle: String(it.subtitle || "") } : null
+      }))
+    : (Array.isArray(offsets) ? offsets.map(off => ({ offset: off, expect: null })) : []);
+  if (!list.length)       return res.status(400).json({ error: "offsets required" });
   if (!zone_or_output_id) return res.status(400).json({ error: "zone_or_output_id required" });
   if (!kind)              return res.status(400).json({ error: "kind required" });
   try {
@@ -6090,14 +6196,14 @@ app.post("/api/play-multi", async (req, res) => {
     // onto the Core). allSettled so one failed album doesn't abandon the
     // rest of the selection — every album is attempted, then failures are
     // reported together.
-    await openAlbumByOffset(offsets[0], zone_or_output_id, kind, filter);
+    await openAlbumByOffset(list[0].offset, zone_or_output_id, kind, filter, list[0].expect);
     const MULTI_QUEUE_BATCH = 4;
-    const rest = offsets.slice(1);
+    const rest = list.slice(1);
     let failed = 0, firstError = null;
     for (let i = 0; i < rest.length; i += MULTI_QUEUE_BATCH) {
       const results = await Promise.allSettled(
         rest.slice(i, i + MULTI_QUEUE_BATCH)
-            .map(off => openAlbumByOffset(off, zone_or_output_id, "queue", filter))
+            .map(it => openAlbumByOffset(it.offset, zone_or_output_id, "queue", filter, it.expect))
       );
       for (const r of results) {
         if (r.status === "rejected") {
@@ -6113,7 +6219,9 @@ app.post("/api/play-multi", async (req, res) => {
     }
     res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    // stale = the FIRST album's offset drifted and couldn't be relocated —
+    // same 409 contract as /api/album and /api/play.
+    res.status(e.stale ? 409 : 500).json({ error: e.message });
   }
 });
 
@@ -6492,7 +6600,8 @@ app.post("/api/play-unheard", async (req, res) => {
   try {
     const pick = await pickUnheardAlbum();
     if (!pick) return res.status(503).json({ error: "No albums available" });
-    await openAlbumByOffset(pick.offset, zoneId, "play_now");
+    await openAlbumByOffset(pick.offset, zoneId, "play_now", null,
+                            { title: pick.title || "", subtitle: pick.subtitle || "" });
     res.json({ ok: true, album: pick.title, artist: pick.subtitle });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -6527,7 +6636,8 @@ app.get("/api/shortcut/play-random", async (req, res) => {
   try {
     const picks = (await pickRandomAlbums(1)).albums;
     if (!picks.length) return res.status(503).json({ error: "No albums available" });
-    await openAlbumByOffset(picks[0].offset, zone.zone_id, "play_now");
+    await openAlbumByOffset(picks[0].offset, zone.zone_id, "play_now", null,
+                            { title: picks[0].title || "", subtitle: picks[0].subtitle || "" });
     res.json({ ok: true, album: picks[0].title, artist: picks[0].subtitle, zone: zone.display_name });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -6548,7 +6658,8 @@ app.get("/api/shortcut/play-unheard", async (req, res) => {
   try {
     const pick = await pickUnheardAlbum();
     if (!pick) return res.status(503).json({ error: "No albums available" });
-    await openAlbumByOffset(pick.offset, zone.zone_id, "play_now");
+    await openAlbumByOffset(pick.offset, zone.zone_id, "play_now", null,
+                            { title: pick.title || "", subtitle: pick.subtitle || "" });
     res.json({ ok: true, album: pick.title, artist: pick.subtitle, zone: zone.display_name });
   } catch (e) {
     res.status(500).json({ error: e.message });

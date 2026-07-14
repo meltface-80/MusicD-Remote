@@ -505,6 +505,9 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           offset: ppAlbum.offset,
+          // Identity travels with the play (stale-offset defense; see /api/play).
+          title:    ppAlbum.title    || "",
+          subtitle: ppAlbum.subtitle || "",
           zone_or_output_id: zoneId,
           kind,
           filter_type: "", filter_value: "", filter_parent: ""

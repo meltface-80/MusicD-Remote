@@ -1328,7 +1328,12 @@
   });
 
   async function fetchAlbumDetail(album) {
-    const r = await fetch(`/api/album?offset=${album.offset}${filterQSOf(currentDetailFilter)}`);
+    // Send the album's identity so the server can detect a stale offset
+    // (library changed since the tile rendered) and relocate — or 409 —
+    // instead of returning whatever album now sits at that position.
+    const idQS = `&title=${encodeURIComponent(album.title || "")}` +
+                 `&subtitle=${encodeURIComponent(album.subtitle || "")}`;
+    const r = await fetch(`/api/album?offset=${album.offset}${idQS}${filterQSOf(currentDetailFilter)}`);
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
       throw new Error(j.error || `HTTP ${r.status}`);
@@ -1339,6 +1344,11 @@
     // waited — bail rather than render album A's rows (whose tap handlers
     // would fire against album B's offset). Same guard as fetchAlbumExtras.
     if (album !== currentAlbum) return;
+
+    // The server corrects the offset when the stale-offset defense relocated
+    // the album — adopt it so Play/Queue and per-track actions use the fresh
+    // position instead of re-tripping the same relocation on every call.
+    if (typeof j.offset === "number" && j.offset >= 0) album.offset = j.offset;
 
     // Only accept server title if it matches what we expected — guards against
     // stale index offsets returning a completely different album after a library change.
@@ -1587,6 +1597,10 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           offset: currentAlbum.offset,
+          // Identity travels with the play so a stale offset is relocated
+          // (or refused with a 409) server-side — never played blind.
+          title:    currentAlbum.title    || "",
+          subtitle: currentAlbum.subtitle || "",
           zone_or_output_id: selectedZoneId,
           kind,
           filter_type:   currentDetailFilter ? currentDetailFilter.type   : "",
@@ -1596,6 +1610,7 @@
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      if (typeof j.offset === "number" && j.offset >= 0) currentAlbum.offset = j.offset;
       showToast(`${j.action || orig} → ${zoneName(selectedZoneId)}`);
       // Keep the album view open after playing so the user stays on the album.
     } catch (e) {
@@ -2523,7 +2538,12 @@
         grid.innerHTML = "";
         const frag = document.createDocumentFragment();
         for (const a of albums) {
-          frag.appendChild(buildAlbumTile(a, () => openAlbum(a)));
+          // Label albums carry FULL-LIBRARY offsets; without the explicit
+          // filter:null override a lingering genre/tag filter would resolve
+          // them against the wrong (filtered) list — the offset misses, and
+          // the stale-offset defense correctly refuses with "library changed"
+          // even though nothing did. (Same override Home rows use.)
+          frag.appendChild(buildAlbumTile(a, () => openAlbum(a, { filter: null })));
         }
         grid.appendChild(frag);
       } catch (e) {
@@ -2588,6 +2608,9 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           offsets: albumSelected.map(a => a.offset),
+          // Identity per album so a mid-scan stale offset is relocated or
+          // refused server-side instead of queueing the wrong records.
+          items: albumSelected.map(a => ({ offset: a.offset, title: a.title || "", subtitle: a.subtitle || "" })),
           zone_or_output_id: selectedZoneId,
           kind,
           filter_type:   activeFilter ? activeFilter.type   : "",
@@ -2684,6 +2707,47 @@
   const volPop    = document.getElementById("mt-vol-popover");
   const volSlider = document.getElementById("mt-vol-slider");
   const volVal    = document.getElementById("mt-vol-value");
+  const volMinL   = document.getElementById("mt-vol-min");
+  const volMaxL   = document.getElementById("mt-vol-max");
+  const volWrap   = document.getElementById("mt-vol-sliderwrap");
+
+  // The selected zone's controllable output, looked up at READ time — never a
+  // mirrored global (same principle as window.__getCurrentNp below: mirrors
+  // strand stale state across zone switches and early-return render paths).
+  // type "incremental" means relative-only (no absolute scale): the sheets
+  // hide the slider/scale and the −/+ send relative nudges.
+  function currentVolOutput() {
+    return (currentZone && (currentZone.outputs || []).find(o => o.volume)) || null;
+  }
+
+  // WebKit has no ::range-progress, so the accent fill left of the thumb is a
+  // gradient driven by --vol-fill; keep it in sync whenever value/min/max move.
+  function paintVolFill(slider) {
+    if (!slider) return;
+    const val = parseFloat(slider.value);
+    if (!Number.isFinite(val)) return;   // empty/cleared attrs — leave the fill untouched
+    const min = parseFloat(slider.min) || 0;
+    const max = parseFloat(slider.max);
+    const hi  = Number.isFinite(max) && max > min ? max : min + 100;
+    const pct = ((val - min) / (hi - min)) * 100;
+    slider.style.setProperty("--vol-fill", Math.max(0, Math.min(100, pct)) + "%");
+  }
+
+  // One writer for "both sliders + both readouts + both fills" — the mini bar
+  // and the NP sheet must always show the same number for the same output.
+  function syncVolumeUI(v) {
+    volSlider.value = v;
+    volVal.textContent = Math.round(v);
+    if (npVolSlider) npVolSlider.value = v;
+    if (npVolValue)  npVolValue.textContent = Math.round(v);
+    paintVolFill(volSlider); paintVolFill(npVolSlider);
+  }
+  // Scale labels show the output's real range (0/100 for number volumes,
+  // e.g. -80/0 for dB volumes) — matches what the slider actually spans.
+  function paintVolScale(minEl, maxEl, v) {
+    if (minEl) minEl.textContent = Math.round(v.min != null ? v.min : 0);
+    if (maxEl) maxEl.textContent = Math.round(v.max != null ? v.max : 100);
+  }
 
   // Now-playing screen (Roon-style) elements — shared modal, driven by the
   // same poll loop so there's a single source of truth.
@@ -2703,6 +2767,11 @@
   const npVolBtn    = document.getElementById("np-volbtn");
   const npVolPopover= document.getElementById("np-vol-popover");
   const npVolFixed  = document.getElementById("np-vol-fixed");
+  const npVolControls = document.getElementById("np-vol-controls");
+  const npVolValue  = document.getElementById("np-vol-value");
+  const npVolMinL   = document.getElementById("np-vol-min");
+  const npVolMaxL   = document.getElementById("np-vol-max");
+  const npVolWrap   = document.getElementById("np-vol-sliderwrap");
   const npIconVol   = document.getElementById("np-icon-vol");
   const npIconMute  = document.getElementById("np-icon-mute");
   const npVolSlider = document.getElementById("np-vol-slider");
@@ -2826,8 +2895,7 @@
     const volOutput = (zone.outputs || []).find(o => o.volume);
     const muted = (zone.outputs || []).some(o => o.is_muted);
     const playing = zone.state === "playing" || zone.state === "loading";
-    const barSig = [np.line1, np.line2, np.line3, zone.state, muted,
-                    volOutput ? volOutput.volume.value : "novol"].join("|");
+    const barSig = [np.line1, np.line2, np.line3, zone.state, muted].join("|");
     if (barSig !== lastBarSig) {
       lastBarSig = barSig;
 
@@ -2841,23 +2909,30 @@
       iconPause.classList.toggle("hidden", !playing);
       btnPP.setAttribute("aria-label", playing ? "Pause" : "Play");
 
-      // Volume: use the first output that has a volume control
-      if (volOutput) {
-        const v = volOutput.volume;
-        volSlider.min   = v.min   != null ? v.min  : 0;
-        volSlider.max   = v.max   != null ? v.max  : 100;
-        volSlider.step  = v.step  != null ? v.step : 1;
-        if (!userIsDraggingVolume) {
-          volSlider.value = v.value;
-          volVal.textContent = Math.round(v.value);
-        }
-        btnVol.disabled = false;
-      } else {
-        btnVol.disabled = true;
-      }
-
       iconVol .classList.toggle("hidden",  muted);
       iconMute.classList.toggle("hidden", !muted);
+    }
+
+    // Volume UI — every tick, NOT barSig-gated: a zone switch can leave the
+    // signature unchanged, and the sheet must never keep serving the previous
+    // zone's range/type. userIsDraggingVolume still guards the value writes.
+    if (volOutput) {
+      const v = volOutput.volume;
+      volSlider.min   = v.min   != null ? v.min  : 0;
+      volSlider.max   = v.max   != null ? v.max  : 100;
+      volSlider.step  = v.step  != null ? v.step : 1;
+      if (!userIsDraggingVolume) {
+        volSlider.value = v.value != null ? v.value : 0;
+        volVal.textContent = v.value != null ? Math.round(v.value) : "—";
+        paintVolFill(volSlider);
+      }
+      paintVolScale(volMinL, volMaxL, v);
+      // Relative-only (incremental) outputs have no absolute scale — the
+      // sheet collapses to the −/+ nudge buttons, matching Roon.
+      if (volWrap) volWrap.classList.toggle("hidden", (v.type || null) === "incremental");
+      btnVol.disabled = false;
+    } else {
+      btnVol.disabled = true;
     }
 
     // Resync the local seek baseline used by the now-playing screen's ticker.
@@ -2948,7 +3023,7 @@
     }
     paintSeek();
 
-    // Volume — show the slider only when the endpoint has a controllable
+    // Volume — show the controls only when the endpoint has a controllable
     // volume; otherwise show "Volume control is fixed" (matches Roon).
     const volOutput = (currentZone.outputs || []).find(o => o.volume);
     if (volOutput) {
@@ -2956,11 +3031,17 @@
       npVolSlider.min  = v.min  != null ? v.min  : 0;
       npVolSlider.max  = v.max  != null ? v.max  : 100;
       npVolSlider.step = v.step != null ? v.step : 1;
-      if (!userIsDraggingVolume) npVolSlider.value = v.value;
-      npVolSlider.classList.remove("hidden");
+      if (!userIsDraggingVolume) {
+        npVolSlider.value = v.value != null ? v.value : 0;
+        if (npVolValue) npVolValue.textContent = v.value != null ? Math.round(v.value) : "—";
+        paintVolFill(npVolSlider);
+      }
+      paintVolScale(npVolMinL, npVolMaxL, v);
+      if (npVolWrap) npVolWrap.classList.toggle("hidden", (v.type || null) === "incremental");
+      if (npVolControls) npVolControls.classList.remove("hidden");
       if (npVolFixed) npVolFixed.classList.add("hidden");
     } else {
-      npVolSlider.classList.add("hidden");
+      if (npVolControls) npVolControls.classList.add("hidden");
       if (npVolFixed) npVolFixed.classList.remove("hidden");
     }
     const muted = (currentZone.outputs || []).some(o => o.is_muted);
@@ -3091,7 +3172,7 @@
     npVolSlider.addEventListener("input", () => {
       userIsDraggingVolume = true;
       const v = parseFloat(npVolSlider.value);
-      volSlider.value = v; volVal.textContent = Math.round(v);
+      syncVolumeUI(v);
       clearTimeout(npVolDebounce);
       npVolDebounce = setTimeout(() => setVolume(v), 90);
     });
@@ -3140,9 +3221,10 @@
   let volDebounce = null;
   volSlider.addEventListener("input", () => {
     userIsDraggingVolume = true;
-    volVal.textContent = Math.round(parseFloat(volSlider.value));
+    const v = parseFloat(volSlider.value);
+    syncVolumeUI(v);
     clearTimeout(volDebounce);
-    volDebounce = setTimeout(() => setVolume(parseFloat(volSlider.value)), 90);
+    volDebounce = setTimeout(() => setVolume(v), 90);
   });
   volSlider.addEventListener("change", () => {
     userIsDraggingVolume = false;
@@ -3222,21 +3304,36 @@
     }, { source: "now-playing", zoneId: currentZone.zone_id });
   });
 
-  // Volume +/- buttons
-  const stepMinus = document.getElementById("mt-vol-minus");
-  const stepPlus  = document.getElementById("mt-vol-plus");
-  function stepVolume(delta) {
-    if (!currentZone) return;
+  // Volume +/- buttons (shared by the mini-bar sheet and the NP sheet)
+  const stepMinus   = document.getElementById("mt-vol-minus");
+  const stepPlus    = document.getElementById("mt-vol-plus");
+  const npStepMinus = document.getElementById("np-vol-minus");
+  const npStepPlus  = document.getElementById("np-vol-plus");
+  async function stepVolume(delta) {
+    const vo = currentVolOutput();   // read-time — never a stale mirror
+    if (!vo) return;
+    if ((vo.volume.type || null) === "incremental") {
+      // Relative-only output: no absolute scale exists — send a nudge.
+      try {
+        await fetch("/api/volume", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ zone_or_output_id: currentZone.zone_id, relative: delta > 0 ? 1 : -1 })
+        });
+      } catch (e) { /* best-effort, like setVolume */ }
+      return;
+    }
     const cur = parseFloat(volSlider.value);
     const min = parseFloat(volSlider.min);
     const max = parseFloat(volSlider.max);
     const next = Math.max(min, Math.min(max, cur + delta));
-    volSlider.value = next;
-    volVal.textContent = Math.round(next);
+    syncVolumeUI(next);
     setVolume(next);
   }
-  if (stepMinus) stepMinus.addEventListener("click", (e) => { e.stopPropagation(); stepVolume(-2); });
-  if (stepPlus)  stepPlus .addEventListener("click", (e) => { e.stopPropagation(); stepVolume(+2); });
+  if (stepMinus)   stepMinus  .addEventListener("click", (e) => { e.stopPropagation(); stepVolume(-2); });
+  if (stepPlus)    stepPlus   .addEventListener("click", (e) => { e.stopPropagation(); stepVolume(+2); });
+  if (npStepMinus) npStepMinus.addEventListener("click", (e) => { e.stopPropagation(); stepVolume(-2); });
+  if (npStepPlus)  npStepPlus .addEventListener("click", (e) => { e.stopPropagation(); stepVolume(+2); });
 
   // Polling: 1.5s when visible/playing, slower when not
   function startPolling() {

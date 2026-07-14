@@ -2,6 +2,46 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.38] — 2026-07-14
+
+### Fixed
+
+- **"Play now" no longer plays a different album after a library change.** Album tiles carry
+  a position (offset) into Roon's albums list captured when the extension's index was built;
+  a Roon import/rescan shifts those positions, and both the album view and Play/Queue
+  resolved the album by raw offset with no identity check — so during (or after) a scan the
+  view could look right (its header renders from the cached tile) while the tracks and the
+  actual playback came from whatever album now sat at the stale position. Per-track play has
+  verified identity since v1.6.10; the album-level path now gets the same protection: the
+  album's title/artist travel with every open and play, the server verifies the item at the
+  offset matches, silently re-locates the album by identity in the index when it moved (and
+  returns the corrected position to the UI), and refuses loudly ("library just changed —
+  close and reopen") instead of playing blind when it can't. A verify-mismatch also triggers
+  the library-change probe immediately instead of waiting for the next 5-minute tick. The
+  album view previously *detected* this exact mismatch and silently kept rendering the wrong
+  album's tracks under the right title — that path now adopts the server-corrected position.
+  The same identity check covers every offset-based play path: multi-select Play/Queue, the
+  wall display's grid tiles, Random Album Radio's auto-advance, and the unheard/random
+  shortcuts — each already knew which album it meant; now Roon is held to it.
+- **Review hardening (8-angle)**: a stale radio pick keeps the 30s throttle armed instead of
+  retrying on every zone event (~1/sec) during an import; the play-time change probe can't
+  overlap itself or chain rebuilds hotter than every 30s; label-browser albums now open with
+  the explicit full-library filter override (a lingering genre/tag filter made their offsets
+  resolve against the wrong list — previously a silent wrong-album, now it would have been a
+  spurious "library changed" refusal); `/api/play-multi` returns the same 409 as the other
+  play routes when the first album moved; the volume sheets read the output's volume type at
+  tap time instead of from a mirrored global that a zone switch could strand.
+
+### Changed
+
+- **Roon-style volume control** (user request). The volume popovers on the mini play bar and
+  the now-playing screen are now one shared full-width sheet matching the official Roon app:
+  large speaker icon + numeric readout, a full-width slider with a proper touch-size thumb
+  (the old 4px hairline was unusable on phones) and the output's real min/max on a scale
+  beneath it, and round − / + buttons. Both sheets stay in sync, dB-scaled outputs show
+  their true range, and relative-only ("incremental") volume outputs — which previously got
+  a meaningless absolute slider — now collapse to the − / + nudge buttons, as in Roon.
+
 ## [1.6.37] — 2026-07-13
 
 ### Fixed

@@ -974,31 +974,9 @@ main {
   z-index: 71;
 }
 
-.mt-vol-popover {
-  position: absolute;
-  right: 12px;
-  bottom: calc(100% + 4px);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  box-shadow: var(--shadow-card);
-  min-width: 220px;
-}
-.mt-vol-popover input[type="range"] {
-  flex: 1;
-  accent-color: var(--accent);
-}
-.mt-vol-value {
-  font-size: 12px;
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-  min-width: 28px;
-  text-align: right;
-}
+/* (The old pill-style volume popover that lived here was dead code — the
+   .mt-vol-popover rules further down always overrode it. Removed when the
+   popover became the shared Roon-style .vol-sheet.) */
 
 /* Push the main grid above the mini transport */
 main {
@@ -1447,7 +1425,6 @@ main {
   width: 100%; margin-top: 14px; gap: 14px;
 }
 .np-vol { display: flex; align-items: center; gap: 10px; flex: 1; justify-content: flex-end; }
-.np-vol-slider { flex: 1; max-width: 150px; accent-color: var(--accent); cursor: pointer; }
 .np-mini-btn {
   display: inline-flex; align-items: center; justify-content: center;
   width: 56px; height: 56px;
@@ -1490,6 +1467,110 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 /* ------------------------------------------------------------------ */
 /*  Volume bar — full-width sheet with - / slider / +                  */
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* Roon-style volume sheet — one component shared by the mini-bar popover
+   and the now-playing screen popover: [speaker icon + big value]
+   [full-width slider with min/max scale beneath] [round − +]. */
+.vol-sheet {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 16px 12px;
+  border-radius: 16px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-modal);
+  animation: vol-in .14s ease-out;
+}
+@keyframes vol-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+.vol-controls {           /* np variant wraps its controls so the "fixed" note can swap in */
+  display: flex; align-items: center; gap: 14px;
+  flex: 1; min-width: 0;
+}
+.vol-readout { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.vol-readout .vol-icon { display: inline-flex; color: var(--text); }
+.vol-readout .vol-icon svg { width: 26px; height: 26px; }
+.vol-readout .vol-value {
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  min-width: 42px;
+}
+.vol-slider-wrap {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 0;
+}
+.vol-scale {
+  display: flex; justify-content: space-between;
+  font-size: 14px; color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  padding: 0 4px;
+}
+.vol-step {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  cursor: pointer;
+  flex: 0 0 auto;
+  font-size: 22px;
+  font-weight: 500;
+}
+.vol-step:hover  { background: var(--border); }
+.vol-step:active { transform: scale(.95); }
+
+/* Big touch-friendly slider (the native 4px hairline was unusable on
+   phones). Track fill uses --vol-fill, kept in sync from JS, because
+   WebKit has no ::range-progress. */
+input.vol-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 30px;               /* generous hit target */
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+input.vol-range::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(to right,
+    var(--accent) 0%, var(--accent) var(--vol-fill, 50%),
+    var(--border) var(--vol-fill, 50%), var(--border) 100%);
+}
+input.vol-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 26px; height: 26px;
+  margin-top: -10px;          /* centre the 26px thumb on the 6px track */
+  border-radius: 50%;
+  background: #fff;
+  border: 0;
+  box-shadow: 0 1px 5px rgba(0,0,0,.45);
+}
+input.vol-range::-moz-range-track {
+  height: 6px; border-radius: 3px;
+  background: var(--border);
+}
+input.vol-range::-moz-range-progress {
+  height: 6px; border-radius: 3px;
+  background: var(--accent);
+}
+input.vol-range::-moz-range-thumb {
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  background: #fff;
+  border: 0;
+  box-shadow: 0 1px 5px rgba(0,0,0,.45);
+}
+
 .mt-vol-popover {
   /* Sit just above the mini transport, span the full width. */
   position: fixed;
@@ -1497,61 +1578,17 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
   bottom: calc(78px + env(safe-area-inset-bottom));
   margin: 0 10px;
   z-index: 71;   /* one above .mini-transport (70) */
-  border-radius: 14px;
-  padding: 14px 14px;
   min-width: 0;
+}
+/* .np-popover's base rule appears LATER in this file, so at equal specificity
+   its 10px padding / panel-2 background / 12px radius would beat .vol-sheet's
+   on the now-playing sheet — repeat the sheet's shell at higher specificity. */
+.np-popover.vol-sheet {
+  padding: 18px 16px 12px;
+  border-radius: 16px;
   background: var(--bg-elev);
-  border: 1px solid var(--border);
   box-shadow: var(--shadow-modal);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  animation: vol-in .14s ease-out;
 }
-@keyframes vol-in {
-  from { opacity: 0; transform: translateY(6px); }
-  to   { opacity: 1; transform: none; }
-}
-.mt-vol-popover .vol-row {
-  display: flex; align-items: center; gap: 12px;
-  flex: 1; min-width: 0;
-}
-.mt-vol-popover input[type="range"] {
-  flex: 1; min-width: 0;
-  height: 4px;
-  accent-color: var(--accent);
-}
-.mt-vol-value {
-  font-size: 14px;
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-  min-width: 32px;
-  text-align: right;
-}
-.mt-vol-step {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px; height: 36px;
-  border-radius: 50%;
-  background: var(--bg-elev-2);
-  border: 1px solid var(--border);
-  color: var(--text);
-  cursor: pointer;
-  flex: 0 0 auto;
-  font-size: 18px;
-  font-weight: 500;
-}
-.mt-vol-step:hover { background: var(--border); }
-.mt-vol-step:active { transform: scale(.95); }
-.mt-vol-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-dim);
-  flex: 0 0 auto;
-}
-.mt-vol-icon svg { width: 22px; height: 22px; }
 
 /* ------------------------------------------------------------------ */
 /*  Filter pill bar (sits below the sticky topbar)                     */
@@ -2053,7 +2090,17 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 }
 .np-popover.hidden { display: none; }
 .np-device-popover { left: 0; width: 230px; }
-.np-vol-popover    { right: 0; min-width: 210px; display: flex; align-items: center; }
+/* The now-playing volume popover is the same full-width Roon-style sheet as
+   the mini bar's (user request: identical control on both screens). Fixed
+   positioning spans the phone width; .vol-sheet supplies the interior. */
+.np-vol-popover {
+  position: fixed;
+  left: 0; right: 0;
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  margin: 0 10px;
+  z-index: 71;
+  width: auto; min-width: 0;
+}
 
 .np-popover-title {
   font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
@@ -2070,8 +2117,6 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 .np-device-item.is-current { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .np-device-empty { color: var(--text-faint); font-size: 14px; padding: 8px 10px; }
 
-.np-vol-popover .np-vol-slider { flex: 1; margin: 0; accent-color: var(--accent); cursor: pointer; }
-.np-vol-slider.hidden { display: none; }
 .np-vol-fixed {
   display: flex; align-items: center; gap: 8px;
   color: var(--text-dim); font-size: 13px; padding: 2px 4px; white-space: nowrap;
