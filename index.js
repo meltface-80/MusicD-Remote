@@ -34,14 +34,62 @@ const DEBUG      = process.env.RRA_DEBUG === "1" ||
                    (process.env.DOCKER === "1" && process.env.RRA_DEBUG !== "0");
 
 // ---------------------------------------------------------------------------
-// Timestamped logs: every line gets an ISO-8601 UTC prefix so docker logs can
-// be correlated with Roon Server's own log timestamps. Patched once, before
-// anything logs — the launcher runs index.js with inherited stdio, so this
-// covers everything the container prints (the launcher stamps its own lines).
+// Timestamped logs + Roon-style log files. Every line gets an ISO-8601 UTC
+// prefix (correlates with Roon Server's own logs) and is ALSO appended to
+// data/logs/MusicD-Remote_log.txt on the data volume — so logs survive
+// container rebuilds and can be zipped up for a bug report, exactly like
+// Roon's own RoonServer_log.txt. At ~8 MB the current file rotates to
+// MusicD-Remote_log.01.txt (newest) … up to .10.txt (oldest, then dropped):
+// Roon's scheme, capped at 10 files (~88 MB worst case) instead of Roon's 20.
+// stdout is untouched — docker logs shows the same lines. If the data volume
+// is unavailable the file side disables itself; stdout always works.
+// Patched once, before anything logs — the launcher runs index.js with
+// inherited stdio (it stamps its own few lines but doesn't write the file:
+// two writers on one file would interleave).
 // ---------------------------------------------------------------------------
+const util = require("util");
+const LOG_DIR       = path.join(__dirname, "data", "logs");
+const LOG_FILE      = path.join(LOG_DIR, "MusicD-Remote_log.txt");
+const LOG_MAX_BYTES = 8 * 1024 * 1024;
+const LOG_MAX_FILES = 10;
+let _logStream = null;
+let _logBytes  = 0;
+let _logDead   = false;   // volume unavailable — stdout-only from then on
+function _numberedLog(i) {
+  return path.join(LOG_DIR, "MusicD-Remote_log." + String(i).padStart(2, "0") + ".txt");
+}
+function _openLogStream() {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+  _logBytes  = fs.existsSync(LOG_FILE) ? fs.statSync(LOG_FILE).size : 0;
+  _logStream = fs.createWriteStream(LOG_FILE, { flags: "a" });
+  _logStream.on("error", () => { _logDead = true; _logStream = null; });
+}
+function _rotateLogs() {
+  if (_logStream) { _logStream.end(); _logStream = null; }
+  if (fs.existsSync(_numberedLog(LOG_MAX_FILES))) fs.unlinkSync(_numberedLog(LOG_MAX_FILES));
+  for (let i = LOG_MAX_FILES - 1; i >= 1; i--) {
+    if (fs.existsSync(_numberedLog(i))) fs.renameSync(_numberedLog(i), _numberedLog(i + 1));
+  }
+  if (fs.existsSync(LOG_FILE)) fs.renameSync(LOG_FILE, _numberedLog(1));
+  _openLogStream();
+}
+function _logToFile(line) {
+  if (_logDead) return;
+  try {
+    if (!_logStream) _openLogStream();
+    if (_logBytes >= LOG_MAX_BYTES) _rotateLogs();
+    if (!_logStream) return;
+    _logBytes += Buffer.byteLength(line);
+    _logStream.write(line);
+  } catch (e) { _logDead = true; _logStream = null; }   // volume gone — stdout keeps working
+}
 for (const _level of ["log", "warn", "error"]) {
   const _orig = console[_level].bind(console);
-  console[_level] = (...args) => _orig(new Date().toISOString(), ...args);
+  console[_level] = (...args) => {
+    const ts = new Date().toISOString();
+    _orig(ts, ...args);
+    _logToFile(ts + " " + util.format(...args) + "\n");
+  };
 }
 // Docker Desktop on macOS has no host networking, so Roon's SOOD multicast
 // discovery can never reach the LAN. ROON_CORE_IP (already shown in the
@@ -6813,6 +6861,8 @@ app.listen(PORT, () => {
   console.log("MusicD Remote v" + pkg.version +
               " — debug logging " + (DEBUG ? "ON" : "off") +
               (process.env.DOCKER === "1" ? " (Docker default; RRA_DEBUG=0 to quiet)" : ""));
+  console.log("Log files: " + LOG_FILE + " (rotates at 8 MB, keeps " + LOG_MAX_FILES + " numbered files)" +
+              (_logDead ? " — UNAVAILABLE, stdout only" : ""));
   console.log("Make sure to authorise the extension in Roon → Settings → Extensions.");
   if (DEBUG) console.log("Debug logging enabled (RRA_DEBUG=1).");
 });

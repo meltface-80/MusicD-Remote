@@ -2,6 +2,20 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.43] — 2026-07-15
+
+### Added
+
+- **Roon-style log files** (user request, follows v1.6.42's observability pass). Everything
+  the extension prints is now also written to `data/logs/MusicD-Remote_log.txt` on the data
+  volume — logs survive container rebuilds and updates, and can be zipped for a bug report
+  exactly like Roon's own `RoonServer_log.txt`. When the current file reaches ~8 MB it
+  rotates to `MusicD-Remote_log.01.txt` (newest) through `.10.txt` (oldest, then dropped) —
+  Roon's rotation scheme, capped at 10 numbered files (~88 MB worst case) instead of Roon's
+  20. Retention is size-based, not time-based. `docker logs` is unchanged (stdout keeps the
+  same lines); if the data volume is unavailable the file side disables itself and stdout
+  carries on. The startup banner states the log path and rotation policy.
+
 ## [1.6.42] — 2026-07-14
 
 ### Changed

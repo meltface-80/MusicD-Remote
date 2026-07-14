@@ -455,6 +455,19 @@ Please let me know if you run into any trouble.
 | `ROON_CORE_IP` | *(discover)* | Roon Core address, for setups where multicast discovery can't reach it (macOS / Docker Desktop). When set, the extension connects to the Core directly instead of discovering it |
 | `ROON_CORE_PORT` | `9330` | Roon Core API port used with `ROON_CORE_IP` — only change it if your Core runs its API on a non-standard port |
 
+### Logs
+
+Everything the extension prints is also written to the data volume, Roon-style:
+`data/logs/MusicD-Remote_log.txt` is the current file; at ~8 MB it rotates to
+`MusicD-Remote_log.01.txt` (newest) through `.10.txt` (oldest, then dropped) — about
+88 MB worst case, surviving container rebuilds and updates. Grab them for a bug report with:
+
+```bash
+docker run --rm -v musicd-remote-data:/data alpine tar -czf - -C /data logs > musicd-logs.tar.gz
+```
+
+`docker logs musicd-remote` shows the same lines live.
+
 Pass extra env vars with `-e` in the `docker run` command:
 
 ```bash
