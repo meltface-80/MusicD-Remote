@@ -1067,19 +1067,39 @@
   // ambient glow on the same album.
   window.__setModalAmbient = setModalAmbient;
 
-  function setModalArtist(subtitle) {
-    modalSub.innerHTML = "";
+  function setModalArtist(subtitle, names) {
+    // `names` is the server's library-validated split (/api/album `artists`):
+    // it also breaks on comma/&/+/and, but only when a fragment is a known
+    // library artist — so "Panda Bear, Sonic Boom & Adrian Sherwood" becomes
+    // three links while "Earth, Wind & Fire" stays one. Until the detail
+    // response lands (or for legacy callers) the conservative client split
+    // applies: " / " is Roon's standard separator; feat/featuring/ft handle
+    // featured artists; " & " and comma are NOT split here because they are
+    // often part of a band name ("Simon & Garfunkel").
+    //
+    // The links live in their own container as modalSub's first child so the
+    // late validated re-render can't wipe the year/label/score spans that
+    // renderExtras appends after them. A call WITHOUT `names` is an album
+    // (re)open: full reset, and the previous album's extras go with it.
+    const validated = Array.isArray(names) && names.length > 0;
+    let box = document.getElementById("modal-artist-names");
+    if (!validated || !box) {
+      modalSub.innerHTML = "";
+      box = document.createElement("span");
+      box.id = "modal-artist-names";
+      modalSub.appendChild(box);
+    }
+    box.innerHTML = "";
     if (!subtitle) return;
-    // Split on common multi-artist separators so each name becomes its own link.
-    // " / " is Roon's standard separator; feat/featuring/ft handle featured artists.
-    // " & " is intentionally NOT split — it is often part of a band name (e.g. "Simon & Garfunkel").
-    const parts = subtitle.split(/ \/ | feat\.? | featuring | ft\.? /i).map(s => s.trim()).filter(Boolean);
+    const parts = validated
+      ? names
+      : subtitle.split(/ \/ | feat\.? | featuring | ft\.? /i).map(s => s.trim()).filter(Boolean);
     parts.forEach((part, i) => {
       if (i > 0) {
         const sep = document.createElement("span");
         sep.className = "modal-subtitle-year";
-        sep.textContent = " / ";
-        modalSub.appendChild(sep);
+        sep.textContent = validated ? " · " : " / ";
+        box.appendChild(sep);
       }
       const btn = document.createElement("button");
       btn.className = "modal-artist-link";
@@ -1089,7 +1109,7 @@
         if (window.__exitLabels) window.__exitLabels();   // leave the labels browser if active
         window.__showArtistAlbums && window.__showArtistAlbums(part);
       });
-      modalSub.appendChild(btn);
+      box.appendChild(btn);
     });
   }
 
@@ -1201,11 +1221,15 @@
       modalTracks.innerHTML = "";
       for (const t of j.tracks) {
         const li = document.createElement("li");
+        // Two-line rows (queue-tab style): title over the FULL artist credit,
+        // stacked in a .t-text column so multi-artist tracks aren't clipped.
+        const tx = document.createElement("div"); tx.className = "t-text";
         const ti = document.createElement("span"); ti.className = "t-title";
         ti.textContent = t.title || "";
         const su = document.createElement("span"); su.className = "t-sub";
         su.textContent = t.subtitle || "";
-        li.appendChild(ti); li.appendChild(su);
+        tx.appendChild(ti); tx.appendChild(su);
+        li.appendChild(tx);
         modalTracks.appendChild(li);
       }
     } else {
@@ -1357,8 +1381,13 @@
       const returnedNorm = (j.album.title || "").toLowerCase().trim();
       if (!expectedNorm || returnedNorm === expectedNorm) {
         modalTitle.textContent = j.album.title;
-        // Subtitle already set as a clickable button by openAlbum(); don't overwrite.
       }
+    }
+    // Re-render the artist line with the server's library-validated split so
+    // each collaborator becomes their own link (openAlbum rendered the
+    // conservative client split as a placeholder).
+    if (Array.isArray(j.artists) && j.artists.length) {
+      setModalArtist((j.album && j.album.subtitle) || album.subtitle || "", j.artists);
     }
 
     // Build action buttons in preferred order
@@ -1404,11 +1433,16 @@
       trackList.forEach((t, idx) => {
         const li = document.createElement("li");
         li.className = "t-row";
+        // Same two-line .t-text structure as the cached render above — the
+        // .t-actions row stays a SIBLING of .t-text so the is-open flex-wrap
+        // still drops it onto its own full-width line.
+        const tx = document.createElement("div"); tx.className = "t-text";
         const ti = document.createElement("span"); ti.className = "t-title";
         ti.textContent = t.title || "";
         const su = document.createElement("span"); su.className = "t-sub";
         su.textContent = t.subtitle || "";
-        li.appendChild(ti); li.appendChild(su);
+        tx.appendChild(ti); tx.appendChild(su);
+        li.appendChild(tx);
         li.addEventListener("click", (e) => {
           if (e.target.closest(".t-actions")) return;   // taps on the buttons themselves
           toggleTrackActions(li, t, idx);
@@ -1585,6 +1619,9 @@
       }
     });
   }
+  // Shared with the artist-albums view and the Qobuz artist screen (separate
+  // IIFEs) — same clamp/expand behavior everywhere a bio renders.
+  window.__setupBioToggle = setupBioToggle;
 
   async function invoke(kind, btn) {
     if (!currentAlbum) return;
@@ -4920,6 +4957,28 @@ function initServiceBrowser(cfg) {
         view.loaded = true;
         const artist = j.artist || {};
         renderArtistHead(artist.image || null, artist.name || view.artistName || "");
+        // Qobuz's editorial bio (same clamp/expand as the library artist view).
+        if (j.biography && artistHeadEl) {
+          const bio = document.createElement("div");
+          bio.className = "artist-bio-body qobuz-artist-bio";
+          const text = document.createElement("div");
+          text.className = "bio-text";
+          text.dataset.clipped = "true";
+          text.textContent = j.biography;
+          const foot = document.createElement("div");
+          foot.className = "artist-bio-foot";
+          const toggle = document.createElement("button");
+          toggle.type = "button";
+          toggle.className = "bio-toggle hidden";
+          toggle.textContent = "Show more";
+          const src = document.createElement("span");
+          src.className = "artist-bio-src";
+          src.textContent = "Bio: Qobuz";
+          foot.appendChild(toggle); foot.appendChild(src);
+          bio.appendChild(text); bio.appendChild(foot);
+          artistHeadEl.appendChild(bio);
+          if (window.__setupBioToggle) window.__setupBioToggle(text, toggle);
+        }
         if (statusEl) statusEl.textContent = albums.length
           ? ((j.total || albums.length) + " albums")
           : "No albums found.";
@@ -5542,6 +5601,7 @@ initServiceBrowser({
   function exitArtistView() {
     if (!artistViewActive) return;
     artistViewActive = false;
+    bioSeq++;   // any in-flight bio must not prepend into the restored screen
     // Restore exactly the screen the artist view was opened from (the Home
     // landing, or an album wall) so Back doesn't dump the user somewhere else.
     if (saved) {
@@ -5565,6 +5625,10 @@ initServiceBrowser({
     // search artist-chip stops the search itself; this covers every other path.
     if (window.__clearSearchIfActive) window.__clearSearchIfActive();
     if (artistViewActive) exitArtistView();
+    // Invalidate any in-flight bio fetch NOW — bumping only inside
+    // renderArtistBioHead left a window where artist A's late bio could
+    // prepend into artist B's freshly-rendered grid.
+    bioSeq++;
     // Snapshot the screen we're leaving (Home landing or an album wall) so the
     // "← Back" button restores it exactly.
     saved = {
@@ -5646,6 +5710,13 @@ initServiceBrowser({
       }
 
       grid.appendChild(frag);
+
+      // Artist header (avatar + validated bio) loads after the albums so the
+      // grid is never blocked on external services. One of the artist's own
+      // album titles pins their identity for the lookup (see /api/artist-bio).
+      const bioAlbum = (j.primary[0] && j.primary[0].title) ||
+                       (j.featured[0] && j.featured[0].title) || "";
+      renderArtistBioHead(artistName, bioAlbum);
     } catch (e) {
       if (countBar) {
         countBar.innerHTML = `
@@ -5654,6 +5725,57 @@ initServiceBrowser({
         document.getElementById("artist-back-btn").addEventListener("click", exitArtistView);
       }
     }
+  }
+
+  // Build the LMS-style artist header: round avatar, bio with Show more,
+  // "Bio: <source>" attribution. Decorative — any failure leaves the plain
+  // album grid, and a view/artist switch mid-fetch renders nothing stale.
+  let bioSeq = 0;
+  async function renderArtistBioHead(artistName, albumTitle) {
+    const seq = bioSeq;   // generation is bumped by showArtistAlbums/exitArtistView, not here
+    try {
+      const r = await fetch("/api/artist-bio?artist=" + encodeURIComponent(artistName) +
+                            "&album=" + encodeURIComponent(albumTitle || ""));
+      if (!r.ok) return;
+      const j = await r.json();
+      const b = j.bio;
+      if (!b || !b.text) return;
+      if (seq !== bioSeq || !artistViewActive) return;   // superseded / view closed
+
+      // LMS-remote layout: large centred round portrait on top, bio beneath
+      // it full-width, then a centred Show more and a centred "Bio: <source>"
+      // caption — not a thumbnail beside the text.
+      const head = document.createElement("div");
+      head.className = "artist-bio-head";
+      if (b.image) {
+        const img = document.createElement("img");
+        img.className = "artist-bio-avatar";
+        img.alt = "";
+        img.onerror = () => img.remove();   // dead portrait URL — no broken-image circle
+        img.src = b.image;
+        head.appendChild(img);
+      }
+      const body = document.createElement("div");
+      body.className = "artist-bio-body";
+      const text = document.createElement("div");
+      text.className = "bio-text";
+      text.dataset.clipped = "true";
+      text.textContent = b.text;
+      const foot = document.createElement("div");
+      foot.className = "artist-bio-foot";
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "bio-toggle hidden";
+      toggle.textContent = "Show more";
+      const src = document.createElement("span");
+      src.className = "artist-bio-src";
+      src.textContent = b.source ? "Bio: " + b.source : "";
+      foot.appendChild(toggle); foot.appendChild(src);
+      body.appendChild(text); body.appendChild(foot);
+      head.appendChild(body);
+      grid.prepend(head);
+      if (window.__setupBioToggle) window.__setupBioToggle(text, toggle);
+    } catch (e) { /* bio is decorative — the album grid stands alone */ }
   }
 
   window.__showArtistAlbums = showArtistAlbums;

@@ -2,6 +2,53 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.41] — 2026-07-14
+
+### Changed
+
+- **Artist bio header now matches the LMS-remote reference** (user feedback on v1.6.40).
+  The artist portrait was a small 72px thumbnail beside the text; it is now a large centred
+  round portrait (up to 200px) above the bio, with the bio full-width beneath it and the
+  Show more control and "Bio: <source>" caption centred underneath — the layout from the
+  user's example. The Qobuz browser's artist screen keeps its compact avatar+name row and
+  inline footer.
+
+## [1.6.40] — 2026-07-14
+
+### Added
+
+- **Individual artist links on multi-artist albums** (user request). The album view's
+  credit line now splits collaborations into separate tappable links — "Panda Bear, Sonic
+  Boom & Adrian Sherwood" becomes three artists, each opening their own albums screen
+  (their albums first, then "Also appears on"). Splitting on `,` `&` `+` `and` `/` is
+  inherently ambiguous ("Earth, Wind & Fire" is one band), so the split is
+  library-validated server-side: it's accepted only when at least one fragment is a known
+  artist in your library (the exact credit of some album) — real collaborators usually
+  have their own albums, band-name fragments never do. Credits that fail validation stay
+  as one link, exactly as before.
+- **Artist bios on the artist screen** (user request, LMS-remote style). The artist-albums
+  view now opens with a header: round artist portrait, editorial bio clamped with
+  Show more/Show less, and a "Bio: Qobuz" (or Tidal/Wikipedia) attribution. It reuses the
+  wall display's validated bio pipeline — Qobuz/Tidal album-matched first, then
+  album-cross-checked Wikipedia, sharing the same bounded cache — with the artist's own
+  album pinning their identity, so lesser-known names don't get someone else's bio. The
+  Qobuz artist portrait that the pipeline always fetched (and discarded) now becomes the
+  avatar. The in-app Qobuz browser's artist screen gains the same bio block — Qobuz's
+  editorial biography was already in the API response and previously thrown away.
+  (Band MEMBERS as shown in LMS aren't available from any pipeline source — Qobuz's
+  artist payload doesn't carry them; noted as a known limitation.)
+
+## [1.6.39] — 2026-07-14
+
+### Changed
+
+- **Album view track rows show the full artist credits** (user request). Track rows were
+  [number | title | artist right-aligned in a 35%-wide ellipsis column], which cut off
+  multi-artist credits ("Crosby, Stills, Nash…"). They now use the same two-line layout as
+  the Queue tab and the Qobuz app: title on the first line, the complete artist/composer
+  credit beneath it in dim text that wraps instead of clipping. The per-track Play now /
+  Queue tap-to-expand actions are unchanged.
+
 ## [1.6.38] — 2026-07-14
 
 ### Fixed

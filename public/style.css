@@ -747,7 +747,7 @@ main {
 }
 .track-list li {
   counter-increment: trk;
-  display: flex; align-items: baseline; gap: 12px;
+  display: flex; align-items: flex-start; gap: 12px;
   padding: 10px 4px;
   border-bottom: 1px solid var(--border);
   font-size: 14px; color: var(--text);
@@ -757,15 +757,25 @@ main {
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
   font-size: 12px; min-width: 22px;
+  line-height: 20px;   /* optically aligns the number with the 14px title line */
+}
+/* Two-line rows, queue-tab style: title over the FULL artist credit. The
+   old layout put the artist in a right-aligned 35%-wide ellipsis column,
+   which cut multi-artist credits off (the whole reason for this redesign). */
+.track-list .t-text {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column;
 }
 .track-list .t-title {
-  flex: 1; min-width: 0;
+  min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .track-list .t-sub {
-  color: var(--text-dim); font-size: 13px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 35%;
+  color: var(--text-dim); font-size: 12px;
+  margin-top: 1px;
+  overflow-wrap: anywhere;   /* long multi-artist credits wrap, never clip */
 }
+.track-list .t-sub:empty { display: none; }
 
 /* ------------------------------------------------------------------ */
 /*  Toast                                                              */
@@ -1898,6 +1908,34 @@ input.vol-range::-moz-range-thumb {
   grid-column: 1 / -1; padding: 48px 0;
   text-align: center; color: var(--text-dim); font-size: 15px;
 }
+
+/* Artist header, LMS-remote style: large centred round portrait on top,
+   bio beneath it, centred Show more + "Bio: <source>" caption. The Qobuz
+   artist screen reuses .artist-bio-body/.artist-bio-foot for its bio block
+   under its own compact header row. */
+.artist-bio-head {
+  grid-column: 1 / -1;
+  padding: 6px 0 12px;
+  display: flex; flex-direction: column; align-items: center;
+}
+.artist-bio-avatar {
+  width: min(46vw, 200px); height: min(46vw, 200px);
+  border-radius: 50%; object-fit: cover;
+  background: var(--bg-elev);
+  margin-bottom: 14px;
+  box-shadow: var(--shadow-card);
+}
+.artist-bio-body { width: 100%; max-width: 680px; min-width: 0; }
+.artist-bio-body .bio-text { font-size: 13.5px; line-height: 1.6; color: var(--text-dim); }
+.artist-bio-foot {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 2px; margin-top: 6px;
+}
+.artist-bio-src  { font-size: 12px; color: var(--text-faint); }
+/* Qobuz artist screen: bio sits under the compact avatar+name row, so its
+   footer stays inline/left rather than centred. */
+.qobuz-artist-bio { margin-top: 10px; }
+.qobuz-artist-bio .artist-bio-foot { flex-direction: row; align-items: center; gap: 12px; }
 .content-count {
   display: flex; align-items: center; padding: 8px 16px;
   font-size: 14px; color: var(--text-dim);

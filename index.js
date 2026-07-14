@@ -3182,6 +3182,48 @@ function splitArtistNames(subtitle) {
     .map(name => ({ name, n: normalize(name) }));
 }
 
+// ---- Credit splitting for the album view's artist links --------------------
+// Roon's subtitle is flat text: "Earth, Wind & Fire" (one band) and
+// "Panda Bear, Sonic Boom & Adrian Sherwood" (three artists) are structurally
+// identical, so splitting on , & + and is irreducibly heuristic. The split is
+// accepted only when at least one fragment is a KNOWN library artist (the
+// exact credit of some album in the index): genuine collaborators usually
+// have their own albums, while band-name fragments ("Wind", "Stills", "the
+// Machine") never appear as a whole album credit. splitArtistNames above
+// deliberately keeps , & + unsplit for the search chips — this is the looser,
+// library-validated splitter, used only where a wrong link is recoverable
+// (the artist screen still substring-matches whatever name it's given).
+let _knownArtistCache = { builtAt: -1, set: new Set() };
+function knownArtistSet() {
+  if (_knownArtistCache.builtAt !== albumIndex.builtAt) {
+    const set = new Set();
+    for (const al of albumIndex.albums) { if (al.nArtist) set.add(al.nArtist); }
+    _knownArtistCache = { builtAt: albumIndex.builtAt, set };
+  }
+  return _knownArtistCache.set;
+}
+function splitCreditIntoArtists(subtitle) {
+  const whole = (subtitle || "").trim();
+  if (!whole) return [];
+  // Stage 1 — Roon's own separators, never part of a band name (a bare slash
+  // like AC/DC is unspaced): split unconditionally, exactly like the client's
+  // conservative splitter always has.
+  const safeParts = whole.split(/ \/ | feat\.? | featuring | ft\.? /i)
+    .map(s => s.trim()).filter(Boolean);
+  // Stage 2 — the risky separators expand a part only when the library
+  // validates at least one fragment as a known artist.
+  const known = knownArtistSet();
+  const out = [];
+  for (const part of safeParts) {
+    const frags = part.split(/\s*,\s*| & | \+ | and /i)
+      .map(s => s.trim())
+      .filter(f => f.length >= 2);   // "," splits of initials/junk never link
+    if (frags.length >= 2 && frags.some(f => known.has(normalize(f)))) out.push(...frags);
+    else out.push(part);
+  }
+  return out.length ? out : [whole];
+}
+
 // Walk the whole albums hierarchy once and cache a record per album.
 // Concurrent callers share the same in-flight build promise.
 async function buildAlbumIndex() {
@@ -3849,6 +3891,28 @@ app.get("/api/artist-albums", (req, res) => {
   primary.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
   featured.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
   res.json({ artist, primary, featured });
+});
+
+// Artist header bio for the artist-albums view. Wraps the wall display's
+// validated lookup (Qobuz/Tidal album-matched first, then album-cross-checked
+// Wikipedia) and shares its bounded cache. `album` is one of the artist's own
+// album titles — it pins the artist's identity, exactly as on the display.
+app.get("/api/artist-bio", async (req, res) => {
+  const artist = (req.query.artist || "").trim();
+  const album  = (req.query.album  || "").trim();
+  if (!artist) return res.status(400).json({ error: "artist required" });
+  try {
+    const bio = await fetchDisplayArtistBio(artist, album || null);
+    if (!bio || !bio.description) return res.json({ bio: null });
+    res.json({ bio: {
+      name:   bio.name || artist,
+      text:   bio.description,
+      source: bio.source || "",
+      image:  bio.image || null
+    }});
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get("/api/random-albums", async (req, res) => {
@@ -4581,7 +4645,10 @@ app.get("/api/album", async (req, res) => {
       album:  r.album,
       tracks: r.tracks,
       actions: r.actions.map(a => ({ kind: a.kind, title: a.title })),
-      offset: r.offset   // corrected when the stale-offset defense relocated
+      offset: r.offset,  // corrected when the stale-offset defense relocated
+      // Library-validated split of the credit into individually linkable
+      // artist names (single-element array when the credit stays whole).
+      artists: splitCreditIntoArtists(r.album.subtitle)
     });
   } catch (e) {
     res.status(e.stale ? 409 : 500).json({ error: e.message });
@@ -4912,7 +4979,12 @@ app.get("/api/qobuz/artist-albums", async (req, res) => {
     ]);
     const albums = normalizeQobuzAlbums(r.albums.items, favIds);
     const hasMore = offset + r.albums.items.length < r.albums.total; // raw length — see /api/qobuz/search
-    res.json({ artist: r.artist, offset, limit: 50, total: r.albums.total, has_more: hasMore, albums });
+    res.json({
+      artist: r.artist, offset, limit: 50, total: r.albums.total, has_more: hasMore, albums,
+      // Qobuz's editorial bio was fetched all along and discarded — surface it
+      // so the artist screen can show it (first page only; it never changes).
+      biography: (offset === 0 && r.biography) ? stripHtml(String(r.biography)).trim() : ""
+    });
   } catch (e) {
     res.status(serviceErrorStatus(e)).json({ error: e.message });
   }
@@ -5831,7 +5903,14 @@ async function fetchServiceArtistBio(name, albumTitle) {
       if (hitArtist && hitArtist.id != null) {
         const a = await qobuzWithToken(t => qobuz.getArtist(t, String(hitArtist.id), 1, 0));
         const text = a && a.biography ? stripHtml(String(a.biography)).trim() : "";
-        if (text) return { name: (a.artist && a.artist.name) || hitArtist.name || name, description: text, source: "Qobuz" };
+        if (text) return {
+          name: (a.artist && a.artist.name) || hitArtist.name || name,
+          description: text,
+          source: "Qobuz",
+          // The artist portrait rides along for the phone UI's artist header;
+          // the wall display ignores it (it has its own FanArt photo cards).
+          image: (a.artist && a.artist.image) || null
+        };
       }
     } catch (e) { if (DEBUG) console.error("[display:bio:qobuz]", e.message); }
   }
