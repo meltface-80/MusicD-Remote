@@ -268,6 +268,11 @@
     if (homeView) homeView.classList.add("hidden");
     grid.classList.remove("hidden");
     setTopbarNav(true, true, false);   // random / genre grid: Back + Refresh, no search
+    // Home and the grid share <main>'s scroll container — without this, a
+    // wall entered while Home was scrolled down (e.g. tapping a genre card
+    // below the fold) opens mid-page/at-the-bottom instead of at the top.
+    const mainEl = document.querySelector("main");
+    if (mainEl) mainEl.scrollTop = 0;
     if (opts && opts.loadIfEmpty && !labelsActive && !grid.children.length) loadRandom();
   }
   window.__showHome = showHome;
