@@ -2,6 +2,27 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.46] — 2026-07-15
+
+### Added
+
+- **Automatic library-sync awareness — the extension stops fighting a busy Core** (user
+  request, prompted by Roon Early Access 1674's browse-performance issues). While the Roon
+  Core is importing local files or syncing streaming favourites, the extension now detects
+  it and **defers its heavy background work** — the full-index rebuild (a 17-page re-walk)
+  and the labels scan — instead of thrashing an already-congested Core with a fresh rebuild
+  on every 5-minute tick that lands on a still-changing library. Album selection, playback
+  and search stay fully operational throughout: they serve from the existing in-memory
+  index, and the stale-offset play defense keeps playback correct even while offsets shift.
+  - **Detection** is automatic and needs no Roon API support (Roon exposes no "importing"
+    signal): the existing 5-minute probe already reads the album count each tick, so a count
+    that keeps *moving* between probes means a sync is in progress. On detection the probe
+    speeds up to once a minute to catch the end quickly; once the count holds steady for two
+    consecutive probes the extension runs **exactly one** rebuild and returns to normal. On a
+    ~550-album import this collapses roughly six wasteful mid-sync rebuilds into one.
+  - The Roon status line shows "Roon library updating…" while deferring. An explicit manual
+    "Rescan" in the labels UI bypasses the wait (a deliberate action never silently no-ops).
+
 ## [1.6.45] — 2026-07-15
 
 ### Fixed

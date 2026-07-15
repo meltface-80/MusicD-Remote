@@ -232,12 +232,14 @@ const roon = new RoonApi({
     // re-pair with a cheap 2-call probe instead of a full library re-walk —
     // a flapping connection no longer multiplies full rescans onto the Core.
     console.log("[roon] unpaired from core — index kept, awaiting re-pair");
+    _statusSync = "";   // clear any "library updating…" note — sync state is reset on re-pair
     _statusPair = "Not paired with any Roon Core"; _statusPairErr = true; pushStatus();
   }
 });
 
 // ---- Roon status line (pairing state + any update notice) ----
 let _statusPair = "Starting\u2026";
+let _statusSync = "";   // "  \u2022  Roon library updating\u2026" while a sync is deferring background work
 let _statusPairErr = false;
 function pushStatus() {
   const st = updater.getStatus();
@@ -245,7 +247,7 @@ function pushStatus() {
   if (st.apply.phase === "downloading" || st.apply.phase === "extracting") extra = "  \u2022  Updating\u2026";
   else if (st.apply.phase === "restarting") extra = "  \u2022  Restarting to update\u2026";
   else if (st.available) extra = `  \u2022  Update available: v${st.latest} \u2014 install from the web app or this Settings page`;
-  try { svc_status.set_status(_statusPair + extra, _statusPairErr); } catch (e) {} // svc_status may be null before Roon pairs
+  try { svc_status.set_status(_statusPair + _statusSync + extra, _statusPairErr); } catch (e) {} // svc_status may be null before Roon pairs
 }
 async function updateCheckTick() {
   try { await updater.checkNow(); } catch (e) {} // network failure — no status to update, skip silently
@@ -1992,8 +1994,18 @@ async function buildFileLabelMap(onProgress) {
 // Errors are logged to data/labels-scan.log. On excessive errors in a pass
 // the scan finishes early; the next 12-hour auto-rescan will retry.
 // ---------------------------------------------------------------------------
-async function runLabelsIndexScan() {
+async function runLabelsIndexScan(force) {
   if (labelsIndex.building) return;
+  // Defer the (Roon-light but external-API-heavy) labels scan while the Core
+  // is syncing — album offsets are still moving, so a scan now would index
+  // against a moving target and pile external fetches onto the churn. Resumes
+  // on the next natural trigger (12h timer, or a label-view lazy ensure) once
+  // the sync has settled. `force` (an explicit user "Rescan" click) bypasses
+  // the gate — a deliberate action must not silently no-op.
+  if (librarySync.syncing && !force) {
+    appendLabelsLog("[labels] scan deferred — Roon library is syncing");
+    return;
+  }
   if (albumIndex.count === 0) {
     if (albumIndex.building) { try { await albumIndex.building; } catch (e) { /* albumIndex build failed — safe to continue; the count===0 check below will abort */ } }
     if (albumIndex.count === 0) return;
@@ -3244,6 +3256,24 @@ const INDEX_CHECK_MS   = 5 * 60 * 1000;    // how often to check for library edi
 // against Build 1670). The probe can't see a mid-list count-neutral edit,
 // so a full walk still runs at most daily:
 const INDEX_HARD_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const INDEX_SYNC_CHECK_MS   = 60 * 1000;   // faster probe cadence while the library is syncing
+const SYNC_SETTLE_TICKS     = 2;           // consecutive stable-count probes to declare a sync finished
+
+// Library-sync awareness. Roon exposes no "importing" signal to extensions,
+// so we infer it from the probe: while the album count keeps MOVING between
+// probes the Core is syncing (a local file import or a streaming-favourites
+// sync). During a sync the extension DEFERS its heavy background work — the
+// full-index rebuild (a 17-page re-walk) and the labels scan — instead of
+// thrashing an already-congested Core on every 5-minute tick that lands on a
+// still-changing library. Album selection, playback and search keep working
+// throughout: they serve from the existing in-memory index, and the
+// stale-offset play defense (v1.6.38) keeps plays correct even while offsets
+// shift. Exactly one rebuild runs once the count settles.
+const librarySync = {
+  syncing:   false,
+  lastCount: -1,   // album count at the previous probe (-1 = not yet sampled)
+  stable:    0     // consecutive stable-count probes observed while syncing
+};
 
 const albumIndex = {
   albums:   [],     // [{ offset, title, subtitle, image_key, nTitle, nArtist, tTitle[], tArtist[], jTitle, jArtist, artistNames[] }]
@@ -3433,6 +3463,23 @@ async function checkIndexChanged() {
       // the offsets could drift past 24h with only probe-level verification.
       const capExpired = albumIndex.builtAt > 0 &&
                          (Date.now() - albumIndex.builtAt) > INDEX_HARD_MAX_AGE_MS;
+
+      // Sync gate: has the count MOVED since the previous probe? A moving
+      // count = the Core is actively importing, so defer the rebuild rather
+      // than re-walking a library that's still changing. (A count-neutral
+      // identity change — a retag/reorder — is NOT a sync: moved is false, so
+      // it falls straight through to the immediate rebuild below.)
+      const moved = librarySync.lastCount >= 0 && total !== librarySync.lastCount;
+      librarySync.lastCount = total;
+      if (librarySync.syncing) {
+        if (moved) { librarySync.stable = 0; return; }          // still importing — keep deferring
+        if (++librarySync.stable < SYNC_SETTLE_TICKS) return;   // quiet, but wait for confirmation
+        endLibrarySync();                                       // settled → fall through, rebuild once
+      } else if (moved && changed) {
+        beginLibrarySync(total);                                // count just started moving → defer
+        return;
+      }
+
       if (!changed && !capExpired) {
         albumIndex.verifiedAt = Date.now();
         return;
@@ -3462,6 +3509,9 @@ function startIndexMaintenance() {
   // library re-walk. This matters when the Core itself is struggling: its
   // GC pauses drop the connection, and the old unconditional rescan then
   // hit the recovering Core with a full library walk on every re-pair.
+  // A re-pair starts fresh: don't assume we're mid-sync from a previous life.
+  librarySync.syncing = false; librarySync.lastCount = -1; librarySync.stable = 0;
+  _statusSync = "";
   if (isIndexFresh()) {
     checkIndexChanged();
   } else {
@@ -3469,10 +3519,34 @@ function startIndexMaintenance() {
       .then(() => seedLabelsFromCache())
       .catch(e => { if (DEBUG) console.error("[index] initial build:", e.message); });
   }
-  indexMaintTimer = setInterval(checkIndexChanged, INDEX_CHECK_MS);
+  setProbeCadence(INDEX_CHECK_MS);
 }
 function stopIndexMaintenance() {
   if (indexMaintTimer) { clearInterval(indexMaintTimer); indexMaintTimer = null; }
+}
+// The probe runs every 5 min normally, every 1 min while a sync is deferring
+// rebuilds (so the settle is detected quickly). Swapping the interval keeps a
+// single timer; callers pass the cadence they want.
+function setProbeCadence(ms) {
+  if (indexMaintTimer) clearInterval(indexMaintTimer);
+  indexMaintTimer = setInterval(checkIndexChanged, ms);
+}
+function beginLibrarySync(total) {
+  librarySync.syncing = true;
+  librarySync.stable  = 0;
+  _statusSync = "  •  Roon library updating…";
+  console.log("[index] library sync detected (count moving, now " + total +
+              ") — deferring index rebuild + labels scan until it settles");
+  pushStatus();
+  setProbeCadence(INDEX_SYNC_CHECK_MS);
+}
+function endLibrarySync() {
+  librarySync.syncing = false;
+  librarySync.stable  = 0;
+  _statusSync = "";
+  console.log("[index] library sync settled — rebuilding index once");
+  pushStatus();
+  setProbeCadence(INDEX_CHECK_MS);
 }
 
 // ---- Matching -------------------------------------------------------------
@@ -4366,7 +4440,7 @@ app.post("/api/labels/rescan", (req, res) => {
   if (labelsIndex.building) return res.json({ ok: false, reason: "scan already running" });
   labelsIndex.builtAt = 0;
   appendLabelsLog("[labels] manual rescan requested via web UI");
-  runLabelsIndexScan().catch(e => {
+  runLabelsIndexScan(true).catch(e => {   // force: explicit user action bypasses the sync gate
     const msg = "[labels] rescan error: " + e.message;
     if (DEBUG) console.error(msg);
     appendLabelsLog(msg);
@@ -4388,7 +4462,7 @@ app.post("/api/labels/rescan-force", (req, res) => {
   labelsIndex.builtAt = 0;
   discogsLogoTried.clear();
   appendLabelsLog("[labels] FORCE rescan requested — cleared name cache + logo dedup, starting full scan");
-  runLabelsIndexScan().catch(e => {
+  runLabelsIndexScan(true).catch(e => {   // force: explicit user action bypasses the sync gate
     const msg = "[labels] force-rescan error: " + e.message;
     console.error(msg); appendLabelsLog(msg);
   });
