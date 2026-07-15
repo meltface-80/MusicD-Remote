@@ -232,12 +232,14 @@ const roon = new RoonApi({
     // re-pair with a cheap 2-call probe instead of a full library re-walk —
     // a flapping connection no longer multiplies full rescans onto the Core.
     console.log("[roon] unpaired from core — index kept, awaiting re-pair");
+    _statusSync = "";   // clear any "library updating…" note — sync state is reset on re-pair
     _statusPair = "Not paired with any Roon Core"; _statusPairErr = true; pushStatus();
   }
 });
 
 // ---- Roon status line (pairing state + any update notice) ----
 let _statusPair = "Starting\u2026";
+let _statusSync = "";   // "  \u2022  Roon library updating\u2026" while a sync is deferring background work
 let _statusPairErr = false;
 function pushStatus() {
   const st = updater.getStatus();
@@ -245,7 +247,7 @@ function pushStatus() {
   if (st.apply.phase === "downloading" || st.apply.phase === "extracting") extra = "  \u2022  Updating\u2026";
   else if (st.apply.phase === "restarting") extra = "  \u2022  Restarting to update\u2026";
   else if (st.available) extra = `  \u2022  Update available: v${st.latest} \u2014 install from the web app or this Settings page`;
-  try { svc_status.set_status(_statusPair + extra, _statusPairErr); } catch (e) {} // svc_status may be null before Roon pairs
+  try { svc_status.set_status(_statusPair + _statusSync + extra, _statusPairErr); } catch (e) {} // svc_status may be null before Roon pairs
 }
 async function updateCheckTick() {
   try { await updater.checkNow(); } catch (e) {} // network failure — no status to update, skip silently
@@ -845,14 +847,58 @@ async function pickSmartAlbum() {
 // open it, and load its contents. item_keys are session-scoped, so every
 // request must rebuild this state from scratch. The caller owns the pooled
 // sessionKey (acquired via withBrowseSession) and releases it when done.
-async function loadAlbumSession(sessionKey, offset, filter, expect) {
+// Resolve an album LIVE by name via Roon's own browse "search" hierarchy —
+// offset-free and always current. Used as the fallback when a tile's stored
+// offset is stale (the snapshot hasn't caught up to a Roon library change), so
+// playback never fails just because the index is old. Returns the matching
+// album item in the "browse" hierarchy (drill its item_key for tracks + the
+// Play action), or null when the album genuinely isn't in the library.
+async function findAlbumViaSearch(sessionKey, title, artist, zoneId) {
+  const t = (title || "").trim();
+  if (!t) return null;
+  // Roon's browse root + search are ZONE-SCOPED — the working now-playing
+  // resolver passes a zone on every call. The open-detail path has no zone, so
+  // fall back to any live zone purely as browse context (we're only reading).
+  const zone = zoneId || Object.keys(zones)[0] || undefined;
+  const hier = "browse";
+  // Every stage logs unconditionally: this is the stale-offset recovery path,
+  // and when it can't find an album the log must show WHICH stage failed.
+  await browse({ hierarchy: hier, pop_all: true, multi_session_key: sessionKey, zone_or_output_id: zone });
+  const root = await load({ hierarchy: hier, offset: 0, count: 100, multi_session_key: sessionKey });
+  const items0 = root.items || [];
+  const searchItem = items0.find(i => i.input_prompt) || items0.find(i => /search/i.test(i.title || ""));
+  if (!searchItem) { console.log("[album:search] no Search entry at browse root for " + JSON.stringify(t)); return null; }
+  const query = `${t} ${artist || ""}`.trim();
+  await browse({ hierarchy: hier, multi_session_key: sessionKey, item_key: searchItem.item_key, input: query, zone_or_output_id: zone });
+  const results = await load({ hierarchy: hier, offset: 0, count: 100, multi_session_key: sessionKey });
+  const sections = results.items || [];
+  const albumsSection = sections.find(s => /album/i.test(s.title || "") && s.item_key);
+  if (!albumsSection) { console.log("[album:search] no Albums section for " + JSON.stringify(query) + "; sections=" + JSON.stringify(sections.map(s => s.title))); return null; }
+  await browse({ hierarchy: hier, multi_session_key: sessionKey, item_key: albumsSection.item_key });
+  const albs = await load({ hierarchy: hier, offset: 0, count: 50, multi_session_key: sessionKey });
+  const list = albs.items || [];
+  const tN = normalize(t), aN = normalize(artist || "");
+  const hit =
+       list.find(i => normalize(i.title) === tN && (!aN || normalize(i.subtitle).includes(aN)))
+    || list.find(i => normalize(i.title) === tN)
+    || list.find(i => { const n = normalize(i.title); return n.includes(tN) || tN.includes(n); })
+    || list[0];
+  if (!hit || !hit.item_key) {
+    console.log("[album:search] no album match for " + JSON.stringify(t) + " among " + JSON.stringify(list.slice(0, 6).map(i => i.title)));
+    return null;
+  }
+  console.log("[album:search] resolved " + JSON.stringify(t) + " -> " + JSON.stringify(hit.title) + " / " + JSON.stringify(hit.subtitle));
+  return hit;
+}
+
+async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
   // 1) Navigate to the album list this offset belongs to (full library, or a
   //    genre/tag list when a filter is active — offsets are per-list). Decade
   //    offsets are full-library positions, so resolve them against the full
   //    library (no Roon list exists for a decade).
   const navFilter = (filter && filter.type === "decade") ? null : (filter || null);
   const nav = await navigateToAlbumList(sessionKey, navFilter);
-  const hierarchy = nav.hierarchy;
+  let hierarchy = nav.hierarchy;
 
   // 2) Re-resolve THIS session's item_key for the album at `offset`
   const albumLoad = await load({
@@ -869,28 +915,43 @@ async function loadAlbumSession(sessionKey, offset, filter, expect) {
   //     Relocation only applies to full-library offsets — a genre/tag/label
   //     list has its own positions the album index can't provide.
   if (!albumIdentityMatches(albumItem, expect)) {
-    scheduleStaleRecheck();
-    let relocated = null;
-    let relocatedOffset = -1;
+    // The tile's stored offset no longer points at the album the user opened
+    // (a library change reshuffled positions). Try the fast path first: locate
+    // it by identity in the in-memory index and retry that offset.
+    let relocated = null, relocatedOffset = -1;
     if (!navFilter) {
       relocatedOffset = relocateAlbumOffset(expect);
       if (relocatedOffset >= 0 && relocatedOffset !== offset) {
-        const retry = await load({
-          hierarchy, offset: relocatedOffset, count: 1, multi_session_key: sessionKey
-        });
+        const retry = await load({ hierarchy, offset: relocatedOffset, count: 1, multi_session_key: sessionKey });
         const retryItem = retry.items && retry.items[0];
         if (albumIdentityMatches(retryItem, expect)) relocated = retryItem;
       }
     }
-    if (!relocated) {
-      const err = new Error("The library just changed and this album moved — close and reopen it.");
-      err.stale = true;
-      throw err;
+    if (relocated) {
+      if (DEBUG) console.log("[album] stale offset " + offset + " relocated to " + relocatedOffset +
+                             " for " + JSON.stringify(expect.title));
+      offset = relocatedOffset;
+      albumItem = relocated;
+    } else {
+      // Index relocation failed (the snapshot itself is stale — expected when
+      // it hasn't refreshed since a Roon import). Resolve the album LIVE by
+      // name via Roon's own search — offset-free and always current, and a
+      // single-album lookup (not a library scan), so it's safe even mid-import.
+      // Only a genuinely-removed album falls through to the stale error.
+      const live = (expect && expect.title)
+        ? await findAlbumViaSearch(sessionKey, expect.title, expect.subtitle, zoneId)
+        : null;
+      if (live) {
+        if (DEBUG) console.log("[album] stale offset " + offset + " resolved live via search for " +
+                               JSON.stringify(expect.title));
+        hierarchy = "browse";
+        albumItem = live;
+      } else {
+        const err = new Error("The library just changed and this album moved — close and reopen it.");
+        err.stale = true;
+        throw err;
+      }
     }
-    if (DEBUG) console.log("[album] stale offset " + offset + " relocated to " + relocatedOffset +
-                           " for " + JSON.stringify(expect.title));
-    offset = relocatedOffset;
-    albumItem = relocated;
   }
 
   // 3) Drill into the album
@@ -972,33 +1033,10 @@ function relocateAlbumOffset(expect) {
   const hit = albumIndex.albums.find(a => a.nTitle === nT && (!nA || a.nArtist === nA));
   return hit ? hit.offset : -1;
 }
-// A verify-mismatch at open/play time is hard evidence the library shifted —
-// kick the change probe now instead of waiting up to 5 minutes for the next
-// scheduled one. checkIndexChanged no-ops while a build is in flight, so
-// chain behind the running build in that case. Two guards keep a bulk import
-// from amplifying: the pending flag clears only AFTER the probe completes
-// (never two concurrent play-driven probes), and a 30s floor stops mismatch
-// bursts from chaining probe→rebuild→probe continuously — worst case the
-// regular 5-minute tick still catches anything this floor skips.
-let _staleRecheckPending = false;
-let _staleRecheckLast = 0;
-function scheduleStaleRecheck() {
-  if (_staleRecheckPending) return;
-  if (Date.now() - _staleRecheckLast < 30 * 1000) return;
-  _staleRecheckPending = true;
-  const clear = () => { _staleRecheckPending = false; };
-  const run = () => {
-    _staleRecheckLast = Date.now();
-    Promise.resolve(checkIndexChanged()).then(clear, clear);
-  };
-  if (albumIndex.building) albumIndex.building.then(run, run);
-  else setTimeout(run, 0);
-}
-
 async function openAlbumByOffset(offset, zoneOrOutputId, invokeKind, filter, expect) {
   return withBrowseSession(async (sessionKey) => {
     const { hierarchy, albumItem, items, playMenu, offset: effectiveOffset } =
-      await loadAlbumSession(sessionKey, offset, filter, expect);
+      await loadAlbumSession(sessionKey, offset, filter, expect, zoneOrOutputId);
 
     const albumInfo = {
       title:     albumItem.title || "",
@@ -1992,8 +2030,16 @@ async function buildFileLabelMap(onProgress) {
 // Errors are logged to data/labels-scan.log. On excessive errors in a pass
 // the scan finishes early; the next 12-hour auto-rescan will retry.
 // ---------------------------------------------------------------------------
-async function runLabelsIndexScan() {
+async function runLabelsIndexScan(force) {
   if (labelsIndex.building) return;
+  // Never scan while Roon is importing — offsets are still moving and it piles
+  // external fetches onto the churn. `force` (an explicit user "Rescan") skips
+  // the check; automatic triggers (12h timer, lazy ensure, post-save) defer and
+  // resume on the next natural trigger once Roon settles.
+  if (!force && await libraryIsImporting()) {
+    appendLabelsLog("[labels] scan deferred — Roon library is importing");
+    return;
+  }
   if (albumIndex.count === 0) {
     if (albumIndex.building) { try { await albumIndex.building; } catch (e) { /* albumIndex build failed — safe to continue; the count===0 check below will abort */ } }
     if (albumIndex.count === 0) return;
@@ -3235,21 +3281,20 @@ const SEARCH_PAGE      = 500;              // albums per Roon load() page
 // a full library re-walk over the same single websocket that was serving the
 // render's browse + image traffic — a major sluggishness source after the
 // Home redesign.
-const INDEX_MAX_AGE_MS = 60 * 60 * 1000;   // rebuild if older than this (safety net)
-const INDEX_CHECK_MS   = 5 * 60 * 1000;    // how often to check for library edits
-// A clean 5-min probe (count + first/last identity unchanged) now REFRESHES
-// freshness (verifiedAt below) instead of letting the 1h window lapse — the
-// lapse made every hour of active use kick off a full count:500 re-walk of a
-// provably unchanged library (the Roon-side JSON-serialization churn reported
-// against Build 1670). The probe can't see a mid-list count-neutral edit,
-// so a full walk still runs at most daily:
-const INDEX_HARD_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+// The album index is a stable snapshot. Roon owns the library; the extension
+// scans it once on first pair, then re-checks only every 12 hours (or on a
+// manual Rescan from the side menu) — and NEVER rebuilds while Roon is actively
+// importing (a still-moving album count). This keeps the extension off a busy
+// Core entirely. Playback stays correct against a snapshot that's hours stale
+// because a stale offset is resolved LIVE by name at play time (see the search
+// fallback in loadAlbumSession), so an out-of-date snapshot never blocks a play.
+const INDEX_CHECK_MS   = 12 * 60 * 60 * 1000;   // re-check for new albums every 12h
+const IMPORT_SETTLE_MS = 5000;                  // album count must hold steady this long to count as "not importing"
 
 const albumIndex = {
   albums:   [],     // [{ offset, title, subtitle, image_key, nTitle, nArtist, tTitle[], tArtist[], jTitle, jArtist, artistNames[] }]
   count:    0,
   builtAt:  0,      // last FULL walk of the library
-  verifiedAt: 0,    // last clean probe that confirmed the index still matches
   progress: 0,      // 0..1 while building
   building: null    // Promise while a build is in flight
 };
@@ -3360,7 +3405,6 @@ async function buildAlbumIndex() {
     albumIndex.albums   = albums.filter(Boolean);  // drop any holes
     albumIndex.count    = albumIndex.albums.length;
     albumIndex.builtAt  = Date.now();
-    albumIndex.verifiedAt = albumIndex.builtAt;
     albumIndex.progress = 1;
     if (DEBUG) console.log("[index] built", albumIndex.count, "albums");
     return albumIndex;
@@ -3373,24 +3417,18 @@ async function buildAlbumIndex() {
   }
 }
 
-// Single definition of index freshness, shared by ensureAlbumIndex (rebuild
-// trigger) and startIndexMaintenance (re-pair probe-vs-rebuild choice) so the
-// two paths can never disagree about when a rebuild is due.
-function isIndexFresh() {
-  // Fresh = full walk OR clean probe within the 1h window, AND the last full
-  // walk is within the 24h hard cap (probes can't see mid-list count-neutral
-  // edits, so verification alone must not extend freshness forever).
-  const freshRef = Math.max(albumIndex.builtAt, albumIndex.verifiedAt);
-  return albumIndex.count > 0 && albumIndex.builtAt > 0 &&
-         (Date.now() - freshRef) <= INDEX_MAX_AGE_MS &&
-         (Date.now() - albumIndex.builtAt) <= INDEX_HARD_MAX_AGE_MS;
+// Does a usable snapshot exist? (Freshness is no longer time-based: the index
+// is a deliberate snapshot refreshed only by the 12h check or a manual Rescan.)
+function isIndexBuilt() {
+  return albumIndex.count > 0 && albumIndex.builtAt > 0;
 }
 
-// Ensure a usable index exists; (re)build if empty or stale. Awaits only the
-// very first build (so the first search returns results); a stale rebuild
-// happens in the background while the current index keeps serving.
+// Ensure a usable index EXISTS — build it only if empty (first pair). Never
+// rebuilds on staleness: that would scan Roon on a user action, which the
+// snapshot model deliberately avoids. Awaits the first build so the first
+// search returns results.
 async function ensureAlbumIndex() {
-  if (!isIndexFresh() && !albumIndex.building) {
+  if (albumIndex.count === 0 && !albumIndex.building) {
     buildAlbumIndex().catch(e => { if (DEBUG) console.error("[index] build failed:", e.message); });
   }
   if (albumIndex.count === 0 && albumIndex.building) {
@@ -3402,78 +3440,104 @@ async function ensureAlbumIndex() {
 // and last albums' identities), triggering a full rebuild only when something
 // actually changed. Runs on the 5-minute maintenance interval AND once on
 // re-pair (instead of the unconditional full re-walk re-pairing used to cost).
-async function checkIndexChanged() {
-  if (!core || albumIndex.building) return;
-  try {
-    await withBrowseSession(async (sessionKey) => {
-      await browse({ hierarchy: "albums", pop_all: true, multi_session_key: sessionKey });
-      const head = await load({ hierarchy: "albums", offset: 0, count: 1, multi_session_key: sessionKey });
-      const total = head.list && head.list.count ? head.list.count : 0;
-      // A count-neutral edit (retag that reorders the list) shifts offsets
-      // without changing the total — compare the FIRST and LAST albums'
-      // identities too. First alone missed count-neutral edits deeper in the
-      // list (an add+remove pair, a mid-list re-sort); checking both ends
-      // costs one extra load per probe and catches almost all of them. This
-      // matters doubly since re-pairing now relies on this probe instead of
-      // an unconditional full rebuild.
-      const identity = it => it ? (it.title || "") + "||" + (it.subtitle || "") : "";
-      const first = head.items && head.items[0];
-      const firstNow = identity(first);
-      const firstIdx = identity(albumIndex.albums[0]);
-      let lastChanged = false;
-      if (total > 1 && albumIndex.count > 1 && total === albumIndex.count) {
-        const tail = await load({ hierarchy: "albums", offset: total - 1, count: 1, multi_session_key: sessionKey });
-        const last = tail.items && tail.items[0];
-        lastChanged = identity(last) !== identity(albumIndex.albums[albumIndex.count - 1]);
-      }
-      const changed = total !== albumIndex.count ||
-                      (albumIndex.count > 0 && firstNow !== firstIdx) || lastChanged;
-      // Even when the probe is clean, honour the daily hard cap here too —
-      // on an idle box nothing else calls ensureAlbumIndex, so without this
-      // the offsets could drift past 24h with only probe-level verification.
-      const capExpired = albumIndex.builtAt > 0 &&
-                         (Date.now() - albumIndex.builtAt) > INDEX_HARD_MAX_AGE_MS;
-      if (!changed && !capExpired) {
-        albumIndex.verifiedAt = Date.now();
-        return;
-      }
-      if (DEBUG) console.log("[index] library", changed ? "changed (count " + albumIndex.count + " -> " + total + ")" : "past the 24h full-walk cap", "- rebuilding");
-      // A library edit (add/remove/reorder) shifts the genre/label/tag list
-      // positions too, so drop the browse offset cache — stale entries would
-      // still be caught by the title verify, but clearing avoids the wasted
-      // verify round-trip on the first play of each filter after a change.
-      clearBrowseOffsetCache();
-      // Re-seed labelsIndex from the fresh album index too: its album offsets
-      // are a snapshot, and a rebuild (reorder/add/remove) leaves them
-      // pointing at the wrong albums for the labels browser + display grids.
-      buildAlbumIndex()
-        .then(() => rebuildLabelsMap())
-        .catch(() => { /* build error already logged by buildAlbumIndex */ });
-    });
-  } catch (e) { /* browse/load probe failed — next maintenance tick will retry */ }
+// One cheap library-change probe (2-3 count:1 round-trips): is the album count
+// or the first/last album different from our built snapshot? Returns true when
+// something changed. No side effects — the caller decides whether to rebuild.
+async function libraryChangedSince() {
+  return await withBrowseSession(async (sessionKey) => {
+    await browse({ hierarchy: "albums", pop_all: true, multi_session_key: sessionKey });
+    const head = await load({ hierarchy: "albums", offset: 0, count: 1, multi_session_key: sessionKey });
+    const total = head.list && head.list.count ? head.list.count : 0;
+    const identity = it => it ? (it.title || "") + "||" + (it.subtitle || "") : "";
+    const firstNow = identity(head.items && head.items[0]);
+    const firstIdx = identity(albumIndex.albums[0]);
+    let lastChanged = false;
+    if (total > 1 && albumIndex.count > 1 && total === albumIndex.count) {
+      const tail = await load({ hierarchy: "albums", offset: total - 1, count: 1, multi_session_key: sessionKey });
+      lastChanged = identity(tail.items && tail.items[0]) !== identity(albumIndex.albums[albumIndex.count - 1]);
+    }
+    return total !== albumIndex.count || (albumIndex.count > 0 && firstNow !== firstIdx) || lastChanged;
+  });
 }
 
-// Background maintenance: build (or verify) now, then probe for library edits
-// periodically. Started on pairing, stopped on unpairing.
+// Best-effort "is Roon importing right now?" — read the album count, wait a few
+// seconds, read it again; a changed count means the library is actively growing.
+// Cheap (two count:1 loads) and only called when we're about to start heavy
+// work, never in a loop. This is how the extension honors "never scan while
+// Roon is adding albums": a manual Rescan and the 12h check both consult it.
+async function libraryIsImporting() {
+  if (!core) return false;
+  try {
+    return await withBrowseSession(async (sessionKey) => {
+      await browse({ hierarchy: "albums", pop_all: true, multi_session_key: sessionKey });
+      const a = await load({ hierarchy: "albums", offset: 0, count: 1, multi_session_key: sessionKey });
+      const c1 = a.list && a.list.count ? a.list.count : 0;
+      await new Promise(r => setTimeout(r, IMPORT_SETTLE_MS));
+      await browse({ hierarchy: "albums", pop_all: true, multi_session_key: sessionKey });
+      const b = await load({ hierarchy: "albums", offset: 0, count: 1, multi_session_key: sessionKey });
+      const c2 = b.list && b.list.count ? b.list.count : 0;
+      return c1 !== c2;
+    });
+  } catch (e) { return false; }   // probe blip — don't block work on a transient error
+}
+
+// The library-refresh decision, shared by the 12h auto-check and the manual
+// Rescan button. Rebuilds the snapshot ONLY when the library changed AND Roon
+// is not mid-import. `force` (manual Rescan) rebuilds even if nothing changed,
+// but STILL refuses while Roon is importing — a deliberate press must not fight
+// an active import. Returns a status the UI can toast.
+let _rebuildInFlight = false;
+async function checkAndMaybeRebuild(reason, force) {
+  if (!core) return { status: "unpaired" };
+  if (albumIndex.building || _rebuildInFlight) return { status: "busy" };
+  _rebuildInFlight = true;
+  try {
+    let changed = force;
+    try {
+      if (!changed) changed = await libraryChangedSince();
+    } catch (e) { return { status: "error" }; }
+
+    if (!changed) {
+      if (_statusSync) { _statusSync = ""; pushStatus(); }
+      return { status: "fresh" };
+    }
+    if (await libraryIsImporting()) {
+      console.log("[index] " + reason + " check: library changed but Roon is still importing — refresh paused");
+      _statusSync = "  •  Roon importing — library refresh paused"; pushStatus();
+      return { status: "importing" };
+    }
+    console.log("[index] " + reason + " check: library changed and settled — rebuilding snapshot once");
+    clearBrowseOffsetCache();
+    await buildAlbumIndex().then(() => rebuildLabelsMap()).catch(() => { /* build error logged in buildAlbumIndex */ });
+    if (_statusSync) { _statusSync = ""; pushStatus(); }
+    return { status: "rebuilt", count: albumIndex.count };
+  } finally {
+    _rebuildInFlight = false;
+  }
+}
+
+// Background maintenance: build the snapshot once on pair (if empty), then
+// re-check for new albums every 12h. No rebuild ever fires from a user action
+// or a play — only this timer or the manual Rescan button, and never while
+// Roon is importing.
 function startIndexMaintenance() {
   stopIndexMaintenance();
-  // The index survives an unpair (see core_unpaired), so a re-pair with a
-  // recent index only needs the cheap probe to confirm it, not a full
-  // library re-walk. This matters when the Core itself is struggling: its
-  // GC pauses drop the connection, and the old unconditional rescan then
-  // hit the recovering Core with a full library walk on every re-pair.
-  if (isIndexFresh()) {
-    checkIndexChanged();
-  } else {
+  _statusSync = "";
+  // The index survives an unpair (it's plain offset/title data), so a re-pair
+  // with an existing snapshot needs no work — the 12h timer and manual Rescan
+  // handle refreshes. Build only when there's no snapshot yet (first pair).
+  if (!isIndexBuilt()) {
     buildAlbumIndex()
       .then(() => seedLabelsFromCache())
       .catch(e => { if (DEBUG) console.error("[index] initial build:", e.message); });
   }
-  indexMaintTimer = setInterval(checkIndexChanged, INDEX_CHECK_MS);
+  indexMaintTimer = setInterval(() => { checkAndMaybeRebuild("12h", false); }, INDEX_CHECK_MS);
+  if (indexMaintTimer.unref) indexMaintTimer.unref();
 }
 function stopIndexMaintenance() {
   if (indexMaintTimer) { clearInterval(indexMaintTimer); indexMaintTimer = null; }
 }
+
 
 // ---- Matching -------------------------------------------------------------
 // Earliest index i where qTokens[k] is a prefix of tokens[i+k] for every k
@@ -4361,12 +4425,25 @@ app.get("/api/labels-scan-status", (req, res) => {
 
 // Force a fresh labels scan — resets builtAt so the next /api/filters/labels
 // call triggers a full re-scan (useful if the initial scan found 0 labels).
+// Manual "Rescan library" (side menu). Checks Roon and rebuilds the album
+// snapshot — but refuses if Roon is still importing, so a deliberate press
+// never fights an active import. Returns a status the UI toasts.
+app.post("/api/library/rescan", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  try {
+    const r = await checkAndMaybeRebuild("manual", true);
+    res.json(r);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post("/api/labels/rescan", (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   if (labelsIndex.building) return res.json({ ok: false, reason: "scan already running" });
   labelsIndex.builtAt = 0;
   appendLabelsLog("[labels] manual rescan requested via web UI");
-  runLabelsIndexScan().catch(e => {
+  runLabelsIndexScan(true).catch(e => {   // force: explicit user action bypasses the sync gate
     const msg = "[labels] rescan error: " + e.message;
     if (DEBUG) console.error(msg);
     appendLabelsLog(msg);
@@ -4388,7 +4465,7 @@ app.post("/api/labels/rescan-force", (req, res) => {
   labelsIndex.builtAt = 0;
   discogsLogoTried.clear();
   appendLabelsLog("[labels] FORCE rescan requested — cleared name cache + logo dedup, starting full scan");
-  runLabelsIndexScan().catch(e => {
+  runLabelsIndexScan(true).catch(e => {   // force: explicit user action bypasses the sync gate
     const msg = "[labels] force-rescan error: " + e.message;
     console.error(msg); appendLabelsLog(msg);
   });
@@ -5598,8 +5675,10 @@ app.get("/api/search/external", async (req, res) => {
 app.post("/api/reindex", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   try {
-    await buildAlbumIndex();
-    res.json({ ok: true, indexed: albumIndex.count });
+    // Route through the shared gate so even this force-rebuild honors
+    // "never scan while Roon is importing".
+    const r = await checkAndMaybeRebuild("reindex", true);
+    res.json(r.status === "rebuilt" ? { ok: true, indexed: albumIndex.count } : { ok: false, ...r });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

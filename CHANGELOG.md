@@ -2,6 +2,64 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.48] — 2026-07-15
+
+### Fixed
+
+- **The live-name playback fallback now actually resolves albums** (v1.6.47 shipped it but it
+  failed for real albums). Comparing it against the extension's proven now-playing resolver
+  found two faults: (1) it passed **no zone** on the Roon search browses, but Roon's browse
+  root and search are zone-scoped, so the Search entry / results came back empty — it now
+  passes the play zone (or any live zone as browse context when opening detail); (2) its
+  album match gave up after an exact-title check, so a Roon title that differs slightly (e.g.
+  a "(Live)" suffix) fell through to the "close and reopen" error — it now mirrors the
+  now-playing resolver's fallbacks (exact + artist → exact → substring → top result). Every
+  stage of the fallback logs unconditionally, so a miss shows in `docker logs` exactly which
+  step failed (`[album:search] …`).
+
+## [1.6.47] — 2026-07-15
+
+### Changed
+
+- **Simpler, snapshot-based library model + robust playback** (user request, replacing the
+  v1.6.46 sync-deferral). The album index is now a stable snapshot: Roon owns the library;
+  the extension scans it once on first pair, then re-checks only **every 12 hours** or on a
+  **manual Rescan** — and **never rebuilds while Roon is importing**. Gone are the 5-minute
+  probe, the play-triggered rechecks, and every user-action rebuild, so the extension stays
+  off a busy Core entirely.
+  - **The "close and reopen it" playback error is fixed.** Playback previously resolved an
+    album by its stored list position, which a Roon import reshuffles — so tapping an album
+    whose position had moved failed. Now, when a stored position is stale, the album is
+    resolved **live by name** via Roon's own search (offset-free, always current, a single
+    lookup — not a scan), so a snapshot that's hours out of date never blocks a play. Only a
+    genuinely-removed album still reports the error.
+  - **Manual "Rescan library"** added to the side menu. It rebuilds the snapshot, but refuses
+    with "Roon is still adding albums — try again shortly" while an import is in progress, so
+    a deliberate press never fights the Core. The 12h auto-check applies the same rule.
+  - Import detection needs no Roon API support: a manual Rescan / 12h check reads the album
+    count, waits a few seconds, reads again — a still-moving count means Roon is importing.
+
+## [1.6.46] — 2026-07-15
+
+### Added
+
+- **Automatic library-sync awareness — the extension stops fighting a busy Core** (user
+  request, prompted by Roon Early Access 1674's browse-performance issues). While the Roon
+  Core is importing local files or syncing streaming favourites, the extension now detects
+  it and **defers its heavy background work** — the full-index rebuild (a 17-page re-walk)
+  and the labels scan — instead of thrashing an already-congested Core with a fresh rebuild
+  on every 5-minute tick that lands on a still-changing library. Album selection, playback
+  and search stay fully operational throughout: they serve from the existing in-memory
+  index, and the stale-offset play defense keeps playback correct even while offsets shift.
+  - **Detection** is automatic and needs no Roon API support (Roon exposes no "importing"
+    signal): the existing 5-minute probe already reads the album count each tick, so a count
+    that keeps *moving* between probes means a sync is in progress. On detection the probe
+    speeds up to once a minute to catch the end quickly; once the count holds steady for two
+    consecutive probes the extension runs **exactly one** rebuild and returns to normal. On a
+    ~550-album import this collapses roughly six wasteful mid-sync rebuilds into one.
+  - The Roon status line shows "Roon library updating…" while deferring. An explicit manual
+    "Rescan" in the labels UI bypasses the wait (a deliberate action never silently no-ops).
+
 ## [1.6.45] — 2026-07-15
 
 ### Fixed

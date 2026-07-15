@@ -5818,6 +5818,28 @@ initServiceBrowser({
   const toggle  = document.getElementById("menu-toggle");
   if (!overlay || !toggle) return;
 
+  // Manual library rescan: rebuilds the album snapshot, but the server refuses
+  // (status "importing") while Roon is still adding albums, so a deliberate
+  // press never fights an active import.
+  async function rescanLibrary() {
+    const toast = window.__showToast || (() => {});
+    toast("Checking Roon…");
+    try {
+      const r = await fetch("/api/library/rescan", { method: "POST" });
+      const j = await r.json().catch(() => ({}));
+      const msg =
+        j.status === "rebuilt"   ? "Library rescanned — " + (j.count || 0) + " albums" :
+        j.status === "importing" ? "Roon is still adding albums — try again shortly" :
+        j.status === "fresh"     ? "Library already up to date" :
+        j.status === "busy"      ? "A scan is already running" :
+        j.status === "unpaired"  ? "Not connected to Roon" :
+                                   "Rescan failed";
+      toast(msg, j.status === "rebuilt" || j.status === "fresh" ? undefined : "error");
+    } catch (e) {
+      toast("Rescan failed", "error");
+    }
+  }
+
   const openMenu  = () => overlay.classList.remove("hidden");
   const closeMenu = () => overlay.classList.add("hidden");
 
@@ -5844,6 +5866,10 @@ initServiceBrowser({
         // applyFilter(null) reveals the wall and loads it.
         if (window.__applyFilter) window.__applyFilter(null);
         else if (window.__loadRandom) window.__loadRandom();
+        return;
+      }
+      if (action === "rescan-library") {
+        rescanLibrary();
         return;
       }
 
