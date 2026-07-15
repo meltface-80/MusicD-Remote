@@ -2,6 +2,16 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.45] — 2026-07-15
+
+### Fixed
+
+- **Genre/wall screens open at the top on desktop** (community contribution — thanks
+  @markmcclusky, PR #67). Home and the album wall share `<main>`'s scroll container, so
+  entering a wall while Home was scrolled down (e.g. tapping a genre card below the fold)
+  opened mid-page or at the bottom instead of at the top. `showWall` now resets the scroll
+  position on entry. This release wraps the already-merged fix in a versioned build.
+
 ## [1.6.44] — 2026-07-15
 
 ### Changed
