@@ -185,7 +185,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
 - The README contains version references (install commands, tarball URLs, `docker build` tags).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.6.44** (until the user says otherwise).
+- Current stable version in the README: **v1.6.45** (until the user says otherwise).
 - The extension is being renamed **MusicD Remote** ("for Roon" is descriptive, not part of the name). The Roon `extension_id` must NEVER change — it would force every user to re-authorize.
 
 ---
@@ -297,4 +297,5 @@ docker run -d \
 | v1.6.41 | stable (superseded) | Artist bio header restyled to the LMS reference (large centred portrait, centred Show more/source) |
 | v1.6.42 | stable (superseded) | Observability: debug default in Docker (RRA_DEBUG=0 quiets), ISO-timestamped logs, Roon browse/load/image traces with durations, always-on failure + pairing logs, [http] request traces |
 | v1.6.43 | stable (superseded) | Roon-style rotating log files on the data volume (8 MB current → .01–.10, size-based retention, ~88 MB cap) |
-| v1.6.44 | **Latest (stable)** | Self-attributing Roon call traces (session key + request shape + ms on :res/failure lines); EA 1674 investigation: pooling verified healthy, slow calls were Core import congestion — README points here |
+| v1.6.44 | stable (superseded) | Self-attributing Roon call traces (session key + request shape + ms on :res/failure lines); EA 1674 investigation: pooling verified healthy, slow calls were Core import congestion |
+| v1.6.45 | **Latest (stable)** | Genre/wall screens open at the top (community fix, @markmcclusky PR #67) wrapped in a versioned build — README points here |
