@@ -293,7 +293,7 @@
      <a href="https://roon.app">Roon</a> — random-album browsing, instant whole-library
      search, rich label &amp; artist pages, and seamless playback with Roon Server at the heart.</p>
   <div class="badges">
-    <span class="badge" id="ver-badge">v1.6.45</span>
+    <span class="badge" id="ver-badge">v1.6.48</span>
     <span class="badge plain">Docker</span>
     <span class="badge plain">MIT licence</span>
     <span class="badge plain">Pairs with your Roon Core over the network</span>
@@ -398,9 +398,9 @@
             <button class="copy-btn" id="copy" type="button">Copy</button>
             <pre id="cmd">sudo mkdir -p /opt/musicd-remote
 cd /opt/musicd-remote
-sudo wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.6.45/MusicD-Remote-v1.6.45.tar.gz
-sudo tar -xzf MusicD-Remote-v1.6.45.tar.gz
-docker build -t musicd-remote:1.6.45 .
+sudo wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.6.48/MusicD-Remote-v1.6.48.tar.gz
+sudo tar -xzf MusicD-Remote-v1.6.48.tar.gz
+docker build -t musicd-remote:1.6.48 .
 
 # Run it
 docker run -d \
@@ -409,13 +409,13 @@ docker run -d \
   --network host \
   -v musicd-remote-data:/app/data \
   -v "/your/path/to/Music:/music:ro" \
-  musicd-remote:1.6.45</pre>
+  musicd-remote:1.6.48</pre>
           </div>
           <noscript><p class="after-note">JavaScript is off, so the configurator can't rebuild this
              command — what's shown is the standard Linux install. The macOS and streaming-only
              variants are in the <a href="https://github.com/meltface-80/MusicD-Remote#install-docker">README</a>.</p></noscript>
           <p class="after-note" id="after-note"></p>
-          <p class="after-note">Installing <b id="ver-line">v1.6.45</b> <span id="ver-note">(checking for the latest release…)</span>.
+          <p class="after-note">Installing <b id="ver-line">v1.6.48</b> <span id="ver-note">(checking for the latest release…)</span>.
              If your user isn't in the <code>docker</code> group, prefix the <code>docker</code>
              commands with <code>sudo</code>.</p>
           <div class="note"><b>One volume to rule them all.</b> The <code>musicd-remote-data</code>
@@ -528,7 +528,7 @@ docker run -d \
 
   var IMAGE = "musicd-remote";
   var REPO  = "meltface-80/MusicD-Remote";
-  var FALLBACK_VERSION = "1.6.45";   // latest published release when this page was built
+  var FALLBACK_VERSION = "1.6.48";   // latest published release when this page was built
 
   var els = {
     modes:      document.getElementById("modes"),
