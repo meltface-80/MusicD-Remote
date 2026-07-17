@@ -59,6 +59,7 @@
   let albumCount = computeAlbumCount();
   let labelsActive = false;        // viewing the record-label browser?
   let unplayedWallActive = false;  // viewing the full "Not played in 6 months" grid?
+  let libraryWallActive = false;   // viewing the full A-Z library grid?
   let albumSelectMode = false;
   let albumSelected = [];          // [{offset,title,subtitle}] albums chosen in select mode
   // The filter that the currently-open album modal belongs to. Usually the
@@ -187,7 +188,7 @@
   window.addEventListener("resize", () => {
     clearTimeout(_wallResizeTimer);
     _wallResizeTimer = setTimeout(() => {
-      if (labelsActive || unplayedWallActive) return;
+      if (labelsActive || unplayedWallActive || libraryWallActive) return;
       if (homeView && !homeView.classList.contains("hidden")) return;
       if (window.__searchActive && window.__searchActive()) return;
       if (Math.min(window.innerWidth, window.innerHeight) >= 768) return;
@@ -202,6 +203,7 @@
   const homeSections = document.getElementById("home-sections");
   const homeUnplayed = document.getElementById("home-unplayed");
   const homeRandom   = document.getElementById("home-random");
+  const homeLibrary  = document.getElementById("home-library");
   const homeLotw     = document.getElementById("home-lotw");
   const homeGenres   = document.getElementById("home-genres");
   const topbarBack   = document.getElementById("topbar-back");
@@ -209,6 +211,7 @@
   const topbarSearch  = document.getElementById("topbar-search");
   let homeSectionsLoaded = false;
   let homeLotwLoaded = false;   // set once the label-of-the-week row populates
+  let homeLibraryLoaded = false; // set once the Library row populates
 
   // Topbar chrome per view: Back button (off Home), Refresh button (random /
   // genre grids), and the Search box (Home only, beside the hamburger).
@@ -221,6 +224,7 @@
   // Show the Home landing (hide the wall). The wall loads lazily when entered.
   function showHome() {
     unplayedWallActive = false;
+    libraryWallActive = false;
     if (window.__clearSearchIfActive) window.__clearSearchIfActive();  // drop stale search results
     if (window.__exitLabels) window.__exitLabels();   // leave the labels browser if active
     if (window.__exitArtistView) window.__exitArtistView();   // leave the artist view if active
@@ -255,6 +259,7 @@
     // Label of the week depends on the background labels scan, which may not be
     // ready on the first visit — retry each visit until it populates, then stop.
     if (!homeLotwLoaded) loadHomeLabelOfWeek();
+    if (!homeLibraryLoaded) loadHomeLibrary();
     if (!homeSectionsLoaded) loadHomeGenres();
   }
   // Reveal the album wall. opts.loadIfEmpty loads a fresh wall only when it has
@@ -263,6 +268,7 @@
   // own content, e.g. labels/search).
   function showWall(opts) {
     unplayedWallActive = false;
+    libraryWallActive = false;
     if (window.__clearSearchIfActive) window.__clearSearchIfActive();  // drop stale search results
     if (window.__exitArtistView) window.__exitArtistView();   // leave the artist view if active
     if (homeView) homeView.classList.add("hidden");
@@ -384,17 +390,21 @@
   // Random-albums row (reuses /api/random-albums, no filter → full library).
   // Reloaded when the Home rows go stale (see showHome's TTL); tapping the
   // header opens the full random wall (same as the hamburger "Random albums").
-  function renderHomeRandom(albums) {
+  // One renderer for the plain album carousels (Random, Library) — same tiles,
+  // same empty state, so the rows can't drift apart.
+  function renderAlbumRow(rowEl, albums) {
     albums = albums || [];
-    homeRandom.innerHTML = "";
+    if (!rowEl) return;
+    rowEl.innerHTML = "";
     if (!albums.length) {
-      homeRandom.innerHTML = '<div class="home-carousel-empty">No albums.</div>';
+      rowEl.innerHTML = '<div class="home-carousel-empty">No albums.</div>';
       return;
     }
     const frag = document.createDocumentFragment();
     for (const a of albums) frag.appendChild(homeTile(a));   // filter:null → offsets resolve
-    homeRandom.appendChild(frag);
+    rowEl.appendChild(frag);
   }
+  function renderHomeRandom(albums) { renderAlbumRow(homeRandom, albums); }
 
   async function loadHomeRandom() {
     if (!homeRandom) return;
@@ -413,6 +423,39 @@
     } catch (e) {
       if (!rowHasContent(homeRandom)) homeRandom.innerHTML = '<div class="home-carousel-empty">Couldn’t load.</div>';
       homeRowsLoadedAt = 0;   // retry on the next Home visit
+    }
+  }
+
+  // Library row — the first albums of the whole library in Roon's own order.
+  // Stable content (changes only when the library does), so it loads once per
+  // session and is retried each Home visit until it populates, like the label
+  // of the week. Tapping the header opens the full scrolling library wall.
+  function renderHomeLibrary(albums) { renderAlbumRow(homeLibrary, albums); }
+
+  async function loadHomeLibrary() {
+    if (!homeLibrary) return;
+    if (!rowHasContent(homeLibrary)) homeLibrary.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
+    try {
+      const r = await fetch("/api/library/albums?offset=0&count=30");
+      // Any non-OK response (503 while the index builds, 500 on a transient
+      // server error) keeps the cached tiles — a built index never legitimately
+      // returns zero albums, so blanking the row to "No albums." would only
+      // ever be showing an error as an empty state.
+      if (!r.ok) {
+        if (!rowHasContent(homeLibrary)) homeLibrary.innerHTML = '<div class="home-carousel-empty">Waiting for Roon Core…</div>';
+        return;   // retried on the next Home visit (homeLibraryLoaded stays false)
+      }
+      const j = await r.json();
+      const albums = (j && j.albums) || [];
+      if (albums.length) {
+        renderHomeLibrary(albums);
+        homeLibraryLoaded = true;   // populated — stop retrying on future visits
+        saveHomeCache({ library: albums });
+      } else if (!rowHasContent(homeLibrary)) {
+        renderHomeLibrary([]);   // genuinely empty and nothing cached — show the empty state
+      }
+    } catch (e) {
+      if (!rowHasContent(homeLibrary)) homeLibrary.innerHTML = '<div class="home-carousel-empty">Couldn’t load.</div>';
     }
   }
 
@@ -468,30 +511,50 @@
     }
   }
 
+  // Shared entry ritual for the full-screen Home walls (Not played / Library):
+  // leave other views, clear the filter, take over the shared grid, set the
+  // topbar chrome + title, scroll to the top, paint skeletons. Both walls'
+  // active flags are reset here; the caller sets its own to true afterwards.
+  function enterFullWall(title) {
+    unplayedWallActive = false;
+    libraryWallActive = false;
+    exitAlbumSelectMode();   // a stale multi-select bar must not survive into a new wall
+    if (window.__exitLabels) window.__exitLabels();
+    if (activeFilter) {
+      activeFilter = null;
+      try { localStorage.removeItem("rra-filter"); } catch (e) {} // localStorage optional (private browsing)
+    }
+    if (homeView) homeView.classList.add("hidden");
+    if (homeSections) homeSections.classList.remove("hidden");
+    grid.classList.remove("hidden");
+    clearWallGridSizing();  // standard scrolling grid, not phone-fit wall
+    setTopbarNav(true, false, false);   // Back (to Home), no Refresh, no search
+    setCountText(title);
+    const m = document.querySelector("main");
+    if (m) m.scrollTop = 0;
+    renderSkeletons(computeAlbumCount());
+    return m;
+  }
+
   // Full-screen "Not played in 6 months" grid — reached by tapping the section
   // header. Fills the main grid with a larger unplayed list (tiles open
   // unfiltered, like the Home row) and shows a Back button to Home.
   async function showUnplayedWall() {
+    enterFullWall("Not played in 6 months");
     unplayedWallActive = true;
-    if (window.__exitLabels) window.__exitLabels();
-    if (activeFilter) { activeFilter = null; try { localStorage.removeItem("rra-filter"); } catch (e) {} }
-    if (homeView) homeView.classList.add("hidden");
-    if (homeSections) homeSections.classList.remove("hidden");
-    grid.classList.remove("hidden");
-    clearWallGridSizing();  // standard grid, not phone-fit wall
-    setTopbarNav(true, false, false);   // Back (to Home), no Refresh, no search
-    setCountText("Not played in 6 months");
-    const m = document.querySelector("main");
-    if (m) m.scrollTop = 0;
-    renderSkeletons(computeAlbumCount());
     try {
       const r = await fetch("/api/home/unplayed?months=6&count=96");
+      // The user may have navigated away while the fetch ran — a late response
+      // must not clobber whatever view owns the shared grid now.
+      if (!unplayedWallActive) return;
       if (r.status === 503) {
         const j = await r.json().catch(() => ({}));
+        if (!unplayedWallActive) return;
         setBanner(j.error || "Waiting for Roon Core. Enable this extension in Roon → Settings → Extensions.", true);
         grid.innerHTML = ""; return;
       }
       const j = await r.json();
+      if (!unplayedWallActive) return;
       const albums = (j && j.albums) || [];
       grid.innerHTML = "";
       if (!albums.length) {
@@ -503,40 +566,117 @@
       for (const a of albums) frag.appendChild(homeTile(a));   // filter:null → offsets resolve
       grid.appendChild(frag);
     } catch (e) {
+      if (!unplayedWallActive) return;
       grid.innerHTML = "";
       setBanner("Couldn’t load: " + e.message, true);
     }
   }
 
-  // Header taps: Not played → full unplayed grid; Random albums → full random
-  // wall; Label of the week → label view.
+  // Full-screen Library wall — the WHOLE library in Roon's own album order,
+  // loaded in pages from the snapshot index (no Roon calls) and appended as
+  // the user scrolls. Reached by tapping the "Library" section header.
+  const LIB_PAGE = 60;
+  const libWall = { offset: 0, loading: false, done: false, seq: 0 };
+  // Any view that takes over the shared grid without going through showHome/
+  // showWall (labels browser, label deep-link, artist view) must call this so
+  // the wall's infinite scroll can't append library tiles into that view.
+  function leaveLibraryWall() { libraryWallActive = false; }
+  window.__leaveLibraryWall = leaveLibraryWall;
+
+  async function fetchLibraryPage(mySeq, firstPage) {
+    if (libWall.loading) return;   // a page is already in flight for this view
+    libWall.loading = true;
+    try {
+      const r = await fetch(`/api/library/albums?offset=${libWall.offset}&count=${LIB_PAGE}`);
+      // Left the wall (or re-entered, bumping seq) while the fetch was in
+      // flight — this response belongs to a dead view; drop it silently.
+      if (!libraryWallActive || mySeq !== libWall.seq) return;
+      if (r.status === 503) {
+        const j = await r.json().catch(() => ({}));
+        if (!libraryWallActive || mySeq !== libWall.seq) return;
+        if (firstPage) { grid.innerHTML = ""; setBanner(j.error || "Waiting for Roon Core…", true); }
+        libWall.done = true;   // don't hammer while the index builds; re-enter to retry
+        return;
+      }
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const j = await r.json();
+      // Re-check after EVERY await: the body read is a second suspension point,
+      // and a view change during it would otherwise get tiles appended into it.
+      if (!libraryWallActive || mySeq !== libWall.seq) return;
+      const albums = (j && j.albums) || [];
+      if (firstPage) { grid.innerHTML = ""; setBanner(null); }
+      const frag = document.createDocumentFragment();
+      for (const a of albums) frag.appendChild(homeTile(a));   // filter:null → offsets resolve
+      grid.appendChild(frag);
+      libWall.offset += albums.length;
+      // End of library = a short (or empty) page; no separate total bookkeeping.
+      libWall.done = albums.length < LIB_PAGE;
+    } catch (e) {
+      if (!libraryWallActive || mySeq !== libWall.seq) return;
+      if (firstPage) { grid.innerHTML = ""; setBanner("Couldn’t load: " + e.message, true); }
+      // Mid-scroll page failure: leave what's loaded; the scroll handler will
+      // retry the same offset on the next nudge.
+    } finally {
+      if (mySeq === libWall.seq) libWall.loading = false;
+    }
+  }
+
+  async function showLibraryWall() {
+    const m = enterFullWall("Library");
+    libraryWallActive = true;
+    libWall.seq++;
+    const mySeq = libWall.seq;
+    libWall.offset = 0; libWall.loading = false; libWall.done = false;
+    await fetchLibraryPage(mySeq, true);
+    // Wide screens (9 columns) can swallow the first page without producing a
+    // scrollbar — no scrollbar means no scroll events, so keep filling until
+    // the viewport overflows (or the library runs out). fetchLibraryPage's
+    // loading guard makes a concurrent scroll-handler fetch harmless (this
+    // iteration then no-ops and the offset check below ends the loop).
+    while (libraryWallActive && mySeq === libWall.seq && !libWall.done && !libWall.loading &&
+           m && m.scrollHeight <= m.clientHeight + 200) {
+      const before = libWall.offset;
+      await fetchLibraryPage(mySeq, false);
+      if (libWall.offset === before) break;   // page failed or empty — stop; scroll retries
+    }
+  }
+
+  // Infinite scroll: <main> is the shared scroll container for every grid view;
+  // only act while the library wall owns it (labelsActive double-checks — the
+  // labels browser paints the same grid without touching the wall flags).
   {
-    const unplayedTitle = document.getElementById("home-unplayed-title");
-    if (unplayedTitle) {
-      unplayedTitle.addEventListener("click", showUnplayedWall);
-      unplayedTitle.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); showUnplayedWall(); }
-      });
+    const mainEl = document.querySelector("main");
+    if (mainEl) {
+      mainEl.addEventListener("scroll", () => {
+        if (!libraryWallActive || labelsActive || libWall.loading || libWall.done) return;
+        if (mainEl.scrollTop + mainEl.clientHeight >= mainEl.scrollHeight - 600) {
+          fetchLibraryPage(libWall.seq, false);
+        }
+      }, { passive: true });
     }
-    const randTitle = document.getElementById("home-random-title");
-    if (randTitle) {
-      const goRandom = () => { if (window.__applyFilter) window.__applyFilter(null); };
-      randTitle.addEventListener("click", goRandom);
-      randTitle.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goRandom(); }
-      });
-    }
-    const lotwTitle = document.getElementById("home-lotw-title");
-    if (lotwTitle) {
-      const goLabel = () => {
-        const name = homeLotw && homeLotw.dataset.label;
-        if (name && window.__showLabelAlbums) window.__showLabelAlbums(name);
-      };
-      lotwTitle.addEventListener("click", goLabel);
-      lotwTitle.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goLabel(); }
-      });
-    }
+  }
+
+  // Section-header activation (click + Enter/Space) — one wiring for all four
+  // Home headers so keyboard behaviour can't drift between them.
+  function wireSectionHeader(id, handler) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("click", handler);
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handler(); }
+    });
+  }
+
+  // Header taps: Not played → full unplayed grid; Random albums → full random
+  // wall; Library → full A-Z wall; Label of the week → label view.
+  {
+    wireSectionHeader("home-unplayed-title", showUnplayedWall);
+    wireSectionHeader("home-random-title", () => { if (window.__applyFilter) window.__applyFilter(null); });
+    wireSectionHeader("home-library-title", showLibraryWall);
+    wireSectionHeader("home-lotw-title", () => {
+      const name = homeLotw && homeLotw.dataset.label;
+      if (name && window.__showLabelAlbums) window.__showLabelAlbums(name);
+    });
   }
 
   // Weighted-random pick from a list of { title, count }.
@@ -655,6 +795,7 @@
     let painted = false;
     if (c.unplayed && homeUnplayed) { renderHomeUnplayed(c.unplayed.aotd, c.unplayed.albums); painted = rowHasContent(homeUnplayed) || painted; }
     if (c.random   && homeRandom)   { renderHomeRandom(c.random);                              painted = rowHasContent(homeRandom)   || painted; }
+    if (c.library  && homeLibrary)  { renderHomeLibrary(c.library); }
     if (c.lotw     && homeLotw)     { renderHomeLotw(c.lotw.label, c.lotw.albums); }
     if (c.genres   && homeGenres)   { renderHomeGenres(c.genres); }
     if (!painted) return false;
@@ -2376,6 +2517,7 @@
       const restoreScroll = !isRepoll && _labelsScrollSaved > 0;
       mode = "list";
       labelsActive = true;
+      leaveLibraryWall();   // labels own the shared grid now — stop the wall's infinite scroll
       clearWallGridSizing();   // labels grid uses its own layout, not the wall's phone-fit
       { const _hv = document.getElementById("home-view"); if (_hv) _hv.classList.add("hidden"); }
       grid.classList.remove("hidden");
@@ -2554,6 +2696,7 @@
       currentLabelName = name;
       mode = "albums";
       labelsActive = true;
+      leaveLibraryWall();   // label albums own the shared grid now — stop the wall's infinite scroll
       clearWallGridSizing();   // label-album grid uses its own layout, not the wall's phone-fit
       { const _hv = document.getElementById("home-view"); if (_hv) _hv.classList.add("hidden"); }
       grid.classList.remove("hidden");
@@ -5629,6 +5772,9 @@ initServiceBrowser({
     // which would otherwise append external rows under this view's grid. The
     // search artist-chip stops the search itself; this covers every other path.
     if (window.__clearSearchIfActive) window.__clearSearchIfActive();
+    // The artist view takes over the shared grid (and snapshot-restores it on
+    // Back) — the library wall's infinite scroll must not append into it.
+    if (window.__leaveLibraryWall) window.__leaveLibraryWall();
     if (artistViewActive) exitArtistView();
     // Invalidate any in-flight bio fetch NOW — bumping only inside
     // renderArtistBioHead left a window where artist A's late bio could

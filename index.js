@@ -3477,7 +3477,11 @@ async function buildAlbumIndex() {
   });
 
   try {
-    return await albumIndex.building;
+    const idx = await albumIndex.building;
+    // Thumbnails ride along with every sync: warm the disk store as soon as the
+    // snapshot lands (fire-and-forget; it self-aborts if a newer build starts).
+    prewarmAlbumArt().catch(e => { if (DEBUG) console.error("[art] prewarm:", e.message); });
+    return idx;
   } finally {
     albumIndex.building = null;
   }
@@ -4176,6 +4180,26 @@ app.get("/api/random-albums", async (req, res) => {
   }
 });
 
+// Whole library, in Roon's own album order, paged straight out of the snapshot
+// index — zero Roon round-trips per page. Feeds the Home "Library" carousel
+// and its full scrolling wall.
+app.get("/api/library/albums", async (req, res) => {
+  if (!core && !isIndexBuilt()) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  try {
+    await ensureAlbumIndex();
+    if (!isIndexBuilt()) return res.status(503).json({ error: "Library index is still building" });
+    const total  = albumIndex.albums.length;
+    const offset = Math.max(0, Math.min(total, parseInt(req.query.offset || "0", 10) || 0));
+    const count  = Math.max(1, Math.min(200, parseInt(req.query.count || "60", 10) || 60));
+    const albums = albumIndex.albums.slice(offset, offset + count).map(a => ({
+      offset: a.offset, title: a.title, subtitle: a.subtitle, image_key: a.image_key
+    }));
+    res.json({ albums, offset, total });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Home section: random albums NOT played in the last N months (default 6).
 // Uses the in-memory album index (no Roon browse) filtered against the plays
 // table, so it's fast. Returns the same album shape as /api/random-albums, so
@@ -4842,6 +4866,125 @@ app.get("/api/debug/browse-probe", async (req, res) => {
 // re-set on hit gives LRU eviction.
 const IMAGE_CACHE_MAX_BYTES = 64 * 1024 * 1024;   // ~64 MB ≈ 1500+ thumbnails
 const imageCache = new Map();                     // "key@size" → { body, type, bytes }
+
+// Disk-backed thumbnail store on the data volume — survives restarts, unlike
+// the in-memory LRU above. Holds ONE "tile master" per album (500px JPEG, the
+// largest size the wall tiles ever request) written by the prewarm pass that
+// runs after every library sync. /api/image serves it for any tile-sized
+// request (≤500px); bigger art (album view 800px, share card 1000px) still
+// goes to the Core on a memory miss. image_key changes when the art changes,
+// so disk entries never go stale — a rebuild prunes keys that left the index.
+const ART_DIR = path.join(__dirname, "data", "art-cache");
+const PREWARM_ART_SIZE = 500;
+try { fs.mkdirSync(ART_DIR, { recursive: true }); } catch (e) {
+  console.error("[art] cannot create art-cache dir:", e.message);
+}
+// image_key is an opaque Roon string — base64url is filesystem-safe AND
+// injective (an escape-based mapping like encodeURIComponent + '%'→'_' can
+// collide two distinct keys onto one file, serving the wrong album's art).
+function artFileName(imageKey) {
+  return Buffer.from(String(imageKey)).toString("base64url") + ".jpg";
+}
+function artFilePath(imageKey) { return path.join(ART_DIR, artFileName(imageKey)); }
+
+// Atomic write: readers race the prewarm on exactly the files it's writing
+// (the wall is first opened while the post-build prewarm runs). A plain
+// writeFile is truncate-then-append, so a concurrent read returns a torn JPEG
+// that would then be cached immutable for a week. Write-to-temp + rename makes
+// the file appear fully-formed or not at all.
+let _artTmpSeq = 0;
+async function writeArtFile(imageKey, body) {
+  const dest = artFilePath(imageKey);
+  // Unique tmp per write — two concurrent write-throughs for the same key must
+  // not interleave into one tmp file (each rename lands a complete image).
+  const tmp  = dest + "." + (++_artTmpSeq) + ".tmp";
+  await fs.promises.writeFile(tmp, body);
+  await fs.promises.rename(tmp, dest);
+}
+
+// Prewarm: fetch the tile master for every indexed album that doesn't have one
+// on disk yet. Kicked after each snapshot build (first pair, 12h refresh,
+// manual Rescan) — "grab the thumbnails during sync" — so wall scrolling never
+// waits on the Core. Sequential with a small gap: art shares the single
+// multiplexed Core websocket with browse + transport, and a burst here would
+// head-of-line block the UI.
+let _artPrewarmInFlight = false;
+let _artPrewarmQueued   = false;
+async function prewarmAlbumArt() {
+  if (!core || !isIndexBuilt()) return;
+  if (_artPrewarmInFlight) {
+    // A rebuild landed mid-prewarm: the running pass will abort on the builtAt
+    // check below, but its kick has already fired — queue one re-run so the
+    // NEW snapshot still gets warmed (otherwise it waits for the next rebuild).
+    _artPrewarmQueued = true;
+    return;
+  }
+  _artPrewarmInFlight = true;
+  const snapshotAt = albumIndex.builtAt;
+  try {
+    // One directory listing serves both passes: prune tile masters whose
+    // image_key left the index (art replaced / album removed), and remember
+    // what's on disk so the fetch pass below doesn't stat once per album.
+    const keep = new Set();
+    for (const al of albumIndex.albums) { if (al.image_key) keep.add(artFileName(al.image_key)); }
+    const onDisk = new Set();
+    let pruned = 0;
+    try {
+      for (const f of await fs.promises.readdir(ART_DIR)) {
+        if (keep.has(f)) { onDisk.add(f); continue; }
+        // Failed unlink (permissions/locked): not counted as pruned, and safe
+        // to ignore — a leftover file only costs disk and is retried next pass.
+        try { await fs.promises.unlink(path.join(ART_DIR, f)); pruned++; } catch (e) {}
+      }
+    } catch (e) { /* readdir failed (dir missing) — nothing to prune */ }
+
+    const todo = [];
+    for (const al of albumIndex.albums) {
+      if (!al.image_key) continue;
+      if (onDisk.has(artFileName(al.image_key))) continue;
+      todo.push(al.image_key);
+    }
+    if (!todo.length) {
+      if (pruned) console.log("[art] prewarm: store current, pruned " + pruned + " stale thumbnails");
+      return;
+    }
+    console.log("[art] prewarm: fetching " + todo.length + " album thumbnails" +
+                (pruned ? " (pruned " + pruned + " stale)" : ""));
+    let done = 0, failed = 0;
+    for (const key of todo) {
+      // A new snapshot or an unpair mid-run: stop — the queued re-kick (or the
+      // next build) covers the new snapshot.
+      if (!core || albumIndex.builtAt !== snapshotAt) break;
+      try {
+        // The on-demand write-through may have stored this key since the listing.
+        if (fs.existsSync(artFilePath(key))) {
+          done++;
+        } else {
+          const { content_type, body } = await getImage(key, {
+            scale: "fit", width: PREWARM_ART_SIZE, height: PREWARM_ART_SIZE, format: "image/jpeg"
+          });
+          // The disk store serves everything as image/jpeg — if the Core hands
+          // back another format despite the hint, skip the file; that album
+          // just keeps using the Core path like before the store existed.
+          if (!content_type || content_type === "image/jpeg") {
+            await writeArtFile(key, body);
+            done++;
+          }
+        }
+      } catch (e) { failed++; }   // missing art / Core blip — the next prewarm retries
+      await new Promise(r => setTimeout(r, 100));
+      if (done && done % 500 === 0) console.log("[art] prewarm: " + done + "/" + todo.length);
+    }
+    console.log("[art] prewarm complete: " + done + "/" + todo.length + " fetched" +
+                (failed ? ", " + failed + " failed" : ""));
+  } finally {
+    _artPrewarmInFlight = false;
+    if (_artPrewarmQueued) {
+      _artPrewarmQueued = false;
+      prewarmAlbumArt().catch(e => { if (DEBUG) console.error("[art] prewarm re-run:", e.message); });
+    }
+  }
+}
 let imageCacheBytes = 0;
 function imageCacheGet(k) {
   const hit = imageCache.get(k);
@@ -4865,25 +5008,54 @@ function imageCachePut(k, entry) {
   }
 }
 
+// Wall/Home tiles ask for 300-500px depending on device DPR (see TILE_IMG_SIZE
+// in app.js). The whole band is served from ONE 500px "tile master" per album
+// — one LRU entry and one disk file instead of a near-identical copy per size.
+// Smaller asks (96px display backdrop, 120px queue rows) stay on the exact-size
+// Core path: shipping them 500px bytes would be ~10x the transfer for art that
+// renders at thumbnail size.
+const TILE_BAND_MIN = 300;
+
 app.get("/api/image/:image_key", async (req, res) => {
-  const size = Math.max(64, Math.min(1200, parseInt(req.query.size || "400", 10)));
-  const cacheKey = req.params.image_key + "@" + size;
-  const cached = imageCacheGet(cacheKey);
-  if (cached) {
-    res.set("Content-Type", cached.type);
+  let size = parseInt(req.query.size || "400", 10);
+  if (!Number.isFinite(size)) size = 400;   // ?size=abc must not poison keys / Core calls with NaN
+  size = Math.max(64, Math.min(1200, size));
+  const key = req.params.image_key;
+  const tileBand = size >= TILE_BAND_MIN && size <= PREWARM_ART_SIZE;
+  // Tile-band requests all canonicalize to the 500px master's cache entry.
+  const cacheKey = key + "@" + (tileBand ? PREWARM_ART_SIZE : size);
+  const serve = (entry) => {
+    res.set("Content-Type", entry.type);
     res.set("Cache-Control", "public, max-age=604800, immutable");
-    return res.send(cached.body);
+    res.send(entry.body);
+  };
+  const cached = imageCacheGet(cacheKey);
+  if (cached) return serve(cached);
+  // Tile band: try the prewarmed disk store next. Works even while unpaired,
+  // so wall art survives a Core outage/restart.
+  if (tileBand) {
+    try {
+      const body = await fs.promises.readFile(artFilePath(key));
+      const entry = { body, type: "image/jpeg", bytes: body.length };
+      imageCachePut(cacheKey, entry);
+      return serve(entry);
+    } catch (e) { /* not prewarmed (yet) — fall through to the Core */ }
   }
   if (!core) return res.status(503).end();
   try {
-    const { content_type, body } = await getImage(req.params.image_key, {
-      scale: "fit", width: size, height: size, format: "image/jpeg"
+    // Tile-band Core fetches are made AT the master size and written through to
+    // the disk store — real browsing traffic warms the store during the (long)
+    // first prewarm instead of the prewarm re-fetching the same art later.
+    const fetchSize = tileBand ? PREWARM_ART_SIZE : size;
+    const { content_type, body } = await getImage(key, {
+      scale: "fit", width: fetchSize, height: fetchSize, format: "image/jpeg"
     });
     const type = content_type || "image/jpeg";
     imageCachePut(cacheKey, { body, type, bytes: body.length });
-    res.set("Content-Type", type);
-    res.set("Cache-Control", "public, max-age=604800, immutable");
-    res.send(body);
+    if (tileBand && type === "image/jpeg") {
+      writeArtFile(key, body).catch(e => { if (DEBUG) console.error("[art] write-through:", e.message); });
+    }
+    serve({ body, type });
   } catch (e) {
     res.status(404).end();
   }

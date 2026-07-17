@@ -2,6 +2,41 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.50] — 2026-07-17
+
+### Added
+
+- **Library carousel on Home + full scrolling library wall.** A new "Library" row shows the
+  start of the whole library in Roon's own album order; tapping the header opens a full
+  grid (3 columns on phones, wider on tablets/desktop, like the other walls) that pages in
+  60 albums at a time as you scroll. Pages come straight from the extension's snapshot
+  index — scrolling the entire library costs **zero Roon Core calls**.
+- **Persistent thumbnail store, grabbed during sync.** Album covers are now written to the
+  data volume (`data/art-cache/`, one 500px JPEG per album) by a throttled prewarm pass
+  that runs after every library sync (first pair, 12-hour check, manual Rescan). All
+  tile-sized art (300–500px) is served from disk with no Core round-trip, survives
+  container restarts, and even keeps rendering while the Core is offline. Normal browsing
+  also writes through to the store, so art you've already looked at never needs fetching
+  again; a sync prunes files for removed/changed albums.
+
+### Fixed (found by the pre-release 8-angle review)
+
+- Library wall's infinite scroll could append A-Z tiles into the labels browser, a label's
+  album grid, or the artist view when reached directly from the wall — those views now
+  explicitly release the wall, and every fetch re-checks view ownership after each await.
+- A rebuild landing mid-prewarm no longer skips warming the new snapshot (the kick is
+  queued and re-runs); prewarm writes are atomic (temp file + rename) so a tile requested
+  mid-write can't cache a torn JPEG for a week; art filenames use an injective encoding so
+  two albums can never collide onto one file.
+- One 500px master per album is now also the single in-memory cache entry for all
+  tile-sized requests (previously each size stored its own copy, shrinking the 64MB LRU);
+  small art (96px wall-display backdrop, 120px queue rows) keeps the exact-size Core path
+  instead of shipping 500px bytes.
+- A transient server error while refreshing the Home Library row no longer wipes the
+  cached tiles with a false "No albums." state; a stale multi-select action bar can no
+  longer survive into a freshly opened wall; a late "Not played" response no longer
+  overwrites whichever view the user navigated to meanwhile.
+
 ## [1.6.49] — 2026-07-16
 
 ### Fixed
