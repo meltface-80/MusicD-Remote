@@ -185,7 +185,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
 - The README contains version references (install commands, tarball URLs, `docker build` tags).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.6.49** (until the user says otherwise).
+- Current stable version in the README: **v1.6.50** (until the user says otherwise).
 - The extension is being renamed **MusicD Remote** ("for Roon" is descriptive, not part of the name). The Roon `extension_id` must NEVER change — it would force every user to re-authorize.
 
 ---
@@ -302,4 +302,5 @@ docker run -d \
 | v1.6.46 | superseded | Automatic library-sync awareness (deferred rebuilds while Roon imports) — replaced by v1.6.47's snapshot model |
 | v1.6.47 | stable (superseded) | Snapshot library model: scan once, re-check every 12h or on manual Rescan, never during import; live-name playback fallback; side-menu Rescan button |
 | v1.6.48 | stable (superseded) | Fixed the live-name play fallback (zone-scoped search + fuller matching) so stale-offset albums open/play reliably |
-| v1.6.49 | **Latest (stable)** | Play fallback rebuilt on Roon's dedicated search hierarchy (v1.6.48's resolved 0/12 in production); Discogs logo 429 cooldown+abort; FanArt 404 log demotion; wall-display idle wake-check 60s + trace-silenced — README points here |
+| v1.6.49 | stable (superseded) | Play fallback rebuilt on Roon's dedicated search hierarchy (v1.6.48's resolved 0/12 in production); Discogs logo 429 cooldown+abort; FanArt 404 log demotion; wall-display idle wake-check 60s + trace-silenced |
+| v1.6.50 | **Latest (stable)** | Home Library carousel + full A-Z scrolling wall (paged from the snapshot index, zero Core calls); persistent thumbnail store on the data volume prewarmed during every sync (atomic writes, write-through, prune); 8-angle review fixes — README points here |
