@@ -850,45 +850,85 @@ async function pickSmartAlbum() {
 // Resolve an album LIVE by name via Roon's own browse "search" hierarchy —
 // offset-free and always current. Used as the fallback when a tile's stored
 // offset is stale (the snapshot hasn't caught up to a Roon library change), so
-// playback never fails just because the index is old. Returns the matching
-// album item in the "browse" hierarchy (drill its item_key for tracks + the
-// Play action), or null when the album genuinely isn't in the library.
+// playback never fails just because the index is old. Returns { item, hierarchy }
+// — the matching album item plus the hierarchy it was found in ("search" or
+// "browse"; drill item_key there for tracks + the Play action) — or null when
+// the album genuinely isn't in the library.
 async function findAlbumViaSearch(sessionKey, title, artist, zoneId) {
   const t = (title || "").trim();
   if (!t) return null;
-  // Roon's browse root + search are ZONE-SCOPED — the working now-playing
-  // resolver passes a zone on every call. The open-detail path has no zone, so
-  // fall back to any live zone purely as browse context (we're only reading).
-  const zone = zoneId || Object.keys(zones)[0] || undefined;
-  const hier = "browse";
-  // Every stage logs unconditionally: this is the stale-offset recovery path,
-  // and when it can't find an album the log must show WHICH stage failed.
-  await browse({ hierarchy: hier, pop_all: true, multi_session_key: sessionKey, zone_or_output_id: zone });
-  const root = await load({ hierarchy: hier, offset: 0, count: 100, multi_session_key: sessionKey });
-  const items0 = root.items || [];
-  const searchItem = items0.find(i => i.input_prompt) || items0.find(i => /search/i.test(i.title || ""));
-  if (!searchItem) { console.log("[album:search] no Search entry at browse root for " + JSON.stringify(t)); return null; }
-  const query = `${t} ${artist || ""}`.trim();
-  await browse({ hierarchy: hier, multi_session_key: sessionKey, item_key: searchItem.item_key, input: query, zone_or_output_id: zone });
-  const results = await load({ hierarchy: hier, offset: 0, count: 100, multi_session_key: sessionKey });
-  const sections = results.items || [];
-  const albumsSection = sections.find(s => /album/i.test(s.title || "") && s.item_key);
-  if (!albumsSection) { console.log("[album:search] no Albums section for " + JSON.stringify(query) + "; sections=" + JSON.stringify(sections.map(s => s.title))); return null; }
-  await browse({ hierarchy: hier, multi_session_key: sessionKey, item_key: albumsSection.item_key });
-  const albs = await load({ hierarchy: hier, offset: 0, count: 50, multi_session_key: sessionKey });
-  const list = albs.items || [];
+  // Roon's search is ZONE-scoped and the zone is required for the later play
+  // action — use the play zone, or any live zone as context when opening
+  // detail without one.
+  const zone  = zoneId || Object.keys(zones)[0] || undefined;
+  const query = (t + " " + (artist || "")).trim();
   const tN = normalize(t), aN = normalize(artist || "");
-  const hit =
+
+  const pickFrom = (list) =>
        list.find(i => normalize(i.title) === tN && (!aN || normalize(i.subtitle).includes(aN)))
     || list.find(i => normalize(i.title) === tN)
     || list.find(i => { const n = normalize(i.title); return n.includes(tN) || tN.includes(n); })
-    || list[0];
-  if (!hit || !hit.item_key) {
-    console.log("[album:search] no album match for " + JSON.stringify(t) + " among " + JSON.stringify(list.slice(0, 6).map(i => i.title)));
-    return null;
+    || list[0] || null;
+
+  // Load the current search-result level, drill its Albums section, match by
+  // name. Shared by both lookup paths; every stage logs unconditionally so a
+  // miss pinpoints the failing step in the log.
+  const albumFromResults = async (hier) => {
+    const results = await load({ hierarchy: hier, offset: 0, count: 100, multi_session_key: sessionKey });
+    const sections = results.items || [];
+    const albumsSection = sections.find(sec => /album/i.test(sec.title || "") && sec.item_key);
+    if (!albumsSection) {
+      console.log("[album:search] no Albums section in " + hier + " results for " + JSON.stringify(query) +
+                  "; sections=" + JSON.stringify(sections.slice(0, 8).map(sec => sec.title)));
+      return null;
+    }
+    await browse({ hierarchy: hier, multi_session_key: sessionKey, item_key: albumsSection.item_key });
+    const albs = await load({ hierarchy: hier, offset: 0, count: 50, multi_session_key: sessionKey });
+    const hit = pickFrom(albs.items || []);
+    if (!hit || !hit.item_key) {
+      console.log("[album:search] no album match for " + JSON.stringify(t) + " among " +
+                  JSON.stringify((albs.items || []).slice(0, 6).map(i => i.title)));
+      return null;
+    }
+    console.log("[album:search] resolved " + JSON.stringify(t) + " -> " + JSON.stringify(hit.title) +
+                " / " + JSON.stringify(hit.subtitle) + " via " + hier);
+    return hit;
+  };
+
+  // Primary: the dedicated "search" hierarchy — a documented top-level
+  // hierarchy that takes the query as `input` directly at the root, no root
+  // crawl needed. (The v1.6.48 attempt crawled the "browse" root for a Search
+  // entry and missed 12/12 in production: that root exposes no Search entry
+  // on this session. Kept below as the secondary path.)
+  try {
+    await browse({ hierarchy: "search", input: query, pop_all: true,
+                   multi_session_key: sessionKey, zone_or_output_id: zone });
+    const hit = await albumFromResults("search");
+    if (hit) return { item: hit, hierarchy: "search" };
+  } catch (e) {
+    console.log("[album:search] search-hierarchy lookup failed: " + e.message);
   }
-  console.log("[album:search] resolved " + JSON.stringify(t) + " -> " + JSON.stringify(hit.title) + " / " + JSON.stringify(hit.subtitle));
-  return hit;
+
+  // Secondary: general "browse" root -> Search entry (the now-playing
+  // resolver's pattern).
+  try {
+    await browse({ hierarchy: "browse", pop_all: true, multi_session_key: sessionKey, zone_or_output_id: zone });
+    const root = await load({ hierarchy: "browse", offset: 0, count: 100, multi_session_key: sessionKey });
+    const items0 = root.items || [];
+    const searchItem = items0.find(i => i.input_prompt) || items0.find(i => /search/i.test(i.title || ""));
+    if (!searchItem) {
+      console.log("[album:search] no Search entry at browse root; root items=" +
+                  JSON.stringify(items0.slice(0, 8).map(i => i.title)));
+      return null;
+    }
+    await browse({ hierarchy: "browse", multi_session_key: sessionKey,
+                   item_key: searchItem.item_key, input: query, zone_or_output_id: zone });
+    const hit = await albumFromResults("browse");
+    if (hit) return { item: hit, hierarchy: "browse" };
+  } catch (e) {
+    console.log("[album:search] browse-root lookup failed: " + e.message);
+  }
+  return null;
 }
 
 async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
@@ -944,8 +984,8 @@ async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
       if (live) {
         if (DEBUG) console.log("[album] stale offset " + offset + " resolved live via search for " +
                                JSON.stringify(expect.title));
-        hierarchy = "browse";
-        albumItem = live;
+        hierarchy = live.hierarchy;
+        albumItem = live.item;
       } else {
         const err = new Error("The library just changed and this album moved — close and reopen it.");
         err.stale = true;
@@ -2528,7 +2568,11 @@ async function fetchFanArtLogo(groupKey, mbid) {
     return logoUrl ? "found" : "none";
   } catch (e) {
     // Don't cache on network error — retry next restart. 404 = no logo, cache null.
-    if (DEBUG) console.error("[labels:fanart]", groupKey, e.message);
+    // 404 is the expected "no artwork for this label" case and is already counted
+    // in the pass summary — logging each one just floods the log.
+    if (DEBUG && !(e.message && e.message.includes("404"))) {
+      console.error("[labels:fanart]", groupKey, e.message);
+    }
     if (e.message && e.message.includes("404")) {
       const mergeTarget = labelMerges.get(groupKey);
       const canonKey = mergeTarget ? mergeTarget.targetKey : groupKey;
@@ -2598,6 +2642,8 @@ async function fetchLogoFromDiscogs(labelName) {
     }
     return { logo: img, reason: "ok" };
   } catch (e) {
+    // 429 = rate limited — handled with a cooldown by the caller, don't log per-attempt.
+    if (/HTTP 429/.test(e.message || "")) return { logo: null, reason: "rate" };
     if (DEBUG) console.error("[labels:discogs:logo]", e.message);
     return { logo: null, reason: "error" };
   }
@@ -2615,11 +2661,30 @@ async function kickDiscogsLogoFetches() {
   if (!pending.length) return;
   if (DEBUG) console.log("[labels:discogs:logos] fetching logos for", pending.length, "labels");
   appendLabelsLog("[labels:discogs:logos] fetching logos for " + pending.length + " labels");
-  let found = 0, emptyCount = 0, filteredCount = 0, errorCount = 0;
-  for (const { groupKey, display } of pending) {
-    const { logo, reason } = await fetchLogoFromDiscogs(display);
-    // Only mark tried on definitive results — network errors can retry next scan cycle.
-    if (reason !== "error") discogsLogoTried.add(groupKey);
+  let found = 0, emptyCount = 0, filteredCount = 0, errorCount = 0, rateAborted = false;
+  const DISCOGS_429_COOLDOWN_MS = 65 * 1000; // Discogs limit window is per-minute
+  for (let pi = 0; pi < pending.length; pi++) {
+    const { groupKey, display } = pending[pi];
+    let { logo, reason } = await fetchLogoFromDiscogs(display);
+    if (reason === "rate") {
+      // One cooldown per pass: wait out the rate window, then retry this label.
+      // A second 429 straight after the cooldown means we're throttled for the
+      // long haul — abort the pass; untried labels retry next scan cycle.
+      appendLabelsLog("[labels:discogs:logos] rate limited (429) at " + (pi + 1) + "/" +
+        pending.length + " — cooling down " + Math.round(DISCOGS_429_COOLDOWN_MS / 1000) + "s");
+      await new Promise(r => setTimeout(r, DISCOGS_429_COOLDOWN_MS));
+      ({ logo, reason } = await fetchLogoFromDiscogs(display));
+      if (reason === "rate") {
+        rateAborted = true;
+        const abortMsg = "[labels:discogs:logos] still rate limited after cooldown — aborting pass at " +
+          (pi + 1) + "/" + pending.length + " (remaining labels retry next scan)";
+        console.error(abortMsg);
+        appendLabelsLog(abortMsg);
+        break;
+      }
+    }
+    // Only mark tried on definitive results — errors/rate limits can retry next scan cycle.
+    if (reason !== "error" && reason !== "rate") discogsLogoTried.add(groupKey);
     if (logo) {
       // Follow any merge that happened mid-flight so logo persists under the canonical key.
       const mergeTarget = labelMerges.get(groupKey);
@@ -2633,7 +2698,8 @@ async function kickDiscogsLogoFetches() {
     else if (reason === "filtered") filteredCount++;
     else                             errorCount++;
   }
-  const msg = "[labels:discogs:logos] done: " + found + "/" + pending.length + " logos found" +
+  const msg = "[labels:discogs:logos] " + (rateAborted ? "aborted (rate limited)" : "done") +
+    ": " + found + "/" + pending.length + " logos found" +
     (emptyCount    ? ", " + emptyCount    + " no results"     : "") +
     (filteredCount ? ", " + filteredCount + " placeholder img" : "") +
     (errorCount    ? ", " + errorCount    + " errors"          : "");
@@ -3982,7 +4048,7 @@ app.use(express.json());
 // API request tracing (DEBUG): method, path, status, duration — one line per
 // user action. The steady pollers are excluded: they'd bury everything else
 // under a line every 1.5s (zone-state) and per art tile (image).
-const TRACE_SKIP = /^\/api\/(zone-state|zones$|image\/|update\/status|settings\/tidal\/status|labels-scan-status|search-status)/;
+const TRACE_SKIP = /^\/api\/(zone-state|zones$|image\/|update\/status|settings\/tidal\/status|settings\/display|labels-scan-status|search-status)/;
 app.use((req, res, next) => {
   if (!DEBUG || !req.path.startsWith("/api/") || TRACE_SKIP.test(req.path)) return next();
   const t0 = Date.now();

@@ -524,8 +524,15 @@
   if (ppClose) ppClose.addEventListener("click", closePlayPanel);
 
   // ---- Boot ---------------------------------------------------------------
-  checkSettings().then(() => { if (enabled) tick(); });
-  setInterval(checkSettings, 30000);
+  // The settings check is the wake mechanism while the display is toggled off —
+  // it's the ONLY request made in that state (tick() bails when !enabled, so no
+  // zone/content polling happens). Self-scheduling: 30s while on, 60s while off.
+  function scheduleSettingsCheck() {
+    setTimeout(() => {
+      checkSettings().finally(scheduleSettingsCheck);
+    }, enabled ? 30000 : 60000);
+  }
+  checkSettings().then(() => { if (enabled) tick(); }).finally(scheduleSettingsCheck);
   setInterval(() => { if (enabled) tick(); }, 2000);
   setInterval(paintProgress, 250);
 })();

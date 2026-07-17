@@ -3,8 +3,8 @@
 # manual download step needed.
 services:
   musicd-remote:
-    build: https://github.com/meltface-80/MusicD-Remote.git#v1.6.48
-    image: musicd-remote:1.6.48
+    build: https://github.com/meltface-80/MusicD-Remote.git#v1.6.49
+    image: musicd-remote:1.6.49
     container_name: musicd-remote
     restart: unless-stopped
     network_mode: host

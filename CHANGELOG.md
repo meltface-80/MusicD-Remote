@@ -2,6 +2,38 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.49] — 2026-07-16
+
+### Fixed
+
+- **Live-name play fallback rebuilt on Roon's dedicated search hierarchy.** A production log
+  audit showed the v1.6.48 fallback fired 12 times and resolved 0 — every attempt died at
+  "no Search entry at browse root", because a pooled browse session already deep in `albums`
+  navigation doesn't reliably expose the Search item when crawling the general browse root.
+  The fallback now goes straight at Roon's documented **`search` hierarchy** (query as `input`
+  at the root, zone attached) and only falls back to the old browse-root crawl if that fails.
+  Each stage still logs unconditionally (`[album:search] …`), so `docker logs` shows exactly
+  how a stale-offset album was (or wasn't) resolved.
+- **Discogs logo pass no longer burns the whole scan on 429s.** The same audit found 116
+  Discogs 429 responses at fixed ~1.1s cadence ending in "0/107 logos found" on every scan —
+  once rate-limited, the pass kept hammering and marked nothing retryable. Now a 429 triggers
+  a single 65-second cooldown (Discogs' limit window is per-minute) and retries that label;
+  if the retry is still limited the pass aborts with a clear summary and every remaining
+  label stays eligible for the next scan cycle. Rate-limited labels are never marked as
+  "tried", and per-attempt 429 error lines are gone (the pass summary reports the abort).
+- **FanArt.tv 404s no longer flood the log.** A 404 is the normal "no artwork exists for
+  this label" answer and is already counted in the pass summary ("N without fanart artwork") —
+  the per-label error line for 404s is dropped; real errors (timeouts, 5xx) still log.
+
+### Changed
+
+- **Wall display idle polling quietened.** When the display toggle is off, the /display page
+  already stops all zone/content polling (the 2-second tick bails immediately); the only
+  request it makes is the settings check that lets the wall wake up when the toggle is
+  switched back on. That check now runs every **60s while off** (30s while on, as before),
+  and `/api/settings/display` is excluded from `[http]` request traces, so an idle wall no
+  longer writes a poll line to the log twice a minute.
+
 ## [1.6.48] — 2026-07-15
 
 ### Fixed
