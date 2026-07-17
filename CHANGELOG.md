@@ -2,6 +2,16 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.51] — 2026-07-17
+
+### Added
+
+- **Library panel dressed to match the other Home sections** (user-approved design): the
+  Library row now sits in its own warm library-brown tinted panel with a books watermark —
+  two staggered book spines and one leaning against them — in the same solid-silhouette
+  style, size, rotation and opacity as the clock/vinyl/tag/notes motifs. Adapts to light
+  theme like the rest (soft tan panel, dark motif).
+
 ## [1.6.50] — 2026-07-17
 
 ### Added

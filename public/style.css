@@ -20,6 +20,7 @@
   --danger:       #e06464;
   --home-unplayed-bg: #2b3037;   /* pale grey panel on dark */
   --home-random-bg:   #24322e;   /* teal-grey panel on dark */
+  --home-library-bg:  #322b23;   /* warm brown panel on dark */
   --home-lotw-bg:     #2f2a38;   /* violet-grey panel on dark */
   --home-genres-bg:   #33301f;   /* amber-grey panel on dark */
   --panel-hairline: rgba(255,255,255,.07);  /* row separators on tinted panels */
@@ -39,6 +40,7 @@
   --accent-soft:  rgba(31,143,193,.12);
   --home-unplayed-bg: #d9e8fb;   /* soft blue panel on light */
   --home-random-bg:   #d6f0e4;   /* soft teal panel on light */
+  --home-library-bg:  #f0e4d3;   /* soft tan panel on light */
   --home-lotw-bg:     #ece0f7;   /* soft violet panel on light */
   --home-genres-bg:   #f6ecd3;   /* soft amber panel on light */
   --panel-hairline: rgba(26,39,64,.12);     /* row separators on tinted panels */
@@ -2721,6 +2723,7 @@ input.vol-range::-moz-range-thumb {
    "Album detail refresh" section at the end of this file. */
 .home-section-unplayed,
 .home-section-random,
+.home-section-library,
 .home-section-lotw,
 .home-section-genres,
 .track-list-wrap,
@@ -2731,12 +2734,14 @@ input.vol-range::-moz-range-thumb {
 }
 .home-section-unplayed { background: var(--home-unplayed-bg); }
 .home-section-random   { background: var(--home-random-bg); }
+.home-section-library  { background: var(--home-library-bg); }
 .home-section-lotw     { background: var(--home-lotw-bg); }
 .home-section-genres   { background: var(--home-genres-bg); }
 /* The two below-the-fold sections skip rendering until scrolled near — on a
    phone the first paint only lays out the unplayed + random rows. The
    intrinsic size reserves roughly one carousel row so the scrollbar doesn't
    jump. (Older Safari ignores content-visibility — harmless.) */
+.home-section-library,
 .home-section-lotw,
 .home-section-genres {
   content-visibility: auto;
@@ -2758,6 +2763,7 @@ input.vol-range::-moz-range-thumb {
    image), so the theme swap is a color change rather than a second SVG. */
 .home-section-unplayed,
 .home-section-random,
+.home-section-library,
 .home-section-lotw,
 .home-section-genres,
 .track-list-wrap,
@@ -2765,6 +2771,7 @@ input.vol-range::-moz-range-thumb {
 #tab-queue { position: relative; overflow: hidden; }
 .home-section-unplayed > *,
 .home-section-random > *,
+.home-section-library > *,
 .home-section-lotw > *,
 .home-section-genres > *,
 .track-list-wrap > *,
@@ -2772,6 +2779,7 @@ input.vol-range::-moz-range-thumb {
 #tab-queue > * { position: relative; z-index: 1; }
 .home-section-unplayed::before,
 .home-section-random::before,
+.home-section-library::before,
 .home-section-lotw::before,
 .home-section-genres::before,
 .track-list-wrap::before,
@@ -2794,6 +2802,7 @@ input.vol-range::-moz-range-thumb {
 }
 [data-theme="light"] .home-section-unplayed::before,
 [data-theme="light"] .home-section-random::before,
+[data-theme="light"] .home-section-library::before,
 [data-theme="light"] .home-section-lotw::before,
 [data-theme="light"] .home-section-genres::before,
 [data-theme="light"] .track-list-wrap::before,
@@ -2812,6 +2821,14 @@ input.vol-range::-moz-range-thumb {
 .track-list-wrap::before {
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M100%2028%20a72%2072%200%201%200%200%20144%20a72%2072%200%201%200%200%20-144%20Z%20M100%2075%20a25%2025%200%201%200%200%2050%20a25%2025%200%201%200%200%20-50%20Z'%2F%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M100%2081%20a19%2019%200%201%200%200%2038%20a19%2019%200%201%200%200%20-38%20Z%20M100%2095.5%20a4.5%204.5%200%201%200%200%209%20a4.5%204.5%200%201%200%200%20-9%20Z'%2F%3E%3C%2Fsvg%3E");
           mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M100%2028%20a72%2072%200%201%200%200%20144%20a72%2072%200%201%200%200%20-144%20Z%20M100%2075%20a25%2025%200%201%200%200%2050%20a25%2025%200%201%200%200%20-50%20Z'%2F%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M100%2081%20a19%2019%200%201%200%200%2038%20a19%2019%200%201%200%200%20-38%20Z%20M100%2095.5%20a4.5%204.5%200%201%200%200%209%20a4.5%204.5%200%201%200%200%20-9%20Z'%2F%3E%3C%2Fsvg%3E");
+}
+/* "Library" — a couple of books: two staggered spines + one leaning against
+   them, detail bands near the tops (the part the panel actually shows); the
+   bodies run off the bottom of the canvas so no floating bottom edges peek
+   out from behind the album tiles. */
+.home-section-library::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M78%2044%20h30%20a5%205%200%200%201%205%205%20v151%20H73%20V49%20a5%205%200%200%201%205%20-5%20Z%20M73%2058%20h40%20v8%20H73%20Z'%2F%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M124%2066%20h24%20a5%205%200%200%201%205%205%20v129%20h-34%20V71%20a5%205%200%200%201%205%20-5%20Z%20M119%2082%20h34%20v7%20h-34%20Z'%2F%3E%3Cg%20transform%3D'rotate(-14%20172%20200)'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M162%2070%20h22%20a5%205%200%200%201%205%205%20v135%20h-32%20V75%20a5%205%200%200%201%205%20-5%20Z%20M157%2086%20h32%20v7%20h-32%20Z'%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E");
+          mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M78%2044%20h30%20a5%205%200%200%201%205%205%20v151%20H73%20V49%20a5%205%200%200%201%205%20-5%20Z%20M73%2058%20h40%20v8%20H73%20Z'%2F%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M124%2066%20h24%20a5%205%200%200%201%205%205%20v129%20h-34%20V71%20a5%205%200%200%201%205%20-5%20Z%20M119%2082%20h34%20v7%20h-34%20Z'%2F%3E%3Cg%20transform%3D'rotate(-14%20172%20200)'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M162%2070%20h22%20a5%205%200%200%201%205%205%20v135%20h-32%20V75%20a5%205%200%200%201%205%20-5%20Z%20M157%2086%20h32%20v7%20h-32%20Z'%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E");
 }
 /* "Label of the week" — price/luggage tag. */
 .home-section-lotw::before {
