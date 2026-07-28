@@ -69,9 +69,12 @@ jobs:
             NOTES="See CHANGELOG.md for the changes in v$VERSION."
           fi
           # Written to a FILE, not a step output interpolated into the release
-          # command: changelog entries contain backticks (`search`, `docker logs`),
-          # which a double-quoted --notes "${{ ... }}" would execute as command
+          # command: changelog entries contain backticks (`search`, `docker logs`)
+          # which a double-quoted --notes argument would execute as command
           # substitution. --notes-file passes the text through untouched.
+          # NOTE: never write a literal expression-interpolation token in this
+          # file, even inside a shell comment — Actions evaluates them anywhere
+          # in the workflow and an invalid one fails the whole run at startup.
           printf '%s\n' "$NOTES" > /tmp/release-notes.md
           echo "--- release notes ---"; cat /tmp/release-notes.md
 
