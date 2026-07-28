@@ -740,7 +740,7 @@ async function pickRandomAlbums(count, filter) {
     while (picked.size < want) picked.add(Math.floor(Math.random() * matches.length));
     const albums = [...picked].map(i => {
       const al = matches[i];
-      return { offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null };
+      return withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null });
     });
     return { albums, total: matches.length };
   }
@@ -759,7 +759,7 @@ async function pickRandomAlbums(count, filter) {
     while (picked.size < want) picked.add(Math.floor(Math.random() * pool.length));
     const albums = [...picked].map(i => {
       const al = pool[i];
-      return { offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null };
+      return withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null });
     });
     return { albums, total: pool.length };
   }
@@ -1963,12 +1963,56 @@ function musicDirMounted() {
   try { return fs.statSync(MUSIC_DIR).isDirectory(); } catch (e) { return false; }
 }
 
+// ---------------------------------------------------------------------------
+// "Local files" evidence — which albums exist as files under the /music mount.
+// Roon's API gives no storage/source field on album items, so the read-only
+// mount the label scanner already walks is the one authoritative signal we
+// have. Persisted on the data volume so badges survive a restart without
+// waiting for the next scan; empty (no badges anywhere) when /music isn't
+// mounted, which is the honest answer rather than a guess.
+// ---------------------------------------------------------------------------
+const LOCAL_ALBUMS_FILE = path.join(__dirname, "data", "local-albums.json");
+let localAlbumKeys = new Set();
+function loadLocalAlbumKeys() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(LOCAL_ALBUMS_FILE, "utf8"));
+    if (Array.isArray(raw)) localAlbumKeys = new Set(raw);
+    if (DEBUG) console.log("[local] loaded", localAlbumKeys.size, "local album keys");
+  } catch (e) { /* absent on first run / unreadable — rebuilt by the next file scan */ }
+}
+function setLocalAlbumKeys(keys) {
+  localAlbumKeys = keys;
+  try {
+    fs.writeFileSync(LOCAL_ALBUMS_FILE, JSON.stringify([...keys]));
+  } catch (e) {
+    console.error("[local] could not persist local album keys:", e.message);
+  }
+  console.log("[local] " + keys.size + " album keys recorded from " + MUSIC_DIR);
+}
+loadLocalAlbumKeys();
+// True when this album was seen on disk. Matches on title + credit, so a
+// streaming album that merely shares a title with a local one is never badged.
+function albumIsLocal(title, subtitle) {
+  if (!localAlbumKeys.size) return false;
+  return localAlbumKeys.has(normalize(title || "") + "||" + normalize(subtitle || ""));
+}
+// Attach the source flag to an album payload. One helper so every endpoint
+// that returns albums reports it identically.
+function withSource(a) {
+  return Object.assign({}, a, { local: albumIsLocal(a.title, a.subtitle) });
+}
+
 // Build a map of albumKey → label from audio file tags.
 // Expects Artist/Album/track.flac layout — reads one file per album directory.
 async function buildFileLabelMap(onProgress) {
   const map = new Map();
   const bandcampMap = new Map(); // albumKey → Bandcamp album page URL (from COMMENT tag)
-  if (!musicDirMounted()) return { labelMap: map, bandcampMap };
+  // Every album seen on disk, keyed the same way as the maps above — this is
+  // the evidence behind the "local files" badge. Collected for EVERY album
+  // directory (not just ones that yielded a label), since presence on disk is
+  // the whole question.
+  const localKeys = new Set();
+  if (!musicDirMounted()) return { labelMap: map, bandcampMap, localKeys };
   let mm;
   try { mm = await import("music-metadata"); } catch (e) {
     if (DEBUG) console.error("[labels:files] music-metadata not available:", e.message);
@@ -2013,6 +2057,13 @@ async function buildFileLabelMap(onProgress) {
         const albumartist = meta.common.albumartist
           || (meta.common.artists && meta.common.artists[0])
           || meta.common.artist || null;
+        // Record every on-disk album under both credit spellings — Roon's
+        // album-artist can match either the ALBUMARTIST or the ARTIST tag, and
+        // a miss here just means a missing badge, never a wrong one.
+        if (album) {
+          localKeys.add(normalize(album) + "||" + normalize(albumartist || ""));
+          if (meta.common.artist) localKeys.add(normalize(album) + "||" + normalize(meta.common.artist));
+        }
         if (label && !isLikelyNotALabel(label) && album) {
           const key = normalize(album) + "||" + normalize(albumartist || "");
           if (!map.has(key)) map.set(key, label);
@@ -2053,7 +2104,7 @@ async function buildFileLabelMap(onProgress) {
     if (DEBUG) console.error("[labels:files] scan error:", e.message);
   }
   if (DEBUG) console.log("[labels:files] file scan found", map.size, "labels,", bandcampMap.size, "Bandcamp URLs");
-  return { labelMap: map, bandcampMap };
+  return { labelMap: map, bandcampMap, localKeys };
 }
 
 // ---------------------------------------------------------------------------
@@ -2095,11 +2146,14 @@ async function runLabelsIndexScan(force) {
   // so corrected file tags override stale API-derived cache entries on every scan,
   // including 12-hour auto-rescans where all albums are already cached.
   const estimate = albumIndex.albums.length || 1000;
-  const { labelMap: fileLabelMap, bandcampMap } = musicDirMounted()
+  const { labelMap: fileLabelMap, bandcampMap, localKeys } = musicDirMounted()
     ? await buildFileLabelMap((n) => {
         labelsIndex.progress = Math.min(0.15, n / estimate);
       })
-    : { labelMap: new Map(), bandcampMap: new Map() };
+    : { labelMap: new Map(), bandcampMap: new Map(), localKeys: new Set() };
+  // Only replace the known-local set when the scan actually saw the mount —
+  // an unmounted /music must not wipe badges earned by a previous scan.
+  if (localKeys && localKeys.size) setLocalAlbumKeys(localKeys);
   if (fileLabelMap.size) {
     let overrideCount = 0;
     for (const [key, fileLabel] of fileLabelMap) {
@@ -3433,6 +3487,18 @@ function splitCreditIntoArtists(subtitle) {
   const known = knownArtistSet();
   const out = [];
   for (const part of safeParts) {
+    // Stage 1b — UNSPACED slash. Roon writes most multi-artist credits this
+    // way ("T-Bone Walker/Big Joe Turner/Otis Spann", "François Couturier/
+    // Dominique Pifarély"), so refusing to split it left the whole credit as
+    // one dead-end link. Band names also contain bare slashes (AC/DC), so it
+    // splits only on evidence: every fragment looks like a full name (contains
+    // a space — "AC"/"DC" don't), or the library recognises one as an artist.
+    const slashFrags = part.split("/").map(s => s.trim()).filter(Boolean);
+    if (slashFrags.length >= 2) {
+      const allMultiWord = slashFrags.every(f => /\s/.test(f));
+      const anyKnown = slashFrags.some(f => f.length >= 3 && known.has(normalize(f)));
+      if (allMultiWord || anyKnown) { out.push(...slashFrags); continue; }
+    }
     const frags = part.split(/\s*,\s*| & | \+ | and /i)
       .map(s => s.trim())
       .filter(f => f.length >= 2);   // "," splits of initials/junk never link
@@ -4143,7 +4209,10 @@ app.get("/api/artist-albums", (req, res) => {
   }
   primary.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
   featured.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
-  res.json({ artist, primary, featured });
+  const slim = (al) => withSource({
+    offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null
+  });
+  res.json({ artist, primary: primary.map(slim), featured: featured.map(slim) });
 });
 
 // Artist header bio for the artist-albums view. Wraps the wall display's
@@ -4191,7 +4260,7 @@ app.get("/api/library/albums", async (req, res) => {
     const total  = albumIndex.albums.length;
     const offset = Math.max(0, Math.min(total, parseInt(req.query.offset || "0", 10) || 0));
     const count  = Math.max(1, Math.min(200, parseInt(req.query.count || "60", 10) || 60));
-    const albums = albumIndex.albums.slice(offset, offset + count).map(a => ({
+    const albums = albumIndex.albums.slice(offset, offset + count).map(a => withSource({
       offset: a.offset, title: a.title, subtitle: a.subtitle, image_key: a.image_key
     }));
     res.json({ albums, offset, total });
@@ -4227,7 +4296,7 @@ app.get("/api/home/unplayed", async (req, res) => {
     while (picked.size < want) picked.add(Math.floor(Math.random() * pool.length));
     const albums = [...picked].map(i => {
       const al = pool[i];
-      return { offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null };
+      return withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null });
     });
     res.json({ albums, total: pool.length, months });
   } catch (e) {
@@ -4261,7 +4330,7 @@ app.get("/api/home/album-of-the-day", async (req, res) => {
       } catch (e) { played = false; /* DB unavailable — show it */ }
     }
     if (played) return res.json({ album: null, played: true });
-    res.json({ album: { offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null } });
+    res.json({ album: withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -5076,7 +5145,7 @@ app.get("/api/album", async (req, res) => {
   try {
     const r = await openAlbumByOffset(offset, null, null, parseFilter(req.query), expect);
     res.json({
-      album:  r.album,
+      album:  withSource(r.album),
       tracks: r.tracks,
       actions: r.actions.map(a => ({ kind: a.kind, title: a.title })),
       offset: r.offset,  // corrected when the stale-offset defense relocated
@@ -6453,7 +6522,7 @@ app.get("/api/display/content", async (req, res) => {
         const subN = normalize(al.subtitle || "");
         if (subN === artistN || subN.split(" / ").indexOf(artistN) !== -1 ||
             subN.startsWith(artistN + " /") || subN.indexOf(" / " + artistN) !== -1) {
-          moreArtist.push({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null });
+          moreArtist.push(withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }));
         }
       }
     }
@@ -6479,7 +6548,7 @@ app.get("/api/display/content", async (req, res) => {
         const alLabel = resolveAlbumLabelName(al);
         if (!alLabel || canonicalLabelGroupKey(alLabel) !== targetKey) continue;
         seenOffsets.add(al.offset);
-        picks.push({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null });
+        picks.push(withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }));
       }
       if (picks.length >= 3) {
         const entry = labelsIndex.map.get(targetKey);

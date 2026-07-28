@@ -2,6 +2,29 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.53] — 2026-07-28
+
+### Fixed
+
+- **Multi-artist albums now give you a link per artist.** Credits like
+  "T-Bone Walker/Big Joe Turner/Otis Spann" and "François Couturier/Dominique Pifarély"
+  were shown as a single link covering the whole line, because Roon writes these with an
+  unspaced slash and the splitter only broke on a spaced one (deliberately, to protect band
+  names like AC/DC). It now splits on the unspaced slash too, but only on evidence: either
+  every part looks like a full name (contains a space — "AC"/"DC" don't), or the library
+  recognises one of them as an artist. Tapping a name opens that artist's screen, which
+  already lists their own albums first and then an **Also appears on** section.
+
+### Added
+
+- **"Local files" badge on albums.** Albums found on the mounted music folder now carry a
+  small badge (top-right of the cover, on tiles and on the album screen). Roon's extension
+  API exposes no source field, so this uses the read-only /music mount the label scanner
+  already walks: every album directory's tags are recorded during the scan and matched on
+  title + credit. The list is saved on the data volume, so badges survive restarts. No
+  badge means "not confirmed local" rather than "streaming" — a missing badge is preferred
+  over a wrong one, and nothing is badged at all when /music isn't mounted.
+
 ## [1.6.52] — 2026-07-28
 
 ### Fixed

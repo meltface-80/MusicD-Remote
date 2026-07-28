@@ -27,6 +27,13 @@
 
   const modal       = document.getElementById("album-modal");
   const modalImg    = document.getElementById("modal-img");
+  const modalSource = document.getElementById("modal-source");
+  // Same rule as the tiles: badge only on confirmed local files, and clear it
+  // on every open so a previous album's badge can't linger.
+  function setModalSource(album) {
+    if (!modalSource) return;
+    modalSource.classList.toggle("hidden", !(album && album.local));
+  }
   const modalTitle  = document.getElementById("modal-title");
   const modalSub    = document.getElementById("modal-subtitle");
   const modalActs   = document.getElementById("modal-actions");
@@ -909,6 +916,15 @@
 
     const artWrap = document.createElement("div");
     artWrap.className = "album-art-wrap";
+    // Source badge — only shown when the server is confident (an album found
+    // on the /music mount). No badge means "unknown", not "streaming".
+    if (a.local) {
+      const src = document.createElement("span");
+      src.className = "album-source local";
+      src.title = "Local files";
+      src.setAttribute("aria-label", "Local files");
+      artWrap.appendChild(src);
+    }
     if (a.image_key) {
       const img = document.createElement("img");
       img.loading = "lazy"; img.alt = "";
@@ -1310,6 +1326,7 @@
     document.getElementById("album-bio-toggle").classList.add("hidden");
     document.getElementById("album-bio-source").classList.add("hidden");
     document.getElementById("album-bio-text").dataset.clipped = "true";
+    setModalSource(album);   // tile data may already carry it; refreshed below from the detail response
     if (album.image_key) {
       modalImg.src = `/api/image/${encodeURIComponent(album.image_key)}?size=800`;
       modalImg.style.display = "";
@@ -1369,6 +1386,7 @@
     }
     const j = await r.json();
     if (j.album) {
+      setModalSource(j.album);   // authoritative: the server resolved this album
       if (j.album.title)    modalTitle.textContent = j.album.title;
       if (j.album.subtitle) setModalArtist(j.album.subtitle);
       if (j.album.image_key) {
