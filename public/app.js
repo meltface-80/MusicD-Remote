@@ -237,6 +237,7 @@
 
   // Show the Home landing (hide the wall). The wall loads lazily when entered.
   function showHome() {
+    { const c = document.getElementById("library-controls"); if (c) c.classList.add("hidden"); }
     unplayedWallActive = false;
     libraryWallActive = false;
     if (window.__clearSearchIfActive) window.__clearSearchIfActive();  // drop stale search results
@@ -283,6 +284,7 @@
   // don't leave an empty grid behind, without racing actions that render their
   // own content, e.g. labels/search).
   function showWall(opts) {
+    { const c = document.getElementById("library-controls"); if (c) c.classList.add("hidden"); }
     unplayedWallActive = false;
     libraryWallActive = false;
     if (window.__clearSearchIfActive) window.__clearSearchIfActive();  // drop stale search results
@@ -536,6 +538,8 @@
   function enterFullWall(title) {
     unplayedWallActive = false;
     libraryWallActive = false;
+    // The library wall's sort/focus row belongs to that wall only.
+    { const c = document.getElementById("library-controls"); if (c) c.classList.add("hidden"); }
     exitAlbumSelectMode();   // a stale multi-select bar must not survive into a new wall
     if (window.__exitLabels) window.__exitLabels();
     if (activeFilter) {
@@ -594,7 +598,32 @@
   // loaded in pages from the snapshot index (no Roon calls) and appended as
   // the user scrolls. Reached by tapping the "Library" section header.
   const LIB_PAGE = 60;
-  const libWall = { offset: 0, loading: false, done: false, seq: 0 };
+  // sort/dir/focus persist so the wall reopens exactly as the user left it.
+  // Roon's own Sort/Focus run on a private API — these are built from the
+  // extension's own snapshot, so changing them costs no Roon calls at all.
+  const LIB_VIEW_KEY = "rra-library-view";
+  const libWall = { offset: 0, loading: false, done: false, seq: 0, total: 0 };
+  let libView = { sort: "album", dir: "asc", seed: 1, decade: [], source: [], played: "any" };
+  try {
+    const saved = JSON.parse(localStorage.getItem(LIB_VIEW_KEY) || "null");
+    if (saved && typeof saved === "object") libView = Object.assign(libView, saved);
+  } catch (e) { /* corrupt or unavailable — the defaults above stand */ }
+  function saveLibView() {
+    try { localStorage.setItem(LIB_VIEW_KEY, JSON.stringify(libView)); }
+    catch (e) { /* localStorage optional (private browsing) */ }
+  }
+  function libViewQuery() {
+    const p = new URLSearchParams();
+    p.set("sort", libView.sort);
+    p.set("dir", libView.dir);
+    if (libView.sort === "random") p.set("seed", String(libView.seed));
+    for (const d of libView.decade) p.append("decade", d);
+    for (const s of libView.source) p.append("source", s);
+    if (libView.played !== "any") p.set("played", libView.played);
+    return p.toString();
+  }
+  const libFocusCount = () =>
+    libView.decade.length + libView.source.length + (libView.played !== "any" ? 1 : 0);
   // Any view that takes over the shared grid without going through showHome/
   // showWall (labels browser, label deep-link, artist view) must call this so
   // the wall's infinite scroll can't append library tiles into that view.
@@ -609,7 +638,7 @@
     if (libWall.loading) return;   // a page is already in flight for this view
     libWall.loading = true;
     try {
-      const r = await fetch(`/api/library/albums?offset=${libWall.offset}&count=${LIB_PAGE}`);
+      const r = await fetch(`/api/library/albums?offset=${libWall.offset}&count=${LIB_PAGE}&${libViewQuery()}`);
       // Left the wall (or re-entered, bumping seq) while the fetch was in
       // flight — this response belongs to a dead view; drop it silently.
       if (!libraryWallActive || mySeq !== libWall.seq) return;
@@ -633,6 +662,12 @@
       libWall.offset += albums.length;
       // End of library = a short (or empty) page; no separate total bookkeeping.
       libWall.done = albums.length < LIB_PAGE;
+      libWall.total = (j && typeof j.total === "number") ? j.total : libWall.offset;
+      if (firstPage) {
+        setCountText("Library · " + libWall.total.toLocaleString() +
+                     (libFocusCount() ? " matching" : "") + (libWall.total === 1 ? " album" : " albums"));
+        if (!albums.length) setBanner("Nothing matches this focus — try clearing a filter.", false);
+      }
     } catch (e) {
       if (!libraryWallActive || mySeq !== libWall.seq) return;
       if (firstPage) { grid.innerHTML = ""; setBanner("Couldn’t load: " + e.message, true); }
@@ -643,9 +678,220 @@
     }
   }
 
+  // ---- Library wall: sort + focus controls --------------------------------
+  // Roon's Sort/Focus live on a private API, so these are built from this
+  // extension's own snapshot. Sorts marked with a note are approximations and
+  // say so in the sheet rather than pretending to be Roon's.
+  const LIB_SORT_OPTIONS = [
+    { id: "album",      label: "Album name" },
+    { id: "artist",     label: "Artist" },
+    { id: "year",       label: "Release year", note: "from years collected during scanning" },
+    { id: "plays",      label: "Most played",  note: "from plays MusicD Remote has seen" },
+    { id: "lastplayed", label: "Last played",  note: "from plays MusicD Remote has seen" },
+    { id: "random",     label: "Random" }
+  ];
+  const LIB_PLAYED_OPTIONS = [
+    { id: "any",   label: "Any" },
+    { id: "never", label: "Never played" },
+    { id: "6",     label: "Not in 6 months" },
+    { id: "12",    label: "Not in 12 months" }
+  ];
+  let libFacets = null;   // cached /api/library/facets payload
+
+  function libSortLabel() {
+    const o = LIB_SORT_OPTIONS.find(x => x.id === libView.sort);
+    const arrow = libView.dir === "desc" ? " ↓" : " ↑";
+    return (o ? o.label : "Album name") + (libView.sort === "random" ? "" : arrow);
+  }
+
+  // Re-run the wall from page 1 with the current view options.
+  function applyLibView() {
+    saveLibView();
+    renderLibraryControls();
+    libWall.seq++;
+    const mySeq = libWall.seq;
+    libWall.offset = 0; libWall.loading = false; libWall.done = false;
+    const m = document.querySelector("main");
+    if (m) m.scrollTop = 0;
+    renderSkeletons(computeAlbumCount());
+    fetchLibraryPage(mySeq, true);
+  }
+
+  function renderLibraryControls() {
+    let bar = document.getElementById("library-controls");
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.id = "library-controls";
+      bar.className = "library-controls";
+      grid.parentNode.insertBefore(bar, grid);
+    }
+    bar.innerHTML = "";
+    const mk = (text, sub, onClick, active) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "lib-pill" + (active ? " is-active" : "");
+      b.innerHTML = `<span class="lib-pill-label"></span><span class="lib-pill-value"></span>`;
+      b.querySelector(".lib-pill-label").textContent = text;
+      b.querySelector(".lib-pill-value").textContent = sub;
+      b.addEventListener("click", onClick);
+      return b;
+    };
+    bar.appendChild(mk("Sort", libSortLabel(), openLibSortSheet, false));
+    const n = libFocusCount();
+    bar.appendChild(mk("Focus", n ? n + " active" : "None", openLibFocusSheet, n > 0));
+    bar.classList.toggle("hidden", !libraryWallActive);
+  }
+
+  // One sheet builder for both — same bottom-sheet language as the filter and
+  // settings sheets, built as live nodes (never restored from an HTML string).
+  function openLibSheet(title, buildBody, footer) {
+    const back = document.createElement("div");
+    back.className = "lib-sheet-backdrop";
+    const sheet = document.createElement("div");
+    sheet.className = "lib-sheet";
+    const head = document.createElement("div");
+    head.className = "lib-sheet-head";
+    const h = document.createElement("h3"); h.textContent = title;
+    const x = document.createElement("button");
+    x.type = "button"; x.className = "icon-btn"; x.setAttribute("aria-label", "Close");
+    x.textContent = "✕";
+    head.appendChild(h); head.appendChild(x);
+    const body = document.createElement("div");
+    body.className = "lib-sheet-body";
+    sheet.appendChild(head); sheet.appendChild(body);
+    const close = () => { back.remove(); };
+    buildBody(body, close);
+    if (footer) {
+      const f = document.createElement("div");
+      f.className = "lib-sheet-foot";
+      footer(f, close);
+      sheet.appendChild(f);
+    }
+    x.addEventListener("click", close);
+    back.addEventListener("click", (e) => { if (e.target === back) close(); });
+    back.appendChild(sheet);
+    document.body.appendChild(back);
+  }
+
+  function openLibSortSheet() {
+    openLibSheet("Sort", (body, close) => {
+      for (const opt of LIB_SORT_OPTIONS) {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "lib-row" + (libView.sort === opt.id ? " is-on" : "");
+        const main = document.createElement("div");
+        main.className = "lib-row-main";
+        main.textContent = opt.label;
+        row.appendChild(main);
+        if (opt.note) {
+          const sub = document.createElement("div");
+          sub.className = "lib-row-sub";
+          sub.textContent = opt.note;
+          row.appendChild(sub);
+        }
+        row.addEventListener("click", () => {
+          if (libView.sort === "random" && opt.id === "random") libView.seed = Date.now() % 100000;
+          libView.sort = opt.id;
+          close(); applyLibView();
+        });
+        body.appendChild(row);
+      }
+      if (libView.sort !== "random") {
+        const dir = document.createElement("button");
+        dir.type = "button";
+        dir.className = "lib-row lib-row-dir";
+        dir.textContent = libView.dir === "asc" ? "Order: A → Z (tap to reverse)"
+                                                : "Order: Z → A (tap to reverse)";
+        dir.addEventListener("click", () => {
+          libView.dir = libView.dir === "asc" ? "desc" : "asc";
+          close(); applyLibView();
+        });
+        body.appendChild(dir);
+      }
+    });
+  }
+
+  async function openLibFocusSheet() {
+    if (!libFacets) {
+      try {
+        const r = await fetch("/api/library/facets");
+        if (r.ok) libFacets = await r.json();
+      } catch (e) { /* offline — the sheet still shows the play-history facet */ }
+    }
+    const f = libFacets || { decades: [], sources: [] };
+    openLibSheet("Focus", (body) => {
+      const section = (label) => {
+        const s = document.createElement("div");
+        s.className = "lib-sheet-section";
+        const t = document.createElement("div");
+        t.className = "lib-sheet-section-label";
+        t.textContent = label;
+        s.appendChild(t);
+        body.appendChild(s);
+        return s;
+      };
+      const chip = (host, label, on, onToggle) => {
+        const c = document.createElement("button");
+        c.type = "button";
+        c.className = "lib-chip" + (on ? " is-on" : "");
+        c.textContent = label;
+        c.addEventListener("click", () => { onToggle(); renderFocusBody(); });
+        host.appendChild(c);
+      };
+      const renderFocusBody = () => {
+        body.innerHTML = "";
+        if (f.sources && f.sources.length) {
+          const s = section("Source");
+          const wrap = document.createElement("div"); wrap.className = "lib-chips"; s.appendChild(wrap);
+          for (const src of f.sources) {
+            chip(wrap, src.label + " (" + src.count + ")", libView.source.includes(src.value), () => {
+              const i = libView.source.indexOf(src.value);
+              if (i === -1) libView.source.push(src.value); else libView.source.splice(i, 1);
+            });
+          }
+        }
+        if (f.decades && f.decades.length) {
+          const s = section("Decade");
+          const wrap = document.createElement("div"); wrap.className = "lib-chips"; s.appendChild(wrap);
+          for (const d of f.decades) {
+            chip(wrap, d.label + " (" + d.count + ")", libView.decade.includes(String(d.value)), () => {
+              const v = String(d.value);
+              const i = libView.decade.indexOf(v);
+              if (i === -1) libView.decade.push(v); else libView.decade.splice(i, 1);
+            });
+          }
+        }
+        const ps = section("Listening");
+        const pw = document.createElement("div"); pw.className = "lib-chips"; ps.appendChild(pw);
+        for (const p of LIB_PLAYED_OPTIONS) {
+          chip(pw, p.label, libView.played === p.id, () => { libView.played = p.id; });
+        }
+        const note = document.createElement("div");
+        note.className = "lib-sheet-note";
+        note.textContent = "Genre and Tag stay in the main filter — Roon keeps those in separate lists, so they can't be combined with these.";
+        body.appendChild(note);
+      };
+      renderFocusBody();
+    }, (foot, close) => {
+      const clear = document.createElement("button");
+      clear.type = "button"; clear.className = "action-btn";
+      clear.textContent = "Clear all";
+      clear.addEventListener("click", () => {
+        libView.decade = []; libView.source = []; libView.played = "any";
+        close(); applyLibView();
+      });
+      const show = document.createElement("button");
+      show.type = "button"; show.className = "action-btn primary";
+      show.textContent = "Show albums";
+      show.addEventListener("click", () => { close(); applyLibView(); });
+      foot.appendChild(clear); foot.appendChild(show);
+    });
+  }
+
   async function showLibraryWall() {
     const m = enterFullWall("Library");
     libraryWallActive = true;
+    renderLibraryControls();
     libWall.seq++;
     const mySeq = libWall.seq;
     libWall.offset = 0; libWall.loading = false; libWall.done = false;
@@ -3069,11 +3315,24 @@
         if (r.ok) {
           const j  = await r.json();
           const rs = j.results || [];
+          // Whole credited NAME agreement, not "contains the artist's first
+          // word" (which opened Bonnie "Prince" Billy's album for Prince) and
+          // not whole-string equality either — the now-playing line is the
+          // track artist, so "Prince" must still match "Prince & The
+          // Revolution". Split both sides on the credit separators and look
+          // for a shared name.
+          const names = (s) => (s || "")
+            .split(/ \/ |\/| feat\.? | featuring | ft\.? |,| & | \+ | and /i)
+            .map(x => norm(x)).filter(Boolean);
+          const wanted = names(artist);
+          const shares = (sub) => {
+            const got = names(sub);
+            return wanted.some(w => got.includes(w));
+          };
           const match =
             rs.find(a => norm(a.title) === norm(albumTitle) &&
-                         artist && norm(a.subtitle).includes(norm(artist.split(" ")[0]))) ||
-            rs.find(a => norm(a.title) === norm(albumTitle)) ||
-            rs[0];
+                         (!wanted.length || shares(a.subtitle))) ||
+            (!wanted.length ? rs.find(a => norm(a.title) === norm(albumTitle)) : null);
           if (match && typeof match.offset === "number") {
             window.__openAlbum(match, { source: "search" }); return;
           }

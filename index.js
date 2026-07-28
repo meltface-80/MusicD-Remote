@@ -862,13 +862,22 @@ async function findAlbumViaSearch(sessionKey, title, artist, zoneId) {
   // detail without one.
   const zone  = zoneId || Object.keys(zones)[0] || undefined;
   const query = (t + " " + (artist || "")).trim();
-  const tN = normalize(t), aN = normalize(artist || "");
+  const tN = normalize(t);
 
+  // This resolves which album to PLAY, so a loose match starts the wrong music.
+  // The artist (when we know one) must be a credited artist by whole-name
+  // equality — a substring test would happily pick Bonnie "Prince" Billy's
+  // "1999" for Prince's. With no artist to check against we never guess from
+  // an arbitrary result: the caller's stale-offset error is far better than
+  // playing an unrelated album.
+  const artistOk = (i) => !artist || creditHasArtist(i.subtitle, artist);
+  // Exact title always outranks a loose one — otherwise "Live" could beat an
+  // exact "Live at Leeds" just because the loose row's credit matched first.
   const pickFrom = (list) =>
-       list.find(i => normalize(i.title) === tN && (!aN || normalize(i.subtitle).includes(aN)))
-    || list.find(i => normalize(i.title) === tN)
-    || list.find(i => { const n = normalize(i.title); return n.includes(tN) || tN.includes(n); })
-    || list[0] || null;
+       list.find(i => normalize(i.title) === tN && artistOk(i))
+    || (!artist ? list.find(i => normalize(i.title) === tN) : null)
+    || list.find(i => { const n = normalize(i.title); return (n.includes(tN) || tN.includes(n)) && artistOk(i); })
+    || null;
 
   // Load the current search-result level, drill its Albums section, match by
   // name. Shared by both lookup paths; every stage logs unconditionally so a
@@ -1412,6 +1421,13 @@ const labelMbidCache = new Map();  // group key → MusicBrainz MBID
 const labelLogoCache = new Map();  // group key → logo URL | null (null = tried, not found)
 const labelMerges    = new Map();  // source groupKey → { targetKey, targetDisplay, sourceDisplay }
 const albumYearCache = new Map();  // album key → release year (4-digit string) — powers the Decade filter
+// Ordered/filtered library views are memoised (see libraryView). Declared here,
+// ABOVE setAlbumYear, because that function invalidates the cache and would hit
+// the temporal dead zone if these lived with the rest of the view code.
+let libraryMetaVersion = 0;
+const libraryViewCache = new Map();      // sig -> ordered album array
+const LIBRARY_VIEW_CACHE_MAX = 8;
+function bumpLibraryMeta() { libraryMetaVersion++; libraryViewCache.clear(); }
 
 let labelsDb = null;
 let stmtInsertName, stmtInsertMbid, stmtInsertLogo, stmtInsertMerge, stmtDeleteMerge, stmtInsertYear;
@@ -1593,6 +1609,7 @@ function purgeFanartLogoMisses() {
 }
 // Persist a release year for an album key (4-digit). Powers the Decade filter.
 function setAlbumYear(key, year) {
+  bumpLibraryMeta();   // ordered library views join on years — drop stale orderings
   const y = String(year || "").slice(0, 4);
   if (!/^\d{4}$/.test(y)) return; // only store a plausible 4-digit year
   albumYearCache.set(key, y);
@@ -3704,6 +3721,10 @@ function indexRecord(item, offset) {
     // Every identity this album could match a file/favourite under, computed
     // once here so list responses do no string work per album (see withSource).
     srcKeys: albumKeys(title, subtitle),
+    // Sort keys, precomputed: Roon (and every record shop) files "The Wall"
+    // under W, not T. Leading articles are dropped for ordering only — the
+    // displayed title is untouched.
+    sortTitle: nTitle.replace(/^(the|a|an) /, ""),
     tTitle:  nTitle  ? nTitle.split(" ")  : [],
     tArtist: nArtist ? nArtist.split(" ") : [],
     jTitle:  nTitle.replace(/ /g, ""),
@@ -3738,7 +3759,8 @@ function splitArtistNames(subtitle) {
 // Machine") never appear as a whole album credit. splitArtistNames above
 // deliberately keeps , & + unsplit for the search chips — this is the looser,
 // library-validated splitter, used only where a wrong link is recoverable
-// (the artist screen still substring-matches whatever name it's given).
+// (a wrong split now costs a missing link and a missing entry on that
+// artist's screen — the screen matches credited names exactly, v1.6.56).
 let _knownArtistCache = { builtAt: -1, set: new Set() };
 function knownArtistSet() {
   if (_knownArtistCache.builtAt !== albumIndex.builtAt) {
@@ -3789,6 +3811,65 @@ function splitCreditIntoArtists(subtitle) {
   return deduped.length ? deduped : [whole];
 }
 
+// ---- Credited-artist identity of an album ---------------------------------
+// The ONE definition of "which artists is this album credited to", shared by
+// the album view's artist links (splitCreditIntoArtists) and the artist screen
+// (/api/artist-albums). If a link is rendered for X on album A, X's screen
+// shows A — and nothing else does.
+//
+// Matching is EQUALITY in canonArtist() space, never substring. A substring
+// test is what put "Jordan Prince" and 'Bonnie "Prince" Billy' under Prince,
+// and would equally put Kate Bush under Bush or Air Supply under Air.
+//
+// Deliberately NOT albumKeys(): that splits every separator ungated, which is
+// safe there only because the album TITLE must match too. Here the artist name
+// is the only factor, so the split has to stay evidence-gated.
+function creditIdentities(subtitle) {
+  const whole = String(subtitle || "").trim();
+  const c = canonArtist(whole);
+  if (!c) return { c: "", first: "", names: null };   // punctuation/CJK-only credit
+  const names = splitCreditIntoArtists(whole);
+  const set = new Set([c]);
+  const add = (s) => { const x = canonArtist(s); if (x) set.add(x); };
+  // The client renders links for the stage-1 parts before /api/album answers,
+  // so every name it can show must resolve here too.
+  for (const p of whole.split(/ \/ | feat\.? | featuring | ft\.? /i)) add(p);
+  for (const n of names) add(n);
+  const all = [...set];
+  return {
+    c,
+    first: canonArtist(names[0] || whole),
+    names: all.length > 1 ? all : null   // null = plain single-artist credit
+  };
+}
+function applyCreditIdentities(al) {
+  const id = creditIdentities(al.subtitle);
+  al.cArtist = id.c; al.cFirst = id.first; al.cCredits = id.names;
+}
+// Second pass over the snapshot: splitCreditIntoArtists needs knownArtistSet(),
+// which only exists once every record does. MUST run AFTER albumIndex.builtAt
+// is updated — knownArtistSet() caches against builtAt, so calling it earlier
+// would hand back the PREVIOUS library's artist set on every rebuild.
+function rebuildCreditIdentities() {
+  knownArtistSet();
+  for (const al of albumIndex.albums) applyCreditIdentities(al);
+}
+// Is `artist` one of the credited artists of `credit`? Whole-name equality —
+// the single test every "is this album by this artist?" decision should use.
+// Never `.includes()`: that is what matched Jordan Prince for Prince.
+// Both sides may be full credits rendered differently ("Miles Davis/John
+// Coltrane" here, "Miles Davis" there), so compare the two identity SETS
+// rather than treating the query as one name — otherwise the stale-offset
+// resolver fails on exactly the multi-artist albums it exists to rescue.
+function creditHasArtist(credit, artist) {
+  const qId = creditIdentities(artist || "");
+  const cId = creditIdentities(credit);
+  if (!qId.c || !cId.c) return false;
+  const qNames = qId.names || [qId.c];
+  const cNames = cId.names || [cId.c];
+  return qNames.some(q => cNames.includes(q));
+}
+
 // Walk the whole albums hierarchy once and cache a record per album.
 // Concurrent callers share the same in-flight build promise.
 async function buildAlbumIndex() {
@@ -3819,6 +3900,7 @@ async function buildAlbumIndex() {
     albumIndex.count    = albumIndex.albums.length;
     rebuildAmbiguousAlbumKeys();   // identities shared by >1 album get no badge
     albumIndex.builtAt  = Date.now();
+    rebuildCreditIdentities();     // AFTER builtAt — see the function's comment
     albumIndex.progress = 1;
     if (DEBUG) console.log("[index] built", albumIndex.count, "albums");
     return albumIndex;
@@ -4486,13 +4568,22 @@ app.get("/api/artist-albums", (req, res) => {
   const artist = (req.query.artist || "").trim();
   if (!artist) return res.status(400).json({ error: "artist required" });
   if (!albumIndex.count) return res.json({ artist, primary: [], featured: [] });
-  const norm = normalize(artist);
+  // EQUALITY on whole credited names, never substring: "jordan prince" and
+  // 'bonnie "prince" billy' both CONTAIN "prince" and used to be listed as
+  // Prince appearances. An empty query is refused for the same reason
+  // albumKey() refuses blank titles — a punctuation-only name normalises to ""
+  // and would otherwise match the entire library.
+  const q = canonArtist(artist);
+  if (!q) return res.json({ artist, primary: [], featured: [] });
   const primary = [], featured = [];
   for (const al of albumIndex.albums) {
-    const sub = normalize(al.subtitle || "");
-    if (!sub) continue;
-    if (sub === norm) primary.push(al);
-    else if (sub.includes(norm)) featured.push(al);
+    if (al.cArtist === undefined) applyCreditIdentities(al);   // record built outside the pass
+    const names = al.cCredits;
+    if (names ? !names.includes(q) : al.cArtist !== q) continue;
+    // Credited as the whole credit or the lead artist → their own album;
+    // credited further along → an appearance.
+    if (q === al.cArtist || q === al.cFirst) primary.push(al);
+    else featured.push(al);
   }
   primary.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
   featured.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
@@ -4539,15 +4630,171 @@ app.get("/api/random-albums", async (req, res) => {
 // Whole library, in Roon's own album order, paged straight out of the snapshot
 // index — zero Roon round-trips per page. Feeds the Home "Library" carousel
 // and its full scrolling wall.
+// ---------------------------------------------------------------------------
+// Library wall: sorting + focus.
+//
+// Roon's own Sort/Focus run on a private API — the extension API exposes four
+// strings per album and NO ordering control, so this is built entirely from the
+// snapshot and its side tables (years from the label scan, source flags, play
+// history). That means no Roon calls on a user action, and it composes facets
+// (decade AND source AND unplayed), which the browse tree cannot do at all.
+//
+// Ordered results are memoised: the whole library is sorted once per
+// option-combination, not per page. The key includes a metadata version because
+// years and labels keep arriving DURING a label scan — a snapshot-timestamp key
+// alone would serve a stale ordering for hours.
+// ---------------------------------------------------------------------------
+
+const LIB_SORTS = new Set(["album", "artist", "year", "plays", "lastplayed", "random"]);
+
+function albumYearOf(al) {
+  const y = parseInt(albumYearCache.get(al.nTitle + "||" + al.nArtist) || "", 10);
+  return Number.isFinite(y) ? y : null;
+}
+// Deterministic shuffle: paging must not reshuffle between requests, so the
+// order is a pure function of (album, seed) rather than Math.random().
+function seededRank(str, seed) {
+  let h = seed >>> 0;
+  for (let i = 0; i < str.length; i++) { h = (h * 31 + str.charCodeAt(i)) >>> 0; }
+  return h;
+}
+// Album titles played since a cutoff — the plays table records titles only, so
+// this is title-keyed (two artists' "Greatest Hits" collide). Same limitation
+// the Home "not played" row already carries.
+function playedTitleSet(months) {
+  return getPlayedTitlesSince(Date.now() - months * 30 * 24 * 60 * 60 * 1000);
+}
+function playStats() {
+  const out = { count: new Map(), last: new Map() };
+  if (!labelsDb) return out;
+  try {
+    for (const r of labelsDb.prepare(
+      "SELECT lower(trim(album)) a, COUNT(*) n, MAX(ts) t FROM plays WHERE album != '' GROUP BY a").all()) {
+      out.count.set(r.a, r.n); out.last.set(r.a, r.t);
+    }
+  } catch (e) { /* DB unavailable — every album simply scores zero */ }
+  return out;
+}
+
+function libraryView(q) {
+  const sort   = LIB_SORTS.has(String(q.sort || "")) ? String(q.sort) : "album";
+  const desc   = String(q.dir || "asc") === "desc";
+  const seed   = parseInt(q.seed, 10) || 1;
+  const asList = (v) => (v === undefined ? [] : (Array.isArray(v) ? v : [v])).map(String).filter(Boolean);
+  const decades = asList(q.decade).map(d => parseInt(d, 10)).filter(Number.isFinite);
+  const sources = asList(q.source);
+  const played  = String(q.played || "any");
+  const sig = [albumIndex.builtAt, libraryMetaVersion, sort, desc, seed,
+               decades.join(","), sources.join(","), played].join("|");
+  const hit = libraryViewCache.get(sig);
+  if (hit) return hit;
+
+  let list = albumIndex.albums;
+
+  if (decades.length) {
+    list = list.filter(al => {
+      const y = albumYearOf(al);
+      return y !== null && decades.some(d => y >= d && y < d + 10);
+    });
+  }
+  if (sources.length) {
+    list = list.filter(al => {
+      const s = withSource({ title: al.title, subtitle: al.subtitle }, al).source;
+      return sources.includes(s || "none");
+    });
+  }
+  if (played !== "any") {
+    const months = played === "never" ? 0 : parseInt(played, 10);
+    // "never" uses the whole history; "6"/"12" mean "not in the last N months".
+    const seen = played === "never"
+      ? getPlayedTitlesSince(0)
+      : playedTitleSet(Number.isFinite(months) && months > 0 ? months : 6);
+    list = list.filter(al => !seen.has(String(al.title || "").toLowerCase().trim()));
+  }
+
+  const stats = (sort === "plays" || sort === "lastplayed") ? playStats() : null;
+  const playKey = (al) => String(al.title || "").toLowerCase().trim();
+  const cmp = {
+    album:  (a, b) => a.sortTitle.localeCompare(b.sortTitle) || a.nArtist.localeCompare(b.nArtist),
+    artist: (a, b) => (a.cFirst || a.nArtist).localeCompare(b.cFirst || b.nArtist) ||
+                      a.sortTitle.localeCompare(b.sortTitle),
+    // Unknown years sort last in BOTH directions — an album with no year yet is
+    // "unknown", not "year zero", and must never head the list.
+    year:   (a, b) => {
+      const ya = albumYearOf(a), yb = albumYearOf(b);
+      if (ya === null && yb === null) return a.sortTitle.localeCompare(b.sortTitle);
+      if (ya === null) return 1;
+      if (yb === null) return -1;
+      return ya - yb || a.sortTitle.localeCompare(b.sortTitle);
+    },
+    plays:  (a, b) => (stats.count.get(playKey(a)) || 0) - (stats.count.get(playKey(b)) || 0) ||
+                      a.sortTitle.localeCompare(b.sortTitle),
+    lastplayed: (a, b) => (stats.last.get(playKey(a)) || 0) - (stats.last.get(playKey(b)) || 0) ||
+                      a.sortTitle.localeCompare(b.sortTitle),
+    random: (a, b) => seededRank(a.nTitle + a.nArtist, seed) - seededRank(b.nTitle + b.nArtist, seed)
+  }[sort];
+
+  let out;
+  if (sort === "year") {
+    // Albums whose year hasn't been discovered yet are UNKNOWN, not year zero:
+    // they're held out of the ordering entirely and appended, so reversing to
+    // newest-first can't float them to the top.
+    const known = [], unknown = [];
+    for (const al of list) (albumYearOf(al) === null ? unknown : known).push(al);
+    known.sort(cmp);
+    if (desc) known.reverse();
+    unknown.sort((a, b) => a.sortTitle.localeCompare(b.sortTitle));
+    out = known.concat(unknown);
+  } else {
+    out = list.slice().sort(cmp);
+    // "Most played"/"Last played" read naturally as highest-first, so their
+    // default direction is inverted relative to the alphabetical sorts.
+    const invert = (sort === "plays" || sort === "lastplayed") ? !desc : desc;
+    if (invert) out.reverse();
+  }
+
+  if (libraryViewCache.size >= LIBRARY_VIEW_CACHE_MAX) {
+    libraryViewCache.delete(libraryViewCache.keys().next().value);
+  }
+  libraryViewCache.set(sig, out);
+  return out;
+}
+
+// Which focus values actually exist, with counts — so the sheet never offers a
+// facet that would return nothing.
+app.get("/api/library/facets", async (req, res) => {
+  if (!core && !isIndexBuilt()) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  try {
+    await ensureAlbumIndex();
+    const decades = new Map(), sources = new Map();
+    for (const al of albumIndex.albums) {
+      const y = albumYearOf(al);
+      if (y !== null) { const d = Math.floor(y / 10) * 10; decades.set(d, (decades.get(d) || 0) + 1); }
+      const s = withSource({ title: al.title, subtitle: al.subtitle }, al).source || "none";
+      sources.set(s, (sources.get(s) || 0) + 1);
+    }
+    res.json({
+      total: albumIndex.albums.length,
+      decades: [...decades.entries()].sort((a, b) => b[0] - a[0]).map(([d, n]) => ({ value: d, label: d + "s", count: n })),
+      sources: ["local", "qobuz", "tidal"].filter(s => sources.get(s))
+                 .map(s => ({ value: s, label: { local: "Local files", qobuz: "Qobuz", tidal: "TIDAL" }[s], count: sources.get(s) })),
+      hasPlays: !!(labelsDb && getPlayedTitlesSince(0).size)
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get("/api/library/albums", async (req, res) => {
   if (!core && !isIndexBuilt()) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   try {
     await ensureAlbumIndex();
     if (!isIndexBuilt()) return res.status(503).json({ error: "Library index is still building" });
-    const total  = albumIndex.albums.length;
+    const view   = libraryView(req.query);
+    const total  = view.length;
     const offset = Math.max(0, Math.min(total, parseInt(req.query.offset || "0", 10) || 0));
     const count  = Math.max(1, Math.min(200, parseInt(req.query.count || "60", 10) || 60));
-    const albums = albumIndex.albums.slice(offset, offset + count).map(a => withSource({
+    const albums = view.slice(offset, offset + count).map(a => withSource({
       offset: a.offset, title: a.title, subtitle: a.subtitle, image_key: a.image_key
     }, a));
     res.json({ albums, offset, total });
@@ -6544,12 +6791,29 @@ async function fetchArtistMbid(artistName) {
   if (artistMbidCache.has(key)) return artistMbidCache.get(key);
   await mbWait();
   const q = `artist:"${mbQuote(artistName)}"`;
-  const url = `https://musicbrainz.org/ws/2/artist/?query=${encodeURIComponent(q)}&fmt=json&limit=1`;
+  const url = `https://musicbrainz.org/ws/2/artist/?query=${encodeURIComponent(q)}&fmt=json&limit=5`;
   let mbid = null;
   try {
     const json = await httpJson(url, { "User-Agent": MB_USER_AGENT });
     const artists = json && json.artists;
-    if (Array.isArray(artists) && artists.length) mbid = artists[0].id || null;
+    // MusicBrainz search is fuzzy and ALWAYS returns something — taking hit #1
+    // blind gave the wall display photos of a different act entirely for
+    // short names like Low, Air, Ash or Yes. Require the name to actually match.
+    if (Array.isArray(artists) && artists.length) {
+      // normalize() strips non-Latin scripts to "", which would reject every
+      // candidate for e.g. 坂本龍一 and lose their photos entirely — fall back
+      // to a raw comparison, and to the top hit when the name can't be
+      // canonicalised at all (the pre-check behaviour, only for those names).
+      const raw = (x) => String(x || "").trim().toLowerCase();
+      const hit = artists.find(a => namesEqualLoose(a.name, artistName)) ||
+                  artists.find(a => raw(a.name) === raw(artistName)) ||
+                  (!normalize(artistName) ? artists[0] : null);
+      mbid = hit ? (hit.id || null) : null;
+      if (!hit && DEBUG) {
+        console.log("[display:mb:artist] no name match for " + JSON.stringify(artistName) +
+                    " (top hit: " + JSON.stringify(artists[0] && artists[0].name) + ")");
+      }
+    }
   } catch (e) {
     if (DEBUG) console.error("[display:mb:artist]", e.message);
   }
@@ -6611,7 +6875,12 @@ function scoreDisplayVideo(item, artistN, trackTokens) {
                           channelN === artistN + " music" || channelN === artistN + " official" ||
                           channelN.replace(/\s+/g, "") === artistN.replace(/\s+/g, "") + "vevo";
   if (channelIsArtist) score += 70;
-  else if (channelN.indexOf(artistN) !== -1) score += 40; // artist-adjacent channel: needs the keyword too
+  // Whole-name only: a raw substring let the "Kate Bush" channel score as
+  // artist-adjacent for the band Bush, and 40 + the "official video" keyword
+  // is exactly the threshold, so the wrong artist's video would play.
+  else if (namesEqualLoose(channelN, artistN) ||
+           namesEqualLoose(channelN.replace(/\s+(topic|official|music|band|tv|channel)$/, ""), artistN))
+    score += 40;                                          // artist-adjacent channel: needs the keyword too
   else return -1;                                         // chat shows / fan uploads — reject outright
   if (/\bofficial (music )?video\b/i.test(title)) score += 30;
   else if (/\(official\b/i.test(title)) score += 20;
@@ -6821,14 +7090,18 @@ app.get("/api/display/content", async (req, res) => {
     // index. Both use the same tile shape the display renders as cover grids.
     const npTitleN = normalize(album);
     const artistN  = normalize(primaryArtist);
+    const artistQ  = canonArtist(primaryArtist);
     const moreArtist = [];
     if (artistN) {
       for (const al of albumIndex.albums) {
         if (moreArtist.length >= 12) break;
         if (normalize(al.title) === npTitleN) continue;
-        const subN = normalize(al.subtitle || "");
-        if (subN === artistN || subN.split(" / ").indexOf(artistN) !== -1 ||
-            subN.startsWith(artistN + " /") || subN.indexOf(" / " + artistN) !== -1) {
+        // Whole credited name only — the old `" / " + artistN` test matched a
+        // PREFIX of a credit segment, so "Madonna / Prince Paul" was tiled
+        // under "More from Prince". Reads the identities precomputed with the
+        // snapshot rather than re-splitting every credit on every track change.
+        if (al.cArtist === undefined) applyCreditIdentities(al);
+        if (al.cCredits ? al.cCredits.includes(artistQ) : al.cArtist === artistQ) {
           moreArtist.push(withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }, al));
         }
       }
@@ -7172,14 +7445,23 @@ async function findNowPlayingAlbum(zoneId) {
       await browse({ hierarchy: hier, multi_session_key: sessionKey, item_key: albumsSection.item_key });
       const albs = await load({ hierarchy: hier, offset: 0, count: 50, multi_session_key: sessionKey });
 
-      const titleN  = title.toLowerCase().trim();
-      const artistN = artist.toLowerCase().trim();
+      // Whole-name artist agreement, and no blind first-result guess: this
+      // decides which album's tracklist and art are shown as "now playing", so
+      // a Kate Bush album must never answer for the band Bush.
+      const titleN  = normalize(title);
+      const artistOk = (i) => !artist || creditHasArtist(i.subtitle, artist);
+      const albItems = albs.items || [];
+      // `artist` here is the TRACK artist, which legitimately differs from the
+      // album credit on compilations, soundtracks and classical ("Aretha
+      // Franklin" on a "Various Artists" album), so an exact title on its own
+      // is still accepted — this only chooses which tracklist to DISPLAY, it
+      // never starts playback, so a miss (no tracklist at all) is worse than a
+      // rare mismatch. The play resolver above stays strict for that reason.
       const albumItem =
-           (albs.items || []).find(i => (i.title || "").toLowerCase() === titleN
-                                      && (i.subtitle || "").toLowerCase().includes(artistN))
-        || (albs.items || []).find(i => (i.title || "").toLowerCase() === titleN)
-        || (albs.items || []).find(i => (i.title || "").toLowerCase().includes(titleN))
-        || (albs.items || [])[0];
+           albItems.find(i => normalize(i.title) === titleN && artistOk(i))
+        || albItems.find(i => normalize(i.title) === titleN)
+        || albItems.find(i => normalize(i.title).includes(titleN) && artistOk(i))
+        || null;
       if (!albumItem || !albumItem.item_key) return fallback;
 
       await browse({ hierarchy: hier, multi_session_key: sessionKey, item_key: albumItem.item_key });

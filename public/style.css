@@ -3073,3 +3073,88 @@ input.vol-range::-moz-range-thumb {
 [data-theme="light"] #tab-queue .q-divider-line { background: rgba(26,39,64,.15); }
 [data-theme="light"] #tab-queue .queue-list li.is-tappable:hover { background: rgba(26,39,64,.06); }
 [data-theme="light"] #tab-queue .queue-list li.is-tappable:active { background: var(--accent-soft); }
+
+/* ------------------------------------------------------------------ */
+/*  Library wall — sort + focus                                        */
+/*  Two pills under the top bar, and bottom sheets built from the same  */
+/*  language as the filter/settings sheets. Roon's own Sort/Focus run   */
+/*  on a private API; these are computed from the extension's snapshot. */
+/* ------------------------------------------------------------------ */
+.library-controls {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+  margin: 0 0 12px;
+}
+.library-controls.hidden { display: none; }
+.lib-pill {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  padding: 7px 12px; border-radius: 10px;
+  background: var(--bg-elev); border: 1px solid var(--border);
+  color: var(--text); font-family: inherit; cursor: pointer; text-align: left;
+  min-height: 44px; justify-content: center;
+}
+.lib-pill:hover { border-color: var(--accent); }
+.lib-pill.is-active { border-color: var(--accent); background: var(--accent-soft); }
+.lib-pill-label {
+  font-size: 10px; font-weight: 700; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--text-faint);
+}
+.lib-pill-value {
+  font-size: 13px; font-weight: 600; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
+
+.lib-sheet-backdrop {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(0,0,0,.55);
+  display: flex; align-items: flex-end; justify-content: center;
+}
+.lib-sheet {
+  width: 100%; max-width: 560px; max-height: 82vh;
+  display: flex; flex-direction: column;
+  background: var(--bg-elev); color: var(--text);
+  border-radius: 16px 16px 0 0;
+  border-top: 1px solid var(--border);
+  box-shadow: var(--shadow-modal);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+@media (min-width: 560px) { .lib-sheet { border-radius: 16px; margin-bottom: 24px; } }
+.lib-sheet-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 14px 8px; border-bottom: 1px solid var(--panel-hairline);
+}
+.lib-sheet-head h3 { font-size: 16px; font-weight: 700; margin: 0; }
+.lib-sheet-body { overflow-y: auto; padding: 8px 14px 14px; }
+.lib-sheet-foot {
+  display: flex; gap: 8px; padding: 10px 14px 14px;
+  border-top: 1px solid var(--panel-hairline);
+}
+.lib-sheet-foot .action-btn { flex: 1 1 0; }
+.lib-row {
+  display: block; width: 100%; text-align: left;
+  padding: 11px 12px; margin-top: 6px; border-radius: 10px;
+  background: var(--bg-elev-2); border: 1px solid transparent;
+  color: var(--text); font-family: inherit; cursor: pointer;
+}
+.lib-row:hover { border-color: var(--border); }
+.lib-row.is-on { border-color: var(--accent); background: var(--accent-soft); }
+.lib-row-main { font-size: 14px; font-weight: 600; }
+.lib-row-sub  { font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
+.lib-row-dir  { font-size: 13px; font-weight: 600; color: var(--text-dim); }
+.lib-sheet-section { margin-top: 14px; }
+.lib-sheet-section-label {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--text-faint); margin-bottom: 7px;
+}
+.lib-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.lib-chip {
+  padding: 7px 12px; border-radius: 999px;
+  background: var(--bg-elev-2); border: 1px solid var(--border);
+  color: var(--text-dim); font-size: 12.5px; font-weight: 600;
+  font-family: inherit; cursor: pointer;
+}
+.lib-chip:hover { border-color: var(--accent); }
+.lib-chip.is-on { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.lib-sheet-note {
+  margin-top: 16px; font-size: 11.5px; line-height: 1.5;
+  color: var(--text-faint);
+}
