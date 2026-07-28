@@ -2,6 +2,37 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.56] — 2026-07-28
+
+### Fixed
+
+- **Wrong artists no longer appear under "Also appears on"** (reported with a screenshot:
+  opening **Prince** listed an album by *Jordan Prince* and two by *Bonnie "Prince" Billy*).
+  The artist screen was asking "does this credit contain the letters of the artist's name?",
+  so any credit containing "prince" matched. It now asks "is this artist one of the album's
+  credited artists?", using the same library-validated splitter that decides which artist
+  names are clickable — so if an album shows a link for an artist, that album appears on
+  their screen, and nothing else does. Genuine work is unaffected: "Prince & The Revolution"
+  and "Prince/Miles Davis" stay under **Albums**, "Sheena Easton feat. Prince" under
+  **Also appears on**.
+- The same flaw was found in six more places and fixed with one shared rule:
+  - **Playback.** When a tile's saved position is stale the app re-finds the album by name;
+    that matcher used the same substring test and then fell back to *whatever Roon returned
+    first* with no identity check — it could start a completely unrelated album. It now
+    requires the artist to match as a whole name and never guesses.
+  - **Now playing.** The album lookup behind the now-playing screen could show a different
+    artist's tracklist and artwork (a Kate Bush album answering for the band Bush).
+  - **Wall display.** "More from <artist>" matched a prefix of a credit segment, tiling
+    "Madonna / Prince Paul" under Prince; and a YouTube channel merely *containing* the
+    artist's name (the "Kate Bush" channel for Bush) could score high enough to play.
+  - **Artist photos.** The MusicBrainz lookup took the first fuzzy result with no name check
+    at all, so short names (Low, Air, Ash, Yes) could show another act's photos entirely.
+  - **Tapping the album name** on the now-playing screen matched on only the first word of
+    the credit, so playing Kate Bush could open any "Kate …" album.
+- **An artist whose name is only punctuation or non-Latin characters** ("!!!", "少年ナイフ")
+  no longer returns the entire library: those names normalise to an empty string, and
+  "anything contains nothing" is always true.
+
 ## [1.6.55] — 2026-07-28
 
 ### Fixed (multi-angle review of the v1.6.53/54 badge work)

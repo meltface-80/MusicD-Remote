@@ -3069,11 +3069,15 @@
         if (r.ok) {
           const j  = await r.json();
           const rs = j.results || [];
+          // Whole-credit agreement, not "contains the artist's first word":
+          // that opened Bonnie "Prince" Billy's album for Prince, and any
+          // "Kate …" album when playing Kate Bush. With no confident match we
+          // show the toast rather than opening an arbitrary result.
+          const na = artist ? norm(artist) : "";
           const match =
             rs.find(a => norm(a.title) === norm(albumTitle) &&
-                         artist && norm(a.subtitle).includes(norm(artist.split(" ")[0]))) ||
-            rs.find(a => norm(a.title) === norm(albumTitle)) ||
-            rs[0];
+                         (!na || norm(a.subtitle) === na)) ||
+            (!na ? rs.find(a => norm(a.title) === norm(albumTitle)) : null);
           if (match && typeof match.offset === "number") {
             window.__openAlbum(match, { source: "search" }); return;
           }

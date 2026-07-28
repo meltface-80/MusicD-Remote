@@ -864,11 +864,18 @@ async function findAlbumViaSearch(sessionKey, title, artist, zoneId) {
   const query = (t + " " + (artist || "")).trim();
   const tN = normalize(t), aN = normalize(artist || "");
 
+  // This resolves which album to PLAY, so a loose match starts the wrong music.
+  // The artist (when we know one) must be a credited artist by whole-name
+  // equality — a substring test would happily pick Bonnie "Prince" Billy's
+  // "1999" for Prince's. With no artist to check against we never guess from
+  // an arbitrary result: the caller's stale-offset error is far better than
+  // playing an unrelated album.
+  const artistOk = (i) => !artist || creditHasArtist(i.subtitle, artist);
   const pickFrom = (list) =>
-       list.find(i => normalize(i.title) === tN && (!aN || normalize(i.subtitle).includes(aN)))
-    || list.find(i => normalize(i.title) === tN)
-    || list.find(i => { const n = normalize(i.title); return n.includes(tN) || tN.includes(n); })
-    || list[0] || null;
+       list.find(i => normalize(i.title) === tN && artistOk(i))
+    || list.find(i => { const n = normalize(i.title); return (n.includes(tN) || tN.includes(n)) && artistOk(i); })
+    || (!artist ? list.find(i => normalize(i.title) === tN) : null)
+    || null;
 
   // Load the current search-result level, drill its Albums section, match by
   // name. Shared by both lookup paths; every stage logs unconditionally so a
@@ -3789,6 +3796,59 @@ function splitCreditIntoArtists(subtitle) {
   return deduped.length ? deduped : [whole];
 }
 
+// ---- Credited-artist identity of an album ---------------------------------
+// The ONE definition of "which artists is this album credited to", shared by
+// the album view's artist links (splitCreditIntoArtists) and the artist screen
+// (/api/artist-albums). If a link is rendered for X on album A, X's screen
+// shows A — and nothing else does.
+//
+// Matching is EQUALITY in canonArtist() space, never substring. A substring
+// test is what put "Jordan Prince" and 'Bonnie "Prince" Billy' under Prince,
+// and would equally put Kate Bush under Bush or Air Supply under Air.
+//
+// Deliberately NOT albumKeys(): that splits every separator ungated, which is
+// safe there only because the album TITLE must match too. Here the artist name
+// is the only factor, so the split has to stay evidence-gated.
+function creditIdentities(subtitle) {
+  const whole = String(subtitle || "").trim();
+  const c = canonArtist(whole);
+  if (!c) return { c: "", first: "", names: null };   // punctuation/CJK-only credit
+  const names = splitCreditIntoArtists(whole);
+  const set = new Set([c]);
+  const add = (s) => { const x = canonArtist(s); if (x) set.add(x); };
+  // The client renders links for the stage-1 parts before /api/album answers,
+  // so every name it can show must resolve here too.
+  for (const p of whole.split(/ \/ | feat\.? | featuring | ft\.? /i)) add(p);
+  for (const n of names) add(n);
+  const all = [...set];
+  return {
+    c,
+    first: canonArtist(names[0] || whole),
+    names: all.length > 1 ? all : null   // null = plain single-artist credit
+  };
+}
+function applyCreditIdentities(al) {
+  const id = creditIdentities(al.subtitle);
+  al.cArtist = id.c; al.cFirst = id.first; al.cCredits = id.names;
+}
+// Second pass over the snapshot: splitCreditIntoArtists needs knownArtistSet(),
+// which only exists once every record does. MUST run AFTER albumIndex.builtAt
+// is updated — knownArtistSet() caches against builtAt, so calling it earlier
+// would hand back the PREVIOUS library's artist set on every rebuild.
+function rebuildCreditIdentities() {
+  knownArtistSet();
+  for (const al of albumIndex.albums) applyCreditIdentities(al);
+}
+// Is `artist` one of the credited artists of `credit`? Whole-name equality —
+// the single test every "is this album by this artist?" decision should use.
+// Never `.includes()`: that is what matched Jordan Prince for Prince.
+function creditHasArtist(credit, artist) {
+  const q = canonArtist(artist || "");
+  if (!q) return false;
+  const id = creditIdentities(credit);
+  return id.names ? id.names.includes(q) : id.c === q;
+}
+
 // Walk the whole albums hierarchy once and cache a record per album.
 // Concurrent callers share the same in-flight build promise.
 async function buildAlbumIndex() {
@@ -3819,6 +3879,7 @@ async function buildAlbumIndex() {
     albumIndex.count    = albumIndex.albums.length;
     rebuildAmbiguousAlbumKeys();   // identities shared by >1 album get no badge
     albumIndex.builtAt  = Date.now();
+    rebuildCreditIdentities();     // AFTER builtAt — see the function's comment
     albumIndex.progress = 1;
     if (DEBUG) console.log("[index] built", albumIndex.count, "albums");
     return albumIndex;
@@ -4486,13 +4547,22 @@ app.get("/api/artist-albums", (req, res) => {
   const artist = (req.query.artist || "").trim();
   if (!artist) return res.status(400).json({ error: "artist required" });
   if (!albumIndex.count) return res.json({ artist, primary: [], featured: [] });
-  const norm = normalize(artist);
+  // EQUALITY on whole credited names, never substring: "jordan prince" and
+  // 'bonnie "prince" billy' both CONTAIN "prince" and used to be listed as
+  // Prince appearances. An empty query is refused for the same reason
+  // albumKey() refuses blank titles — a punctuation-only name normalises to ""
+  // and would otherwise match the entire library.
+  const q = canonArtist(artist);
+  if (!q) return res.json({ artist, primary: [], featured: [] });
   const primary = [], featured = [];
   for (const al of albumIndex.albums) {
-    const sub = normalize(al.subtitle || "");
-    if (!sub) continue;
-    if (sub === norm) primary.push(al);
-    else if (sub.includes(norm)) featured.push(al);
+    if (al.cArtist === undefined) applyCreditIdentities(al);   // record built outside the pass
+    const names = al.cCredits;
+    if (names ? !names.includes(q) : al.cArtist !== q) continue;
+    // Credited as the whole credit or the lead artist → their own album;
+    // credited further along → an appearance.
+    if (q === al.cArtist || q === al.cFirst) primary.push(al);
+    else featured.push(al);
   }
   primary.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
   featured.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
@@ -6544,12 +6614,22 @@ async function fetchArtistMbid(artistName) {
   if (artistMbidCache.has(key)) return artistMbidCache.get(key);
   await mbWait();
   const q = `artist:"${mbQuote(artistName)}"`;
-  const url = `https://musicbrainz.org/ws/2/artist/?query=${encodeURIComponent(q)}&fmt=json&limit=1`;
+  const url = `https://musicbrainz.org/ws/2/artist/?query=${encodeURIComponent(q)}&fmt=json&limit=5`;
   let mbid = null;
   try {
     const json = await httpJson(url, { "User-Agent": MB_USER_AGENT });
     const artists = json && json.artists;
-    if (Array.isArray(artists) && artists.length) mbid = artists[0].id || null;
+    // MusicBrainz search is fuzzy and ALWAYS returns something — taking hit #1
+    // blind gave the wall display photos of a different act entirely for
+    // short names like Low, Air, Ash or Yes. Require the name to actually match.
+    if (Array.isArray(artists) && artists.length) {
+      const hit = artists.find(a => namesEqualLoose(a.name, artistName));
+      mbid = hit ? (hit.id || null) : null;
+      if (!hit && DEBUG) {
+        console.log("[display:mb:artist] no name match for " + JSON.stringify(artistName) +
+                    " (top hit: " + JSON.stringify(artists[0] && artists[0].name) + ")");
+      }
+    }
   } catch (e) {
     if (DEBUG) console.error("[display:mb:artist]", e.message);
   }
@@ -6611,7 +6691,12 @@ function scoreDisplayVideo(item, artistN, trackTokens) {
                           channelN === artistN + " music" || channelN === artistN + " official" ||
                           channelN.replace(/\s+/g, "") === artistN.replace(/\s+/g, "") + "vevo";
   if (channelIsArtist) score += 70;
-  else if (channelN.indexOf(artistN) !== -1) score += 40; // artist-adjacent channel: needs the keyword too
+  // Whole-name only: a raw substring let the "Kate Bush" channel score as
+  // artist-adjacent for the band Bush, and 40 + the "official video" keyword
+  // is exactly the threshold, so the wrong artist's video would play.
+  else if (namesEqualLoose(channelN, artistN) ||
+           namesEqualLoose(channelN.replace(/\s+(topic|official|music|band|tv|channel)$/, ""), artistN))
+    score += 40;                                          // artist-adjacent channel: needs the keyword too
   else return -1;                                         // chat shows / fan uploads — reject outright
   if (/\bofficial (music )?video\b/i.test(title)) score += 30;
   else if (/\(official\b/i.test(title)) score += 20;
@@ -6826,9 +6911,10 @@ app.get("/api/display/content", async (req, res) => {
       for (const al of albumIndex.albums) {
         if (moreArtist.length >= 12) break;
         if (normalize(al.title) === npTitleN) continue;
-        const subN = normalize(al.subtitle || "");
-        if (subN === artistN || subN.split(" / ").indexOf(artistN) !== -1 ||
-            subN.startsWith(artistN + " /") || subN.indexOf(" / " + artistN) !== -1) {
+        // Whole credited name only. The old `" / " + artistN` test matched a
+        // PREFIX of a credit segment, so "Madonna / Prince Paul" was tiled
+        // under "More from Prince".
+        if (creditHasArtist(al.subtitle, primaryArtist)) {
           moreArtist.push(withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }, al));
         }
       }
@@ -7172,14 +7258,16 @@ async function findNowPlayingAlbum(zoneId) {
       await browse({ hierarchy: hier, multi_session_key: sessionKey, item_key: albumsSection.item_key });
       const albs = await load({ hierarchy: hier, offset: 0, count: 50, multi_session_key: sessionKey });
 
-      const titleN  = title.toLowerCase().trim();
-      const artistN = artist.toLowerCase().trim();
+      // Whole-name artist agreement, and no blind first-result guess: this
+      // decides which album's tracklist and art are shown as "now playing", so
+      // a Kate Bush album must never answer for the band Bush.
+      const titleN  = normalize(title);
+      const artistOk = (i) => !artist || creditHasArtist(i.subtitle, artist);
+      const albItems = albs.items || [];
       const albumItem =
-           (albs.items || []).find(i => (i.title || "").toLowerCase() === titleN
-                                      && (i.subtitle || "").toLowerCase().includes(artistN))
-        || (albs.items || []).find(i => (i.title || "").toLowerCase() === titleN)
-        || (albs.items || []).find(i => (i.title || "").toLowerCase().includes(titleN))
-        || (albs.items || [])[0];
+           albItems.find(i => normalize(i.title) === titleN && artistOk(i))
+        || albItems.find(i => normalize(i.title).includes(titleN) && artistOk(i))
+        || (!artist ? albItems.find(i => normalize(i.title) === titleN) : null);
       if (!albumItem || !albumItem.item_key) return fallback;
 
       await browse({ hierarchy: hier, multi_session_key: sessionKey, item_key: albumItem.item_key });
