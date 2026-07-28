@@ -33,12 +33,15 @@ Over time with prolonged use the database learns when you last listened to an al
 
 Browse your library in multiple ways:
 
+* Your whole library — a Library row on the Home screen opens a full grid that scrolls through every album in your collection
 * Albums
 * Artists
 * Genres
 * Record Labels
 * Decades
 * Tags
+
+Album artwork is cached on the server as your library syncs, so browsing stays fast and puts no extra load on your Roon Core — even with a large collection.
 
 Quickly jump between related artists, albums and labels from anywhere in the application.
 

@@ -740,7 +740,7 @@ async function pickRandomAlbums(count, filter) {
     while (picked.size < want) picked.add(Math.floor(Math.random() * matches.length));
     const albums = [...picked].map(i => {
       const al = matches[i];
-      return { offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null };
+      return withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }, al);
     });
     return { albums, total: matches.length };
   }
@@ -759,7 +759,7 @@ async function pickRandomAlbums(count, filter) {
     while (picked.size < want) picked.add(Math.floor(Math.random() * pool.length));
     const albums = [...picked].map(i => {
       const al = pool[i];
-      return { offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null };
+      return withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }, al);
     });
     return { albums, total: pool.length };
   }
@@ -793,12 +793,12 @@ async function pickRandomAlbums(count, filter) {
         }
         const item = res.value.items && res.value.items[0];
         if (item && item.hint !== "header") {
-          albums.push({
+          albums.push(withSource({
             offset:    off,
             title:     item.title || "",
             subtitle:  item.subtitle || "",
             image_key: item.image_key || null
-          });
+          }));
         }
       });
     }
@@ -1963,21 +1963,326 @@ function musicDirMounted() {
   try { return fs.statSync(MUSIC_DIR).isDirectory(); } catch (e) { return false; }
 }
 
+// ---------------------------------------------------------------------------
+// "Local files" evidence — which albums exist as files under the /music mount.
+// Roon's API gives no storage/source field on album items, so the read-only
+// mount the label scanner already walks is the one authoritative signal we
+// have. Persisted on the data volume so badges survive a restart without
+// waiting for the next scan; empty (no badges anywhere) when /music isn't
+// mounted, which is the honest answer rather than a guess.
+// ---------------------------------------------------------------------------
+// Write-then-rename so a crash mid-write can't leave truncated JSON that the
+// loader silently discards (which would drop every badge until the next scan).
+function writeJsonAtomic(file, data, tag) {
+  const tmp = file + ".tmp";
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(data));
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    console.error(tag + " could not persist " + path.basename(file) + ":", e.message);
+    try { fs.unlinkSync(tmp); } catch (e2) { /* temp file already gone — nothing to clean up */ }
+  }
+}
+
+// Bumped whenever the key FORMAT changes. Persisted sets written by an older
+// format are discarded rather than silently failing to match (which would look
+// like every badge vanishing for no reason).
+const SOURCE_KEY_VERSION = 2;
+const LOCAL_ALBUMS_FILE = path.join(__dirname, "data", "local-albums.json");
+let localAlbumKeys = new Set();
+function loadLocalAlbumKeys() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(LOCAL_ALBUMS_FILE, "utf8"));
+    if (raw && raw.v === SOURCE_KEY_VERSION && Array.isArray(raw.keys)) {
+      localAlbumKeys = new Set(raw.keys);
+      if (DEBUG) console.log("[local] loaded", localAlbumKeys.size, "local album keys");
+    } else {
+      // Old format: the file scan rebuilds it. Kick a labels scan shortly so
+      // local badges come back in minutes rather than at the next 12h cycle.
+      console.log("[local] stored keys are an older format — rescanning /music to rebuild badges");
+      const t = setTimeout(() => {
+        if (!core || labelsIndex.building) return;
+        runLabelsIndexScan().catch(e => {
+          if (DEBUG) console.error("[local] rebuild scan:", e.message);
+        });
+      }, 60000);
+      if (t.unref) t.unref();
+    }
+  } catch (e) { /* absent on first run / unreadable — rebuilt by the next file scan */ }
+}
+function setLocalAlbumKeys(keys) {
+  localAlbumKeys = keys;
+  writeJsonAtomic(LOCAL_ALBUMS_FILE, { v: SOURCE_KEY_VERSION, keys: [...keys] }, "[local]");
+  console.log("[local] " + keys.size + " album keys recorded from " + MUSIC_DIR);
+}
+loadLocalAlbumKeys();
+
+// ---------------------------------------------------------------------------
+// Streaming provenance — which library albums came from Qobuz / Tidal.
+//
+// Roon exposes no source field, but adding a streaming album to your Roon
+// library favourites it in the service, so the user's own favourites (read
+// with the logins this extension already holds for reviews and identification)
+// are a good proxy. Matched on normalized title + artist, same conservative
+// rule as the local badge: a confident match or no badge at all.
+//
+// Refreshed alongside the library snapshot and persisted, so badges are
+// available immediately on restart and cost nothing per request.
+// ---------------------------------------------------------------------------
+const STREAM_ALBUMS_FILE = path.join(__dirname, "data", "stream-albums.json");
+let qobuzAlbumKeys = new Set();
+let tidalAlbumKeys = new Set();
+function loadStreamAlbumKeys() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(STREAM_ALBUMS_FILE, "utf8"));
+    // Older key format: ignore it. The startup refresh below rebuilds from the
+    // services within seconds, so nothing is lost.
+    if (!raw || raw.v !== SOURCE_KEY_VERSION) return;
+    if (Array.isArray(raw.qobuz)) qobuzAlbumKeys = new Set(raw.qobuz);
+    if (Array.isArray(raw.tidal)) tidalAlbumKeys = new Set(raw.tidal);
+    if (DEBUG) console.log("[stream] loaded", qobuzAlbumKeys.size, "Qobuz +",
+                           tidalAlbumKeys.size, "Tidal album keys");
+  } catch (e) { /* absent on first run — rebuilt by the next favourites refresh */ }
+}
+function saveStreamAlbumKeys() {
+  writeJsonAtomic(STREAM_ALBUMS_FILE,
+    { v: SOURCE_KEY_VERSION, qobuz: [...qobuzAlbumKeys], tidal: [...tidalAlbumKeys] }, "[stream]");
+}
+loadStreamAlbumKeys();
+// First run (or a version upgrade) has no persisted keys: fetch them shortly
+// after boot so badges appear without waiting for the next library sync.
+// Delayed so it never competes with pairing, and unref'd so it can't hold the
+// process open.
+if (!qobuzAlbumKeys.size && !tidalAlbumKeys.size) {
+  const t = setTimeout(() => {
+    refreshStreamAlbumKeys("startup").catch(e => {
+      if (DEBUG) console.error("[stream] startup refresh:", e.message);
+    });
+  }, 20000);
+  if (t.unref) t.unref();
+}
+
+// An album's identity for cross-source matching: title + artist, canonicalised.
+// ONE definition, used by the local scan and both streaming sets — they share a
+// key space, so they must share the key builder.
+//
+// On top of normalize() (case, accents, punctuation) this drops "and" tokens,
+// because normalize() turns "&" into a separator but leaves "and" as a word —
+// so "Songs of Love & Hate" and "Songs of Love and Hate" could never match.
+function canonText(s) {
+  const n = normalize(s || "");
+  return n ? n.split(" ").filter(t => t && t !== "and").join(" ") : "";
+}
+// Artists additionally lose a leading "the" ("The Beatles" / "Beatles").
+function canonArtist(s) {
+  const c = canonText(s);
+  return c.startsWith("the ") ? c.slice(4) : c;
+}
+// A blank canonical TITLE returns null and is never stored or looked up:
+// normalize() strips everything that isn't ASCII alphanumeric, so "+", "÷",
+// "!!!" and any all-CJK/Cyrillic title collapse to "". Keying those would make
+// unrelated albums collide — one Japanese-titled local album would otherwise
+// badge every Japanese-titled streaming album as local.
+function albumKey(title, artist) {
+  const t = canonText(title);
+  if (!t) return null;
+  return t + "||" + canonArtist(artist);
+}
+
+// Every identity an album could be known by. Roon credits multi-artist albums
+// with all performers ("T-Bone Walker/Big Joe Turner/Otis Spann") while Qobuz
+// and TIDAL report only the primary one, so the whole-credit key alone misses
+// every collaboration. Each individual artist is offered as an alternative.
+// The TITLE always has to match, so a wrong badge would need the same album
+// title AND a shared artist on genuinely different releases.
+function albumKeys(title, subtitle) {
+  const t = canonText(title);
+  if (!t) return [];
+  const out = [], seen = new Set();
+  const push = (artist) => {
+    const k = t + "||" + canonArtist(artist);
+    if (!seen.has(k)) { seen.add(k); out.push(k); }
+  };
+  push(subtitle || "");
+  // Same separators the artist links use, plus the unspaced slash.
+  for (const frag of String(subtitle || "").split(/ \/ |\/| feat\.? | featuring | ft\.? |, | & | \+ /i)) {
+    const f = frag.trim();
+    if (f.length >= 2) push(f);
+  }
+  return out;
+}
+
+// Index one favourite under every identity Roon might show it as: each credited
+// artist, and — because the services return the edition separately from the
+// title while Roon often bakes it in — both "Album" and "Album (Deluxe)".
+function addFavouriteKeys(keys, title, version, artists) {
+  const titles = [title];
+  if (version) titles.push(title + " " + version);
+  for (const t of titles) {
+    for (const artist of artists) {
+      if (!artist) continue;
+      const key = albumKey(t, artist);
+      if (key) keys.add(key);
+    }
+  }
+}
+
+// Pull the user's favourites from whichever services are connected. Never
+// throws: a service that isn't connected (or is having a bad day) just leaves
+// its previous key set untouched.
+let _streamRefreshInFlight = false;
+let _streamRefreshQueued   = false;
+async function refreshStreamAlbumKeys(reason) {
+  if (_streamRefreshInFlight) {
+    // Rescan fires this AND the library sync fires it again — dropping the
+    // second would leave the badges stale exactly when the user asked for a
+    // refresh. Queue one re-run instead.
+    _streamRefreshQueued = true;
+    return;
+  }
+  _streamRefreshInFlight = true;
+  try {
+    if (qobuzToken || (qobuzUsername && qobuzPasswordMd5)) {
+      try {
+        // Page until the service runs out: a one-page read silently badged only
+        // the first 500 favourites and left the rest looking unmatched.
+        const PAGE = 500, MAX_PAGES = 20;
+        const keys = new Set();
+        let fetched = 0, skipped = 0;
+        for (let page = 0; page < MAX_PAGES; page++) {
+          const items = await qobuzWithToken((t) => qobuz.getFavoriteAlbums(t, PAGE, page * PAGE));
+          if (!items.length) break;
+          fetched += items.length;
+          for (const a of items) {
+            const before = keys.size;
+            addFavouriteKeys(keys, a.title, a.version,
+              [(a.artist && a.artist.name), (a.performer && a.performer.name)]);
+            if (keys.size === before) skipped++;
+          }
+          if (items.length < PAGE) break;
+        }
+        // Assigned even when EMPTY — the user may have un-favourited everything,
+        // and keeping the old set would badge albums that are no longer theirs.
+        qobuzAlbumKeys = keys;
+        console.log("[stream] Qobuz favourites: " + keys.size + " albums from " + fetched +
+                    " favourites (" + reason + ")" + (skipped ? ", " + skipped + " unkeyable" : ""));
+      } catch (e) {
+        // Left untouched on failure: a network blip must not wipe working badges.
+        console.error("[stream] Qobuz favourites failed (keys kept):", e.message);
+      }
+    }
+    if (tidalRefreshToken && tidalUserId) {
+      try {
+        // Through tidalWithToken so a revoked/expired access token is refreshed
+        // and retried, like every other Tidal call.
+        const rows = await tidalWithToken((token, cc) =>
+          tidal.getFavoriteAlbums(token, cc, tidalUserId));
+        const keys = new Set();
+        let skipped = 0;
+        for (const row of rows) {
+          const a = (row && row.item) ? row.item : row;
+          if (!a || !a.title) continue;
+          const before = keys.size;
+          addFavouriteKeys(keys, a.title, a.version,
+            [(a.artist && a.artist.name)].concat((a.artists || []).map(x => x && x.name)));
+          if (keys.size === before) skipped++;
+        }
+        tidalAlbumKeys = keys;   // empty is a valid answer — see the Qobuz note
+        console.log("[stream] Tidal favourites: " + keys.size + " albums from " + rows.length +
+                    " favourites (" + reason + ")" + (skipped ? ", " + skipped + " unkeyable" : ""));
+      } catch (e) {
+        console.error("[stream] Tidal favourites failed (keys kept):", e.message);
+      }
+    }
+    saveStreamAlbumKeys();
+  } finally {
+    _streamRefreshInFlight = false;
+    if (_streamRefreshQueued) {
+      _streamRefreshQueued = false;
+      refreshStreamAlbumKeys("queued").catch(e => {
+        if (DEBUG) console.error("[stream] queued refresh:", e.message);
+      });
+    }
+  }
+}
+
+// Disconnecting a service must take its badges with it — otherwise every album
+// keeps the logo of an account the user has removed, and the persisted file
+// reinstates it on the next restart.
+function clearStreamAlbumKeys(which) {
+  if (which === "qobuz") qobuzAlbumKeys = new Set();
+  if (which === "tidal") tidalAlbumKeys = new Set();
+  saveStreamAlbumKeys();
+  console.log("[stream] cleared " + which + " album keys (disconnected)");
+}
+
+// Attach the source flag to an album payload. One helper so every endpoint
+// that returns albums reports it identically.
+//
+// `rec` is the albumIndex record the payload came from, when there is one: it
+// already carries the normalized title/artist, so the hot list paths (walls,
+// Library paging, artist screens) do no string work at all here.
+//
+// Local wins over a streaming match — the files are what actually plays. But
+// an album favourited in BOTH services is genuinely ambiguous: Roon pulled it
+// from one of them and we can't tell which, so it gets no badge rather than a
+// coin-flip logo.
+function withSource(a, rec) {
+  const keys = (rec && rec.srcKeys) ? rec.srcKeys : albumKeys(a.title, a.subtitle);
+  let source = null;
+  for (const key of keys) {
+    // Two library albums share this identity — we can't tell which is which,
+    // so neither gets a badge.
+    if (ambiguousAlbumKeys.has(key)) continue;
+    if (localAlbumKeys.has(key)) { source = "local"; break; }
+    const inQobuz = qobuzAlbumKeys.has(key);
+    const inTidal = tidalAlbumKeys.has(key);
+    if (inQobuz && inTidal) break;              // favourited in both — unknowable
+    if (inQobuz) { source = "qobuz"; break; }
+    if (inTidal) { source = "tidal"; break; }
+  }
+  a.source = source;
+  return a;
+}
+
+// Identities held by more than one library album (duplicate rips, a local copy
+// alongside a streaming copy Roon didn't group). Any badge on those would be a
+// coin flip, so they're suppressed. Rebuilt with the snapshot.
+let ambiguousAlbumKeys = new Set();
+function rebuildAmbiguousAlbumKeys() {
+  const seen = new Map();
+  const dupes = new Set();
+  for (const al of albumIndex.albums) {
+    for (const key of (al.srcKeys || [])) {
+      const owner = seen.get(key);
+      if (owner === undefined) seen.set(key, al.offset);
+      else if (owner !== al.offset) dupes.add(key);
+    }
+  }
+  ambiguousAlbumKeys = dupes;
+  if (dupes.size) console.log("[source] " + dupes.size + " ambiguous album identities — badges suppressed for those");
+}
+
 // Build a map of albumKey → label from audio file tags.
 // Expects Artist/Album/track.flac layout — reads one file per album directory.
 async function buildFileLabelMap(onProgress) {
   const map = new Map();
   const bandcampMap = new Map(); // albumKey → Bandcamp album page URL (from COMMENT tag)
-  if (!musicDirMounted()) return { labelMap: map, bandcampMap };
+  // Every album seen on disk, keyed the same way as the maps above — this is
+  // the evidence behind the "local files" badge. Collected for EVERY album
+  // directory (not just ones that yielded a label), since presence on disk is
+  // the whole question.
+  const localKeys = new Set();
+  if (!musicDirMounted()) return { labelMap: map, bandcampMap, localKeys };
   let mm;
   try { mm = await import("music-metadata"); } catch (e) {
     if (DEBUG) console.error("[labels:files] music-metadata not available:", e.message);
-    return { labelMap: map, bandcampMap };
+    return { labelMap: map, bandcampMap, localKeys };
   }
   const parseFile = mm.parseFile || (mm.default && mm.default.parseFile);
   if (!parseFile) {
     if (DEBUG) console.error("[labels:files] music-metadata loaded but parseFile not found");
-    return { labelMap: map, bandcampMap };
+    return { labelMap: map, bandcampMap, localKeys };
   }
 
   const AUDIO_RE = /\.(flac|mp3|m4a|aac|ogg|opus|wv|ape|wav|aiff?)$/i;
@@ -2013,6 +2318,23 @@ async function buildFileLabelMap(onProgress) {
         const albumartist = meta.common.albumartist
           || (meta.common.artists && meta.common.artists[0])
           || meta.common.artist || null;
+        // Record every on-disk album under both credit spellings — Roon's
+        // album-artist can match either the ALBUMARTIST or the ARTIST tag, and
+        // a miss here just means a missing badge, never a wrong one.
+        if (album) {
+          const k1 = albumKey(album, albumartist || "");
+          if (k1) localKeys.add(k1);
+          // Also key by the track artist — Roon's album credit sometimes matches
+          // that instead. NOT for compilations: one sampled track would claim a
+          // various-artists disc for whichever performer happened to be first,
+          // and could then badge an unrelated streaming album as local.
+          const isCompilation = /various|soundtrack|ost\b/i.test(albumartist || "") ||
+                                meta.common.compilation === true;
+          if (meta.common.artist && !isCompilation) {
+            const k2 = albumKey(album, meta.common.artist);
+            if (k2) localKeys.add(k2);
+          }
+        }
         if (label && !isLikelyNotALabel(label) && album) {
           const key = normalize(album) + "||" + normalize(albumartist || "");
           if (!map.has(key)) map.set(key, label);
@@ -2053,7 +2375,7 @@ async function buildFileLabelMap(onProgress) {
     if (DEBUG) console.error("[labels:files] scan error:", e.message);
   }
   if (DEBUG) console.log("[labels:files] file scan found", map.size, "labels,", bandcampMap.size, "Bandcamp URLs");
-  return { labelMap: map, bandcampMap };
+  return { labelMap: map, bandcampMap, localKeys };
 }
 
 // ---------------------------------------------------------------------------
@@ -2095,11 +2417,14 @@ async function runLabelsIndexScan(force) {
   // so corrected file tags override stale API-derived cache entries on every scan,
   // including 12-hour auto-rescans where all albums are already cached.
   const estimate = albumIndex.albums.length || 1000;
-  const { labelMap: fileLabelMap, bandcampMap } = musicDirMounted()
+  const { labelMap: fileLabelMap, bandcampMap, localKeys } = musicDirMounted()
     ? await buildFileLabelMap((n) => {
         labelsIndex.progress = Math.min(0.15, n / estimate);
       })
-    : { labelMap: new Map(), bandcampMap: new Map() };
+    : { labelMap: new Map(), bandcampMap: new Map(), localKeys: new Set() };
+  // Only replace the known-local set when the scan actually saw the mount —
+  // an unmounted /music must not wipe badges earned by a previous scan.
+  if (localKeys && localKeys.size) setLocalAlbumKeys(localKeys);
   if (fileLabelMap.size) {
     let overrideCount = 0;
     for (const [key, fileLabel] of fileLabelMap) {
@@ -3376,6 +3701,9 @@ function indexRecord(item, offset) {
     title, subtitle,
     image_key: item.image_key || null,
     nTitle, nArtist,
+    // Every identity this album could match a file/favourite under, computed
+    // once here so list responses do no string work per album (see withSource).
+    srcKeys: albumKeys(title, subtitle),
     tTitle:  nTitle  ? nTitle.split(" ")  : [],
     tArtist: nArtist ? nArtist.split(" ") : [],
     jTitle:  nTitle.replace(/ /g, ""),
@@ -3433,13 +3761,32 @@ function splitCreditIntoArtists(subtitle) {
   const known = knownArtistSet();
   const out = [];
   for (const part of safeParts) {
-    const frags = part.split(/\s*,\s*| & | \+ | and /i)
-      .map(s => s.trim())
-      .filter(f => f.length >= 2);   // "," splits of initials/junk never link
-    if (frags.length >= 2 && frags.some(f => known.has(normalize(f)))) out.push(...frags);
-    else out.push(part);
+    // Stage 1b — UNSPACED slash. Roon writes most multi-artist credits this
+    // way ("T-Bone Walker/Big Joe Turner/Otis Spann", "François Couturier/
+    // Dominique Pifarély"), so refusing to split it left the whole credit as
+    // one dead-end link. Band names also contain bare slashes (AC/DC), so it
+    // splits only on evidence: every fragment looks like a full name (contains
+    // a space — "AC"/"DC" don't), or the library recognises one as an artist.
+    const slashFrags = part.split("/").map(s => s.trim()).filter(Boolean);
+    let pieces = [part];
+    if (slashFrags.length >= 2) {
+      const allMultiWord = slashFrags.every(f => /\s/.test(f));
+      const anyKnown = slashFrags.some(f => f.length >= 3 && known.has(normalize(f)));
+      if (allMultiWord || anyKnown) pieces = slashFrags;
+    }
+    // Each slash piece still goes through the ", & + and" stage below —
+    // "Miles Davis/John Coltrane & Bill Evans" must not stop half-split.
+    for (const piece of pieces) {
+      const frags = piece.split(/\s*,\s*| & | \+ | and /i)
+        .map(s => s.trim())
+        .filter(f => f.length >= 2);   // "," splits of initials/junk never link
+      if (frags.length >= 2 && frags.some(f => known.has(normalize(f)))) out.push(...frags);
+      else if (piece.length >= 2 || pieces.length === 1) out.push(piece);
+    }
   }
-  return out.length ? out : [whole];
+  // Badly-tagged credits repeat a name ("Artist/Artist") — one link each.
+  const deduped = [...new Set(out)];
+  return deduped.length ? deduped : [whole];
 }
 
 // Walk the whole albums hierarchy once and cache a record per album.
@@ -3470,6 +3817,7 @@ async function buildAlbumIndex() {
 
     albumIndex.albums   = albums.filter(Boolean);  // drop any holes
     albumIndex.count    = albumIndex.albums.length;
+    rebuildAmbiguousAlbumKeys();   // identities shared by >1 album get no badge
     albumIndex.builtAt  = Date.now();
     albumIndex.progress = 1;
     if (DEBUG) console.log("[index] built", albumIndex.count, "albums");
@@ -3481,6 +3829,11 @@ async function buildAlbumIndex() {
     // Thumbnails ride along with every sync: warm the disk store as soon as the
     // snapshot lands (fire-and-forget; it self-aborts if a newer build starts).
     prewarmAlbumArt().catch(e => { if (DEBUG) console.error("[art] prewarm:", e.message); });
+    // So do the streaming favourites that decide the Qobuz/Tidal badges — the
+    // library just changed, so which albums came from where may have too.
+    refreshStreamAlbumKeys("library sync").catch(e => {
+      if (DEBUG) console.error("[stream] refresh:", e.message);
+    });
     return idx;
   } finally {
     albumIndex.building = null;
@@ -3758,13 +4111,13 @@ function searchAlbums(query, limit) {
     a.al.nTitle.localeCompare(b.al.nTitle) ||
     a.al.nArtist.localeCompare(b.al.nArtist)
   );
-  return out.slice(0, limit).map(({ al, score }) => ({
+  return out.slice(0, limit).map(({ al, score }) => withSource({
     offset:    al.offset,
     title:     al.title,
     subtitle:  al.subtitle,
     image_key: al.image_key,
     score
-  }));
+  }, al));
 }
 
 // ---------------------------------------------------------------------------
@@ -4143,7 +4496,10 @@ app.get("/api/artist-albums", (req, res) => {
   }
   primary.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
   featured.sort((a, b) => (a.title || "").localeCompare(b.title || ""));
-  res.json({ artist, primary, featured });
+  const slim = (al) => withSource({
+    offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null
+  }, al);
+  res.json({ artist, primary: primary.map(slim), featured: featured.map(slim) });
 });
 
 // Artist header bio for the artist-albums view. Wraps the wall display's
@@ -4191,9 +4547,9 @@ app.get("/api/library/albums", async (req, res) => {
     const total  = albumIndex.albums.length;
     const offset = Math.max(0, Math.min(total, parseInt(req.query.offset || "0", 10) || 0));
     const count  = Math.max(1, Math.min(200, parseInt(req.query.count || "60", 10) || 60));
-    const albums = albumIndex.albums.slice(offset, offset + count).map(a => ({
+    const albums = albumIndex.albums.slice(offset, offset + count).map(a => withSource({
       offset: a.offset, title: a.title, subtitle: a.subtitle, image_key: a.image_key
-    }));
+    }, a));
     res.json({ albums, offset, total });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -4227,7 +4583,7 @@ app.get("/api/home/unplayed", async (req, res) => {
     while (picked.size < want) picked.add(Math.floor(Math.random() * pool.length));
     const albums = [...picked].map(i => {
       const al = pool[i];
-      return { offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null };
+      return withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }, al);
     });
     res.json({ albums, total: pool.length, months });
   } catch (e) {
@@ -4261,7 +4617,7 @@ app.get("/api/home/album-of-the-day", async (req, res) => {
       } catch (e) { played = false; /* DB unavailable — show it */ }
     }
     if (played) return res.json({ album: null, played: true });
-    res.json({ album: { offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null } });
+    res.json({ album: withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }) });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -4305,7 +4661,7 @@ app.get("/api/home/label-of-the-week", (req, res) => {
       return res.json(empty);
     }
     const entry = labelsIndex.map.get(keys[fnv1aHash(wk) % keys.length]);
-    const albums = entry.albums.slice(0, 24).map(a => ({
+    const albums = entry.albums.slice(0, 24).map(a => withSource({
       offset: a.offset, title: a.title || "", subtitle: a.subtitle || "", image_key: a.image_key || null
     }));
     const data = { label: entry.display, albums };
@@ -4499,7 +4855,9 @@ app.get("/api/label-albums", (req, res) => {
       (a.title || "").localeCompare(b.title || "", undefined, { sensitivity: "base" }));
   }
   const gk = labelGroupKey(name);
-  res.json({ albums, total: albums.length, label: name, order,
+  // Shallow-copied so the badge isn't written onto the stored label index.
+  res.json({ albums: albums.map(a => withSource(Object.assign({}, a))),
+             total: albums.length, label: name, order,
              groupKey: gk, logo_url: labelLogoCache.get(gk) || null });
 });
 
@@ -4521,6 +4879,12 @@ app.get("/api/labels-scan-status", (req, res) => {
 app.post("/api/library/rescan", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   try {
+    // Always re-read the streaming favourites on an explicit Rescan, even when
+    // the snapshot itself turns out to be unchanged — this is the user's way to
+    // refresh the Qobuz/Tidal badges after adding albums in those services.
+    refreshStreamAlbumKeys("manual rescan").catch(e => {
+      if (DEBUG) console.error("[stream] refresh:", e.message);
+    });
     const r = await checkAndMaybeRebuild("manual", true);
     res.json(r);
   } catch (e) {
@@ -5076,7 +5440,7 @@ app.get("/api/album", async (req, res) => {
   try {
     const r = await openAlbumByOffset(offset, null, null, parseFilter(req.query), expect);
     res.json({
-      album:  r.album,
+      album:  withSource(r.album),
       tracks: r.tracks,
       actions: r.actions.map(a => ({ kind: a.kind, title: a.title })),
       offset: r.offset,  // corrected when the stale-offset defense relocated
@@ -5297,6 +5661,11 @@ app.post("/api/settings/qobuz", async (req, res) => {
     savePersistedSettings({ qobuzUsername, qobuzPasswordMd5, qobuzToken, qobuzDisplayName });
     qobuzFavIds.clear(); // account may have changed — drop cached favourite ids
     qobuzFeaturedCache.clear();
+    // Newly connected account — read its favourites now so Qobuz badges appear
+    // without waiting for the next library sync.
+    refreshStreamAlbumKeys("qobuz connected").catch(e => {
+      if (DEBUG) console.error("[stream] refresh:", e.message);
+    });
     console.log("[settings] qobuz connected as " + qobuzDisplayName);
     res.json({ ok: true, displayName: qobuzDisplayName });
   } catch (e) {
@@ -5308,6 +5677,7 @@ app.post("/api/settings/qobuz/disconnect", (req, res) => {
   qobuzUsername = qobuzPasswordMd5 = qobuzToken = qobuzDisplayName = "";
   qobuzFavIds.clear();
   qobuzFeaturedCache.clear();
+  clearStreamAlbumKeys("qobuz");   // badges go with the account
   savePersistedSettings({ qobuzUsername: "", qobuzPasswordMd5: "", qobuzToken: "", qobuzDisplayName: "" });
   res.json({ ok: true });
 });
@@ -5647,6 +6017,11 @@ app.post("/api/settings/tidal/start", async (req, res) => {
         tidalFavIds.clear();       // account may have changed — drop cached favourite ids
         tidalFeaturedCache.clear();
         tidalPendingAuth = null;
+        // Newly connected account — read its favourites now so Tidal badges
+        // appear without waiting for the next library sync.
+        refreshStreamAlbumKeys("tidal connected").catch(e => {
+          if (DEBUG) console.error("[stream] refresh:", e.message);
+        });
         console.log("[settings] tidal connected as " + tidalDisplayName);
       } catch (e) {
         if (tidalPendingAuth !== pending) return;
@@ -5695,6 +6070,7 @@ app.post("/api/settings/tidal/disconnect", (req, res) => {
   tidalAccessTokenExpiry = 0;
   tidalFavIds.clear();
   tidalFeaturedCache.clear();
+  clearStreamAlbumKeys("tidal");   // badges go with the account
   savePersistedSettings({ tidalRefreshToken: "", tidalUserId: "", tidalCountryCode: "US", tidalDisplayName: "" });
   res.json({ ok: true });
 });
@@ -6453,7 +6829,7 @@ app.get("/api/display/content", async (req, res) => {
         const subN = normalize(al.subtitle || "");
         if (subN === artistN || subN.split(" / ").indexOf(artistN) !== -1 ||
             subN.startsWith(artistN + " /") || subN.indexOf(" / " + artistN) !== -1) {
-          moreArtist.push({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null });
+          moreArtist.push(withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }, al));
         }
       }
     }
@@ -6479,7 +6855,7 @@ app.get("/api/display/content", async (req, res) => {
         const alLabel = resolveAlbumLabelName(al);
         if (!alLabel || canonicalLabelGroupKey(alLabel) !== targetKey) continue;
         seenOffsets.add(al.offset);
-        picks.push({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null });
+        picks.push(withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }, al));
       }
       if (picks.length >= 3) {
         const entry = labelsIndex.map.get(targetKey);

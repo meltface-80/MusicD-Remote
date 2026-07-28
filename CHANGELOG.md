@@ -2,6 +2,112 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.55] — 2026-07-28
+
+### Fixed (multi-angle review of the v1.6.53/54 badge work)
+
+- **Wrong badges are now impossible in three cases that could produce them.** (1) Titles made
+  entirely of symbols or non-Latin characters ("+", "÷", Japanese, Cyrillic) reduced to an
+  empty identity, so one such local album could badge every other one as local — those are
+  now never keyed. (2) An album favourited in *both* Qobuz and TIDAL was always labelled
+  Qobuz; it's genuinely unknowable, so it gets no badge. (3) Two library albums sharing an
+  identity (a local rip plus a streaming copy Roon didn't group) now suppress each other's
+  badge instead of guessing.
+- **Badges no longer outlive the account.** Disconnecting Qobuz or TIDAL clears its badges,
+  and an empty favourites list is now honoured — previously un-favouriting everything (or
+  switching accounts) left the old badges in place permanently, saved across restarts.
+- **All your Qobuz favourites are read, not just the first 500** — the request was a single
+  un-paged page, so larger collections were silently half-badged.
+- **A refresh triggered while another was running is no longer dropped** — tapping Rescan
+  used to be swallowed by the sync's own refresh, so badges appeared not to update.
+- TIDAL favourites now go through the same token-refresh-and-retry path as every other TIDAL
+  call; a compilation on disk can no longer claim a track artist as its album artist; and
+  both badge files are written atomically so a crash mid-write can't wipe every badge.
+- **Multi-artist links**: a mixed credit like "Miles Davis/John Coltrane & Bill Evans" now
+  splits fully instead of leaving "John Coltrane & Bill Evans" as one dead-end link, and a
+  repeated name no longer produces two identical links.
+
+### Changed
+
+- **Streaming badges now match far more of the library.** Roon credits every performer on a
+  collaboration while Qobuz and TIDAL report only the primary artist, so albums like
+  "T-Bone Walker/Big Joe Turner/Otis Spann" could never match — every collaboration was a
+  guaranteed miss. Each credited artist is now tried individually (the album title must
+  still match exactly, so this can't cause a wrong badge). Matching also ignores "&" vs
+  "and" and a leading "The", and uses the edition the services report separately, so
+  "Rumours" matches "Rumours (Deluxe Edition)".
+- Badges now appear on **every** screen — filtered genre/decade walls, search results, the
+  labels browser and Label of the week previously showed none, which made a missing badge
+  meaningless there.
+- Album lists no longer recompute matching keys per request; the identities are built once
+  with the library snapshot.
+
+## [1.6.54] — 2026-07-28
+
+### Added
+
+- **Qobuz and TIDAL badges on albums**, completing the source icons started in v1.6.53.
+  Roon's extension API still exposes no source field, so this uses the Qobuz/TIDAL logins
+  the extension already holds: adding a streaming album to your Roon library favourites it
+  in the service, so your own favourites tell us which library albums came from where.
+  Each service's mark is shown top-right of the cover, alongside the existing local-files
+  icon, on tiles and on the album screen.
+  - Favourites are read when a service is connected, on every library sync, and on a manual
+    **Rescan library** (the way to refresh badges after adding albums in Qobuz/TIDAL). The
+    result is saved on the data volume, so badges are there immediately after a restart.
+  - Matching is on title + artist, and stays deliberately conservative: an album that can't
+    be matched confidently (a different edition or remaster, say) simply gets no badge
+    rather than the wrong one. Local files win when an album is both on disk and favourited.
+  - A service you haven't connected costs nothing and shows nothing.
+
+## [1.6.53] — 2026-07-28
+
+### Fixed
+
+- **Multi-artist albums now give you a link per artist.** Credits like
+  "T-Bone Walker/Big Joe Turner/Otis Spann" and "François Couturier/Dominique Pifarély"
+  were shown as a single link covering the whole line, because Roon writes these with an
+  unspaced slash and the splitter only broke on a spaced one (deliberately, to protect band
+  names like AC/DC). It now splits on the unspaced slash too, but only on evidence: either
+  every part looks like a full name (contains a space — "AC"/"DC" don't), or the library
+  recognises one of them as an artist. Tapping a name opens that artist's screen, which
+  already lists their own albums first and then an **Also appears on** section.
+
+### Added
+
+- **"Local files" badge on albums.** Albums found on the mounted music folder now carry a
+  small badge (top-right of the cover, on tiles and on the album screen). Roon's extension
+  API exposes no source field, so this uses the read-only /music mount the label scanner
+  already walks: every album directory's tags are recorded during the scan and matched on
+  title + credit. The list is saved on the data volume, so badges survive restarts. No
+  badge means "not confirmed local" rather than "streaming" — a missing badge is preferred
+  over a wrong one, and nothing is badged at all when /music isn't mounted.
+
+## [1.6.52] — 2026-07-28
+
+### Fixed
+
+- **Albums became untappable after coming back from an artist's discography** (reported by a
+  tester, reproduced here). Going album → artist → Back returned you to a wall that looked
+  perfect but where no tile responded to taps; only refreshing the wall recovered it. The
+  artist view was saving the screen it came from as an HTML *string* and rebuilding it from
+  that markup on Back — which recreates the tiles as fresh elements and throws away the tap
+  handlers and the album identity attached to the originals. It now sets the original tiles
+  aside and puts those exact elements back, so everything on them survives. This fixes the
+  dead tiles on **every** screen the artist view can be opened from: random albums, genre /
+  tag / decade walls, Not played in 6 months, the Library wall, and label albums. (Home rows
+  were never affected.)
+- Returning to the **Library wall** now resumes loading more albums as you scroll — its
+  paging was switched off on the way into the artist view and never switched back on.
+- Returning to a **label's albums** restores the labels bar and the label you were viewing,
+  instead of stranding you on a grid with no way back to the label list.
+- **Back now returns you to where you were scrolled to**, rather than the top of the wall.
+- A **multi-select left open** on a wall no longer follows you into the artist view (its
+  action bar stayed on screen and made tiles select instead of open).
+- **Rotating a phone while viewing an artist** (or Safari hiding its toolbar mid-scroll) no
+  longer silently replaces the discography with a random wall.
+- Opening a second artist from within an artist view no longer breaks the Back trail.
+
 ## [1.6.51] — 2026-07-17
 
 ### Added
