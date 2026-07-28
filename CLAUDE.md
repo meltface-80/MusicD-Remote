@@ -196,7 +196,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
 - The README contains version references (install commands, tarball URLs, `docker build` tags).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.6.51** (until the user says otherwise).
+- Current stable version in the README: **v1.6.55** (until the user says otherwise).
 - The extension is being renamed **MusicD Remote** ("for Roon" is descriptive, not part of the name). The Roon `extension_id` must NEVER change — it would force every user to re-authorize.
 
 ---
@@ -315,4 +315,8 @@ docker run -d \
 | v1.6.48 | stable (superseded) | Fixed the live-name play fallback (zone-scoped search + fuller matching) so stale-offset albums open/play reliably |
 | v1.6.49 | stable (superseded) | Play fallback rebuilt on Roon's dedicated search hierarchy (v1.6.48's resolved 0/12 in production); Discogs logo 429 cooldown+abort; FanArt 404 log demotion; wall-display idle wake-check 60s + trace-silenced |
 | v1.6.50 | stable (superseded) | Home Library carousel + full A-Z scrolling wall (paged from the snapshot index, zero Core calls); persistent thumbnail store on the data volume prewarmed during every sync (atomic writes, write-through, prune); 8-angle review fixes |
-| v1.6.51 | **Latest (stable)** | Library panel styling: warm library-brown tint + books watermark (two spines + one leaning, user-approved render), joining the Home tinted-panel system in both themes — README points here |
+| v1.6.51 | stable (superseded) | Library panel styling: warm library-brown tint + books watermark, joining the Home tinted-panel system in both themes |
+| v1.6.52 | stable (superseded) | Fixed albums going untappable after Back from an artist view — screens are restored by moving live nodes, never via an innerHTML string (pre-flight step 4 added) |
+| v1.6.53 | stable (superseded) | Per-artist links on unspaced-slash credits (evidence-gated, AC/DC safe); "local files" badge from the /music scan |
+| v1.6.54 | stable (superseded) | Qobuz + TIDAL source badges from the services' own favourites |
+| v1.6.55 | **Latest (stable)** | Badge review pass: closed three wrong-badge paths (empty-normalising titles, dual-service albums, duplicate library identities), badges cleared on disconnect, Qobuz favourites paged, per-artist identity matching + "&"/"and"/edition tolerance, badges on every screen — README points here |
