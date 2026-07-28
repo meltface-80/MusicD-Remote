@@ -23,7 +23,14 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
-const INDEX_PATH = path.join(REPO_ROOT, "index.js");
+
+// MUSICD_INDEX_JS points the extractor at a COPY of index.js. Its only purpose
+// is mutation-checking: reintroduce a fixed bug in a throwaway copy and confirm
+// the suite goes red, proving the assertions actually bite. Unset in normal
+// runs, so tests always read the shipping file.
+const INDEX_PATH = process.env.MUSICD_INDEX_JS
+  ? path.resolve(process.env.MUSICD_INDEX_JS)
+  : path.join(REPO_ROOT, "index.js");
 
 let _src = null;
 function indexSource() {

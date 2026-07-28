@@ -72,22 +72,41 @@ test("pre-flight 2 — no stale UPPER_SNAKE constant names in index.js", () => {
 // and silently drops every listener and closure attached to the originals.
 // Screens must be saved by MOVING the live nodes into a DocumentFragment.
 //
-// Mirrors the CLAUDE.md grep: a line mentioning .innerHTML is a violation
-// unless it is an assignment (`= value`, `= <eol>`) or an append (`+=`).
-const INNERHTML_WRITE = /\.innerHTML\s*(=\s*$|=[^=]|\+=)/;
+// The CLAUDE.md grep classifies a whole LINE as a write if any `.innerHTML =`
+// appears on it. That has a real blind spot, confirmed by mutation-testing the
+// DOM suite: `grid.innerHTML = tmp.innerHTML;` is a serialise-and-re-parse
+// round trip — the exact v1.6.52 bug — and the line-based grep passes it,
+// because the write masks the read beside it.
+//
+// So this classifies each OCCURRENCE: a `.innerHTML` is a write only when it
+// is immediately followed by `= value`, `= <eol>` or `+=`. Anything else —
+// including `===`, a bare read, or a read on the right of an assignment — is a
+// read and fails. Current code passes this stricter rule.
+const WRITE_AFTER = /^\s*(=\s*$|=[^=]|\+=)/;
+const TOKEN = ".innerHTML";
+
+function innerHtmlReads(rel) {
+  const found = [];
+  lines(rel).forEach((line, i) => {
+    let idx = -1;
+    while ((idx = line.indexOf(TOKEN, idx + 1)) > -1) {
+      if (!WRITE_AFTER.test(line.slice(idx + TOKEN.length))) {
+        found.push(`${rel}:${i + 1}: ${line.trim()}`);
+      }
+    }
+  });
+  return found;
+}
 
 test("pre-flight 4 — no .innerHTML READS in browser code", () => {
   const violations = [];
   for (const rel of listFiles("public", (f) => f.endsWith(".js"))) {
-    lines(rel).forEach((line, i) => {
-      if (line.includes(".innerHTML") && !INNERHTML_WRITE.test(line)) {
-        violations.push(`${rel}:${i + 1}: ${line.trim()}`);
-      }
-    });
+    violations.push(...innerHtmlReads(rel));
   }
   assert.deepEqual(violations, [],
-    "an .innerHTML read serialises live nodes and drops their listeners — " +
-    "snapshot the nodes into a DocumentFragment instead:\n" + violations.join("\n"));
+    "an .innerHTML read serialises live nodes and drops every listener and " +
+    "closure attached to them — snapshot the live nodes into a " +
+    "DocumentFragment instead:\n" + violations.join("\n"));
 });
 
 // --- pre-flight 5 — workflow expression audit -----------------------------
