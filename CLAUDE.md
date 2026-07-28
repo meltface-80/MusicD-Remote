@@ -48,6 +48,16 @@ grep -n '\.innerHTML' public/*.js | grep -vE '\.innerHTML\s*(=\s*$|=[^=]|\+=)' \
   && echo "ERROR: innerHTML read — snapshot live nodes, don't serialise" || echo "OK"
 ```
 
+```bash
+# 5. Workflow expression audit — every interpolation token in a workflow must
+#    be a REAL expression. Actions evaluates them even inside shell comments,
+#    and an invalid one kills the run at startup with no jobs and no error
+#    (the v1.6.52-55 "no releases were ever created" outage).
+grep -n '\${{' .github/workflows/*.yml \
+  | grep -vE '\$\{\{ *(steps|github|secrets|env|matrix|runner|inputs)\.' \
+  && echo "ERROR: invalid workflow expression" || echo "OK"
+```
+
 If step 3 cannot run (Roon not available), run steps 1 and 2 and explicitly note why 3 was skipped.
 
 ### Pre-flight checklist (tick each before every push)
@@ -121,11 +131,21 @@ Do not commit with known CONFIRMED or PLAUSIBLE bugs. Fix them all in the same v
 - Develop on a **feature branch** of `meltface-80/MusicD-Remote` (e.g. `claude/<topic>`). Never commit directly to `main`.
 - For each change: commit to the branch, build and **commit the tarball to the branch** (see below), push, and give the user the docker install command for the branch build. The user tests the branch build, then opens and merges the PR themselves.
 - **Never open or merge a pull request yourself** unless the user explicitly asks. The user merges.
-- **When the user says "merged", it means merged AND the release is published as latest** —
-  run the promotion pass immediately without asking: bump every README version reference,
-  the docs-site fallback version/examples, and this file's current-stable note + version
-  history table, as a docs-only commit on the freshly-restarted branch. (Established
-  2026-07-14; the user should not have to say "promote to latest" separately.)
+- **Two-phase release handshake (revised 2026-07-28 — supersedes the earlier rule).**
+  - **"merged"** = the user tested the branch build and merged it. This is the nod to
+    **cut the release**: confirm the tag `vX.Y.Z` and a **pre-release** exist for it, and
+    create them if the workflow didn't. Do NOT touch README / docs-site versions yet.
+  - **"marked/moved to latest"** = the user is happy and has promoted the release. NOW run
+    the full promotion pass: every README version reference, the docs-site fallback
+    version/examples, and this file's current-stable note + version-history table, as a
+    docs-only commit on the freshly-restarted branch.
+  - After every merge, VERIFY the release actually appeared (`list_releases` / `git
+    ls-remote --tags`). The workflow failing silently is how v1.6.52-v1.6.55 shipped with
+    no tag and no release at all.
+- **Never write a literal `${{ ... }}`-style expression token in a workflow file**, not even
+  inside a shell comment: Actions evaluates them anywhere in the file, and an invalid one
+  fails the run at startup with zero jobs — which looks like "nothing happened", not an
+  error. (Caused the v1.6.52-55 release outage.)
 - The `old/` folder contains two permanent historical tarballs (v1.5.37 and v1.5.49). **Do not add to or remove from this folder.**
 
 ---
