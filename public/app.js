@@ -3069,15 +3069,24 @@
         if (r.ok) {
           const j  = await r.json();
           const rs = j.results || [];
-          // Whole-credit agreement, not "contains the artist's first word":
-          // that opened Bonnie "Prince" Billy's album for Prince, and any
-          // "Kate …" album when playing Kate Bush. With no confident match we
-          // show the toast rather than opening an arbitrary result.
-          const na = artist ? norm(artist) : "";
+          // Whole credited NAME agreement, not "contains the artist's first
+          // word" (which opened Bonnie "Prince" Billy's album for Prince) and
+          // not whole-string equality either — the now-playing line is the
+          // track artist, so "Prince" must still match "Prince & The
+          // Revolution". Split both sides on the credit separators and look
+          // for a shared name.
+          const names = (s) => (s || "")
+            .split(/ \/ |\/| feat\.? | featuring | ft\.? |,| & | \+ | and /i)
+            .map(x => norm(x)).filter(Boolean);
+          const wanted = names(artist);
+          const shares = (sub) => {
+            const got = names(sub);
+            return wanted.some(w => got.includes(w));
+          };
           const match =
             rs.find(a => norm(a.title) === norm(albumTitle) &&
-                         (!na || norm(a.subtitle) === na)) ||
-            (!na ? rs.find(a => norm(a.title) === norm(albumTitle)) : null);
+                         (!wanted.length || shares(a.subtitle))) ||
+            (!wanted.length ? rs.find(a => norm(a.title) === norm(albumTitle)) : null);
           if (match && typeof match.offset === "number") {
             window.__openAlbum(match, { source: "search" }); return;
           }

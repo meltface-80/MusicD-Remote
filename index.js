@@ -862,7 +862,7 @@ async function findAlbumViaSearch(sessionKey, title, artist, zoneId) {
   // detail without one.
   const zone  = zoneId || Object.keys(zones)[0] || undefined;
   const query = (t + " " + (artist || "")).trim();
-  const tN = normalize(t), aN = normalize(artist || "");
+  const tN = normalize(t);
 
   // This resolves which album to PLAY, so a loose match starts the wrong music.
   // The artist (when we know one) must be a credited artist by whole-name
@@ -871,10 +871,12 @@ async function findAlbumViaSearch(sessionKey, title, artist, zoneId) {
   // an arbitrary result: the caller's stale-offset error is far better than
   // playing an unrelated album.
   const artistOk = (i) => !artist || creditHasArtist(i.subtitle, artist);
+  // Exact title always outranks a loose one — otherwise "Live" could beat an
+  // exact "Live at Leeds" just because the loose row's credit matched first.
   const pickFrom = (list) =>
        list.find(i => normalize(i.title) === tN && artistOk(i))
-    || list.find(i => { const n = normalize(i.title); return (n.includes(tN) || tN.includes(n)) && artistOk(i); })
     || (!artist ? list.find(i => normalize(i.title) === tN) : null)
+    || list.find(i => { const n = normalize(i.title); return (n.includes(tN) || tN.includes(n)) && artistOk(i); })
     || null;
 
   // Load the current search-result level, drill its Albums section, match by
@@ -3745,7 +3747,8 @@ function splitArtistNames(subtitle) {
 // Machine") never appear as a whole album credit. splitArtistNames above
 // deliberately keeps , & + unsplit for the search chips — this is the looser,
 // library-validated splitter, used only where a wrong link is recoverable
-// (the artist screen still substring-matches whatever name it's given).
+// (a wrong split now costs a missing link and a missing entry on that
+// artist's screen — the screen matches credited names exactly, v1.6.56).
 let _knownArtistCache = { builtAt: -1, set: new Set() };
 function knownArtistSet() {
   if (_knownArtistCache.builtAt !== albumIndex.builtAt) {
@@ -3842,11 +3845,17 @@ function rebuildCreditIdentities() {
 // Is `artist` one of the credited artists of `credit`? Whole-name equality —
 // the single test every "is this album by this artist?" decision should use.
 // Never `.includes()`: that is what matched Jordan Prince for Prince.
+// Both sides may be full credits rendered differently ("Miles Davis/John
+// Coltrane" here, "Miles Davis" there), so compare the two identity SETS
+// rather than treating the query as one name — otherwise the stale-offset
+// resolver fails on exactly the multi-artist albums it exists to rescue.
 function creditHasArtist(credit, artist) {
-  const q = canonArtist(artist || "");
-  if (!q) return false;
-  const id = creditIdentities(credit);
-  return id.names ? id.names.includes(q) : id.c === q;
+  const qId = creditIdentities(artist || "");
+  const cId = creditIdentities(credit);
+  if (!qId.c || !cId.c) return false;
+  const qNames = qId.names || [qId.c];
+  const cNames = cId.names || [cId.c];
+  return qNames.some(q => cNames.includes(q));
 }
 
 // Walk the whole albums hierarchy once and cache a record per album.
@@ -6623,7 +6632,14 @@ async function fetchArtistMbid(artistName) {
     // blind gave the wall display photos of a different act entirely for
     // short names like Low, Air, Ash or Yes. Require the name to actually match.
     if (Array.isArray(artists) && artists.length) {
-      const hit = artists.find(a => namesEqualLoose(a.name, artistName));
+      // normalize() strips non-Latin scripts to "", which would reject every
+      // candidate for e.g. 坂本龍一 and lose their photos entirely — fall back
+      // to a raw comparison, and to the top hit when the name can't be
+      // canonicalised at all (the pre-check behaviour, only for those names).
+      const raw = (x) => String(x || "").trim().toLowerCase();
+      const hit = artists.find(a => namesEqualLoose(a.name, artistName)) ||
+                  artists.find(a => raw(a.name) === raw(artistName)) ||
+                  (!normalize(artistName) ? artists[0] : null);
       mbid = hit ? (hit.id || null) : null;
       if (!hit && DEBUG) {
         console.log("[display:mb:artist] no name match for " + JSON.stringify(artistName) +
@@ -6906,15 +6922,18 @@ app.get("/api/display/content", async (req, res) => {
     // index. Both use the same tile shape the display renders as cover grids.
     const npTitleN = normalize(album);
     const artistN  = normalize(primaryArtist);
+    const artistQ  = canonArtist(primaryArtist);
     const moreArtist = [];
     if (artistN) {
       for (const al of albumIndex.albums) {
         if (moreArtist.length >= 12) break;
         if (normalize(al.title) === npTitleN) continue;
-        // Whole credited name only. The old `" / " + artistN` test matched a
+        // Whole credited name only — the old `" / " + artistN` test matched a
         // PREFIX of a credit segment, so "Madonna / Prince Paul" was tiled
-        // under "More from Prince".
-        if (creditHasArtist(al.subtitle, primaryArtist)) {
+        // under "More from Prince". Reads the identities precomputed with the
+        // snapshot rather than re-splitting every credit on every track change.
+        if (al.cArtist === undefined) applyCreditIdentities(al);
+        if (al.cCredits ? al.cCredits.includes(artistQ) : al.cArtist === artistQ) {
           moreArtist.push(withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }, al));
         }
       }
@@ -7264,10 +7283,17 @@ async function findNowPlayingAlbum(zoneId) {
       const titleN  = normalize(title);
       const artistOk = (i) => !artist || creditHasArtist(i.subtitle, artist);
       const albItems = albs.items || [];
+      // `artist` here is the TRACK artist, which legitimately differs from the
+      // album credit on compilations, soundtracks and classical ("Aretha
+      // Franklin" on a "Various Artists" album), so an exact title on its own
+      // is still accepted — this only chooses which tracklist to DISPLAY, it
+      // never starts playback, so a miss (no tracklist at all) is worse than a
+      // rare mismatch. The play resolver above stays strict for that reason.
       const albumItem =
            albItems.find(i => normalize(i.title) === titleN && artistOk(i))
+        || albItems.find(i => normalize(i.title) === titleN)
         || albItems.find(i => normalize(i.title).includes(titleN) && artistOk(i))
-        || (!artist ? albItems.find(i => normalize(i.title) === titleN) : null);
+        || null;
       if (!albumItem || !albumItem.item_key) return fallback;
 
       await browse({ hierarchy: hier, multi_session_key: sessionKey, item_key: albumItem.item_key });
