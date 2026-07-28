@@ -2924,6 +2924,17 @@ input.vol-range::-moz-range-thumb {
 /* Larger on the album detail artwork, which is far bigger than a tile. */
 #modal-source { width: 28px; height: 28px; top: 8px; right: 8px; border-radius: 8px; }
 #modal-source::before { -webkit-mask-size: 16px 16px; mask-size: 16px 16px; }
+/* TIDAL — its overlapping-diamond mark (evenodd leaves the overlap open,
+   which is what gives the logo its character). */
+.album-source.tidal::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2024%2024'%3E%3Cpath%20fill-rule%3D'evenodd'%20fill%3D'%23fff'%20d%3D'M7.6%205.4%20L12%209.8%20L7.6%2014.2%20L3.2%209.8%20Z%20M16.4%205.4%20L20.8%209.8%20L16.4%2014.2%20L12%209.8%20Z%20M12%2010.6%20L16.4%2015%20L12%2019.4%20L7.6%2015%20Z'%2F%3E%3C%2Fsvg%3E");
+          mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2024%2024'%3E%3Cpath%20fill-rule%3D'evenodd'%20fill%3D'%23fff'%20d%3D'M7.6%205.4%20L12%209.8%20L7.6%2014.2%20L3.2%209.8%20Z%20M16.4%205.4%20L20.8%209.8%20L16.4%2014.2%20L12%209.8%20Z%20M12%2010.6%20L16.4%2015%20L12%2019.4%20L7.6%2015%20Z'%2F%3E%3C%2Fsvg%3E");
+}
+/* Qobuz — its "Q" mark. */
+.album-source.qobuz::before {
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2024%2024'%3E%3Cpath%20fill-rule%3D'evenodd'%20fill%3D'%23fff'%20d%3D'M12%202.6%20a9.4%209.4%200%201%200%200%2018.8%20a9.4%209.4%200%201%200%200%20-18.8%20Z%20M12%206.6%20a5.4%205.4%200%201%201%200%2010.8%20a5.4%205.4%200%201%201%200%20-10.8%20Z'%2F%3E%3Crect%20x%3D'12.6'%20y%3D'13.4'%20width%3D'3.6'%20height%3D'9'%20rx%3D'1.4'%20transform%3D'rotate(-42%2014.4%2017.9)'%20fill%3D'%23fff'%2F%3E%3C%2Fsvg%3E");
+          mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2024%2024'%3E%3Cpath%20fill-rule%3D'evenodd'%20fill%3D'%23fff'%20d%3D'M12%202.6%20a9.4%209.4%200%201%200%200%2018.8%20a9.4%209.4%200%201%200%200%20-18.8%20Z%20M12%206.6%20a5.4%205.4%200%201%201%200%2010.8%20a5.4%205.4%200%201%201%200%20-10.8%20Z'%2F%3E%3Crect%20x%3D'12.6'%20y%3D'13.4'%20width%3D'3.6'%20height%3D'9'%20rx%3D'1.4'%20transform%3D'rotate(-42%2014.4%2017.9)'%20fill%3D'%23fff'%2F%3E%3C%2Fsvg%3E");
+}
 .album-source.local::before {
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2024%2024'%20fill%3D'%23fff'%3E%3Crect%20x%3D'3'%20y%3D'4'%20width%3D'3'%20height%3D'16'%20rx%3D'1.2'%2F%3E%3Crect%20x%3D'8.5'%20y%3D'4'%20width%3D'3'%20height%3D'16'%20rx%3D'1.2'%2F%3E%3Crect%20x%3D'14'%20y%3D'4'%20width%3D'3'%20height%3D'16'%20rx%3D'1.2'%2F%3E%3Crect%20x%3D'18.6'%20y%3D'4.9'%20width%3D'3'%20height%3D'16'%20rx%3D'1.2'%20transform%3D'rotate(14%2020.1%2012.9)'%2F%3E%3C%2Fsvg%3E");
           mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%2024%2024'%20fill%3D'%23fff'%3E%3Crect%20x%3D'3'%20y%3D'4'%20width%3D'3'%20height%3D'16'%20rx%3D'1.2'%2F%3E%3Crect%20x%3D'8.5'%20y%3D'4'%20width%3D'3'%20height%3D'16'%20rx%3D'1.2'%2F%3E%3Crect%20x%3D'14'%20y%3D'4'%20width%3D'3'%20height%3D'16'%20rx%3D'1.2'%2F%3E%3Crect%20x%3D'18.6'%20y%3D'4.9'%20width%3D'3'%20height%3D'16'%20rx%3D'1.2'%20transform%3D'rotate(14%2020.1%2012.9)'%2F%3E%3C%2Fsvg%3E");

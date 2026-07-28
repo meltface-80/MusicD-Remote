@@ -32,7 +32,10 @@
   // on every open so a previous album's badge can't linger.
   function setModalSource(album) {
     if (!modalSource) return;
-    modalSource.classList.toggle("hidden", !(album && album.local));
+    const kind = album && (album.source || (album.local ? "local" : null));
+    const label = { local: "Local files", qobuz: "Qobuz", tidal: "TIDAL" }[kind];
+    modalSource.className = "album-source" + (label ? " " + kind : " hidden");
+    if (label) { modalSource.title = label; modalSource.setAttribute("aria-label", label); }
   }
   const modalTitle  = document.getElementById("modal-title");
   const modalSub    = document.getElementById("modal-subtitle");
@@ -904,6 +907,20 @@
   // floor keeps DPR-1 desktops sharp on wide walls where tiles exceed 200px.
   const TILE_IMG_SIZE = Math.min(500, Math.max(300, Math.ceil((190 * (window.devicePixelRatio || 1)) / 100) * 100));
 
+  // Source badge for an album payload: "local" | "qobuz" | "tidal", or null
+  // when the server couldn't determine it. `a.local` is still honoured so a
+  // tile built from an older cached payload keeps its badge.
+  const SOURCE_LABEL = { local: "Local files", qobuz: "Qobuz", tidal: "TIDAL" };
+  function sourceBadge(a) {
+    const kind = a.source || (a.local ? "local" : null);
+    if (!kind || !SOURCE_LABEL[kind]) return null;
+    const el = document.createElement("span");
+    el.className = "album-source " + kind;
+    el.title = SOURCE_LABEL[kind];
+    el.setAttribute("aria-label", SOURCE_LABEL[kind]);
+    return el;
+  }
+
   // Build a single album tile. onClick defaults to opening the album modal,
   // but callers (e.g. the label browser) can override it to carry a filter.
   function buildAlbumTile(a, onClick) {
@@ -916,15 +933,11 @@
 
     const artWrap = document.createElement("div");
     artWrap.className = "album-art-wrap";
-    // Source badge — only shown when the server is confident (an album found
-    // on the /music mount). No badge means "unknown", not "streaming".
-    if (a.local) {
-      const src = document.createElement("span");
-      src.className = "album-source local";
-      src.title = "Local files";
-      src.setAttribute("aria-label", "Local files");
-      artWrap.appendChild(src);
-    }
+    // Source badge — only shown when the server is confident: local files, or
+    // an album matched in your Qobuz/Tidal favourites. No badge means the
+    // source couldn't be determined, not that it's missing.
+    const srcBadge = sourceBadge(a);
+    if (srcBadge) artWrap.appendChild(srcBadge);
     if (a.image_key) {
       const img = document.createElement("img");
       img.loading = "lazy"; img.alt = "";

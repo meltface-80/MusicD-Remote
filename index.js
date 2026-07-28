@@ -1996,10 +1996,117 @@ function albumIsLocal(title, subtitle) {
   if (!localAlbumKeys.size) return false;
   return localAlbumKeys.has(normalize(title || "") + "||" + normalize(subtitle || ""));
 }
+
+// ---------------------------------------------------------------------------
+// Streaming provenance — which library albums came from Qobuz / Tidal.
+//
+// Roon exposes no source field, but adding a streaming album to your Roon
+// library favourites it in the service, so the user's own favourites (read
+// with the logins this extension already holds for reviews and identification)
+// are a good proxy. Matched on normalized title + artist, same conservative
+// rule as the local badge: a confident match or no badge at all.
+//
+// Refreshed alongside the library snapshot and persisted, so badges are
+// available immediately on restart and cost nothing per request.
+// ---------------------------------------------------------------------------
+const STREAM_ALBUMS_FILE = path.join(__dirname, "data", "stream-albums.json");
+let qobuzAlbumKeys = new Set();
+let tidalAlbumKeys = new Set();
+function loadStreamAlbumKeys() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(STREAM_ALBUMS_FILE, "utf8"));
+    if (raw && Array.isArray(raw.qobuz)) qobuzAlbumKeys = new Set(raw.qobuz);
+    if (raw && Array.isArray(raw.tidal)) tidalAlbumKeys = new Set(raw.tidal);
+    if (DEBUG) console.log("[stream] loaded", qobuzAlbumKeys.size, "Qobuz +",
+                           tidalAlbumKeys.size, "Tidal album keys");
+  } catch (e) { /* absent on first run — rebuilt by the next favourites refresh */ }
+}
+function saveStreamAlbumKeys() {
+  try {
+    fs.writeFileSync(STREAM_ALBUMS_FILE,
+      JSON.stringify({ qobuz: [...qobuzAlbumKeys], tidal: [...tidalAlbumKeys] }));
+  } catch (e) {
+    console.error("[stream] could not persist streaming album keys:", e.message);
+  }
+}
+loadStreamAlbumKeys();
+// First run (or a version upgrade) has no persisted keys: fetch them shortly
+// after boot so badges appear without waiting for the next library sync.
+// Delayed so it never competes with pairing, and unref'd so it can't hold the
+// process open.
+if (!qobuzAlbumKeys.size && !tidalAlbumKeys.size) {
+  const t = setTimeout(() => {
+    refreshStreamAlbumKeys("startup").catch(e => {
+      if (DEBUG) console.error("[stream] startup refresh:", e.message);
+    });
+  }, 20000);
+  if (t.unref) t.unref();
+}
+
+// An album's identity for cross-source matching: title + primary artist, both
+// normalized. Editions differ ("(Remastered)", "(Deluxe)") — those simply miss
+// and go unbadged rather than being badged wrongly.
+function streamKey(title, artist) {
+  return normalize(title || "") + "||" + normalize(artist || "");
+}
+
+// Pull the user's favourites from whichever services are connected. Never
+// throws: a service that isn't connected (or is having a bad day) just leaves
+// its previous key set untouched.
+let _streamRefreshInFlight = false;
+async function refreshStreamAlbumKeys(reason) {
+  if (_streamRefreshInFlight) return;
+  _streamRefreshInFlight = true;
+  try {
+    if (qobuzToken || (qobuzUsername && qobuzPasswordMd5)) {
+      try {
+        const items = await qobuzWithToken((t) => qobuz.getFavoriteAlbums(t, 500, 0));
+        const keys = new Set();
+        for (const a of items) {
+          const artist = (a.artist && a.artist.name) ||
+                         (a.performer && a.performer.name) || "";
+          if (a.title) keys.add(streamKey(a.title, artist));
+        }
+        if (keys.size) qobuzAlbumKeys = keys;
+        console.log("[stream] Qobuz favourites: " + keys.size + " albums (" + reason + ")");
+      } catch (e) {
+        console.error("[stream] Qobuz favourites failed:", e.message);
+      }
+    }
+    if (tidalRefreshToken) {
+      try {
+        const token = await tidalEnsureAccessToken();
+        const rows = await tidal.getFavoriteAlbums(token, tidalCountryCode, tidalUserId);
+        const keys = new Set();
+        for (const row of rows) {
+          const a = (row && row.item) ? row.item : row;
+          if (!a || !a.title) continue;
+          const artist = (a.artist && a.artist.name) ||
+                         (a.artists && a.artists[0] && a.artists[0].name) || "";
+          keys.add(streamKey(a.title, artist));
+        }
+        if (keys.size) tidalAlbumKeys = keys;
+        console.log("[stream] Tidal favourites: " + keys.size + " albums (" + reason + ")");
+      } catch (e) {
+        console.error("[stream] Tidal favourites failed:", e.message);
+      }
+    }
+    saveStreamAlbumKeys();
+  } finally {
+    _streamRefreshInFlight = false;
+  }
+}
+
 // Attach the source flag to an album payload. One helper so every endpoint
-// that returns albums reports it identically.
+// that returns albums reports it identically. Local wins when an album is both
+// on disk and favourited in a service — the files are what actually plays.
 function withSource(a) {
-  return Object.assign({}, a, { local: albumIsLocal(a.title, a.subtitle) });
+  const key = streamKey(a.title, a.subtitle);
+  let source = null;
+  if (albumIsLocal(a.title, a.subtitle)) source = "local";
+  else if (qobuzAlbumKeys.has(key))      source = "qobuz";
+  else if (tidalAlbumKeys.has(key))      source = "tidal";
+  return Object.assign({}, a, { local: source === "local", source });
 }
 
 // Build a map of albumKey → label from audio file tags.
@@ -3547,6 +3654,11 @@ async function buildAlbumIndex() {
     // Thumbnails ride along with every sync: warm the disk store as soon as the
     // snapshot lands (fire-and-forget; it self-aborts if a newer build starts).
     prewarmAlbumArt().catch(e => { if (DEBUG) console.error("[art] prewarm:", e.message); });
+    // So do the streaming favourites that decide the Qobuz/Tidal badges — the
+    // library just changed, so which albums came from where may have too.
+    refreshStreamAlbumKeys("library sync").catch(e => {
+      if (DEBUG) console.error("[stream] refresh:", e.message);
+    });
     return idx;
   } finally {
     albumIndex.building = null;
@@ -4590,6 +4702,12 @@ app.get("/api/labels-scan-status", (req, res) => {
 app.post("/api/library/rescan", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   try {
+    // Always re-read the streaming favourites on an explicit Rescan, even when
+    // the snapshot itself turns out to be unchanged — this is the user's way to
+    // refresh the Qobuz/Tidal badges after adding albums in those services.
+    refreshStreamAlbumKeys("manual rescan").catch(e => {
+      if (DEBUG) console.error("[stream] refresh:", e.message);
+    });
     const r = await checkAndMaybeRebuild("manual", true);
     res.json(r);
   } catch (e) {
@@ -5366,6 +5484,11 @@ app.post("/api/settings/qobuz", async (req, res) => {
     savePersistedSettings({ qobuzUsername, qobuzPasswordMd5, qobuzToken, qobuzDisplayName });
     qobuzFavIds.clear(); // account may have changed — drop cached favourite ids
     qobuzFeaturedCache.clear();
+    // Newly connected account — read its favourites now so Qobuz badges appear
+    // without waiting for the next library sync.
+    refreshStreamAlbumKeys("qobuz connected").catch(e => {
+      if (DEBUG) console.error("[stream] refresh:", e.message);
+    });
     console.log("[settings] qobuz connected as " + qobuzDisplayName);
     res.json({ ok: true, displayName: qobuzDisplayName });
   } catch (e) {
@@ -5716,6 +5839,11 @@ app.post("/api/settings/tidal/start", async (req, res) => {
         tidalFavIds.clear();       // account may have changed — drop cached favourite ids
         tidalFeaturedCache.clear();
         tidalPendingAuth = null;
+        // Newly connected account — read its favourites now so Tidal badges
+        // appear without waiting for the next library sync.
+        refreshStreamAlbumKeys("tidal connected").catch(e => {
+          if (DEBUG) console.error("[stream] refresh:", e.message);
+        });
         console.log("[settings] tidal connected as " + tidalDisplayName);
       } catch (e) {
         if (tidalPendingAuth !== pending) return;

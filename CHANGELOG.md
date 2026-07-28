@@ -2,6 +2,24 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.54] — 2026-07-28
+
+### Added
+
+- **Qobuz and TIDAL badges on albums**, completing the source icons started in v1.6.53.
+  Roon's extension API still exposes no source field, so this uses the Qobuz/TIDAL logins
+  the extension already holds: adding a streaming album to your Roon library favourites it
+  in the service, so your own favourites tell us which library albums came from where.
+  Each service's mark is shown top-right of the cover, alongside the existing local-files
+  icon, on tiles and on the album screen.
+  - Favourites are read when a service is connected, on every library sync, and on a manual
+    **Rescan library** (the way to refresh badges after adding albums in Qobuz/TIDAL). The
+    result is saved on the data volume, so badges are there immediately after a restart.
+  - Matching is on title + artist, and stays deliberately conservative: an album that can't
+    be matched confidently (a different edition or remaster, say) simply gets no badge
+    rather than the wrong one. Local files win when an album is both on disk and favourited.
+  - A service you haven't connected costs nothing and shows nothing.
+
 ## [1.6.53] — 2026-07-28
 
 ### Fixed
