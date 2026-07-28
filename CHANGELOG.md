@@ -2,6 +2,35 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.57] — 2026-07-28
+
+### Added
+
+- **Sort and Focus on the Library screen.** Two controls sit above the wall: **Sort**
+  (Album name, Artist, Release year, Most played, Last played, Random — each with an
+  A→Z / Z→A toggle) and **Focus** (Source: local files / Qobuz / TIDAL; Decade; and
+  Listening: never played / not in 6 or 12 months). Your choice is remembered.
+  - Focus facets **combine** — "local files AND 1990s AND never played" is one tap each.
+    Roon's browse tree can't express that, because each facet there is a separate list.
+  - Everything is computed from the extension's own library snapshot, so changing sort or
+    focus makes **no calls to your Roon Core** and returns instantly. Results are cached
+    per combination and rebuilt when the library or its scanned data changes.
+  - Album and Artist sorting file "The Wall" under W, as a record shop would.
+  - Albums whose release year hasn't been discovered yet are treated as **unknown** and
+    always listed last, never as "year 0" — sorting newest-first can't float them to the top.
+  - Random uses a fixed shuffle per visit, so scrolling never repeats or skips albums.
+
+### Note on Roon parity
+
+Roon's own Sort and Focus run on a private interface that extensions cannot reach — the
+public API exposes four fields per album and no ordering control whatsoever. What's here is
+the closest useful subset built from data this extension already has. **Not possible:**
+star ratings, Roon favourites, Roon's own play counts and date-added, per-folder storage,
+and the Inspector predicates (Live, Compilation, Duplicates…). Release year, plays and
+source coverage depend on the library scan, and each approximate sort says so in the sheet
+rather than pretending otherwise. **Genre and Tag stay in the main filter**, because Roon
+keeps those in separate lists that can't be combined with the rest.
+
 ## [1.6.56] — 2026-07-28
 
 ### Fixed

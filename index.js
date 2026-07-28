@@ -1421,6 +1421,13 @@ const labelMbidCache = new Map();  // group key → MusicBrainz MBID
 const labelLogoCache = new Map();  // group key → logo URL | null (null = tried, not found)
 const labelMerges    = new Map();  // source groupKey → { targetKey, targetDisplay, sourceDisplay }
 const albumYearCache = new Map();  // album key → release year (4-digit string) — powers the Decade filter
+// Ordered/filtered library views are memoised (see libraryView). Declared here,
+// ABOVE setAlbumYear, because that function invalidates the cache and would hit
+// the temporal dead zone if these lived with the rest of the view code.
+let libraryMetaVersion = 0;
+const libraryViewCache = new Map();      // sig -> ordered album array
+const LIBRARY_VIEW_CACHE_MAX = 8;
+function bumpLibraryMeta() { libraryMetaVersion++; libraryViewCache.clear(); }
 
 let labelsDb = null;
 let stmtInsertName, stmtInsertMbid, stmtInsertLogo, stmtInsertMerge, stmtDeleteMerge, stmtInsertYear;
@@ -1602,6 +1609,7 @@ function purgeFanartLogoMisses() {
 }
 // Persist a release year for an album key (4-digit). Powers the Decade filter.
 function setAlbumYear(key, year) {
+  bumpLibraryMeta();   // ordered library views join on years — drop stale orderings
   const y = String(year || "").slice(0, 4);
   if (!/^\d{4}$/.test(y)) return; // only store a plausible 4-digit year
   albumYearCache.set(key, y);
@@ -3713,6 +3721,10 @@ function indexRecord(item, offset) {
     // Every identity this album could match a file/favourite under, computed
     // once here so list responses do no string work per album (see withSource).
     srcKeys: albumKeys(title, subtitle),
+    // Sort keys, precomputed: Roon (and every record shop) files "The Wall"
+    // under W, not T. Leading articles are dropped for ordering only — the
+    // displayed title is untouched.
+    sortTitle: nTitle.replace(/^(the|a|an) /, ""),
     tTitle:  nTitle  ? nTitle.split(" ")  : [],
     tArtist: nArtist ? nArtist.split(" ") : [],
     jTitle:  nTitle.replace(/ /g, ""),
@@ -4618,15 +4630,171 @@ app.get("/api/random-albums", async (req, res) => {
 // Whole library, in Roon's own album order, paged straight out of the snapshot
 // index — zero Roon round-trips per page. Feeds the Home "Library" carousel
 // and its full scrolling wall.
+// ---------------------------------------------------------------------------
+// Library wall: sorting + focus.
+//
+// Roon's own Sort/Focus run on a private API — the extension API exposes four
+// strings per album and NO ordering control, so this is built entirely from the
+// snapshot and its side tables (years from the label scan, source flags, play
+// history). That means no Roon calls on a user action, and it composes facets
+// (decade AND source AND unplayed), which the browse tree cannot do at all.
+//
+// Ordered results are memoised: the whole library is sorted once per
+// option-combination, not per page. The key includes a metadata version because
+// years and labels keep arriving DURING a label scan — a snapshot-timestamp key
+// alone would serve a stale ordering for hours.
+// ---------------------------------------------------------------------------
+
+const LIB_SORTS = new Set(["album", "artist", "year", "plays", "lastplayed", "random"]);
+
+function albumYearOf(al) {
+  const y = parseInt(albumYearCache.get(al.nTitle + "||" + al.nArtist) || "", 10);
+  return Number.isFinite(y) ? y : null;
+}
+// Deterministic shuffle: paging must not reshuffle between requests, so the
+// order is a pure function of (album, seed) rather than Math.random().
+function seededRank(str, seed) {
+  let h = seed >>> 0;
+  for (let i = 0; i < str.length; i++) { h = (h * 31 + str.charCodeAt(i)) >>> 0; }
+  return h;
+}
+// Album titles played since a cutoff — the plays table records titles only, so
+// this is title-keyed (two artists' "Greatest Hits" collide). Same limitation
+// the Home "not played" row already carries.
+function playedTitleSet(months) {
+  return getPlayedTitlesSince(Date.now() - months * 30 * 24 * 60 * 60 * 1000);
+}
+function playStats() {
+  const out = { count: new Map(), last: new Map() };
+  if (!labelsDb) return out;
+  try {
+    for (const r of labelsDb.prepare(
+      "SELECT lower(trim(album)) a, COUNT(*) n, MAX(ts) t FROM plays WHERE album != '' GROUP BY a").all()) {
+      out.count.set(r.a, r.n); out.last.set(r.a, r.t);
+    }
+  } catch (e) { /* DB unavailable — every album simply scores zero */ }
+  return out;
+}
+
+function libraryView(q) {
+  const sort   = LIB_SORTS.has(String(q.sort || "")) ? String(q.sort) : "album";
+  const desc   = String(q.dir || "asc") === "desc";
+  const seed   = parseInt(q.seed, 10) || 1;
+  const asList = (v) => (v === undefined ? [] : (Array.isArray(v) ? v : [v])).map(String).filter(Boolean);
+  const decades = asList(q.decade).map(d => parseInt(d, 10)).filter(Number.isFinite);
+  const sources = asList(q.source);
+  const played  = String(q.played || "any");
+  const sig = [albumIndex.builtAt, libraryMetaVersion, sort, desc, seed,
+               decades.join(","), sources.join(","), played].join("|");
+  const hit = libraryViewCache.get(sig);
+  if (hit) return hit;
+
+  let list = albumIndex.albums;
+
+  if (decades.length) {
+    list = list.filter(al => {
+      const y = albumYearOf(al);
+      return y !== null && decades.some(d => y >= d && y < d + 10);
+    });
+  }
+  if (sources.length) {
+    list = list.filter(al => {
+      const s = withSource({ title: al.title, subtitle: al.subtitle }, al).source;
+      return sources.includes(s || "none");
+    });
+  }
+  if (played !== "any") {
+    const months = played === "never" ? 0 : parseInt(played, 10);
+    // "never" uses the whole history; "6"/"12" mean "not in the last N months".
+    const seen = played === "never"
+      ? getPlayedTitlesSince(0)
+      : playedTitleSet(Number.isFinite(months) && months > 0 ? months : 6);
+    list = list.filter(al => !seen.has(String(al.title || "").toLowerCase().trim()));
+  }
+
+  const stats = (sort === "plays" || sort === "lastplayed") ? playStats() : null;
+  const playKey = (al) => String(al.title || "").toLowerCase().trim();
+  const cmp = {
+    album:  (a, b) => a.sortTitle.localeCompare(b.sortTitle) || a.nArtist.localeCompare(b.nArtist),
+    artist: (a, b) => (a.cFirst || a.nArtist).localeCompare(b.cFirst || b.nArtist) ||
+                      a.sortTitle.localeCompare(b.sortTitle),
+    // Unknown years sort last in BOTH directions — an album with no year yet is
+    // "unknown", not "year zero", and must never head the list.
+    year:   (a, b) => {
+      const ya = albumYearOf(a), yb = albumYearOf(b);
+      if (ya === null && yb === null) return a.sortTitle.localeCompare(b.sortTitle);
+      if (ya === null) return 1;
+      if (yb === null) return -1;
+      return ya - yb || a.sortTitle.localeCompare(b.sortTitle);
+    },
+    plays:  (a, b) => (stats.count.get(playKey(a)) || 0) - (stats.count.get(playKey(b)) || 0) ||
+                      a.sortTitle.localeCompare(b.sortTitle),
+    lastplayed: (a, b) => (stats.last.get(playKey(a)) || 0) - (stats.last.get(playKey(b)) || 0) ||
+                      a.sortTitle.localeCompare(b.sortTitle),
+    random: (a, b) => seededRank(a.nTitle + a.nArtist, seed) - seededRank(b.nTitle + b.nArtist, seed)
+  }[sort];
+
+  let out;
+  if (sort === "year") {
+    // Albums whose year hasn't been discovered yet are UNKNOWN, not year zero:
+    // they're held out of the ordering entirely and appended, so reversing to
+    // newest-first can't float them to the top.
+    const known = [], unknown = [];
+    for (const al of list) (albumYearOf(al) === null ? unknown : known).push(al);
+    known.sort(cmp);
+    if (desc) known.reverse();
+    unknown.sort((a, b) => a.sortTitle.localeCompare(b.sortTitle));
+    out = known.concat(unknown);
+  } else {
+    out = list.slice().sort(cmp);
+    // "Most played"/"Last played" read naturally as highest-first, so their
+    // default direction is inverted relative to the alphabetical sorts.
+    const invert = (sort === "plays" || sort === "lastplayed") ? !desc : desc;
+    if (invert) out.reverse();
+  }
+
+  if (libraryViewCache.size >= LIBRARY_VIEW_CACHE_MAX) {
+    libraryViewCache.delete(libraryViewCache.keys().next().value);
+  }
+  libraryViewCache.set(sig, out);
+  return out;
+}
+
+// Which focus values actually exist, with counts — so the sheet never offers a
+// facet that would return nothing.
+app.get("/api/library/facets", async (req, res) => {
+  if (!core && !isIndexBuilt()) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  try {
+    await ensureAlbumIndex();
+    const decades = new Map(), sources = new Map();
+    for (const al of albumIndex.albums) {
+      const y = albumYearOf(al);
+      if (y !== null) { const d = Math.floor(y / 10) * 10; decades.set(d, (decades.get(d) || 0) + 1); }
+      const s = withSource({ title: al.title, subtitle: al.subtitle }, al).source || "none";
+      sources.set(s, (sources.get(s) || 0) + 1);
+    }
+    res.json({
+      total: albumIndex.albums.length,
+      decades: [...decades.entries()].sort((a, b) => b[0] - a[0]).map(([d, n]) => ({ value: d, label: d + "s", count: n })),
+      sources: ["local", "qobuz", "tidal"].filter(s => sources.get(s))
+                 .map(s => ({ value: s, label: { local: "Local files", qobuz: "Qobuz", tidal: "TIDAL" }[s], count: sources.get(s) })),
+      hasPlays: !!(labelsDb && getPlayedTitlesSince(0).size)
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get("/api/library/albums", async (req, res) => {
   if (!core && !isIndexBuilt()) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   try {
     await ensureAlbumIndex();
     if (!isIndexBuilt()) return res.status(503).json({ error: "Library index is still building" });
-    const total  = albumIndex.albums.length;
+    const view   = libraryView(req.query);
+    const total  = view.length;
     const offset = Math.max(0, Math.min(total, parseInt(req.query.offset || "0", 10) || 0));
     const count  = Math.max(1, Math.min(200, parseInt(req.query.count || "60", 10) || 60));
-    const albums = albumIndex.albums.slice(offset, offset + count).map(a => withSource({
+    const albums = view.slice(offset, offset + count).map(a => withSource({
       offset: a.offset, title: a.title, subtitle: a.subtitle, image_key: a.image_key
     }, a));
     res.json({ albums, offset, total });
