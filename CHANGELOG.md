@@ -2,6 +2,31 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.52] — 2026-07-28
+
+### Fixed
+
+- **Albums became untappable after coming back from an artist's discography** (reported by a
+  tester, reproduced here). Going album → artist → Back returned you to a wall that looked
+  perfect but where no tile responded to taps; only refreshing the wall recovered it. The
+  artist view was saving the screen it came from as an HTML *string* and rebuilding it from
+  that markup on Back — which recreates the tiles as fresh elements and throws away the tap
+  handlers and the album identity attached to the originals. It now sets the original tiles
+  aside and puts those exact elements back, so everything on them survives. This fixes the
+  dead tiles on **every** screen the artist view can be opened from: random albums, genre /
+  tag / decade walls, Not played in 6 months, the Library wall, and label albums. (Home rows
+  were never affected.)
+- Returning to the **Library wall** now resumes loading more albums as you scroll — its
+  paging was switched off on the way into the artist view and never switched back on.
+- Returning to a **label's albums** restores the labels bar and the label you were viewing,
+  instead of stranding you on a grid with no way back to the label list.
+- **Back now returns you to where you were scrolled to**, rather than the top of the wall.
+- A **multi-select left open** on a wall no longer follows you into the artist view (its
+  action bar stayed on screen and made tiles select instead of open).
+- **Rotating a phone while viewing an artist** (or Safari hiding its toolbar mid-scroll) no
+  longer silently replaces the discography with a random wall.
+- Opening a second artist from within an artist view no longer breaks the Back trail.
+
 ## [1.6.51] — 2026-07-17
 
 ### Added

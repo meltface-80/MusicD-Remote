@@ -38,6 +38,16 @@ grep -n 'DISCOGS_TOKEN\|FANART_TV_KEY' index.js && echo "ERROR: stale constant n
 node -e "require('./index.js')" 2>&1 | head -5
 ```
 
+```bash
+# 4. Live-UI round-trip audit — a view must never save/restore another
+#    screen by READING .innerHTML. Re-parsing that markup builds fresh
+#    elements, silently dropping every listener and closure attached to
+#    the originals (the v1.6.52 "albums untappable after Back" bug).
+#    Move the live nodes into a DocumentFragment instead.
+grep -n '\.innerHTML' public/*.js | grep -vE '\.innerHTML\s*(=\s*$|=[^=]|\+=)' \
+  && echo "ERROR: innerHTML read — snapshot live nodes, don't serialise" || echo "OK"
+```
+
 If step 3 cannot run (Roon not available), run steps 1 and 2 and explicitly note why 3 was skipped.
 
 ### Pre-flight checklist (tick each before every push)
@@ -48,6 +58,7 @@ If step 3 cannot run (Roon not available), run steps 1 and 2 and explicitly note
 - [ ] Every new `catch (e) {}` is intentional — not swallowing a symptom
 - [ ] Auth headers reference the live variable, not a deleted constant
 - [ ] Any new HTML element ID matches the `getElementById` call in app.js exactly
+- [ ] No screen is saved/restored via an `.innerHTML` string — move live nodes (step 4 above)
 - [ ] `package.json` version bumped
 - [ ] CHANGELOG.md entry added
 

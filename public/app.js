@@ -189,6 +189,10 @@
     clearTimeout(_wallResizeTimer);
     _wallResizeTimer = setTimeout(() => {
       if (labelsActive || unplayedWallActive || libraryWallActive) return;
+      // The artist view owns the grid too — without this, a phone rotation (or
+      // Safari collapsing its toolbar mid-scroll) replaced the discography with
+      // a random wall while the header still said the artist's name.
+      if (window.__artistViewActive && window.__artistViewActive()) return;
       if (homeView && !homeView.classList.contains("hidden")) return;
       if (window.__searchActive && window.__searchActive()) return;
       if (Math.min(window.innerWidth, window.innerHeight) >= 768) return;
@@ -227,7 +231,9 @@
     libraryWallActive = false;
     if (window.__clearSearchIfActive) window.__clearSearchIfActive();  // drop stale search results
     if (window.__exitLabels) window.__exitLabels();   // leave the labels browser if active
-    if (window.__exitArtistView) window.__exitArtistView();   // leave the artist view if active
+    // Discard, don't restore: this function is establishing its own screen and
+    // has already reset the view flags above.
+    if (window.__exitArtistView) window.__exitArtistView({ restore: false });
     // Home is unfiltered — clear any active genre/tag filter so the breadcrumb
     // title goes away AND Home's full-library tiles resolve correctly.
     if (activeFilter) {
@@ -270,7 +276,9 @@
     unplayedWallActive = false;
     libraryWallActive = false;
     if (window.__clearSearchIfActive) window.__clearSearchIfActive();  // drop stale search results
-    if (window.__exitArtistView) window.__exitArtistView();   // leave the artist view if active
+    // Discard, don't restore: this function is establishing its own screen and
+    // has already reset the view flags above.
+    if (window.__exitArtistView) window.__exitArtistView({ restore: false });
     if (homeView) homeView.classList.add("hidden");
     grid.classList.remove("hidden");
     setTopbarNav(true, true, false);   // random / genre grid: Back + Refresh, no search
@@ -580,8 +588,12 @@
   // Any view that takes over the shared grid without going through showHome/
   // showWall (labels browser, label deep-link, artist view) must call this so
   // the wall's infinite scroll can't append library tiles into that view.
-  function leaveLibraryWall() { libraryWallActive = false; }
+  // Returns whether the wall WAS active, so a view that only borrows the grid
+  // (the artist view, which restores it on Back) can re-arm paging afterwards.
+  function leaveLibraryWall() { const was = libraryWallActive; libraryWallActive = false; return was; }
   window.__leaveLibraryWall = leaveLibraryWall;
+  window.__restoreLibraryWall = (was) => { libraryWallActive = !!was; };
+  window.__libraryWallSeq = () => libWall.seq;
 
   async function fetchLibraryPage(mySeq, firstPage) {
     if (libWall.loading) return;   // a page is already in flight for this view
@@ -939,6 +951,7 @@
     if (albumActionBar) albumActionBar.classList.add("hidden");
     grid.querySelectorAll(".album.is-selected").forEach(b => b.classList.remove("is-selected"));
   }
+  window.__exitAlbumSelectMode = exitAlbumSelectMode;
 
   function updateAlbumActionBar() {
     const n = albumSelected.length;
@@ -1252,7 +1265,9 @@
       btn.textContent = part;
       btn.addEventListener("click", () => {
         closeModal();
-        if (window.__exitLabels) window.__exitLabels();   // leave the labels browser if active
+        // The artist view PARKS the labels browser itself (see showArtistAlbums)
+        // so its Back can restore it — tearing it down here would lose the open
+        // label and leave the restored grid without its labels bar.
         window.__showArtistAlbums && window.__showArtistAlbums(part);
       });
       box.appendChild(btn);
@@ -2397,6 +2412,44 @@
     }
     window.__exitLabels       = exitLabels;
     window.__showLabelAlbums  = showLabelAlbums;
+
+    // Park / unpark for views that BORROW the shared grid and hand it back
+    // (the artist view). exitLabels() is a real teardown — it forgets which
+    // label was open, so Back would land on a label grid the browser no longer
+    // believes it owns (no labels bar, no way back to the list). Parking hides
+    // the chrome and closes the sheets but remembers the mode/label, so the
+    // artist view's Back restores the labels browser whole.
+    function parkLabels() {
+      if (!labelsActive) return null;
+      const state = {
+        mode,
+        currentLabelName,
+        currentLabelLogoUrl,
+        barHidden: labelsBar ? labelsBar.classList.contains("hidden") : true
+      };
+      closeLabelLogoSheet();
+      exitLabelSelectMode();
+      exitAlbumSelectMode();
+      if (labelUnmergeSheet) labelUnmergeSheet.classList.add("hidden");
+      if (labelsBar) labelsBar.classList.add("hidden");
+      labelsBtn.classList.remove("is-active");
+      // Stops the list re-poll (guarded on mode === "list") from repainting
+      // label tiles over the borrowing view.
+      mode = null;
+      labelsActive = false;
+      return state;
+    }
+    function unparkLabels(state) {
+      if (!state) return;
+      mode                = state.mode;
+      currentLabelName    = state.currentLabelName;
+      currentLabelLogoUrl = state.currentLabelLogoUrl;
+      labelsActive        = true;
+      labelsBtn.classList.add("is-active");
+      if (labelsBar) labelsBar.classList.toggle("hidden", state.barHidden);
+    }
+    window.__parkLabels   = parkLabels;
+    window.__unparkLabels = unparkLabels;
 
     // ----- Logo picker sheet -----
 
@@ -5746,21 +5799,58 @@ initServiceBrowser({
   let artistViewActive = false;
   let saved            = null;   // snapshot of the screen we came from
 
-  function exitArtistView() {
+  // opts.restore === false: the caller is building its OWN screen (Home, a
+  // fresh wall) and has already reset the view flags — putting the captured
+  // screen and its flags back would fight that, e.g. re-arming the library
+  // wall's paging over a Home screen. Drop the snapshot instead.
+  function exitArtistView(opts) {
     if (!artistViewActive) return;
     artistViewActive = false;
     bioSeq++;   // any in-flight bio must not prepend into the restored screen
+    if (saved && opts && opts.restore === false) {
+      saved = null;
+      grid.innerHTML = "";
+      // The artist view owns this bar; without clearing it, its "← Back"
+      // button survives onto the screen the caller is about to show.
+      if (countBar) { countBar.innerHTML = ""; countBar.classList.add("hidden"); }
+      return;
+    }
     // Restore exactly the screen the artist view was opened from (the Home
     // landing, or an album wall) so Back doesn't dump the user somewhere else.
     if (saved) {
-      grid.innerHTML = saved.gridHtml;
+      // Put the ORIGINAL NODES back — never re-parse an HTML string. Album
+      // tiles carry their behaviour on the node itself (click + long-press
+      // listeners, and a closure holding the album's offset/title used to open
+      // and play it); serializing to markup and re-parsing drops all of that,
+      // so the wall came back looking perfect with every tile dead. Moving live
+      // nodes through a DocumentFragment keeps them intact — the same technique
+      // the Qobuz/Tidal browser uses (see snapshotListInto/restoreSnapshot).
+      grid.innerHTML = "";
+      grid.appendChild(saved.gridNodes);
       grid.classList.toggle("hidden", saved.gridHidden);
       if (homeView)     homeView.classList.toggle("hidden", saved.homeViewHidden);
       if (homeSections) homeSections.classList.toggle("hidden", saved.homeSectionsHidden);
-      if (countBar) { countBar.innerHTML = saved.countHtml; countBar.classList.toggle("hidden", saved.countHidden); }
+      if (countBar) {
+        countBar.innerHTML = "";
+        countBar.appendChild(saved.countNodes);
+        countBar.classList.toggle("hidden", saved.countHidden);
+      }
       if (topbarBack)    topbarBack.classList.toggle("hidden", saved.topbarBackHidden);
       if (topbarRefresh) topbarRefresh.classList.toggle("hidden", saved.topbarRefreshHidden);
       if (topbarSearch)  topbarSearch.classList.toggle("hidden", saved.topbarSearchHidden);
+      // Re-arm the screens whose behaviour lives OUTSIDE the restored nodes:
+      // the library wall's infinite scroll (parked on the way in, else it never
+      // pages again) and the labels browser's chrome/mode.
+      // Only re-arm the wall if nothing else entered it meanwhile (a fresh
+      // entry bumps the sequence and owns the paging state now).
+      const libSeqNow = window.__libraryWallSeq ? window.__libraryWallSeq() : 0;
+      if (window.__restoreLibraryWall && saved.libraryWallSeq === libSeqNow) {
+        window.__restoreLibraryWall(saved.libraryWallWasActive);
+      }
+      if (window.__unparkLabels) window.__unparkLabels(saved.labels);
+      // Land back where the user was, not at the top of the wall.
+      const mainEl = document.querySelector("main");
+      if (mainEl && typeof saved.scrollTop === "number") mainEl.scrollTop = saved.scrollTop;
     }
     saved = null;
   }
@@ -5772,22 +5862,46 @@ initServiceBrowser({
     // which would otherwise append external rows under this view's grid. The
     // search artist-chip stops the search itself; this covers every other path.
     if (window.__clearSearchIfActive) window.__clearSearchIfActive();
-    // The artist view takes over the shared grid (and snapshot-restores it on
-    // Back) — the library wall's infinite scroll must not append into it.
-    if (window.__leaveLibraryWall) window.__leaveLibraryWall();
+    // Artist → album → artist chaining: put the FIRST screen back before
+    // capturing, so what we snapshot below is the real originating screen (and
+    // its live view flags), not a half-torn-down artist view.
     if (artistViewActive) exitArtistView();
+    // The artist view takes over the shared grid (and snapshot-restores it on
+    // Back) — park the library wall's infinite scroll so it can't append into
+    // this view, remembering whether it was live so Back can re-arm it.
+    const libraryWallWasActive = window.__leaveLibraryWall ? !!window.__leaveLibraryWall() : false;
+    const libraryWallSeq = window.__libraryWallSeq ? window.__libraryWallSeq() : 0;
+    // Same for the labels browser: park its chrome (bar, sheets, select modes)
+    // but keep the mode/label it was showing so Back restores it whole.
+    const labels = window.__parkLabels ? window.__parkLabels() : null;
+    // A multi-select started on the previous wall must not leak in here — its
+    // action bar would stay on screen and this view's tiles would select
+    // instead of open. Runs BEFORE the capture so the restored screen comes
+    // back with its selection cleared in both the DOM and the state.
+    if (window.__exitAlbumSelectMode) window.__exitAlbumSelectMode();
     // Invalidate any in-flight bio fetch NOW — bumping only inside
     // renderArtistBioHead left a window where artist A's late bio could
     // prepend into artist B's freshly-rendered grid.
     bioSeq++;
     // Snapshot the screen we're leaving (Home landing or an album wall) so the
     // "← Back" button restores it exactly.
+    // Move the live nodes out into fragments rather than copying markup — see
+    // exitArtistView for why (tile listeners + album identity live on the nodes).
+    const gridNodes = document.createDocumentFragment();
+    while (grid.firstChild) gridNodes.appendChild(grid.firstChild);
+    const countNodes = document.createDocumentFragment();
+    if (countBar) while (countBar.firstChild) countNodes.appendChild(countBar.firstChild);
+    const mainEl = document.querySelector("main");
     saved = {
-      gridHtml:           grid.innerHTML,
+      gridNodes,
+      countNodes,
+      libraryWallWasActive,
+      libraryWallSeq,
+      labels,
+      scrollTop:          mainEl ? mainEl.scrollTop : 0,
       gridHidden:         grid.classList.contains("hidden"),
       homeViewHidden:     homeView     ? homeView.classList.contains("hidden")     : true,
       homeSectionsHidden: homeSections ? homeSections.classList.contains("hidden") : true,
-      countHtml:          countBar ? countBar.innerHTML : "",
       countHidden:        countBar ? countBar.classList.contains("hidden") : true,
       topbarBackHidden:    topbarBack    ? topbarBack.classList.contains("hidden")    : true,
       topbarRefreshHidden: topbarRefresh ? topbarRefresh.classList.contains("hidden") : true,
@@ -5931,6 +6045,7 @@ initServiceBrowser({
 
   window.__showArtistAlbums = showArtistAlbums;
   window.__exitArtistView   = exitArtistView;
+  window.__artistViewActive = () => artistViewActive;
 })();
 
 /* ------------------------------------------------------------------ */
