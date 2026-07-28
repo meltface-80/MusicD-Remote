@@ -53,10 +53,27 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         run: |
           VERSION=${{ steps.version.outputs.version }}
-          NOTES=$(awk "/^## \\[$VERSION\\]/,/^## \\[/" CHANGELOG.md | head -n -1 | tail -n +2)
-          echo "notes<<EOF" >> $GITHUB_OUTPUT
-          echo "$NOTES" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # Print the lines BETWEEN this version's "## [x.y.z]" heading and the
+          # next "## [" heading. The previous awk range (/^## \[$VERSION\]/,/^## \[/)
+          # always returned just the heading itself — a range whose end pattern
+          # also matches its start line collapses to that single line — which the
+          # head/tail trim then reduced to nothing, so every release shipped with
+          # empty notes. index($0,...)==1 anchors the match without the version's
+          # dots being treated as regex wildcards.
+          NOTES=$(awk -v ver="$VERSION" '
+            !found && index($0, "## [" ver "]") == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md | sed -e :a -e '/^\n*$/{$d;N;};/\n$/ba')
+          if [ -z "$NOTES" ]; then
+            NOTES="See CHANGELOG.md for the changes in v$VERSION."
+          fi
+          # Written to a FILE, not a step output interpolated into the release
+          # command: changelog entries contain backticks (`search`, `docker logs`),
+          # which a double-quoted --notes "${{ ... }}" would execute as command
+          # substitution. --notes-file passes the text through untouched.
+          printf '%s\n' "$NOTES" > /tmp/release-notes.md
+          echo "--- release notes ---"; cat /tmp/release-notes.md
 
       - name: Create GitHub Release
         if: steps.check.outputs.exists == 'false'
@@ -66,12 +83,12 @@ jobs:
           if [ -n "$TARBALL" ] && [ -f "$TARBALL" ]; then
             gh release create "$TAG" "$TARBALL" \
               --title "MusicD Remote $TAG" \
-              --notes "${{ steps.notes.outputs.notes }}" \
+              --notes-file /tmp/release-notes.md \
               --prerelease
           else
             gh release create "$TAG" \
               --title "MusicD Remote $TAG" \
-              --notes "${{ steps.notes.outputs.notes }}" \
+              --notes-file /tmp/release-notes.md \
               --prerelease
           fi
         env:
