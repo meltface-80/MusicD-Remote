@@ -2,6 +2,46 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.55] — 2026-07-28
+
+### Fixed (multi-angle review of the v1.6.53/54 badge work)
+
+- **Wrong badges are now impossible in three cases that could produce them.** (1) Titles made
+  entirely of symbols or non-Latin characters ("+", "÷", Japanese, Cyrillic) reduced to an
+  empty identity, so one such local album could badge every other one as local — those are
+  now never keyed. (2) An album favourited in *both* Qobuz and TIDAL was always labelled
+  Qobuz; it's genuinely unknowable, so it gets no badge. (3) Two library albums sharing an
+  identity (a local rip plus a streaming copy Roon didn't group) now suppress each other's
+  badge instead of guessing.
+- **Badges no longer outlive the account.** Disconnecting Qobuz or TIDAL clears its badges,
+  and an empty favourites list is now honoured — previously un-favouriting everything (or
+  switching accounts) left the old badges in place permanently, saved across restarts.
+- **All your Qobuz favourites are read, not just the first 500** — the request was a single
+  un-paged page, so larger collections were silently half-badged.
+- **A refresh triggered while another was running is no longer dropped** — tapping Rescan
+  used to be swallowed by the sync's own refresh, so badges appeared not to update.
+- TIDAL favourites now go through the same token-refresh-and-retry path as every other TIDAL
+  call; a compilation on disk can no longer claim a track artist as its album artist; and
+  both badge files are written atomically so a crash mid-write can't wipe every badge.
+- **Multi-artist links**: a mixed credit like "Miles Davis/John Coltrane & Bill Evans" now
+  splits fully instead of leaving "John Coltrane & Bill Evans" as one dead-end link, and a
+  repeated name no longer produces two identical links.
+
+### Changed
+
+- **Streaming badges now match far more of the library.** Roon credits every performer on a
+  collaboration while Qobuz and TIDAL report only the primary artist, so albums like
+  "T-Bone Walker/Big Joe Turner/Otis Spann" could never match — every collaboration was a
+  guaranteed miss. Each credited artist is now tried individually (the album title must
+  still match exactly, so this can't cause a wrong badge). Matching also ignores "&" vs
+  "and" and a leading "The", and uses the edition the services report separately, so
+  "Rumours" matches "Rumours (Deluxe Edition)".
+- Badges now appear on **every** screen — filtered genre/decade walls, search results, the
+  labels browser and Label of the week previously showed none, which made a missing badge
+  meaningless there.
+- Album lists no longer recompute matching keys per request; the identities are built once
+  with the library snapshot.
+
 ## [1.6.54] — 2026-07-28
 
 ### Added
