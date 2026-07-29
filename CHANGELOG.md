@@ -2,6 +2,48 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.61] — 2026-07-29
+
+### Changed
+
+- **The Home screen is flat, in Roon's layout.** Each section used to sit in its own
+  softly-tinted rounded panel with a decorative watermark behind it. Those are gone. A
+  section is now a **bold title, a hairline rule beneath it, then the row** — separated by
+  that rule and by whitespace alone, on the page background. Clean and simple.
+  - The rows are **left-aligned and bleed to the screen edge**, so the next tile is
+    half-visible and the row reads as scrollable — Roon's edge-to-edge carousels. Short
+    rows used to be centred, which was right inside a panel and looks like a mistake
+    without one.
+  - **Tile sizing and grid layout are untouched**, as asked: still 150px tiles with a 12px
+    gap at every breakpoint, and the genre grid keeps its 2/3/4/6-column steps. The rows
+    are 28px wider now simply because the panel padding is gone, so slightly more of the
+    next tile peeks.
+  - Applied at the base level, so it is the same on phone portrait, tablet and desktop.
+    There was no phone-only hook for the panel system, and since nothing about the grid
+    changes, flattening everywhere was both simpler and more consistent than inventing one.
+  - **The album view's Tracks and About panels and the Queue tab keep their tinted panels
+    and watermarks.** They shared the same CSS as Home — the recipe was written as five
+    shared selector lists — so this was a trim of each list, not a deletion.
+
+### Fixed
+
+- **A CSS comment left unterminated during the above silently commented out the entire
+  carousel definition.** No error, no warning — the parser simply swallows everything up
+  to the next `*/`. Caught by a screenshot; now caught by a test (below).
+
+### Added
+
+- **18 more tests** (215 → 233):
+  - `test/dom/home-flat.test.js` — asserts both halves of the split in both themes: every
+    Home section is transparent with no radius, padding or watermark, **and** the album
+    modal's three panels still have all four. Deleting one line too many from a shared
+    selector list silently strips the modal; one too few leaves a Home card. Neither
+    throws, and nothing else would have noticed. Also pins the title/rule treatment and,
+    explicitly, that tile width and gap did not move.
+  - **CSS integrity checks** in the static suite — every stylesheet must have balanced,
+    terminated comments and balanced braces. This is the class of bug above: it produces
+    no error at all, just a screen that quietly lost its layout.
+
 ## [1.6.60] — 2026-07-29
 
 ### Added
