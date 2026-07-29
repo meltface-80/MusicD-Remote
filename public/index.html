@@ -803,7 +803,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             </span>
             <span class="settings-nav-txt">
               <span class="settings-nav-title">Appearance</span>
-              <span class="settings-nav-desc">Dark / light theme</span>
+              <span class="settings-nav-desc">Theme &amp; colours</span>
             </span>
             <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
@@ -1051,14 +1051,13 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
         </div>
 
         <div class="settings-block">
-          <div class="settings-row">
-            <span class="settings-label">Appearance — dark / light</span>
-            <button id="theme-toggle" class="icon-btn" aria-label="Toggle theme" title="Toggle theme">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                   stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>
-              </svg>
-            </button>
+          <span class="settings-label">Theme</span>
+          <!-- Rows are built by app.js from its THEMES table, so the list and
+               the palettes can never drift apart. -->
+          <div id="theme-list" class="theme-list" role="radiogroup" aria-label="Theme"></div>
+          <div class="theme-apply-row">
+            <span id="theme-apply-hint" class="theme-apply-hint"></span>
+            <button id="theme-apply" class="action-btn primary" type="button" disabled>Apply</button>
           </div>
         </div>
       </div>

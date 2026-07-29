@@ -28,7 +28,7 @@ node --test test/unit/credits.test.js
 > `node --test <directory>` is **not** supported on every Node 22 build — it tries to
 > `require()` the directory. `run.sh` expands each suite to explicit files instead.
 
-Current state: **233 tests, all passing** (static 22, unit 157, dom 54).
+Current state: **291 tests, all passing** (static 22, unit 157, dom 112).
 
 ---
 
@@ -241,7 +241,7 @@ The file carries a second test for the **album view**, which shares the extracte
 renderer. It is the caller that already worked, so it is the one a refactor regression
 would break silently.
 
-**`home-flat.test.js`** — the v1.6.61 flat Home screen, asserted from computed styles in
+**`flat-ui.test.js`** — the flat UI (v1.6.61 Home, v1.6.62 album view + queue), asserted from computed styles in
 both themes. The Home panel recipe was written as **five shared selector lists** covering
 the Home sections *and* the album modal's Tracks / About / Queue panels, which still want
 it. Flattening meant trimming the Home half out of each list. Delete one line too many and
@@ -252,6 +252,41 @@ with no radius, padding or watermark, and all three modal panels still carrying 
 It also pins the promise made when the work was scoped — **tile width and gap did not
 move** (150px / 12px). A redesign that quietly reflows the grid is the easiest way to
 break a layout the user explicitly asked to keep.
+
+A second pair of cases covers the **queue going edge to edge**, at a phone width and a
+tablet width. Two things there are easy to get wrong and invisible on a phone: the gutter
+being cancelled belongs to `.modal-body`, which is shared with the album view and the Now
+playing screen, so it is undone with a negative margin rather than removed — wrong sign or
+wrong breakpoint and the rows either stay inset or hang off the screen; and
+`.modal.np-mode .modal-info` caps every now-playing pane at **460px**, which would leave a
+"full-width" queue floating mid-screen on a tablet while looking perfect on a 390px phone.
+The tablet case is the only thing that catches that. Both cases also assert the row content
+still lines up with the summary line above it, since the bleed has to be paid back as row
+padding, and that the page never gains a horizontal scrollbar.
+
+**`themes.test.js`** — the four themes and the picker that chooses between them.
+
+Two separate things. First, **contrast is computed, not eyeballed**: every theme's real
+applied tokens are read off the document and run through the WCAG formula in Node, then
+asserted. Contrast is worth automating precisely because it is invisible to review — a
+palette that fails looks fine to whoever chose the colours, and the failure only lands on
+the people who could least afford it. The two original themes ship a `--text-faint` that
+fails AA, so they are asserted at the level they *actually* meet, with the gap named in a
+`FLOORS` table; a test that pretended they passed would be worse than none. The two new
+palettes are held to the real bar.
+
+Second, **the picker must remain a picker**: selecting a row must not apply it, only Apply
+does. That is the entire point of the control and exactly the behaviour that silently
+decays back into an instant toggle. Also covered: each swatch previews its *own* palette
+(if they inherited the applied theme they would all look identical and the picker would
+give the user nothing to choose by), and a v1 saved theme migrates to the new key without
+moving the user onto a palette they never chose.
+
+> This file found a real bug on its first run: **28 `showToast()` calls inside
+> `initSettings` were throwing `ReferenceError`**. `showToast` is declared in a different
+> top-level IIFE, so every message in the Settings sheet — token saves, display settings,
+> the whole Qobuz and TIDAL connect flow — failed silently, and the `catch` blocks that
+> tried to report the failure threw again. Nothing else in the suite touched that scope.
 
 > **A renamed class can empty a query and take its assertions with it.** When the sort
 > sheet's rows moved from `.lib-row` to `.lib-sort-row`, `library-sheet.test.js` went red
@@ -368,6 +403,16 @@ For v1.6.60's now-playing artist links:
 | Drop the poll signature guard (rebuild every 1.5s) | 2 failures |
 | Navigate without closing the modal first | 2 failures |
 | Link every name regardless of `linkable` | 2 failures |
+
+For v1.6.62's album view + queue flattening:
+
+| Mutation | Result |
+|---|---|
+| Drop the 460px np-column cap lift (tablet only) | 4 failures |
+| Drop the negative-margin bleed | 4 failures |
+| Don't pay the gutter back as row padding | 4 failures |
+| Restore the inset rounded now-playing pill | 4 failures |
+| Re-tint the queue panel | 4 failures |
 
 Two of those — *bump per album* and *overwrite existing years* — **initially survived**,
 because the tests stubbed `setAlbumYear` by hand and the stub was more conservative than

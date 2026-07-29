@@ -2,6 +2,106 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.63] — 2026-07-29
+
+### Added
+
+- **Two new themes, drawn from the MusicD site's colours**, alongside the existing two:
+  - **Copper dark** — charcoal and copper. Eight of its thirteen colours are the site's
+    own values verbatim, so it reads as the same design rather than a recolour.
+  - **Brass light** — warm parchment with a brass accent. The site has no light mode, so
+    this one is designed: the restraint is in the *chroma*, not the hue — the neutrals sit
+    a few points of yellow above grey, which reads as paper rather than a yellow wash, and
+    all the colour weight lives in the accent.
+  - **The original dark and light themes are untouched.** Not "carefully preserved" —
+    literally unchanged, because the new palettes are keyed on a separate attribute.
+- **A theme picker in Settings → Appearance**: a list of all four, one selected at a time,
+  each with a swatch showing that theme's own background and accent, confirmed with
+  **Apply**. Choosing a row no longer changes the app instantly — nothing happens until
+  you apply it, so a choice can be backed out of. Replaces the old dark/light toggle.
+- **The browser chrome colour now follows the theme.** It was hard-coded to the dark
+  background and never updated, so it had always been wrong in light theme.
+
+### Fixed
+
+- **Every toast in the Settings sheet was broken.** All 28 `showToast()` calls inside the
+  settings code were throwing `ReferenceError` — the function lives in a different
+  top-level scope — so token saves, display settings and the entire Qobuz/TIDAL connect
+  flow reported nothing, and the error handlers that tried to say so threw again. Found by
+  the new theme tests on their first run.
+- **Three places printed white text on the accent fill in *every* theme**, measuring
+  **2.28:1** in dark — well under the readable threshold. These now use a proper
+  `--on-accent` token, which also collapses three different hard-coded "text on accent"
+  values (`#0b1418`, `#04121a`, `#fff`) that had drifted apart across nine sites.
+- **Both new palettes fix the `--text-faint` contrast failure** the originals ship
+  (2.64:1 at worst in dark, 2.90:1 in light — both below AA). Copper dark reaches 4.61:1
+  and brass light 4.71:1 on the same surfaces. Brass light additionally fixes two failures
+  the current light theme has: accent-as-text (3.35:1 → 5.32:1) and text on an accent fill
+  (3.65:1 → 5.75:1).
+
+### Changed
+
+- Themes are now two attributes rather than one: `data-theme` (dark/light **family**) and
+  `data-palette` (classic/copper **colours**). Thirteen rules in the stylesheet are keyed
+  on the light *family* — white-on-accent text, the light hover washes, the translucent
+  top bar — and a new light theme under a third `data-theme` value would have silently
+  missed every one of them. This way the new themes inherit all thirteen and the existing
+  two cannot drift.
+- `--accent` now has a companion `--accent-text`. In three palettes they are the same
+  value and nothing changes; copper genuinely needs two, because the copper that reads
+  well as a *fill* measures 4.27:1 as *text* on the deepest surface.
+- A saved theme from before this release carries over untouched.
+
+### Added (tests)
+
+- **48 more tests** (243 → 291). `test/dom/themes.test.js` computes every theme's contrast
+  ratios from the real applied tokens and asserts them — contrast is worth automating
+  because it is invisible to review. The two original themes are asserted at the level they
+  actually meet, with the shortfall named rather than papered over.
+
+## [1.6.62] — 2026-07-29
+
+### Changed
+
+- **The album view and the Queue are flat, in Roon's layout** — the same treatment Home
+  got in v1.6.61. The tinted panels and their decorative watermarks are gone from the app
+  **entirely**; nothing is a card any more.
+  - **Album view.** The Tracks and About panels lose their tint, corners and watermark.
+    Track rows are now full-width, separated by the app's standard hairline. The artwork
+    is square and unshadowed, and the album title is larger and heavier — at 22px it read
+    as a caption above the button row rather than the heading of the screen.
+  - **Queue.** Rows run **edge to edge**, and the now-playing row is a full-bleed block
+    rather than an inset rounded pill. Taller rows, a larger square thumbnail, and a bold
+    title over the artist, as Roon has them.
+  - **Button layout is unchanged, as asked** — same four actions, same equal-width row.
+    Only the finish moved: the secondary actions are outlined on the page background
+    instead of filled chips, and the primary carries more weight. Scoped to the album
+    view's row, because `.action-btn` is shared with five other places (the logo sheet,
+    the label merge bar, the multi-select bar, the Library Focus sheet, Settings).
+  - **The ambient cover glow is off.** Roon's album and queue screens are flat black, and
+    a blurred cover wash behind flat rows was the last of the card-era look. The element
+    and its JS are left in place, so restoring it is a one-line change.
+
+### Fixed
+
+- A comment lost its closing `*/` during the above and silently swallowed the next
+  comment's opener. Harmless in outcome, but caught by the CSS integrity check added in
+  v1.6.61 — which is the second time that check has earned its place in two versions.
+
+### Added
+
+- **10 more tests** (233 → 243). `test/dom/home-flat.test.js` is now
+  `test/dom/flat-ui.test.js` and asserts the end state across **all eight surfaces** in
+  both themes: nothing tinted, nothing card-cornered, no watermarks.
+  - New cases cover the queue's edge-to-edge rows at **a phone width and a tablet width**.
+    The tablet case is the one that matters: `.modal.np-mode .modal-info` caps every
+    now-playing pane at 460px, so a "full-width" queue looks perfect on a 390px phone and
+    floats mid-screen on a tablet. Also asserted: row content still lines up with the
+    header above it (the bleed has to be paid back as row padding), and the page never
+    gains a horizontal scrollbar.
+  - Five mutations run against them — dropping the column-cap lift, the bleed, the padding
+    payback, the full-bleed highlight, and re-tinting the panel — all five fail the suite.
+
 ## [1.6.61] — 2026-07-29
 
 ### Changed

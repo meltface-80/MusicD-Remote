@@ -4,7 +4,13 @@
 /*  Released under the MIT License. See the LICENSE file for details.  */
 /*  Mobile-first: stacked layout by default, side-by-side on wide.     */
 /* ------------------------------------------------------------------ */
-:root {
+/* `:root` is the dark+classic palette. The second selector lets a nested
+   element opt into it explicitly — the theme picker's swatches do exactly
+   that, so each one previews its own palette rather than the applied one.
+   The other three palettes already use attribute selectors, which match
+   any element; this one needed the extra selector to behave the same. */
+:root,
+[data-theme="dark"][data-palette="classic"] {
   --font-sans: "Helvetica Neue", Helvetica, Arial, system-ui, -apple-system,
                "Segoe UI", Roboto, sans-serif;
 
@@ -16,11 +22,21 @@
   --text-dim:     #8a8f96;
   --text-faint:   #5d6269;
   --accent:       #4cb7e6;
+  /* The accent used as TEXT. Identical to --accent in this palette, so nothing
+     here changes — it exists because a fill colour and a text colour have
+     different contrast requirements, and the copper palette below genuinely
+     needs two values. Declaring it in every palette keeps the CSS uniform. */
+  --accent-text:  #4cb7e6;
   --accent-soft:  rgba(76,183,230,.15);
+  /* Text printed ON an accent fill. Was hard-coded at nine sites in three
+     different literals (#0b1418, #04121a and a bare #fff), three of which had
+     no light-theme override at all and shipped white-on-cyan at 2.28:1. */
+  --on-accent:    #0b1418;
+  /* --bg with alpha, for the blurred top bar. backdrop-filter needs the
+     translucency, so it cannot use var(--bg) — which is why this used to be a
+     hard-coded rgba that no new palette could reach. */
+  --bg-translucent: rgba(14,16,18,.85);
   --danger:       #e06464;
-  --home-unplayed-bg: #2b3037;   /* pale grey panel on dark */
-  --home-random-bg:   #24322e;   /* teal-grey panel on dark */
-  --home-lotw-bg:     #2f2a38;   /* violet-grey panel on dark */
   --panel-hairline: rgba(255,255,255,.07);  /* row separators on tinted panels */
   --shadow-card:  0 2px 6px rgba(0,0,0,.45), 0 10px 24px rgba(0,0,0,.35);
   --shadow-modal: 0 24px 64px rgba(0,0,0,.6);
@@ -35,14 +51,92 @@
   --text-dim:     #5e636a;
   --text-faint:   #8c919a;
   --accent:       #1f8fc1;
+  --accent-text:  #1f8fc1;
   --accent-soft:  rgba(31,143,193,.12);
-  --home-unplayed-bg: #d9e8fb;   /* soft blue panel on light */
-  --home-random-bg:   #d6f0e4;   /* soft teal panel on light */
-  --home-lotw-bg:     #ece0f7;   /* soft violet panel on light */
+  --on-accent:    #ffffff;
+  --bg-translucent: rgba(246,245,242,.85);
   --panel-hairline: rgba(26,39,64,.12);     /* row separators on tinted panels */
   --danger:       #c0392b;
   --shadow-card:  0 1px 2px rgba(0,0,0,.06), 0 6px 16px rgba(0,0,0,.08);
   --shadow-modal: 0 24px 64px rgba(0,0,0,.18);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Palettes                                                           */
+/*                                                                     */
+/*  data-theme  = dark | light    — the FAMILY. Drives the thirteen    */
+/*                                  component rules further down this  */
+/*                                  file ([data-theme="light"] .foo).  */
+/*  data-palette = classic | copper — the COLOURS. Tokens only.        */
+/*                                                                     */
+/*  Both palette blocks are qualified by family, because --on-accent   */
+/*  is family-dependent: a dark palette prints near-black on its fill, */
+/*  a light one prints near-white. A palette-only selector would give  */
+/*  the brass theme the copper theme's dark on-accent.                 */
+/*  Specificity (0,2,0) beats the family blocks above (0,1,0).         */
+/* ------------------------------------------------------------------ */
+
+/* Copper dark — the MusicD site's palette. Eight of these are that site's
+   values verbatim; the rest are derived to fit tokens it has no concept of. */
+[data-theme="dark"][data-palette="copper"] {
+  --bg:           #1b1d1f;
+  --bg-elev:      #232628;
+  --bg-elev-2:    #2a2d30;
+  --border:       #35393d;
+  --text:         #e8e6e3;
+  --text-dim:     #a8a49e;
+  /* The site has only two text tiers; this third one is derived from --text-dim
+     and darkened until it clears 4.5:1 on the DEEPEST surface (4.61 on
+     --bg-elev-2). The current dark theme's equivalent fails at 2.64. */
+  --text-faint:   #9a948c;
+  /* Copper for fills, a lighter copper for text. This is not a preference:
+     #c47f4a as text on --bg-elev-2 measures 4.27:1, a real failure, while
+     #d99a66 gives 5.78. The site itself splits them the same way. */
+  --accent:       #c47f4a;
+  --accent-text:  #d99a66;
+  --accent-soft:  rgba(196,127,74,.15);
+  /* Warm near-black rather than the cool #0b1418, so a copper fill doesn't
+     read blue-shadowed. 5.74:1. */
+  --on-accent:    #17120d;
+  --bg-translucent: rgba(27,29,31,.85);
+  /* Hue 3 degrees against copper's 26, and light enough to clear 4.5:1 on
+     every surface including the deepest (4.81). */
+  --danger:       #e8776f;
+  /* Warm white rather than pure white — a neutral hairline reads faintly blue
+     against charcoal. */
+  --panel-hairline: rgba(235,228,220,.08);
+  /* --bg here is 2.4x lighter than the classic dark background, so identical
+     shadows read weaker. Alphas lifted to compensate. */
+  --shadow-card:  0 2px 6px rgba(0,0,0,.50), 0 10px 24px rgba(0,0,0,.40);
+  --shadow-modal: 0 24px 64px rgba(0,0,0,.62);
+}
+
+/* Brass light — designed, because the site has no light mode. The restraint
+   is in the CHROMA, not the hue: the neutrals sit a few points of yellow above
+   grey, which reads as paper rather than as a yellow wash, and all the colour
+   weight lives in the accent. Elevation runs the same direction as the classic
+   light theme (elev lighter than bg), so existing depth cues still work. */
+[data-theme="light"][data-palette="copper"] {
+  --bg:           #f7f4ed;
+  --bg-elev:      #fffdf8;
+  --bg-elev-2:    #fbf8f1;
+  --border:       #e4ded1;
+  --text:         #1e1b16;
+  --text-dim:     #5c554a;
+  --text-faint:   #756c5e;
+  /* The site's own --copper-dim. One value serves both roles here: 5.32:1 as
+     text and 5.75:1 under --on-accent, so this palette needs no split. */
+  --accent:       #8a5a35;
+  --accent-text:  #8a5a35;
+  --accent-soft:  rgba(138,90,53,.12);
+  --on-accent:    #fffdf8;
+  --bg-translucent: rgba(247,244,237,.85);
+  --danger:       #b3271d;
+  /* Warm brown rather than the classic light theme's cool blue-grey, which
+     would grey the parchment. */
+  --panel-hairline: rgba(58,44,26,.13);
+  --shadow-card:  0 1px 2px rgba(58,44,26,.07), 0 6px 16px rgba(58,44,26,.10);
+  --shadow-modal: 0 24px 64px rgba(58,44,26,.20);
 }
 
 * { box-sizing: border-box; }
@@ -88,7 +182,7 @@ button { font-family: inherit; }
   gap: 10px;
   padding: 12px 14px;
   padding-top: calc(12px + env(safe-area-inset-top));
-  background: rgba(14,16,18,.85);
+  background: var(--bg-translucent);
   backdrop-filter: saturate(160%) blur(14px);
   -webkit-backdrop-filter: saturate(160%) blur(14px);
   border-bottom: 1px solid var(--border);
@@ -99,7 +193,7 @@ button { font-family: inherit; }
 }
 /* Refresh sits at the far right of the top bar. */
 #topbar-refresh { margin-left: auto; }
-[data-theme="light"] .topbar { background: rgba(246,245,242,.85); }
+
 
 .album-count {
   font-size: 13px;
@@ -155,12 +249,11 @@ button { font-family: inherit; }
   height: 38px; padding: 0;
   width: 38px;
   background: var(--accent);
-  color: #0b1418;
+  color: var(--on-accent);
   font-weight: 600; font-size: 14px;
   border: 1px solid transparent;
 }
 .primary-btn span { display: none; }
-[data-theme="light"] .primary-btn { color: #fff; }
 .primary-btn:hover { filter: brightness(1.08); }
 .primary-btn:active { transform: scale(.97); }
 .primary-btn[disabled] { opacity: .5; cursor: progress; }
@@ -226,7 +319,7 @@ button { font-family: inherit; }
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .search-ico { color: var(--text-faint); flex: 0 0 auto; }
-.search-box:focus-within .search-ico { color: var(--accent); }
+.search-box:focus-within .search-ico { color: var(--accent-text); }
 #search-input {
   flex: 1 1 auto; min-width: 0;
   appearance: none; background: transparent; color: var(--text);
@@ -314,7 +407,7 @@ button { font-family: inherit; }
   font-size: 14px; cursor: pointer;
   transition: background .15s, color .15s;
 }
-.search-chip:hover, .search-chip:active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.search-chip:hover, .search-chip:active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 
 /* ------------------------------------------------------------------ */
 /*  Update toast (sits under the header; shown when an update exists)   */
@@ -336,7 +429,7 @@ button { font-family: inherit; }
 .update-toast.open { display: flex; }
 .update-toast.is-error { background: color-mix(in srgb, #e5484d 16%, transparent); }
 .update-toast-top { display: flex; align-items: center; gap: 10px; }
-.update-ico { color: var(--accent); flex: 0 0 auto; }
+.update-ico { color: var(--accent-text); flex: 0 0 auto; }
 .update-toast.is-error .update-ico { color: #e5484d; }
 .update-text { flex: 1 1 auto; min-width: 0; line-height: 1.35; }
 .update-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
@@ -671,17 +764,22 @@ main {
   width: 100%; max-width: 280px; margin: 0 auto;
   aspect-ratio: 1 / 1;
   background: var(--bg-elev-2);
-  border-radius: 8px; overflow: hidden;
-  box-shadow: var(--shadow-card);
+  /* Square and flat, as Roon has it — the drop shadow belonged to the
+     card-era look. np-mode's Now playing tab overrides both of these on the
+     img itself (see .modal.np-mode.tab-album .modal-art), so this only
+     affects the album view. */
+  border-radius: 3px; overflow: hidden;
   flex-shrink: 0;
 }
 .modal-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 .modal-info { display: flex; flex-direction: column; min-width: 0; }
 .modal-info h2 {
-  margin: 4px 0 4px;
-  font-size: 22px; font-weight: 500; line-height: 1.2;
-  letter-spacing: -.01em; word-break: break-word;
+  margin: 14px 0 6px;
+  /* Larger and heavier than the old 22px/500 — Roon leads its album screen
+     with the title, and at 22px it read as a caption above the button row. */
+  font-size: 27px; font-weight: 700; line-height: 1.15;
+  letter-spacing: -.02em; word-break: break-word;
 }
 .modal-subtitle {
   margin: 0 0 20px;
@@ -727,14 +825,41 @@ main {
 .action-btn:active { transform: scale(.97); }
 .action-btn.primary {
   background: var(--accent);
-  color: #0b1418;
+  color: var(--on-accent);
   border-color: transparent;
 }
-[data-theme="light"] .action-btn.primary { color: #fff; }
 .action-btn[disabled] { opacity: .55; cursor: not-allowed; }
 
+/* Album-view action row, Roon-styled. SCOPED to .modal-actions on purpose:
+   .action-btn is shared with the logo sheet, the label merge bar, the album
+   multi-select bar, the Library Focus sheet, the Settings rescan button and
+   the per-track buttons — restyling the base class would move all of them.
+   The layout is deliberately unchanged (same four buttons, same equal-width
+   row); only the finish moves: Roon's secondary actions are outlined on the
+   page background rather than filled chips, and its primary carries more
+   weight than the rest. */
+.modal-actions .action-btn {
+  background: transparent;
+  border-color: var(--border);
+  font-weight: 600;
+  padding: 11px 8px;
+}
+.modal-actions .action-btn:hover { background: var(--bg-elev-2); filter: none; }
+.modal-actions .action-btn.primary {
+  background: var(--accent);
+  border-color: transparent;
+  font-weight: 700;
+}
+.modal-actions .action-btn.primary:hover { background: var(--accent); filter: brightness(1.08); }
+
+/* Section heading on the flat album view. Same language as the Home sections
+   and the modal tab strip: uppercase, tracked out, over a hairline — so
+   "TRACKS" and "ABOUT THIS ALBUM" read as section breaks now that no panel
+   encloses them. */
 .section-label {
-  margin: 0 0 8px;
+  margin: 0 0 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
   font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
   color: var(--text-faint); font-weight: 600;
 }
@@ -829,7 +954,7 @@ main {
   margin-top: 6px;
   background: transparent;
   border: 0;
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
@@ -852,13 +977,13 @@ main {
   transition: color .15s ease, border-color .15s ease;
 }
 .bio-source:hover {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
+  color: var(--accent-text);
+  border-bottom-color: var(--accent-text);
 }
 .pitchfork-score {
   font-size: 0.78em;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--accent-text);
   letter-spacing: 0.01em;
 }
 .bnm-badge {
@@ -1051,7 +1176,7 @@ main {
 .share-spinner {
   width: 26px; height: 26px;
   border: 3px solid var(--border);
-  border-top-color: var(--accent);
+  border-top-color: var(--accent-text);
   border-radius: 50%;
   animation: spin .8s linear infinite;
   margin: 0 auto 10px;
@@ -1084,9 +1209,8 @@ main {
 .share-actions .primary {
   background: var(--accent);
   border-color: transparent;
-  color: #0b1418;
+  color: var(--on-accent);
 }
-[data-theme="light"] .share-actions .primary { color: #fff; }
 .share-actions button:hover,
 .share-actions a:hover { filter: brightness(1.1); }
 .share-actions button:active,
@@ -1680,7 +1804,7 @@ input.vol-range::-moz-range-thumb {
   color: #fff;
   border-color: transparent;
 }
-.filter-pill.is-active:hover { background: var(--accent); color: #fff; }
+.filter-pill.is-active:hover { background: var(--accent); color: var(--on-accent); }
 
 /* Loading state for the grid while a filter is gathering matches */
 .album-grid.is-loading {
@@ -1714,7 +1838,7 @@ input.vol-range::-moz-range-thumb {
 /*  Filter funnel: active state on the icon button                     */
 /* ------------------------------------------------------------------ */
 .icon-btn.is-active {
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--accent-soft);
   border-color: transparent;
 }
@@ -1825,7 +1949,7 @@ input.vol-range::-moz-range-thumb {
 
 /* Filter bottom sheet (All / Genre / Tag) */
 .filter-sheet { max-height: 80vh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
-.filter-check { color: var(--accent); font-weight: 700; }
+.filter-check { color: var(--accent-text); font-weight: 700; }
 .filter-check.hidden { display: none; }
 .filter-section-toggle {
   display: flex; align-items: center; justify-content: space-between;
@@ -1857,7 +1981,7 @@ input.vol-range::-moz-range-thumb {
 .filter-item:hover { background: var(--bg-elev-2); }
 .filter-item.is-current {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 600;
 }
 .filter-item-title {
@@ -1911,7 +2035,7 @@ input.vol-range::-moz-range-thumb {
 /* Artist link in album modal */
 .modal-artist-link {
   background: none; border: none; padding: 0;
-  color: var(--accent); font-size: inherit; font-family: inherit;
+  color: var(--accent-text); font-size: inherit; font-family: inherit;
   cursor: pointer; text-align: left;
   transition: opacity .15s ease;
 }
@@ -1977,7 +2101,7 @@ input.vol-range::-moz-range-thumb {
   color: var(--text-faint); font-size: 14px; cursor: pointer;
   vertical-align: middle; line-height: 1; transition: color .15s ease;
 }
-.settings-info-btn:hover { color: var(--accent); }
+.settings-info-btn:hover { color: var(--accent-text); }
 
 .settings-info-toast {
   position: fixed; bottom: 88px; left: 50%; transform: translateX(-50%);
@@ -2016,7 +2140,7 @@ input.vol-range::-moz-range-thumb {
 .settings-nav-ico {
   flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
   width: 38px; height: 38px; border-radius: 10px;
-  background: var(--bg-elev); color: var(--accent);
+  background: var(--bg-elev); color: var(--accent-text);
 }
 .settings-nav-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
 .settings-nav-title { font-size: 16px; font-weight: 600; color: var(--text); }
@@ -2058,9 +2182,9 @@ input.vol-range::-moz-range-thumb {
    generic hover rule above (0,3,0 beats 0,2,0) so the accent text survives
    desktop hover. */
 .settings-update-btn.is-update-ready {
-  color: var(--accent); border-color: var(--accent); font-weight: 600;
+  color: var(--accent-text); border-color: var(--accent); font-weight: 600;
 }
-.settings-update-btn.is-update-ready:hover:not(:disabled) { color: var(--accent); }
+.settings-update-btn.is-update-ready:hover:not(:disabled) { color: var(--accent-text); }
 .settings-token-row {
   display: flex; gap: 8px; align-items: center; margin-top: 6px;
 }
@@ -2116,8 +2240,7 @@ input.vol-range::-moz-range-thumb {
   transition: filter .15s ease, transform .08s ease;
 }
 .confirm-btn:active { transform: scale(.97); }
-.confirm-primary { background: var(--accent); color: #0b1418; border-color: transparent; }
-[data-theme="light"] .confirm-primary { color: #fff; }
+.confirm-primary { background: var(--accent); color: var(--on-accent); border-color: transparent; }
 
 /* ------------------------------------------------------------------ */
 /*  Toggle switch (settings)                                           */
@@ -2181,7 +2304,7 @@ input.vol-range::-moz-range-thumb {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .np-device-item:hover { background: var(--bg-elev); }
-.np-device-item.is-current { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.np-device-item.is-current { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
 .np-device-empty { color: var(--text-faint); font-size: 14px; padding: 8px 10px; }
 
 .np-vol-fixed {
@@ -2222,7 +2345,7 @@ input.vol-range::-moz-range-thumb {
   100% { transform: rotate(720deg); }
 }
 #play-unheard-topbar.spinning {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: var(--accent);
   pointer-events: none;
 }
@@ -2246,7 +2369,7 @@ input.vol-range::-moz-range-thumb {
 .label-select-toggle.hidden { display: none; }
 .label-select-toggle:hover { color: var(--text); background: var(--bg-elev-2); }
 .label-select-toggle.is-active {
-  background: var(--accent-soft); color: var(--accent); border-color: var(--accent);
+  background: var(--accent-soft); color: var(--accent-text); border-color: var(--accent);
 }
 
 /* Selected tile states — applies to both label tiles and regular album tiles */
@@ -2256,7 +2379,7 @@ input.vol-range::-moz-range-thumb {
   outline-offset: -2px;
 }
 .album.label-tile.is-first-selected .album-art-wrap {
-  outline-color: var(--accent);
+  outline-color: var(--accent-text);
 }
 /* Checkmark badge */
 .album.is-selected .album-art-wrap::after,
@@ -2269,7 +2392,7 @@ input.vol-range::-moz-range-thumb {
     center/13px no-repeat;
 }
 .album.label-tile.is-first-selected .album-art-wrap::after {
-  background-color: var(--accent);
+  background-color: var(--accent-text);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230b1418' stroke-width='2.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
 }
 [data-theme="light"] .album.label-tile.is-first-selected .album-art-wrap::after {
@@ -2278,7 +2401,7 @@ input.vol-range::-moz-range-thumb {
 
 /* "N merged" text under the label subtitle */
 .album-merged-info {
-  font-size: 10px; color: var(--accent);
+  font-size: 10px; color: var(--accent-text);
   margin-top: 1px; cursor: pointer; user-select: none;
   letter-spacing: .02em;
 }
@@ -2386,7 +2509,7 @@ input.vol-range::-moz-range-thumb {
 .qobuz-nr-detail { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding: 4px 0 8px; }
 .qobuz-nr-back {
   align-self: flex-start; cursor: pointer;
-  background: none; border: none; color: var(--accent);
+  background: none; border: none; color: var(--accent-text);
   font-size: 15px; padding: 4px 2px;
 }
 .qobuz-nr-detail-head { display: flex; gap: 14px; align-items: flex-start; }
@@ -2400,7 +2523,7 @@ input.vol-range::-moz-range-thumb {
 .qobuz-nr-detail .qobuz-nr-fav { align-self: flex-start; }
 .qobuz-nr-review { font-size: 14px; line-height: 1.5; }
 .qobuz-nr-review-text { white-space: pre-wrap; }
-.qobuz-nr-review-src { display: inline-block; margin-top: 10px; color: var(--accent); }
+.qobuz-nr-review-src { display: inline-block; margin-top: 10px; color: var(--accent-text); }
 .qobuz-nr-art {
   flex-shrink: 0; width: 56px; height: 56px; border-radius: 6px;
   object-fit: cover; background: var(--bg-elev);
@@ -2416,7 +2539,7 @@ input.vol-range::-moz-range-thumb {
   color: var(--text); font-size: 13px;
 }
 .qobuz-nr-fav:active { border-color: var(--accent); }
-.qobuz-nr-fav.is-done { color: var(--accent); border-color: var(--accent); opacity: 0.85; }
+.qobuz-nr-fav.is-done { color: var(--accent-text); border-color: var(--accent); opacity: 0.85; }
 .qobuz-nr-fav:disabled { cursor: default; }
 
 /* Muted "version" suffix (e.g. Deluxe Edition) after album titles */
@@ -2456,7 +2579,7 @@ input.vol-range::-moz-range-thumb {
   border: 1px solid var(--border); background: var(--bg-elev);
   color: var(--text-dim); font-size: 13px; font-family: inherit;
 }
-.qobuz-tab.is-active { color: var(--accent); border-color: var(--accent); }
+.qobuz-tab.is-active { color: var(--accent-text); border-color: var(--accent); }
 
 /* Qobuz browser: artist matches strip (search results) */
 #qobuz-artists, #tidal-artists {
@@ -2595,7 +2718,7 @@ input.vol-range::-moz-range-thumb {
 .pf-detail { display: flex; flex-direction: column; gap: 14px; overflow-y: auto; padding: 4px 0 16px; }
 .pf-back {
   align-self: flex-start; cursor: pointer;
-  background: none; border: none; color: var(--accent);
+  background: none; border: none; color: var(--accent-text);
   font-size: 15px; padding: 4px 2px; font-family: inherit;
 }
 .pf-detail-head { display: flex; gap: 14px; align-items: flex-start; }
@@ -2624,9 +2747,8 @@ input.vol-range::-moz-range-thumb {
   text-decoration: none;
 }
 .pf-action:active { border-color: var(--accent); }
-.pf-action-primary { background: var(--accent); border-color: var(--accent); color: #04121a; font-weight: 600; }
-.pf-action-link { color: var(--accent); background: none; border-color: transparent; }
-
+.pf-action-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.pf-action-link { color: var(--accent-text); background: none; border-color: transparent; }
 
 /* Tidal device-authorization pending block (settings sheet) */
 .tidal-auth-pending {
@@ -2636,7 +2758,7 @@ input.vol-range::-moz-range-thumb {
   background: var(--bg-elev-2);
 }
 .tidal-auth-link {
-  color: var(--accent); font-size: 14px; font-weight: 600;
+  color: var(--accent-text); font-size: 14px; font-weight: 600;
   text-decoration: underline; word-break: break-all; text-align: center;
 }
 .tidal-auth-code {
@@ -2761,16 +2883,6 @@ input.vol-range::-moz-range-thumb {
 .home-section-link:hover::after { transform: translateX(3px); }
 .home-section-link:focus-visible { outline: 2px solid var(--accent, #4a90d9); outline-offset: 3px; border-radius: 4px; }
 
-/* The album modal's Tracks (.track-list-wrap), About (#album-bio-section) and
-   Queue (#tab-queue) panels keep the tinted-panel recipe below. The Home
-   sections used to share it and no longer do — hence the selector lists here
-   are shorter than they read historically. */
-.track-list-wrap,
-#album-bio-section,
-#tab-queue {
-  border-radius: 16px;
-  padding: 14px 14px 12px;
-}
 /* The two below-the-fold sections skip rendering until scrolled near — on a
    phone the first paint only lays out the unplayed + random rows. The
    intrinsic size reserves roughly one carousel row so the scrollbar doesn't
@@ -2782,54 +2894,6 @@ input.vol-range::-moz-range-thumb {
   contain-intrinsic-size: auto 320px;
 }
 
-/* Faint themed watermark for a section's panel — a large, rotated, SOLID-fill
-   line-art motif CROPPED by the panel's top-left corner (overflow:hidden) so it
-   reads as a bold cut-off detail contained entirely WITHIN the coloured section
-   (never spilling onto the page). Each section carries a motif matching its theme:
-   "Not played in 6 months" -> a clock (time gone by); "Random albums" -> a vinyl
-   record; "Label of the week" -> a price/luggage tag; "Browse by genre" -> a
-   beamed music note. Solid silhouettes (not thin outlines) so they stand out.
-   The art sits behind the title + carousel (z-index:0 vs 1), never intercepts
-   taps (pointer-events:none), and — thanks to overflow:hidden — can never
-   produce a scrollbar. Shared placement lives in the grouped rules; only the
-   mask-image differs per section, and background-color differs per theme —
-   each motif ships ONE opaque-white SVG used as a mask (not a background
-   image), so the theme swap is a color change rather than a second SVG. */
-.track-list-wrap,
-#album-bio-section,
-#tab-queue { position: relative; overflow: hidden; }
-.track-list-wrap > *,
-#album-bio-section > *,
-#tab-queue > * { position: relative; z-index: 1; }
-.track-list-wrap::before,
-#album-bio-section::before,
-#tab-queue::before {
-  content: "";
-  position: absolute;
-  top: -92px;
-  left: -84px;
-  width: 400px;
-  height: 400px;
-  transform: rotate(-14deg);
-  -webkit-mask-position: center; mask-position: center;
-  -webkit-mask-size: contain;    mask-size: contain;
-  -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
-  background-color: #ffffff;
-  opacity: .11;
-  pointer-events: none;
-  z-index: 0;
-}
-[data-theme="light"] .track-list-wrap::before,
-[data-theme="light"] #album-bio-section::before,
-[data-theme="light"] #tab-queue::before {
-  opacity: .14;
-  background-color: #1a2740;
-}
-/* The album modal's Tracks panel — vinyl record. */
-.track-list-wrap::before {
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M100%2028%20a72%2072%200%201%200%200%20144%20a72%2072%200%201%200%200%20-144%20Z%20M100%2075%20a25%2025%200%201%200%200%2050%20a25%2025%200%201%200%200%20-50%20Z'%2F%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M100%2081%20a19%2019%200%201%200%200%2038%20a19%2019%200%201%200%200%20-38%20Z%20M100%2095.5%20a4.5%204.5%200%201%200%200%209%20a4.5%204.5%200%201%200%200%20-9%20Z'%2F%3E%3C%2Fsvg%3E");
-          mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M100%2028%20a72%2072%200%201%200%200%20144%20a72%2072%200%201%200%200%20-144%20Z%20M100%2075%20a25%2025%200%201%200%200%2050%20a25%2025%200%201%200%200%20-50%20Z'%2F%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M100%2081%20a19%2019%200%201%200%200%2038%20a19%2019%200%201%200%200%20-38%20Z%20M100%2095.5%20a4.5%204.5%200%201%200%200%209%20a4.5%204.5%200%201%200%200%20-9%20Z'%2F%3E%3C%2Fsvg%3E");
-}
 .home-carousel {
   display: grid;
   grid-auto-flow: column;
@@ -2895,12 +2959,11 @@ input.vol-range::-moz-range-thumb {
 .home-aotd .album-art-wrap { position: relative; }
 .aotd-badge {
   position: absolute; top: 6px; left: 6px; z-index: 2;
-  background: var(--accent); color: #04121a;
+  background: var(--accent); color: var(--on-accent);
   font-size: 10px; font-weight: 800; letter-spacing: .02em;
   padding: 2px 7px; border-radius: 999px;
   box-shadow: 0 1px 4px rgba(0,0,0,.4);
 }
-[data-theme="light"] .aotd-badge { color: #ffffff; }
 
 /* Source badge — top-RIGHT of the cover so it never collides with the
    album-of-the-day star (top-left). Currently only "local files": three
@@ -2979,12 +3042,12 @@ input.vol-range::-moz-range-thumb {
 /* Light theme: a blurred cover over a white panel reads stronger than the
    same opacity over near-black, so pull it back further. */
 [data-theme="light"] .modal-ambient { opacity: .17; }
-/* The Roon-style Now playing screen keeps its own clean look — but the Queue
-   tab opts back in: its big art is hidden there, so the glow (kept in sync
-   with the playing track by the transport poll) is what ties the list back
-   to the current album. */
-.modal.np-mode .modal-ambient { display: none; }
-.modal.np-mode.tab-queue .modal-ambient { display: block; }
+/* Off on every screen now: Roon's album and queue screens are flat black, and
+   a blurred cover wash behind flat rows is the last piece of the card-era look.
+   The element, its JS (setModalAmbient / window.__setModalAmbient) and the
+   transport poll that keeps it pointed at the playing track are all left in
+   place, so restoring it is a one-line change rather than a rebuild. */
+.modal-ambient { display: none; }
 
 /* 2 — Home-style tinted panels. The panel shell, watermark placement, theme
    flip, and the Tracks panel's vinyl motif are all SHARED with the Home
@@ -2992,43 +3055,22 @@ input.vol-range::-moz-range-thumb {
    here. Tracks reuses the Random-albums teal (vinyl motif matches it);
    About this album reuses the Label-of-the-week violet; the Queue tab
    reuses the Not-played blue-grey. */
-.track-list-wrap    { background: var(--home-random-bg); }
-#album-bio-section  { background: var(--home-lotw-bg); }
-#tab-queue          { background: var(--home-unplayed-bg); }
 
 /* Watermarks sit under dense text here (unlike Home's tile rows), so run
    them fainter than Home's .11 dark / .14 light. Same specificity as the
    shared rules, later in the file — these win by source order. */
-.track-list-wrap::before,
-#album-bio-section::before,
-#tab-queue::before { opacity: .07; }
-[data-theme="light"] .track-list-wrap::before,
-[data-theme="light"] #album-bio-section::before,
-[data-theme="light"] #tab-queue::before { opacity: .08; }
 
-/* About this album — oversized quotation marks (editorial voice). */
-#album-bio-section::before {
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20d%3D'M62%2058%20C44%2058%2030%2072%2030%2092%20C30%20112%2044%20124%2060%20124%20C61%20124%2062%20124%2063%20124%20C58%20138%2046%20146%2034%20148%20L34%20162%20C64%20158%2088%20136%2088%2098%20C88%2074%2077%2058%2062%2058%20Z%20M142%2058%20C124%2058%20110%2072%20110%2092%20C110%20112%20124%20124%20140%20124%20C141%20124%20142%20124%20143%20124%20C138%20138%20126%20146%20114%20148%20L114%20162%20C144%20158%20168%20136%20168%2098%20C168%2074%20157%2058%20142%2058%20Z'%2F%3E%3C%2Fsvg%3E");
-          mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20d%3D'M62%2058%20C44%2058%2030%2072%2030%2092%20C30%20112%2044%20124%2060%20124%20C61%20124%2062%20124%2063%20124%20C58%20138%2046%20146%2034%20148%20L34%20162%20C64%20158%2088%20136%2088%2098%20C88%2074%2077%2058%2062%2058%20Z%20M142%2058%20C124%2058%20110%2072%20110%2092%20C110%20112%20124%20124%20140%20124%20C141%20124%20142%20124%20143%20124%20C138%20138%20126%20146%20114%20148%20L114%20162%20C144%20158%20168%20136%20168%2098%20C168%2074%20157%2058%20142%2058%20Z'%2F%3E%3C%2Fsvg%3E");
-}
+/* 3 — Track rows on the flat album view: full-width rows separated by the
+   app's standard hairline, as Roon has them. --border, not --panel-hairline:
+   the latter was tuned to sit on the tinted panel this list used to live in
+   and is nearly invisible on the page background (same reasoning as the Home
+   section rules). The list keeps its framing border-top now that no panel
+   frames it, and the last row's border is what closes the list. */
+.track-list-wrap .track-list li { border-bottom: 1px solid var(--border); }
 
-/* 3 — Track rows: translucent hairlines instead of the solid --border,
-   which fights the tinted background; the framing border-top goes — the
-   panel itself now frames the list. Last row keeps the panel's bottom
-   padding clean. */
-.track-list-wrap .track-list { border-top: 0; }
-.track-list-wrap .track-list li { border-bottom: 1px solid var(--panel-hairline); }
-.track-list-wrap .track-list li:last-child { border-bottom: 0; }
-
-/* 4 — Queue tab (np-mode): same panel language as the Tracks/About panels.
-   Motif: a play queue — stacked list bars with a play triangle. */
-#tab-queue::before {
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Crect%20x%3D'28'%20y%3D'46'%20width%3D'144'%20height%3D'16'%20rx%3D'8'%2F%3E%3Crect%20x%3D'28'%20y%3D'90'%20width%3D'144'%20height%3D'16'%20rx%3D'8'%2F%3E%3Crect%20x%3D'28'%20y%3D'134'%20width%3D'76'%20height%3D'16'%20rx%3D'8'%2F%3E%3Cpath%20d%3D'M128%20118%20L174%20143%20L128%20168%20Z'%2F%3E%3C%2Fsvg%3E");
-          mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Crect%20x%3D'28'%20y%3D'46'%20width%3D'144'%20height%3D'16'%20rx%3D'8'%2F%3E%3Crect%20x%3D'28'%20y%3D'90'%20width%3D'144'%20height%3D'16'%20rx%3D'8'%2F%3E%3Crect%20x%3D'28'%20y%3D'134'%20width%3D'76'%20height%3D'16'%20rx%3D'8'%2F%3E%3Cpath%20d%3D'M128%20118%20L174%20143%20L128%20168%20Z'%2F%3E%3C%2Fsvg%3E");
-}
-/* 5 — Selectable tracks (v1.6.10): each row in the Tracks panel expands on
+/* 4 — Selectable tracks (v1.6.10): each row in the Tracks panel expands on
    tap to reveal Play now / Queue for that single track. Hover/selection
-   washes are translucent to sit on the tinted panel. The buttons ARE
+   washes are translucent to sit on the flat page. The buttons ARE
    .action-btn (shared recipe: colors, primary, hover, disabled) with a
    row-scale override — flex:none undoes .action-btn's stretch-to-fill,
    and min-height keeps the tap target at the app's 38-40px norm. */
@@ -3055,24 +3097,59 @@ input.vol-range::-moz-range-thumb {
   font-size: 12.5px; font-weight: 600;
 }
 
-/* Queue rows: the same translucent hairlines as the Tracks panel, replacing
-   the solid --border that fights the tint. The id selector (1,1,1) outguns
-   `.queue-list li.is-now` (0,2,1), so the now-playing row's transparent
-   border is restated below it. (The q-divider row needs no restatement:
-   its border-bottom-STYLE stays `none` from the base rule — a color on a
-   none-style border paints nothing.) */
-#tab-queue .queue-list li { border-bottom-color: var(--panel-hairline); }
-#tab-queue .queue-list li.is-now { border-bottom-color: transparent; }
-#tab-queue .q-divider-line { background: rgba(255,255,255,.10); }
-#tab-queue .queue-list li.is-tappable:hover { background: rgba(255,255,255,.05); }
+/* ------------------------------------------------------------------ */
+/*  Queue tab — flat, full-bleed rows (Roon parity)                     */
+/* ------------------------------------------------------------------ */
+/* The rows run edge to edge. .modal-body's horizontal padding is shared with
+   the album view and the Now playing screen, so it is cancelled HERE with a
+   negative margin rather than removed there, and paid back as row padding so
+   the text still lines up. --queue-gutter tracks .modal-body's padding, which
+   is 18px and becomes 28px at >=720px (see the @media block on .modal-body). */
+#tab-queue {
+  --queue-gutter: 18px;
+  margin-inline: calc(var(--queue-gutter) * -1);
+}
+@media (min-width: 720px) { #tab-queue { --queue-gutter: 28px; } }
+/* The summary line keeps the text gutter; only the ROWS go full-bleed. */
+#tab-queue .queue-summary { padding-inline: var(--queue-gutter); }
+#tab-queue .queue-list li { padding-inline: var(--queue-gutter); }
+#tab-queue .q-divider { padding-inline: var(--queue-gutter); }
+
+/* Hairlines on the flat background: --border, the app's standard, not the
+   --panel-hairline that was tuned for the tint this list used to sit on. */
+#tab-queue .queue-list li { border-bottom-color: var(--border); }
+#tab-queue .q-divider-line { background: var(--border); }
+
+/* The now-playing row is a full-bleed block, edge to edge — Roon highlights
+   the whole row rather than insetting a rounded pill. The radius and the
+   accent tint both belonged to the inset look. */
+#tab-queue .queue-list li.is-now {
+  background: var(--bg-elev-2);
+  border-radius: 0;
+  border-bottom-color: var(--border);
+}
+
+/* Washes re-tuned for a flat background — the old values were mixed against
+   the panel tint and are too faint without it. */
+#tab-queue .queue-list li.is-tappable { border-radius: 0; }
+#tab-queue .queue-list li.is-tappable:hover { background: rgba(255,255,255,.06); }
 /* :active must be restated after :hover — during a press both match, and the
-   id-scoped hover rule (1,3,1) would otherwise out-rank the base accent
-   flash `.queue-list li.is-tappable:active` (0,3,1). --accent-soft is
-   themed, so one rule covers both themes. */
+   id-scoped hover rule would otherwise out-rank the base accent flash. */
 #tab-queue .queue-list li.is-tappable:active { background: var(--accent-soft); }
-[data-theme="light"] #tab-queue .q-divider-line { background: rgba(26,39,64,.15); }
 [data-theme="light"] #tab-queue .queue-list li.is-tappable:hover { background: rgba(26,39,64,.06); }
 [data-theme="light"] #tab-queue .queue-list li.is-tappable:active { background: var(--accent-soft); }
+
+/* Roon's queue rows are taller, with a bold title over the artist and a
+   larger square thumbnail. */
+#tab-queue .queue-list li { padding-block: 10px; gap: 14px; }
+#tab-queue .queue-list .q-art { width: 52px; height: 52px; border-radius: 3px; }
+#tab-queue .queue-list .q-title { font-size: 15px; font-weight: 600; }
+
+/* Full-width rows need the np-mode column cap lifted — .modal.np-mode
+   .modal-info caps every np pane at 460px, which would leave the queue
+   floating in the middle of a tablet screen. Scoped to the queue tab so the
+   Now playing screen keeps its centred column. */
+.modal.np-mode.tab-queue .modal-info { max-width: none; }
 
 /* ------------------------------------------------------------------ */
 /*  Library wall — sort + focus                                        */
@@ -3118,7 +3195,7 @@ input.vol-range::-moz-range-thumb {
   display: flex; align-items: center; justify-content: center;
   border-radius: 10px;
   background: var(--bg-elev); border: 1px solid var(--border);
-  color: var(--accent); font-family: inherit; font-size: 20px; line-height: 1;
+  color: var(--accent-text); font-family: inherit; font-size: 20px; line-height: 1;
   cursor: pointer;
 }
 .lib-dir-btn:hover  { border-color: var(--accent); }
@@ -3180,10 +3257,10 @@ input.vol-range::-moz-range-thumb {
   color: var(--text-dim); font-family: inherit; cursor: pointer;
 }
 .lib-sort-row:hover { background: var(--bg-elev-2); }
-.lib-sort-row.is-on { color: var(--accent); background: var(--accent-soft); }
+.lib-sort-row.is-on { color: var(--accent-text); background: var(--accent-soft); }
 .lib-sort-arrow {
   flex: 0 0 20px; text-align: center;
-  font-size: 19px; line-height: 1; color: var(--accent);
+  font-size: 19px; line-height: 1; color: var(--accent-text);
 }
 .lib-sort-text { display: flex; flex-direction: column; min-width: 0; }
 .lib-sort-label { font-size: 15px; font-weight: 600; }
@@ -3213,3 +3290,51 @@ input.vol-range::-moz-range-thumb {
   margin-top: 8px; font-size: 11.5px; line-height: 1.5;
   color: var(--text-faint);
 }
+
+/* ------------------------------------------------------------------ */
+/*  Theme picker (Settings → Appearance)                               */
+/*  A single-select list confirmed with Apply, in the same visual      */
+/*  language as the Library Sort sheet and the filter list: the        */
+/*  selected row carries the accent wash and a tick.                   */
+/* ------------------------------------------------------------------ */
+.theme-list { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 14px; }
+.theme-row {
+  display: flex; align-items: center; gap: 12px;
+  width: 100%; text-align: left;
+  padding: 11px 12px; border-radius: 12px;
+  background: var(--bg-elev-2); border: 1px solid var(--border);
+  color: var(--text); font-family: inherit; cursor: pointer;
+}
+.theme-row:hover { border-color: var(--text-faint); }
+.theme-row.is-on { border-color: var(--accent); background: var(--accent-soft); }
+.theme-row-text { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.theme-row-label { font-size: 15px; font-weight: 600; }
+.theme-row.is-on .theme-row-label { color: var(--accent-text); font-weight: 700; }
+.theme-row-note { font-size: 12px; color: var(--text-faint); margin-top: 2px; }
+.theme-row-check {
+  flex: 0 0 16px; text-align: center;
+  color: var(--accent-text); font-weight: 700; font-size: 15px;
+}
+
+/* Each swatch previews its OWN theme, not the one currently applied — that is
+   the point of a picker. The nested [data-theme]/[data-palette] attributes on
+   the swatch re-declare that palette's tokens locally, so these two colours
+   come from the same source of truth as the real thing and can never drift
+   from it. */
+.theme-swatch {
+  flex: 0 0 auto;
+  width: 40px; height: 28px; border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  position: relative; overflow: hidden;
+}
+.theme-swatch::after {
+  content: ""; position: absolute;
+  right: 5px; top: 50%; transform: translateY(-50%);
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--accent);
+}
+
+.theme-apply-row { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+.theme-apply-hint { font-size: 12.5px; color: var(--text-faint); }
+.theme-apply-row .action-btn { flex: 0 0 auto; min-width: 110px; }

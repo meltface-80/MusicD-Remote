@@ -20,7 +20,6 @@
 
   const grid       = document.getElementById("album-grid");
   const refreshBtn = document.getElementById("refresh-btn");
-  const themeBtn   = document.getElementById("theme-toggle");
   const zoneSel    = document.getElementById("zone-select");
   const banner     = document.getElementById("status-banner");
   const toast      = document.getElementById("toast");
@@ -94,18 +93,78 @@
   }
   function filterQS() { return filterQSOf(activeFilter); }
 
-  // ----- Theme -----
-  const savedTheme = localStorage.getItem("rra-theme");
-  if (savedTheme === "light" || savedTheme === "dark") {
-    document.documentElement.dataset.theme = savedTheme;
-  } else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) {
-    document.documentElement.dataset.theme = "light";
+  // ----- Themes -----
+  // Four themes, expressed as TWO attributes rather than four values of one:
+  //
+  //   data-theme   = dark | light   — the FAMILY
+  //   data-palette = classic | copper — the COLOURS
+  //
+  // The split exists because thirteen rules in style.css are keyed on
+  // `[data-theme="light"] .something` — white text on an accent fill, the
+  // light-side hover washes, the translucent top bar. Those describe the
+  // family, not the palette, and a new light theme under a third data-theme
+  // value would silently miss every one of them: white-on-accent labels would
+  // fall back to near-black, and the queue would use dark-theme washes on a
+  // light background. Keying palettes on their own attribute means the
+  // existing themes are untouched and the new ones inherit all thirteen.
+  const THEMES = [
+    { id: "dark",         label: "Dark",         note: "The original — cool grey and cyan",
+      theme: "dark",  palette: "classic" },
+    { id: "light",        label: "Light",        note: "The original — bright and neutral",
+      theme: "light", palette: "classic" },
+    { id: "copper-dark",  label: "Copper dark",  note: "Charcoal and copper, from the MusicD site",
+      theme: "dark",  palette: "copper" },
+    { id: "brass-light",  label: "Brass light",  note: "Warm parchment with a brass accent",
+      theme: "light", palette: "copper" },
+  ];
+  const THEME_KEY = "rra-theme-v2";
+  const DEFAULT_THEME = "dark";
+  const themeById = (id) => THEMES.find(t => t.id === id) || null;
+
+  function applyTheme(id) {
+    const t = themeById(id) || themeById(DEFAULT_THEME);
+    document.documentElement.dataset.theme   = t.theme;
+    document.documentElement.dataset.palette = t.palette;
+    // The browser chrome colour was hard-coded to the dark background and
+    // never updated, so it was already wrong in light theme. Read it back off
+    // the applied palette instead of maintaining a second list of hexes.
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) {
+      const bg = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+      if (bg) meta.setAttribute("content", bg);
+    }
+    return t.id;
   }
-  themeBtn.addEventListener("click", () => {
-    const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
-    document.documentElement.dataset.theme = next;
-    localStorage.setItem("rra-theme", next);
-  });
+
+  function savedThemeId() {
+    let id = null;
+    try { id = localStorage.getItem(THEME_KEY); } catch (e) { /* private browsing */ }
+    if (themeById(id)) return id;
+    // Migrate the v1 key, which only ever held "light" or "dark" — those are
+    // still valid theme ids, so the user's choice carries over untouched.
+    try {
+      const old = localStorage.getItem("rra-theme");
+      if (old === "light" || old === "dark") {
+        localStorage.setItem(THEME_KEY, old);
+        return old;
+      }
+    } catch (e) { /* private browsing */ }
+    // No stored choice: follow the OS, as before. Read once at boot, with no
+    // change listener — same behaviour the single toggle had.
+    if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) return "light";
+    return DEFAULT_THEME;
+  }
+
+  let currentThemeId = applyTheme(savedThemeId());
+  function setTheme(id) {
+    currentThemeId = applyTheme(id);
+    try { localStorage.setItem(THEME_KEY, currentThemeId); }
+    catch (e) { /* localStorage optional — the theme still applies for this session */ }
+  }
+  // The Appearance pane builds its picker from this.
+  window.__themes = THEMES;
+  window.__currentThemeId = () => currentThemeId;
+  window.__setTheme = setTheme;
 
   // ----- Sizing -----
   // Returns a fixed album count that exactly fills the responsive grid:
@@ -4528,6 +4587,17 @@
 /*  Settings sheet: theme toggle (lives here now), version, repo link  */
 /* ------------------------------------------------------------------ */
 (function initSettings() {
+  // showToast lives in the album/grid IIFE above and is NOT in scope here —
+  // this is a different top-level IIFE. Every one of the 28 bare showToast()
+  // calls in this function was therefore throwing ReferenceError instead of
+  // showing a message: token saves, display settings, and the Qobuz/TIDAL
+  // connect flows all failed silently, and the catch blocks that tried to
+  // report the failure threw again. window.__showToast is the existing bridge
+  // (declared where showToast is), so aliasing it here fixes all of them at
+  // once and keeps the call sites readable.
+  const showToast = (msg, kind) => {
+    if (window.__showToast) window.__showToast(msg, kind);
+  };
   const openBtn    = document.getElementById("settings-toggle");
   const overlay    = document.getElementById("settings-overlay");
   const versionEl  = document.getElementById("settings-version");
@@ -5076,7 +5146,81 @@
     });
   }
 
-  const open = () => { showView("home"); loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); loadDisplaySettings(); loadLabelFolderDepth(); loadQobuzStatus(); loadTidalStatus(); overlay.classList.remove("hidden"); };
+  // ----- Theme picker -----
+  // A single-select list plus Apply, rather than the old instant toggle. The
+  // rows are built from app.js's THEMES table so the list can never offer a
+  // theme the palettes don't define, or miss one they do.
+  //
+  // "Pending" is the row the user has tapped; "current" is what is actually
+  // applied. Apply is disabled while they match, so the button always means
+  // something. Reopening Settings discards a pending choice — the sheet should
+  // never reopen mid-decision.
+  const themeList  = document.getElementById("theme-list");
+  const themeApply = document.getElementById("theme-apply");
+  const themeHint  = document.getElementById("theme-apply-hint");
+  let pendingThemeId = null;
+
+  function renderThemeList() {
+    if (!themeList || !window.__themes) return;
+    const current = window.__currentThemeId();
+    const chosen  = pendingThemeId || current;
+    themeList.innerHTML = "";
+    for (const t of window.__themes) {
+      const on = t.id === chosen;
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "theme-row" + (on ? " is-on" : "");
+      row.setAttribute("role", "radio");
+      row.setAttribute("aria-checked", on ? "true" : "false");
+
+      // A swatch pair — the theme's own background and accent — so the choice
+      // can be made by eye rather than by reading four colour names.
+      const sw = document.createElement("span");
+      sw.className = "theme-swatch";
+      sw.dataset.theme = t.theme;
+      sw.dataset.palette = t.palette;
+      sw.setAttribute("aria-hidden", "true");
+      row.appendChild(sw);
+
+      const txt = document.createElement("span");
+      txt.className = "theme-row-text";
+      const lab = document.createElement("span");
+      lab.className = "theme-row-label";
+      lab.textContent = t.label + (t.id === current ? " · in use" : "");
+      const note = document.createElement("span");
+      note.className = "theme-row-note";
+      note.textContent = t.note;
+      txt.appendChild(lab); txt.appendChild(note);
+      row.appendChild(txt);
+
+      const tick = document.createElement("span");
+      tick.className = "theme-row-check";
+      tick.setAttribute("aria-hidden", "true");
+      tick.textContent = on ? "✓" : "";
+      row.appendChild(tick);
+
+      row.addEventListener("click", () => {
+        pendingThemeId = t.id;
+        renderThemeList();
+      });
+      themeList.appendChild(row);
+    }
+    const dirty = !!pendingThemeId && pendingThemeId !== current;
+    if (themeApply) themeApply.disabled = !dirty;
+    if (themeHint) themeHint.textContent = dirty ? "Not applied yet" : "";
+  }
+
+  if (themeApply) {
+    themeApply.addEventListener("click", () => {
+      if (!pendingThemeId || !window.__setTheme) return;
+      window.__setTheme(pendingThemeId);
+      pendingThemeId = null;
+      renderThemeList();
+      showToast("Theme applied");
+    });
+  }
+
+  const open = () => { showView("home"); pendingThemeId = null; renderThemeList(); loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); loadDisplaySettings(); loadLabelFolderDepth(); loadQobuzStatus(); loadTidalStatus(); overlay.classList.remove("hidden"); };
   const close = () => {
     overlay.classList.add("hidden");
     // Closing Settings ends the client side of any pending Tidal device flow
