@@ -20,9 +20,7 @@
   --danger:       #e06464;
   --home-unplayed-bg: #2b3037;   /* pale grey panel on dark */
   --home-random-bg:   #24322e;   /* teal-grey panel on dark */
-  --home-library-bg:  #322b23;   /* warm brown panel on dark */
   --home-lotw-bg:     #2f2a38;   /* violet-grey panel on dark */
-  --home-genres-bg:   #33301f;   /* amber-grey panel on dark */
   --panel-hairline: rgba(255,255,255,.07);  /* row separators on tinted panels */
   --shadow-card:  0 2px 6px rgba(0,0,0,.45), 0 10px 24px rgba(0,0,0,.35);
   --shadow-modal: 0 24px 64px rgba(0,0,0,.6);
@@ -40,9 +38,7 @@
   --accent-soft:  rgba(31,143,193,.12);
   --home-unplayed-bg: #d9e8fb;   /* soft blue panel on light */
   --home-random-bg:   #d6f0e4;   /* soft teal panel on light */
-  --home-library-bg:  #f0e4d3;   /* soft tan panel on light */
   --home-lotw-bg:     #ece0f7;   /* soft violet panel on light */
-  --home-genres-bg:   #f6ecd3;   /* soft amber panel on light */
   --panel-hairline: rgba(26,39,64,.12);     /* row separators on tinted panels */
   --danger:       #c0392b;
   --shadow-card:  0 1px 2px rgba(0,0,0,.06), 0 6px 16px rgba(0,0,0,.08);
@@ -2733,41 +2729,48 @@ input.vol-range::-moz-range-thumb {
 .menu-item span { flex: 1; }
 
 .home-view.hidden { display: none; }
-.home-search { margin: 2px 0 18px; }
-.home-section { margin: 0 0 22px; }
-.home-section-title { font-size: 16px; font-weight: 700; color: var(--text); margin: 0 0 12px; }
-/* Clickable section headers (Random albums, Label of the week) — the title
-   doubles as a link into the full view. A trailing chevron hints it's tappable. */
-.home-section-link { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
-.home-section-link::after { content: "›"; font-size: 20px; line-height: 1; color: var(--text-faint); transition: transform .15s ease; }
+/* Mirrors main's own padding at each breakpoint (style.css: main { padding:
+   14px } / 18px ≥768 / 22px ≥1200). Scoped to Home so the carousels can bleed
+   past the gutter without main itself being restyled. */
+#home-sections { --home-gutter: 14px; }
+@media (min-width: 768px)  { #home-sections { --home-gutter: 18px; } }
+@media (min-width: 1200px) { #home-sections { --home-gutter: 22px; } }
+/* Roon-style section rhythm: a bold title, a hairline under it, then the row.
+   No panel, no tint, no watermark — the sections are separated by that rule and
+   by whitespace alone, on the flat page background. */
+.home-section { margin: 0 0 30px; }
+.home-section-title {
+  font-size: 21px; font-weight: 700; color: var(--text);
+  margin: 0 0 10px; letter-spacing: -.01em;
+}
+/* The hairline. --border, not --panel-hairline: the latter was tuned to sit on
+   a tinted panel and is nearly invisible on the flat page, while --border is
+   the same hairline the top bar and filter bar already draw on this background,
+   in both themes. */
+.home-section-title { padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+/* Clickable section headers — the title doubles as a link into the full view.
+   A trailing chevron hints it's tappable. inline-flex would shrink-wrap the
+   title and take the rule with it, so the link stays full-width and the chevron
+   is pushed to the far end of the row. */
+.home-section-link { cursor: pointer; display: flex; align-items: center; gap: 6px; }
+.home-section-link::after {
+  content: "›"; font-size: 22px; line-height: 1; color: var(--text-faint);
+  transition: transform .15s ease; margin-left: auto;
+}
 .home-section-link:hover { color: var(--accent, var(--text)); }
 .home-section-link:hover::after { transform: translateX(3px); }
 .home-section-link:focus-visible { outline: 2px solid var(--accent, #4a90d9); outline-offset: 3px; border-radius: 4px; }
 
-/* Each Home section sits in its own softly-tinted panel so the rows read as
-   distinct blocks: grey (unplayed), teal (random), violet (label of the week),
-   amber (genres) — muted in dark mode, pastel in light mode.
-   The album modal's Tracks (.track-list-wrap), About (#album-bio-section)
-   and Queue (#tab-queue) panels share this exact recipe (shell, watermark
-   placement, theme flip) so the screens stay in sync — their deltas (tint
-   choice, lower watermark opacity for text-heavy panels) live in the
-   "Album detail refresh" section at the end of this file. */
-.home-section-unplayed,
-.home-section-random,
-.home-section-library,
-.home-section-lotw,
-.home-section-genres,
+/* The album modal's Tracks (.track-list-wrap), About (#album-bio-section) and
+   Queue (#tab-queue) panels keep the tinted-panel recipe below. The Home
+   sections used to share it and no longer do — hence the selector lists here
+   are shorter than they read historically. */
 .track-list-wrap,
 #album-bio-section,
 #tab-queue {
   border-radius: 16px;
   padding: 14px 14px 12px;
 }
-.home-section-unplayed { background: var(--home-unplayed-bg); }
-.home-section-random   { background: var(--home-random-bg); }
-.home-section-library  { background: var(--home-library-bg); }
-.home-section-lotw     { background: var(--home-lotw-bg); }
-.home-section-genres   { background: var(--home-genres-bg); }
 /* The two below-the-fold sections skip rendering until scrolled near — on a
    phone the first paint only lays out the unplayed + random rows. The
    intrinsic size reserves roughly one carousel row so the scrollbar doesn't
@@ -2792,27 +2795,12 @@ input.vol-range::-moz-range-thumb {
    mask-image differs per section, and background-color differs per theme —
    each motif ships ONE opaque-white SVG used as a mask (not a background
    image), so the theme swap is a color change rather than a second SVG. */
-.home-section-unplayed,
-.home-section-random,
-.home-section-library,
-.home-section-lotw,
-.home-section-genres,
 .track-list-wrap,
 #album-bio-section,
 #tab-queue { position: relative; overflow: hidden; }
-.home-section-unplayed > *,
-.home-section-random > *,
-.home-section-library > *,
-.home-section-lotw > *,
-.home-section-genres > *,
 .track-list-wrap > *,
 #album-bio-section > *,
 #tab-queue > * { position: relative; z-index: 1; }
-.home-section-unplayed::before,
-.home-section-random::before,
-.home-section-library::before,
-.home-section-lotw::before,
-.home-section-genres::before,
 .track-list-wrap::before,
 #album-bio-section::before,
 #tab-queue::before {
@@ -2831,45 +2819,16 @@ input.vol-range::-moz-range-thumb {
   pointer-events: none;
   z-index: 0;
 }
-[data-theme="light"] .home-section-unplayed::before,
-[data-theme="light"] .home-section-random::before,
-[data-theme="light"] .home-section-library::before,
-[data-theme="light"] .home-section-lotw::before,
-[data-theme="light"] .home-section-genres::before,
 [data-theme="light"] .track-list-wrap::before,
 [data-theme="light"] #album-bio-section::before,
 [data-theme="light"] #tab-queue::before {
   opacity: .14;
   background-color: #1a2740;
 }
-/* "Not played in 6 months" — clock. */
-.home-section-unplayed::before {
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M100%2028%20a72%2072%200%201%200%200%20144%20a72%2072%200%201%200%200%20-144%20Z%20M100%2040%20a60%2060%200%201%200%200%20120%20a60%2060%200%201%200%200%20-120%20Z'%2F%3E%3Cpath%20d%3D'M100%2045.6%20a3.4%203.4%200%201%200%200%206.8%20a3.4%203.4%200%201%200%200%20-6.8%20Z%20M151%2096.6%20a3.4%203.4%200%201%200%200%206.8%20a3.4%203.4%200%201%200%200%20-6.8%20Z%20M100%20147.6%20a3.4%203.4%200%201%200%200%206.8%20a3.4%203.4%200%201%200%200%20-6.8%20Z%20M49%2096.6%20a3.4%203.4%200%201%200%200%206.8%20a3.4%203.4%200%201%200%200%20-6.8%20Z'%2F%3E%3Ccircle%20cx%3D'100'%20cy%3D'100'%20r%3D'6'%2F%3E%3Cline%20x1%3D'100'%20y1%3D'100'%20x2%3D'100'%20y2%3D'62'%20stroke%3D'%23ffffff'%20stroke-width%3D'8'%20stroke-linecap%3D'round'%2F%3E%3Cline%20x1%3D'100'%20y1%3D'100'%20x2%3D'134'%20y2%3D'120'%20stroke%3D'%23ffffff'%20stroke-width%3D'8'%20stroke-linecap%3D'round'%2F%3E%3C%2Fsvg%3E");
-          mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M100%2028%20a72%2072%200%201%200%200%20144%20a72%2072%200%201%200%200%20-144%20Z%20M100%2040%20a60%2060%200%201%200%200%20120%20a60%2060%200%201%200%200%20-120%20Z'%2F%3E%3Cpath%20d%3D'M100%2045.6%20a3.4%203.4%200%201%200%200%206.8%20a3.4%203.4%200%201%200%200%20-6.8%20Z%20M151%2096.6%20a3.4%203.4%200%201%200%200%206.8%20a3.4%203.4%200%201%200%200%20-6.8%20Z%20M100%20147.6%20a3.4%203.4%200%201%200%200%206.8%20a3.4%203.4%200%201%200%200%20-6.8%20Z%20M49%2096.6%20a3.4%203.4%200%201%200%200%206.8%20a3.4%203.4%200%201%200%200%20-6.8%20Z'%2F%3E%3Ccircle%20cx%3D'100'%20cy%3D'100'%20r%3D'6'%2F%3E%3Cline%20x1%3D'100'%20y1%3D'100'%20x2%3D'100'%20y2%3D'62'%20stroke%3D'%23ffffff'%20stroke-width%3D'8'%20stroke-linecap%3D'round'%2F%3E%3Cline%20x1%3D'100'%20y1%3D'100'%20x2%3D'134'%20y2%3D'120'%20stroke%3D'%23ffffff'%20stroke-width%3D'8'%20stroke-linecap%3D'round'%2F%3E%3C%2Fsvg%3E");
-}
-/* "Random albums" — vinyl record (shared by the album modal's Tracks panel). */
-.home-section-random::before,
+/* The album modal's Tracks panel — vinyl record. */
 .track-list-wrap::before {
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M100%2028%20a72%2072%200%201%200%200%20144%20a72%2072%200%201%200%200%20-144%20Z%20M100%2075%20a25%2025%200%201%200%200%2050%20a25%2025%200%201%200%200%20-50%20Z'%2F%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M100%2081%20a19%2019%200%201%200%200%2038%20a19%2019%200%201%200%200%20-38%20Z%20M100%2095.5%20a4.5%204.5%200%201%200%200%209%20a4.5%204.5%200%201%200%200%20-9%20Z'%2F%3E%3C%2Fsvg%3E");
           mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M100%2028%20a72%2072%200%201%200%200%20144%20a72%2072%200%201%200%200%20-144%20Z%20M100%2075%20a25%2025%200%201%200%200%2050%20a25%2025%200%201%200%200%20-50%20Z'%2F%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M100%2081%20a19%2019%200%201%200%200%2038%20a19%2019%200%201%200%200%20-38%20Z%20M100%2095.5%20a4.5%204.5%200%201%200%200%209%20a4.5%204.5%200%201%200%200%20-9%20Z'%2F%3E%3C%2Fsvg%3E");
-}
-/* "Library" — a couple of books: two staggered spines + one leaning against
-   them, detail bands near the tops (the part the panel actually shows); the
-   bodies run off the bottom of the canvas so no floating bottom edges peek
-   out from behind the album tiles. */
-.home-section-library::before {
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M78%2044%20h30%20a5%205%200%200%201%205%205%20v151%20H73%20V49%20a5%205%200%200%201%205%20-5%20Z%20M73%2058%20h40%20v8%20H73%20Z'%2F%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M124%2066%20h24%20a5%205%200%200%201%205%205%20v129%20h-34%20V71%20a5%205%200%200%201%205%20-5%20Z%20M119%2082%20h34%20v7%20h-34%20Z'%2F%3E%3Cg%20transform%3D'rotate(-14%20172%20200)'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M162%2070%20h22%20a5%205%200%200%201%205%205%20v135%20h-32%20V75%20a5%205%200%200%201%205%20-5%20Z%20M157%2086%20h32%20v7%20h-32%20Z'%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E");
-          mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M78%2044%20h30%20a5%205%200%200%201%205%205%20v151%20H73%20V49%20a5%205%200%200%201%205%20-5%20Z%20M73%2058%20h40%20v8%20H73%20Z'%2F%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M124%2066%20h24%20a5%205%200%200%201%205%205%20v129%20h-34%20V71%20a5%205%200%200%201%205%20-5%20Z%20M119%2082%20h34%20v7%20h-34%20Z'%2F%3E%3Cg%20transform%3D'rotate(-14%20172%20200)'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M162%2070%20h22%20a5%205%200%200%201%205%205%20v135%20h-32%20V75%20a5%205%200%200%201%205%20-5%20Z%20M157%2086%20h32%20v7%20h-32%20Z'%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E");
-}
-/* "Label of the week" — price/luggage tag. */
-.home-section-lotw::before {
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M104.88%2021.55A16.67%2016.67%200%200%200%2093.1%2016.67H33.33A16.67%2016.67%200%200%200%2016.67%2033.33V93.1a16.67%2016.67%200%200%200%204.88%2011.78l72.53%2072.53a20.22%2020.22%200%200%200%2028.5%200l54.83-54.83a20.22%2020.22%200%200%200%200-28.5Z%20M62.5%2051.5%20a11%2011%200%201%200%200%2022%20a11%2011%200%201%200%200%20-22%20Z'%2F%3E%3C%2Fsvg%3E");
-          mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M104.88%2021.55A16.67%2016.67%200%200%200%2093.1%2016.67H33.33A16.67%2016.67%200%200%200%2016.67%2033.33V93.1a16.67%2016.67%200%200%200%204.88%2011.78l72.53%2072.53a20.22%2020.22%200%200%200%2028.5%200l54.83-54.83a20.22%2020.22%200%200%200%200-28.5Z%20M62.5%2051.5%20a11%2011%200%201%200%200%2022%20a11%2011%200%201%200%200%20-22%20Z'%2F%3E%3C%2Fsvg%3E");
-}
-/* "Browse by genre" — beamed eighth notes. */
-.home-section-genres::before {
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cellipse%20cx%3D'65'%20cy%3D'150'%20rx%3D'18'%20ry%3D'13'%2F%3E%3Cellipse%20cx%3D'130'%20cy%3D'138'%20rx%3D'18'%20ry%3D'13'%2F%3E%3Crect%20x%3D'79'%20y%3D'40'%20width%3D'8'%20height%3D'112'%2F%3E%3Crect%20x%3D'144'%20y%3D'25'%20width%3D'8'%20height%3D'115'%2F%3E%3Cpolygon%20points%3D'79%2040%20152%2025%20152%2038%2079%2053'%2F%3E%3Cpolygon%20points%3D'79%2058%20152%2043%20152%2056%2079%2071'%2F%3E%3C%2Fsvg%3E");
-          mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cellipse%20cx%3D'65'%20cy%3D'150'%20rx%3D'18'%20ry%3D'13'%2F%3E%3Cellipse%20cx%3D'130'%20cy%3D'138'%20rx%3D'18'%20ry%3D'13'%2F%3E%3Crect%20x%3D'79'%20y%3D'40'%20width%3D'8'%20height%3D'112'%2F%3E%3Crect%20x%3D'144'%20y%3D'25'%20width%3D'8'%20height%3D'115'%2F%3E%3Cpolygon%20points%3D'79%2040%20152%2025%20152%2038%2079%2053'%2F%3E%3Cpolygon%20points%3D'79%2058%20152%2043%20152%2056%2079%2071'%2F%3E%3C%2Fsvg%3E");
 }
 .home-carousel {
   display: grid;
@@ -2880,10 +2839,21 @@ input.vol-range::-moz-range-thumb {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch; scrollbar-width: none;
   padding-bottom: 4px;
-  /* Centre the tiles when they don't fill the panel; "safe" falls back to
-     left-alignment when the row overflows so the first tile is never clipped
-     and horizontal scrolling still works. */
-  justify-content: safe center;
+  /* Left-aligned, as Roon has it. This used to be `safe center`, which was
+     right when each row sat inside its own panel — a short row centred in the
+     card. On the flat layout a centred short row floats away from the title
+     above it and looks like a mistake. */
+  justify-content: start;
+  /* Bleed to the screen edges so the next tile is half-visible and the row
+     reads as scrollable — the whole point of Roon's edge-to-edge carousels.
+     The negative margin cancels main's gutter, the padding puts it back INSIDE
+     the scroller so the first tile still lines up under the section title, and
+     scroll-padding keeps it there after a scroll. --home-gutter tracks main's
+     padding at each breakpoint (style.css: main { padding: 14/18/22px }) so
+     main itself doesn't have to be touched. */
+  margin-inline: calc(var(--home-gutter) * -1);
+  padding-inline: var(--home-gutter);
+  scroll-padding-inline-start: var(--home-gutter);
 }
 .home-carousel::-webkit-scrollbar { display: none; }
 .home-carousel .album { width: auto; flex-shrink: 0; }

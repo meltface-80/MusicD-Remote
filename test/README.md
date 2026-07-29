@@ -28,7 +28,7 @@ node --test test/unit/credits.test.js
 > `node --test <directory>` is **not** supported on every Node 22 build — it tries to
 > `require()` the directory. `run.sh` expands each suite to explicit files instead.
 
-Current state: **215 tests, all passing** (static 16, unit 157, dom 42).
+Current state: **233 tests, all passing** (static 22, unit 157, dom 54).
 
 ---
 
@@ -241,6 +241,18 @@ The file carries a second test for the **album view**, which shares the extracte
 renderer. It is the caller that already worked, so it is the one a refactor regression
 would break silently.
 
+**`home-flat.test.js`** — the v1.6.61 flat Home screen, asserted from computed styles in
+both themes. The Home panel recipe was written as **five shared selector lists** covering
+the Home sections *and* the album modal's Tracks / About / Queue panels, which still want
+it. Flattening meant trimming the Home half out of each list. Delete one line too many and
+the modal silently loses its tint and watermark; one too few and a Home section keeps its
+card. Neither throws. So the test asserts **both halves**: every Home section transparent
+with no radius, padding or watermark, and all three modal panels still carrying all four.
+
+It also pins the promise made when the work was scoped — **tile width and gap did not
+move** (150px / 12px). A redesign that quietly reflows the grid is the easiest way to
+break a layout the user explicitly asked to keep.
+
 > **A renamed class can empty a query and take its assertions with it.** When the sort
 > sheet's rows moved from `.lib-row` to `.lib-sort-row`, `library-sheet.test.js` went red
 > with *"the sheet rendered no controls"* — its selector had stopped matching anything, so
@@ -254,6 +266,13 @@ would break silently.
   `lib/*.js`, `public/*.js`), not just `index.js`.
 - **step 2** — no stale `DISCOGS_TOKEN` / `FANART_TV_KEY` constant names.
 - **step 4** — no `.innerHTML` **reads** in browser code.
+- **CSS integrity** — every stylesheet must have balanced, *terminated* comments and
+  balanced braces. An unterminated `/*` is the quietest bug CSS can produce: the parser
+  swallows everything up to the next `*/` — potentially dozens of rules — and reports
+  nothing at all. This check exists because it happened during v1.6.61: deleting a
+  watermark rule took its comment's closing `*/` with it and left the opening `/*`
+  behind, commenting out the entire `.home-carousel` definition. A screenshot caught it;
+  nothing else would have.
 - **step 5** — every workflow `${{ }}` token is a real expression, checked
   **per token** rather than per line, plus an unbalanced-token check.
 - **checklist** — every `getElementById("x")` target exists in the markup or is

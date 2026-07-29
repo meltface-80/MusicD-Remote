@@ -187,3 +187,61 @@ test("checklist — every getElementById target actually exists", async (t) => {
       "display.js:\n" + missing.join("\n"));
   });
 });
+
+// --- CSS integrity --------------------------------------------------------
+// An unterminated /* comment is the quietest possible CSS bug: the parser
+// swallows everything up to the next "*/" — potentially dozens of rules — and
+// reports nothing. No syntax error, no console warning, just a screen that
+// silently lost its layout.
+//
+// This is here because it happened: flattening the Home screen deleted a
+// watermark rule together with its comment's CLOSING "*/" while leaving the
+// opening "/*" behind, which commented out the entire .home-carousel
+// definition. Caught by a screenshot, not by any check — hence this one.
+const SHIPPED_CSS = listFiles("public", (f) => f.endsWith(".css"));
+
+test("CSS integrity", async (t) => {
+  await t.test("at least one stylesheet was found to check", () => {
+    assert.ok(SHIPPED_CSS.length > 0, "no .css files found under public/");
+  });
+
+  for (const rel of SHIPPED_CSS) {
+    await t.test(`${rel} — comments are balanced and terminated`, () => {
+      const src = read(rel);
+      let i = 0, opened = 0;
+      let unterminatedAt = -1;
+      while (true) {
+        const open = src.indexOf("/*", i);
+        if (open === -1) break;
+        const close = src.indexOf("*/", open + 2);
+        if (close === -1) { unterminatedAt = open; break; }
+        opened++;
+        i = close + 2;
+      }
+      if (unterminatedAt !== -1) {
+        const line = src.slice(0, unterminatedAt).split("\n").length;
+        assert.fail(
+          `${rel}:${line} opens a comment that is never closed. Everything after ` +
+          "it is swallowed by the CSS parser with no error reported."
+        );
+      }
+      // A stray "*/" outside a comment is equally silent.
+      assert.equal(src.split("/*").length - 1, src.split("*/").length - 1,
+        `${rel}: unbalanced comment markers`);
+    });
+
+    await t.test(`${rel} — braces are balanced`, () => {
+      const src = read(rel)
+        .replace(/\/\*[\s\S]*?\*\//g, "")     // strip comments
+        .replace(/"(?:\\.|[^"\\])*"/g, '""')  // and string literals (data: URIs)
+        .replace(/'(?:\\.|[^'\\])*'/g, "''");
+      let depth = 0, minDepth = 0;
+      for (const ch of src) {
+        if (ch === "{") depth++;
+        else if (ch === "}") { depth--; if (depth < minDepth) minDepth = depth; }
+      }
+      assert.equal(minDepth, 0, `${rel}: a "}" appears with no matching "{"`);
+      assert.equal(depth, 0, `${rel}: ${depth} unclosed "{" block(s)`);
+    });
+  }
+});
