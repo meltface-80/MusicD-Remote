@@ -428,6 +428,16 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             </div>
 
             <div class="np-transport">
+              <button class="np-btn np-mode-btn" id="np-shuffle" aria-label="Shuffle" aria-pressed="false">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="16 3 21 3 21 8"/>
+                  <line x1="4" y1="20" x2="21" y2="3"/>
+                  <polyline points="21 16 21 21 16 21"/>
+                  <line x1="15" y1="15" x2="21" y2="21"/>
+                  <line x1="4" y1="4" x2="9" y2="9"/>
+                </svg>
+              </button>
               <button class="np-btn" id="np-prev" aria-label="Previous track" disabled>
                 <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                   <path d="M6 6h2v12H6zM9.5 12l10-6v12z"/>
@@ -446,6 +456,19 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
                   <path d="M16 6h2v12h-2zM4.5 6l10 6-10 6z"/>
                 </svg>
               </button>
+              <!-- Repeat cycles off → whole queue → this track, like Roon.
+                   The "1" badge is DOM text, not an SVG glyph, so it themes and
+                   scales with the rest of the interface. -->
+              <button class="np-btn np-mode-btn" id="np-loop" aria-label="Repeat off">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="17 1 21 5 17 9"/>
+                  <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+                  <polyline points="7 23 3 19 7 15"/>
+                  <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+                </svg>
+                <span class="np-mode-badge hidden" id="np-loop-badge" aria-hidden="true">1</span>
+              </button>
             </div>
 
             <div class="np-secondary">
@@ -461,7 +484,22 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
               <div class="np-popover np-device-popover hidden" id="np-device-popover">
                 <div class="np-popover-title">Play on</div>
                 <div class="np-device-list" id="np-device-list"></div>
+                <button class="np-popover-action" type="button" id="np-group-open">Group zones…</button>
               </div>
+
+              <!-- Roon Radio: Roon's own keep-playing-forever feature. Lives
+                   here rather than in the transport row because it changes what
+                   happens to the QUEUE, not how the current queue is played. -->
+              <button class="np-mini-btn" id="np-radio" aria-label="Roon Radio" aria-pressed="false">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="2"/>
+                  <path d="M7.76 16.24a6 6 0 0 1 0-8.49"/>
+                  <path d="M16.24 7.76a6 6 0 0 1 0 8.49"/>
+                  <path d="M4.93 19.07a10 10 0 0 1 0-14.14"/>
+                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                </svg>
+              </button>
 
               <!-- Volume: tap the speaker to reveal the slider (hidden when fixed) -->
               <div class="np-vol">
@@ -582,6 +620,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
     <div class="mt-zone-popover hidden" id="mt-zone-popover" role="dialog" aria-label="Play on">
       <div class="np-popover-title">Play on</div>
       <div class="np-device-list" id="mt-zone-list"></div>
+      <button class="np-popover-action" type="button" id="mt-group-open">Group zones…</button>
     </div>
 
     <!-- Roon-style volume sheet: [icon + value] [slider with min/max scale] [− +] -->

@@ -142,7 +142,23 @@ const updater = createUpdater({
 // ---------------------------------------------------------------------------
 let core      = null;
 let zones     = {};
+// output_id -> raw Roon output object. Fed by BOTH subscriptions: the zone
+// deltas (an output always arrives inside its zone) and subscribe_outputs.
+// They describe the same objects from the same Core, so merging is consistent
+// and last-writer-wins is safe. The outputs feed exists because grouping needs
+// `can_group_with_output_ids`, which Roon can revise without a zone delta.
 let outputs   = {};
+// True once subscribe_outputs has delivered its snapshot. While it is live the
+// outputs feed owns the map's lifecycle (full replace on Subscribed, removals
+// on outputs_removed) and the zone feed only ever ADDS to it.
+//
+// That split matters for grouping: grouping output A into zone B *removes* zone
+// A, and the zone feed's removal path would delete A's output from this map —
+// even though the output still exists and has merely changed zone. The outputs
+// feed reports it as outputs_changed, so letting it own removals keeps the
+// output visible throughout. Without the feed (older Core, failed subscribe)
+// the zone feed keeps its original full ownership, so nothing regresses.
+let outputsFeedLive = false;
 const scrobbleState = new Map();
 
 // Roon pairing state must survive container rebuilds. node-roon-api's default
@@ -197,7 +213,8 @@ const roon = new RoonApi({
       if (cmd === "Subscribed") {
         console.log("[roon] zone subscription established —",
                     (data.zones || []).length, "zone(s)");
-        zones = {}; outputs = {};
+        zones = {};
+        if (!outputsFeedLive) outputs = {};
         // Reset transition tracking — treat every zone as newly seen.
         Object.keys(zonePrevState).forEach(k => delete zonePrevState[k]);
         (data.zones || []).forEach(z => {
@@ -213,17 +230,43 @@ const roon = new RoonApi({
           (z.outputs || []).forEach(o => { outputs[o.output_id] = o; }); handleRadioZone(z); scrobbleUpdate(z); });
         (data.zones_removed || []).forEach(zid => {
           const z = zones[zid];
-          if (z) (z.outputs || []).forEach(o => delete outputs[o.output_id]);
+          // Only when the outputs feed isn't live — see outputsFeedLive above:
+          // a grouped-away zone's output is still a real output.
+          if (z && !outputsFeedLive) (z.outputs || []).forEach(o => delete outputs[o.output_id]);
           delete zones[zid];
           delete zonePrevState[zid]; // zone offline — reset so it won't auto-start if it returns
         });
+      }
+    });
+    // A second, long-lived subscription for outputs. The zone feed above only
+    // ever mentions an output as a member of a zone, so it cannot report a
+    // change that is purely about the output itself — and grouping depends on
+    // exactly that: `can_group_with_output_ids` tells us which outputs the Core
+    // will let us group together, and it moves as devices come and go.
+    //
+    // One subscription for the life of the pairing (cleared in core_unpaired),
+    // the same shape as the zone feed — NOT the subscribe-then-unsubscribe
+    // pattern /api/queue uses, because this is a cache, not a one-shot read.
+    // Unlike subscribe_zones, the SDK's subscribe_outputs keeps no internal
+    // cache of its own, so the merge below is the only copy.
+    c.services.RoonApiTransport.subscribe_outputs((cmd, data) => {
+      if (cmd === "Subscribed") {
+        console.log("[roon] output subscription established —",
+                    ((data && data.outputs) || []).length, "output(s)");
+        outputsFeedLive = true;
+        outputs = {};
+        ((data && data.outputs) || []).forEach(o => { outputs[o.output_id] = o; });
+      } else if (cmd === "Changed") {
+        ((data && data.outputs_added)   || []).forEach(o => { outputs[o.output_id] = o; });
+        ((data && data.outputs_changed) || []).forEach(o => { outputs[o.output_id] = o; });
+        ((data && data.outputs_removed) || []).forEach(oid => { delete outputs[oid]; });
       }
     });
     // Build the local search index in the background and keep it fresh.
     startIndexMaintenance();
   },
   core_unpaired: function () {
-    core = null; zones = {}; outputs = {};
+    core = null; zones = {}; outputs = {}; outputsFeedLive = false;
     Object.keys(zonePrevState).forEach(k => delete zonePrevState[k]);
     stopIndexMaintenance();
     // The album index is deliberately KEPT across an unpair: it's plain
@@ -4882,16 +4925,56 @@ app.get("/api/status", (req, res) => {
   });
 });
 
+// Roon's per-zone playback modes, normalised so no client has to cope with a
+// missing `settings` block (a zone that has never been played doesn't get one).
+// `loop` keeps Roon's own vocabulary: "disabled" | "loop" (whole queue) |
+// "loop_one" (repeat this track). Anything unrecognised reads as off rather
+// than being passed through — a value we can't render is worse than off.
+function zoneSettings(zone) {
+  const s = (zone && zone.settings) || {};
+  const loop = (s.loop === "loop" || s.loop === "loop_one") ? s.loop : "disabled";
+  return { shuffle: !!s.shuffle, loop, auto_radio: !!s.auto_radio };
+}
+
+// One output as the client sees it. `can_group_with_output_ids` is Roon's own
+// answer to "what may this be grouped with" — it isn't in the vendored SDK's
+// JSDoc but it is part of the Output object on the wire. When the Core doesn't
+// send it we return null, which the client reads as "unknown, offer everything"
+// rather than "nothing is groupable".
+function outputInfo(o) {
+  return {
+    output_id:    o.output_id,
+    zone_id:      o.zone_id || null,
+    display_name: o.display_name || "",
+    can_group_with_output_ids: Array.isArray(o.can_group_with_output_ids)
+      ? o.can_group_with_output_ids.slice()
+      : null
+  };
+}
+
 app.get("/api/zones", (req, res) => {
   const list = Object.values(zones).map(z => ({
     zone_id:      z.zone_id,
     display_name: z.display_name,
     state:        z.state,
-    outputs: (z.outputs || []).map(o => ({
-      output_id: o.output_id, display_name: o.display_name
-    }))
+    settings:     zoneSettings(z),
+    outputs: (z.outputs || []).map(outputInfo)
   })).sort((a, b) => a.display_name.localeCompare(b.display_name));
   res.json({ zones: list });
+});
+
+// Every output the Core knows about, for the zone-grouping sheet. Served from
+// the outputs cache (subscribe_outputs), falling back to the outputs carried by
+// the zone feed so this still answers on a Core that never subscribed us.
+app.get("/api/outputs", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  const src = Object.keys(outputs).length
+    ? Object.values(outputs)
+    : Object.values(zones).reduce((acc, z) => acc.concat(z.outputs || []), []);
+  const zoneName = (zid) => (zones[zid] && zones[zid].display_name) || "";
+  const list = src.map(o => Object.assign(outputInfo(o), { zone_name: zoneName(o.zone_id) }))
+                  .sort((a, b) => a.display_name.localeCompare(b.display_name));
+  res.json({ outputs: list });
 });
 
 // Read an optional genre/tag filter from query params (or POST body).
@@ -7975,6 +8058,9 @@ app.get("/api/zone-state", (req, res) => {
       is_next_allowed:     !!zone.is_next_allowed,
       is_previous_allowed: !!zone.is_previous_allowed,
       is_seek_allowed:     !!zone.is_seek_allowed,
+      // Shuffle / repeat / Roon Radio, so the now-playing screen can show the
+      // zone's real state instead of guessing from its own last write.
+      settings:            zoneSettings(zone),
       outputs: (zone.outputs || []).map(o => ({
         output_id:    o.output_id,
         display_name: o.display_name,
@@ -8023,6 +8109,115 @@ app.post("/api/control", (req, res) => {
   }
   core.services.RoonApiTransport.control(zone_or_output_id, command, (err) => {
     if (err) return res.status(500).json({ error: typeof err === "string" ? err : JSON.stringify(err) });
+    res.json({ ok: true });
+  });
+});
+
+// Shuffle / repeat / Roon Radio for a zone.
+// body: { zone_or_output_id, shuffle?, loop?, auto_radio? }
+//   shuffle:    boolean
+//   loop:       "disabled" | "loop" (whole queue) | "loop_one" (this track)
+//   auto_radio: boolean — Roon Radio, Roon's own keep-playing feature
+//
+// Roon's change_settings also accepts loop:"next" to cycle server-side; we
+// deliberately don't expose it. The client already knows the current mode from
+// the zone poll, so it sends the concrete state it wants — which means the
+// request says what it does, and a failed call can't leave the UI out of step
+// with the zone.
+const ZONE_LOOP_MODES = ["disabled", "loop", "loop_one"];
+app.post("/api/zone-settings", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  const { zone_or_output_id } = req.body || {};
+  if (!zone_or_output_id) return res.status(400).json({ error: "zone_or_output_id required" });
+
+  const patch = {};
+  if (req.body.shuffle !== undefined) {
+    if (typeof req.body.shuffle !== "boolean") return res.status(400).json({ error: "shuffle must be a boolean" });
+    patch.shuffle = req.body.shuffle;
+  }
+  if (req.body.auto_radio !== undefined) {
+    if (typeof req.body.auto_radio !== "boolean") return res.status(400).json({ error: "auto_radio must be a boolean" });
+    patch.auto_radio = req.body.auto_radio;
+  }
+  if (req.body.loop !== undefined) {
+    if (!ZONE_LOOP_MODES.includes(req.body.loop)) {
+      return res.status(400).json({ error: "invalid loop, allowed: " + ZONE_LOOP_MODES.join(", ") });
+    }
+    patch.loop = req.body.loop;
+  }
+  if (!Object.keys(patch).length) {
+    return res.status(400).json({ error: "one of shuffle, loop, auto_radio required" });
+  }
+
+  // Turning Roon Radio on makes the Random Album Radio stand down for this zone
+  // (lib/radio.js returns null while auto_radio is set), so the two never fight
+  // over the same queue. We don't silently switch the user's own setting off —
+  // we report it so the UI can say what just happened.
+  const zone = zones[zone_or_output_id]
+    || (outputs[zone_or_output_id] && zones[outputs[zone_or_output_id].zone_id])
+    || null;
+  const ownRadioStandsDown = !!(patch.auto_radio === true && zone && radioZones.has(zone.zone_id));
+
+  core.services.RoonApiTransport.change_settings(zone_or_output_id, patch, (err) => {
+    if (err) {
+      const msg = typeof err === "string" ? err : JSON.stringify(err);
+      console.warn(`[zone-settings] failed: ${msg}`);
+      return res.status(500).json({ error: msg });
+    }
+    res.json({ ok: true, random_album_radio_stands_down: ownRadioStandsDown });
+  });
+});
+
+// Group outputs into one synchronised zone.  body: { output_ids: [...] }
+// Roon preserves the FIRST output's zone's queue, so the client sends the zone
+// it wants to keep playing first.
+app.post("/api/group-outputs", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  const ids = req.body && req.body.output_ids;
+  if (!Array.isArray(ids) || ids.length < 2) {
+    return res.status(400).json({ error: "output_ids must be an array of at least 2 output ids" });
+  }
+  if (!ids.every(id => typeof id === "string" && id)) {
+    return res.status(400).json({ error: "output_ids must be non-empty strings" });
+  }
+  if (new Set(ids).size !== ids.length) {
+    return res.status(400).json({ error: "output_ids must not repeat" });
+  }
+  const names = ids.map(id => (outputs[id] && outputs[id].display_name) || id);
+  console.log(`[group-outputs] ${names.join(" + ")}`);
+  core.services.RoonApiTransport.group_outputs(ids, (err) => {
+    if (err) {
+      const msg = typeof err === "string" ? err : JSON.stringify(err);
+      console.warn(`[group-outputs] failed: ${msg}`);
+      return res.status(500).json({ error: msg });
+    }
+    console.log(`[group-outputs] ok`);
+    res.json({ ok: true });
+  });
+});
+
+// Split outputs back out of their group.  body: { output_ids: [...] }
+app.post("/api/ungroup-outputs", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  const ids = req.body && req.body.output_ids;
+  if (!Array.isArray(ids) || ids.length < 1) {
+    return res.status(400).json({ error: "output_ids must be a non-empty array of output ids" });
+  }
+  if (!ids.every(id => typeof id === "string" && id)) {
+    return res.status(400).json({ error: "output_ids must be non-empty strings" });
+  }
+  if (new Set(ids).size !== ids.length) {
+    return res.status(400).json({ error: "output_ids must not repeat" });
+  }
+  const names = ids.map(id => (outputs[id] && outputs[id].display_name) || id);
+  console.log(`[ungroup-outputs] ${names.join(", ")}`);
+  core.services.RoonApiTransport.ungroup_outputs(ids, (err) => {
+    if (err) {
+      const msg = typeof err === "string" ? err : JSON.stringify(err);
+      console.warn(`[ungroup-outputs] failed: ${msg}`);
+      return res.status(500).json({ error: msg });
+    }
+    console.log(`[ungroup-outputs] ok`);
     res.json({ ok: true });
   });
 });

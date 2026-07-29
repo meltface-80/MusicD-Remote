@@ -2,6 +2,61 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.1] — 2026-07-29
+
+Roon parity from the official extension API. Six transport capabilities the SDK has always
+offered were simply unused here; these are the four that close the biggest gaps, with no
+reverse-engineered protocol involved.
+
+### Added
+- **Shuffle, repeat and Roon Radio** on the now-playing screen, via Roon's own
+  `change_settings`. Repeat cycles off → whole queue → this track the way Roon's remote does,
+  with the mode named on the button and a "1" inside the repeat arrows for track-repeat.
+- **Zone grouping.** A new "Group zones…" sheet (from either zone picker) ticks the outputs
+  that should play in sync and applies the change with `group_outputs` / `ungroup_outputs`.
+  Only outputs the Core says it can sync with the current zone are offered, and the zone you
+  are listening to is always sent first, so grouping can never lose the playing queue.
+- Grouped zones now name their member outputs on a second line in both zone pickers — a real
+  "Kitchen + Study" group was previously indistinguishable from a zone called that.
+- `GET /api/outputs`, `POST /api/zone-settings`, `POST /api/group-outputs`,
+  `POST /api/ungroup-outputs`; `settings` (shuffle/loop/auto_radio) added to
+  `/api/zone-state` and `/api/zones`.
+
+### Changed
+- A second long-lived Roon subscription (`subscribe_outputs`) now feeds the output cache.
+  The zone feed only ever mentions an output as a member of a zone, so it cannot report a
+  change that is purely about the output — and grouping depends on exactly that
+  (`can_group_with_output_ids`). While that feed is live it owns the cache's removals,
+  because grouping an output into another zone *removes* its old zone and the zone feed's
+  removal path would have deleted a perfectly live output.
+- The now-playing transport row holds five buttons instead of three; its gap is now
+  responsive and the buttons no longer shrink, so the row fits a 360px phone.
+- The mode buttons repaint only when the zone's modes actually change. They are painted from
+  the 1.5s poll, and `setAttribute` marks an attribute dirty even when the value is unchanged
+  — the same paint-invalidation the mini bar's `lastBarSig` gate exists to avoid.
+- Turning Roon Radio on reports that the app's own Random Album Radio stands down for that
+  zone (it always did — `lib/radio.js` defers to `auto_radio` — but nothing said so).
+
+### Error classes documented
+- **State the client invented.** Every mode button is painted from the zone poll and sends a
+  concrete state rather than "toggle", so a change the Core rejects leaves the button dark
+  instead of lit-but-wrong. `loop: "next"` is deliberately not exposed for the same reason.
+- **"Unknown" read as "none".** An absent `can_group_with_output_ids` means the Core didn't
+  say, and must offer every output; an empty array means it did say, and offers none.
+  Collapsing the two would have made grouping silently list nothing on some Cores.
+- **A fixed wait standing in for a signal.** Grouping retires zone ids asynchronously, so the
+  app polls for the settled topology instead of guessing a delay, and closes the sheet as soon
+  as Roon accepts rather than waiting for it.
+
+### Tests
+- 33 new tests (324 total: static 22, unit 170, dom 132): `unit/zonemodes` for the two server projections,
+  `dom/np-modes` for the three mode buttons (including a 360px layout assertion that the
+  five-button row neither overflows nor squashes), `dom/group-sheet` for the grouping diff,
+  the locked anchor, the can-group filter and the unknown-list fallback. Seven mutations were
+  planted — a fixed transport gap, an unchecked `loop` passthrough, "unknown" collapsed to
+  "none", a dropped ungroup half, a mis-ordered group call, an unlocked anchor and an
+  over-eager repaint gate — and all seven went red.
+
 ## [1.7.0] — 2026-07-29
 
 A minor-version bump rather than another point release, because the app looks and behaves

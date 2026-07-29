@@ -1562,10 +1562,15 @@ main {
 
 .np-transport {
   display: flex; align-items: center; justify-content: center;
-  gap: 28px; margin-top: 12px;
+  /* Five buttons now (shuffle · prev · play · next · repeat), as on Roon's own
+     remote. The gap collapses on narrow phones so the row still fits without
+     the circles being squashed — .np-btn is flex: 0 0 auto for that reason, and
+     test/dom/np-modes.test.js asserts the row never overflows at 360px. */
+  gap: clamp(6px, 3.4vw, 28px); margin-top: 12px;
 }
 .np-btn {
   display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto;
   width: 56px; height: 56px;
   background: transparent; color: var(--text);
   border: 0; border-radius: 50%; cursor: pointer;
@@ -1582,6 +1587,34 @@ main {
 }
 .np-playpause:hover { background: var(--text); filter: brightness(.95); }
 .np-playpause svg { width: 30px; height: 30px; }
+
+/* Playback modes (shuffle / repeat): smaller and dimmer than the transport
+   proper until they're on, so the row still reads play-pause-first. */
+.np-mode-btn {
+  position: relative;   /* anchors the repeat-one badge */
+  width: 46px; height: 46px;
+  color: var(--text-dim);
+}
+.np-mode-btn svg { width: 22px; height: 22px; }
+.np-mode-btn.is-on { color: var(--accent-text); background: var(--accent-soft); }
+.np-mode-btn.is-on:hover { background: var(--accent-soft); }
+/* The "1" sits INSIDE the repeat arrows, where the icon is hollow — a corner
+   badge small enough not to crowd a 40px button was too small to read. */
+.np-mode-badge {
+  position: absolute; top: 0; right: 0; bottom: 0; left: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; line-height: 1; font-weight: 700;
+  color: currentColor; pointer-events: none;
+}
+.np-mode-badge.hidden { display: none; }
+/* Roon Radio sits in the secondary row; same on-state as the mode buttons. */
+.np-mini-btn.is-on { color: var(--accent-text); background: var(--accent-soft); }
+.np-mini-btn.is-on:hover { background: var(--accent-soft); color: var(--accent-text); }
+
+@media (max-width: 420px) {
+  .np-mode-btn { width: 40px; height: 40px; }
+  .np-mode-btn svg { width: 20px; height: 20px; }
+}
 
 .np-secondary {
   display: flex; align-items: center; justify-content: space-between;
@@ -2306,6 +2339,52 @@ input.vol-range::-moz-range-thumb {
 .np-device-item:hover { background: var(--bg-elev); }
 .np-device-item.is-current { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
 .np-device-empty { color: var(--text-faint); font-size: 14px; padding: 8px 10px; }
+/* Second line under a zone name, listing the outputs in a grouped zone. */
+.np-device-item { line-height: 1.25; }
+.np-device-sub {
+  display: block; margin-top: 2px;
+  font-size: 12px; font-weight: 400; color: var(--text-faint);
+  overflow: hidden; text-overflow: ellipsis;
+}
+.np-device-item.is-current .np-device-sub { color: inherit; opacity: .8; }
+/* Footer action in a zone popover ("Group zones…"). */
+.np-popover-action {
+  display: block; width: 100%; margin-top: 8px;
+  padding: 9px 10px; border: 0; border-top: 1px solid var(--border);
+  border-radius: 0 0 8px 8px;
+  background: transparent; color: var(--accent-text);
+  font-size: 14px; font-weight: 600; text-align: left; cursor: pointer;
+}
+.np-popover-action:hover { background: var(--bg-elev); }
+
+/* --- Zone grouping sheet (built by openLibSheet, so it inherits .lib-sheet) - */
+.group-row {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 11px 12px; border: 1px solid var(--border); border-radius: 10px;
+  background: transparent; color: var(--text);
+  font-size: 15px; text-align: left; cursor: pointer;
+}
+.group-row + .group-row { margin-top: 6px; }
+.group-row.is-on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
+/* The anchor is disabled because it must stay ticked, not because it is
+   unavailable — dimming it would read as "this zone can't be used". */
+.group-row.is-anchor { cursor: default; }
+.group-row:disabled:not(.is-anchor) { cursor: not-allowed; opacity: .5; }
+.group-box {
+  flex: 0 0 auto;
+  width: 20px; height: 20px; border-radius: 5px;
+  border: 1.5px solid var(--text-faint);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; line-height: 1; color: transparent;
+}
+.group-row.is-on .group-box { border-color: currentColor; color: currentColor; }
+.group-text { min-width: 0; flex: 1 1 auto; }
+.group-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-note {
+  display: block; margin-top: 2px;
+  font-size: 12px; color: var(--text-faint);
+}
+.group-row.is-on .group-note { color: inherit; opacity: .8; }
 
 .np-vol-fixed {
   display: flex; align-items: center; gap: 8px;

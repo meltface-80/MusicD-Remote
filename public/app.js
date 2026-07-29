@@ -1127,6 +1127,213 @@
     });
   }
 
+  // A zone row's label. Grouped zones get a second line naming their outputs,
+  // as Roon's own remote does — without it a zone called "Kitchen + Study" and
+  // a real Kitchen+Study group look identical.
+  function fillZoneRow(item, z) {
+    const outs = z.outputs || [];
+    const name = document.createElement("span");
+    name.className = "group-name";
+    name.textContent = z.display_name;
+    item.appendChild(name);
+    if (outs.length > 1) {
+      const sub = document.createElement("span");
+      sub.className = "np-device-sub";
+      sub.textContent = outs.map(o => o.display_name).filter(Boolean).join(" + ");
+      item.appendChild(sub);
+    }
+  }
+  window.__fillZoneRow = fillZoneRow;
+
+  // ----- Zone grouping (Roon group_outputs / ungroup_outputs) ---------------
+  //
+  // Roon groups OUTPUTS, not zones: a zone IS whichever outputs currently play
+  // in sync. So this is a checklist of outputs anchored on the zone the app is
+  // driving. Roon preserves the first output's queue, so the anchor's own
+  // output is always sent first and always stays ticked — grouping can never
+  // throw away what you're listening to.
+  async function openGroupSheet() {
+    const anchorZoneId = selectedZoneId;
+    let list = [];
+    try {
+      const r = await fetch("/api/outputs", { cache: "no-store" });
+      if (r.ok) { const j = await r.json(); if (Array.isArray(j.outputs)) list = j.outputs; }
+    } catch (e) { /* leaves `list` empty — the empty state below explains it */ }
+
+    const anchorOutputs = anchorZoneId ? list.filter(o => o.zone_id === anchorZoneId) : [];
+    const anchorIds     = anchorOutputs.map(o => o.output_id);
+    const primary       = anchorOutputs[0] || null;
+
+    // Roon says which outputs an output may join. A Core that doesn't send the
+    // list gives us null, which we read as "unknown" and offer everything —
+    // offering nothing would make the feature look broken rather than limited.
+    const allowed = primary && Array.isArray(primary.can_group_with_output_ids)
+      ? new Set(primary.can_group_with_output_ids)
+      : null;
+    const offerable = list.filter(o =>
+      anchorIds.includes(o.output_id) || !allowed || allowed.has(o.output_id));
+
+    const picked = new Set(anchorIds);
+
+    openLibSheet("Group zones", (body, close) => {
+      const paint = () => {
+        body.innerHTML = "";
+        if (!primary) {
+          const note = document.createElement("div");
+          note.className = "lib-sheet-note";
+          note.textContent = list.length
+            ? "Choose a zone first — grouping needs a zone to build the group around."
+            : "No outputs available. Check that the extension is paired with your Roon Core.";
+          body.appendChild(note);
+          return;
+        }
+        for (const o of offerable) {
+          const isPrimary = o.output_id === primary.output_id;
+          const on = picked.has(o.output_id);
+          const row = document.createElement("button");
+          row.type = "button";
+          row.className = "group-row" + (on ? " is-on" : "") + (isPrimary ? " is-anchor" : "");
+          row.dataset.output = o.output_id;
+          const box = document.createElement("span");
+          box.className = "group-box";
+          box.textContent = "✓";
+          const text = document.createElement("span");
+          text.className = "group-text";
+          const nm = document.createElement("span");
+          nm.className = "group-name";
+          nm.textContent = o.display_name || o.output_id;
+          text.appendChild(nm);
+          // Say why a row can't be unticked, and warn when taking an output
+          // would break up a group it is already in. Outputs already in THIS
+          // zone get nothing — they're ticked, which says it, and naming the
+          // group we're editing back at the user is just noise.
+          const noteText = isPrimary
+            ? "Keeps playing — this group's queue"
+            : (!anchorIds.includes(o.output_id) && o.zone_name && o.zone_name !== o.display_name
+                ? "In " + o.zone_name : "");
+          if (noteText) {
+            const nt = document.createElement("span");
+            nt.className = "group-note";
+            nt.textContent = noteText;
+            text.appendChild(nt);
+          }
+          row.appendChild(box); row.appendChild(text);
+          if (isPrimary) {
+            row.disabled = true;
+            row.setAttribute("aria-pressed", "true");
+          } else {
+            row.setAttribute("aria-pressed", String(on));
+            row.addEventListener("click", () => {
+              if (picked.has(o.output_id)) picked.delete(o.output_id);
+              else picked.add(o.output_id);
+              paint();
+              const again = body.querySelector('[data-output="' + o.output_id + '"]');
+              if (again) again.focus();
+            });
+          }
+          body.appendChild(row);
+        }
+        if (offerable.length < list.length) {
+          const note = document.createElement("div");
+          note.className = "lib-sheet-note";
+          note.textContent = "Outputs your Core can't sync with " + primary.display_name +
+                             " aren't listed — Roon decides which devices can play together.";
+          body.appendChild(note);
+        }
+      };
+      paint();
+    }, (foot, close) => {
+      const cancel = document.createElement("button");
+      cancel.type = "button"; cancel.className = "action-btn";
+      cancel.textContent = "Cancel";
+      cancel.addEventListener("click", close);
+      const apply = document.createElement("button");
+      apply.type = "button"; apply.className = "action-btn primary";
+      apply.textContent = "Apply";
+      apply.addEventListener("click", async () => {
+        if (!primary) { close(); return; }
+        const toRemove = anchorIds.filter(id => !picked.has(id));
+        const toAdd    = [...picked].filter(id => !anchorIds.includes(id));
+        if (!toRemove.length && !toAdd.length) { close(); return; }
+        apply.disabled = true; cancel.disabled = true;
+        const ok = await applyGrouping(anchorIds, toRemove, toAdd, primary);
+        apply.disabled = false; cancel.disabled = false;
+        if (ok) close();
+      });
+      foot.appendChild(cancel); foot.appendChild(apply);
+    });
+  }
+
+  // Split first, then group: ungrouping an output that is also being regrouped
+  // elsewhere would otherwise race, and Roon takes the whole desired set for a
+  // group in one call anyway.
+  async function applyGrouping(anchorIds, toRemove, toAdd, primary) {
+    const post = async (url, output_ids) => {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ output_ids })
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.error || ("HTTP " + r.status));
+      }
+    };
+    try {
+      if (toRemove.length) await post("/api/ungroup-outputs", toRemove);
+      if (toAdd.length) {
+        // primary first — Roon preserves the first output's zone's queue.
+        const kept = anchorIds.filter(id => id !== primary.output_id && !toRemove.includes(id));
+        await post("/api/group-outputs", [primary.output_id, ...kept, ...toAdd]);
+      }
+      showToast("Zones updated");
+    } catch (e) {
+      showToast(e.message || "Could not change grouping", "error");
+      return false;
+    }
+    // Roon has accepted the change, so the sheet's work is done — settling the
+    // app onto the new zone happens in the background rather than holding the
+    // sheet open for it. Detached deliberately: an unresolved settle must not
+    // leave the user staring at a sheet Roon has already acted on.
+    const want = new Set([
+      primary.output_id,
+      ...anchorIds.filter(id => !toRemove.includes(id)),
+      ...toAdd,
+    ]);
+    settleZoneAfterGrouping(primary.output_id, want);
+    return true;
+  }
+
+  // Grouping retires zone ids — Roon mints a zone per set of outputs — so the
+  // app has to be re-pointed at whichever zone now holds the output we anchored
+  // on. Left alone, loadZones() would find the old id gone and fall back to
+  // whichever zone sorts first, quietly moving the user elsewhere.
+  //
+  // The Core's zone update is asynchronous, so a single fixed wait is a guess.
+  // Poll instead: take the best answer available on each attempt and stop as
+  // soon as the topology matches what was asked for. Bounded at ~2s, after which
+  // loadZones() and the 1.5s transport poll resync regardless.
+  async function settleZoneAfterGrouping(anchorOutputId, want) {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await new Promise(r => setTimeout(r, 250));
+      let zs = null;
+      try {
+        const r = await fetch("/api/zones", { cache: "no-store" });
+        if (r.ok) { const j = await r.json(); if (Array.isArray(j.zones)) zs = j.zones; }
+      } catch (e) { /* transient — retry; the loop is bounded and resyncs after */ }
+      if (!zs) continue;
+      const z = zs.find(zz => (zz.outputs || []).some(o => o.output_id === anchorOutputId));
+      if (!z) continue;
+      try { localStorage.setItem("rra-zone", z.zone_id); }
+      catch (e) { /* private mode — loadZones() still selects a zone, just not this one */ }
+      const have = new Set((z.outputs || []).map(o => o.output_id));
+      if (have.size === want.size && [...want].every(id => have.has(id))) break;
+    }
+    await loadZones();
+    if (typeof window.__refreshTransport === "function") window.__refreshTransport();
+  }
+  window.__openGroupSheet = openGroupSheet;
+
   async function showLibraryWall() {
     const m = enterFullWall("Library");
     libraryWallActive = true;
@@ -1682,7 +1889,7 @@
       item.type = "button";
       item.className = "np-device-item" + (z.zone_id === selectedZoneId ? " is-current" : "");
       item.dataset.zone = z.zone_id;
-      item.textContent = z.display_name;
+      fillZoneRow(item, z);
       item.addEventListener("click", (e) => {
         e.stopPropagation();
         npDevicePopover.classList.add("hidden");
@@ -1707,6 +1914,16 @@
       if (willShow) await renderDeviceList();
       npDevicePopover.classList.toggle("hidden", !willShow);
       npDeviceBtn.setAttribute("aria-expanded", String(willShow));
+    });
+  }
+
+  const npGroupOpen = document.getElementById("np-group-open");
+  if (npGroupOpen) {
+    npGroupOpen.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (npDevicePopover) npDevicePopover.classList.add("hidden");
+      if (npDeviceBtn) npDeviceBtn.setAttribute("aria-expanded", "false");
+      openGroupSheet();
     });
   }
 
@@ -3572,6 +3789,10 @@
   const npIconVol   = document.getElementById("np-icon-vol");
   const npIconMute  = document.getElementById("np-icon-mute");
   const npVolSlider = document.getElementById("np-vol-slider");
+  const npShuffle   = document.getElementById("np-shuffle");
+  const npLoop      = document.getElementById("np-loop");
+  const npLoopBadge = document.getElementById("np-loop-badge");
+  const npRadio     = document.getElementById("np-radio");
 
   let currentZone = null;       // server-side zone state
   let pollTimer   = null;
@@ -3835,6 +4056,9 @@
     }
 
     if (!npTrack || !onNowPlayingScreen()) return;
+    // Playback modes belong to the ZONE, not to the track — a stopped zone can
+    // still have shuffle on, and Roon lets you set it before pressing play.
+    paintModeButtons();
     if (!np) { setNpTrack(null); setNpArtists(null); npAlbum.textContent = ""; return; }
 
     setNpTrack(np.line1);
@@ -3938,6 +4162,81 @@
     } catch (e) { /* transport control is best-effort; fetchState() already scheduled above */ }
   }
 
+  // Roon's per-zone playback modes. The server always sends `settings`, but a
+  // page kept alive across an extension update can briefly be talking to the
+  // old one — an absent block reads as everything off rather than throwing.
+  function zoneModes() {
+    const s = (currentZone && currentZone.settings) || {};
+    return {
+      shuffle:    !!s.shuffle,
+      loop:       (s.loop === "loop" || s.loop === "loop_one") ? s.loop : "disabled",
+      auto_radio: !!s.auto_radio
+    };
+  }
+
+  const LOOP_LABEL = { disabled: "Repeat off", loop: "Repeat queue", loop_one: "Repeat track" };
+  // Tapping repeat cycles off → whole queue → this track, as Roon's remote does.
+  const LOOP_NEXT  = { disabled: "loop", loop: "loop_one", loop_one: "disabled" };
+
+  let lastModeSig = "";
+  function paintModeButtons() {
+    const live = !!currentZone;
+    const m = zoneModes();
+    // updateNpScreen() runs on the 1.5s poll, and setAttribute() marks an
+    // attribute dirty even when the value is unchanged — the same reason the
+    // mini bar's repaint is gated by lastBarSig. Nothing below changes unless
+    // the zone's modes do, so skip the whole thing when they haven't.
+    const sig = [live, m.shuffle, m.loop, m.auto_radio].join("|");
+    if (sig === lastModeSig) return;
+    lastModeSig = sig;
+    if (npShuffle) {
+      npShuffle.disabled = !live;
+      npShuffle.classList.toggle("is-on", live && m.shuffle);
+      npShuffle.setAttribute("aria-pressed", String(live && m.shuffle));
+      npShuffle.setAttribute("aria-label", live && m.shuffle ? "Shuffle on" : "Shuffle");
+    }
+    if (npLoop) {
+      const loop = live ? m.loop : "disabled";
+      npLoop.disabled = !live;
+      npLoop.classList.toggle("is-on", loop !== "disabled");
+      npLoop.setAttribute("aria-label", LOOP_LABEL[loop]);
+      if (npLoopBadge) npLoopBadge.classList.toggle("hidden", loop !== "loop_one");
+    }
+    if (npRadio) {
+      npRadio.disabled = !live;
+      npRadio.classList.toggle("is-on", live && m.auto_radio);
+      npRadio.setAttribute("aria-pressed", String(live && m.auto_radio));
+      npRadio.setAttribute("aria-label", live && m.auto_radio ? "Roon Radio on" : "Roon Radio");
+    }
+  }
+
+  // Shuffle / repeat / Roon Radio. Mirrors control(): fire, then re-poll, so the
+  // buttons show what the ZONE reports rather than what we asked for — a change
+  // the Core rejects must not leave a button lit.
+  async function changeZoneSettings(patch) {
+    if (!currentZone) return;
+    try {
+      const r = await fetch("/api/zone-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(Object.assign({ zone_or_output_id: currentZone.zone_id }, patch))
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        console.warn("zone-settings failed:", j.error || r.status);
+        if (window.__showToast) window.__showToast(j.error || "Could not change that", "error");
+      } else if (j.random_album_radio_stands_down && window.__showToast) {
+        // Roon Radio and the app's own Random Album Radio would fight over the
+        // same queue, so ours stands down. Say so instead of looking broken.
+        window.__showToast("Roon Radio on — Random Album Radio stands down for this zone");
+      }
+    } catch (e) {
+      // Network blip. The finally below still re-polls, so the buttons resync.
+    } finally {
+      setTimeout(fetchState, 200);
+    }
+  }
+
   async function setVolume(value) {
     if (!currentZone) return;
     try {
@@ -3969,6 +4268,18 @@
   if (npPrev)      npPrev.addEventListener("click", () => control("previous"));
   if (npNext)      npNext.addEventListener("click", () => control("next"));
 
+  // Playback modes. Each reads the zone's CURRENT value at click time (not a
+  // mirrored local flag) and sends the concrete state it wants.
+  if (npShuffle) npShuffle.addEventListener("click", () => changeZoneSettings({ shuffle: !zoneModes().shuffle }));
+  if (npLoop)    npLoop.addEventListener("click", () => changeZoneSettings({ loop: LOOP_NEXT[zoneModes().loop] }));
+  if (npRadio)   npRadio.addEventListener("click", (e) => {
+    // Radio lives in .np-secondary, whose popovers the document handler leaves
+    // alone — close them here so they don't sit over the row.
+    e.stopPropagation();
+    closeNpPopovers();
+    changeZoneSettings({ auto_radio: !zoneModes().auto_radio });
+  });
+
   // Volume popover: tap the speaker to reveal the slider (or the "fixed" note).
   if (npVolBtn && npVolPopover) {
     npVolBtn.addEventListener("click", (e) => {
@@ -3981,15 +4292,20 @@
     });
   }
 
-  // Close the now-playing popovers when tapping outside the controls row.
-  document.addEventListener("click", (e) => {
-    if (e.target.closest && e.target.closest(".np-secondary")) return;
+  // Shut both now-playing popovers (volume, device) and reset their buttons.
+  function closeNpPopovers() {
     if (npVolPopover) npVolPopover.classList.add("hidden");
     if (npVolBtn) npVolBtn.setAttribute("aria-expanded", "false");
     const dp = document.getElementById("np-device-popover");
     const db = document.getElementById("np-device");
     if (dp) dp.classList.add("hidden");
     if (db) db.setAttribute("aria-expanded", "false");
+  }
+
+  // Close the now-playing popovers when tapping outside the controls row.
+  document.addEventListener("click", (e) => {
+    if (e.target.closest && e.target.closest(".np-secondary")) return;
+    closeNpPopovers();
   });
 
   // Now-playing scrubber: show the dragged time live, seek on release.
@@ -4103,7 +4419,8 @@
       const item = document.createElement("button");
       item.type = "button";
       item.className = "np-device-item" + (z.zone_id === cur ? " is-current" : "");
-      item.textContent = z.display_name;
+      if (window.__fillZoneRow) window.__fillZoneRow(item, z);
+      else item.textContent = z.display_name;
       item.addEventListener("click", (e) => {
         e.stopPropagation();
         zonePop.classList.add("hidden");
@@ -4131,6 +4448,15 @@
       zonePop.classList.add("hidden");
       btnZone.setAttribute("aria-expanded", "false");
     });
+    const mtGroupOpen = document.getElementById("mt-group-open");
+    if (mtGroupOpen) {
+      mtGroupOpen.addEventListener("click", (e) => {
+        e.stopPropagation();
+        zonePop.classList.add("hidden");
+        btnZone.setAttribute("aria-expanded", "false");
+        if (window.__openGroupSheet) window.__openGroupSheet();
+      });
+    }
   }
 
   // Tap the info area (art + text) to open the now-playing album in the modal
