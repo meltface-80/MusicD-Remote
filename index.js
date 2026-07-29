@@ -731,8 +731,12 @@ async function pickRandomAlbums(count, filter) {
     if (!Number.isFinite(decade)) return { albums: [], total: 0 };
     const matches = [];
     for (const al of albumIndex.albums) {
-      const y = parseInt(albumYearCache.get(normalize(al.title) + "||" + normalize(al.subtitle)) || "", 10);
-      if (Number.isFinite(y) && y >= decade && y < decade + 10) matches.push(al);
+      // albumYearOf, not a fourth hand-written copy of the key expression —
+      // these must agree with the Decade counts and the Library focus filter,
+      // and a future change to nTitle/nArtist would desynchronise a copy
+      // silently (the counts would say one thing, the results another).
+      const y = albumYearOf(al);
+      if (y !== null && y >= decade && y < decade + 10) matches.push(al);
     }
     if (!matches.length) return { albums: [], total: 0 };
     const want = Math.min(count, matches.length);
@@ -1428,6 +1432,20 @@ let libraryMetaVersion = 0;
 const libraryViewCache = new Map();      // sig -> ordered album array
 const LIBRARY_VIEW_CACHE_MAX = 8;
 function bumpLibraryMeta() { libraryMetaVersion++; libraryViewCache.clear(); }
+// Coalesced bump for the label scan, which discovers years one HTTP response at
+// a time. Bumping per year would clear the memoised orderings several times a
+// second for the hours a first scan takes — the cache would never survive long
+// enough to be used, and every Library page would re-sort the whole library.
+// This caps the staleness at LIBRARY_META_BUMP_MS instead.
+const LIBRARY_META_BUMP_MS = 20000;
+let _metaBumpTimer = null;
+function scheduleLibraryMetaBump() {
+  if (_metaBumpTimer) return;
+  _metaBumpTimer = setTimeout(() => { _metaBumpTimer = null; bumpLibraryMeta(); },
+                              LIBRARY_META_BUMP_MS);
+  // Never hold the process open for a cache invalidation.
+  if (_metaBumpTimer.unref) _metaBumpTimer.unref();
+}
 
 let labelsDb = null;
 let stmtInsertName, stmtInsertMbid, stmtInsertLogo, stmtInsertMerge, stmtDeleteMerge, stmtInsertYear;
@@ -1483,6 +1501,12 @@ function openLabelsDb() {
         year TEXT NOT NULL
       );
     `);
+    // `src` records WHERE a year came from, so a better source can correct a
+    // worse one (see yearSourceRank). Added after the table shipped without
+    // it, so it goes on as a migration; existing rows read back as rank 0 and
+    // any identified source outranks them.
+    try { labelsDb.exec("ALTER TABLE album_years ADD COLUMN src TEXT"); }
+    catch (e) { /* already present — SQLite has no ADD COLUMN IF NOT EXISTS */ }
     stmtInsertName  = labelsDb.prepare("INSERT OR REPLACE INTO label_names (key, label) VALUES (?, ?)");
     stmtInsertMbid  = labelsDb.prepare("INSERT OR REPLACE INTO label_mbids (group_key, mbid) VALUES (?, ?)");
     stmtInsertLogo  = labelsDb.prepare("INSERT OR REPLACE INTO label_logos (group_key, logo_url) VALUES (?, ?)");
@@ -1490,7 +1514,7 @@ function openLabelsDb() {
     stmtDeleteMerge = labelsDb.prepare("DELETE FROM label_merges WHERE source_key = ?");
     stmtInsertPlay  = labelsDb.prepare("INSERT INTO plays (ts, zone, track, artist, album, image_key, duration) VALUES (?,?,?,?,?,?,?)");
     stmtCompletePlay = labelsDb.prepare("UPDATE plays SET completed=1 WHERE id=?");
-    stmtInsertYear  = labelsDb.prepare("INSERT OR REPLACE INTO album_years (key, year) VALUES (?, ?)");
+    stmtInsertYear  = labelsDb.prepare("INSERT OR REPLACE INTO album_years (key, year, src) VALUES (?, ?, ?)");
     const stmtDeleteName = labelsDb.prepare("DELETE FROM label_names WHERE key = ?");
     for (const r of labelsDb.prepare("SELECT key, label FROM label_names").all()) {
       if (!r.label) continue;
@@ -1510,8 +1534,11 @@ function openLabelsDb() {
     for (const r of labelsDb.prepare("SELECT source_key, source_display, target_key, target_display FROM label_merges").all()) {
       labelMerges.set(r.source_key, { targetKey: r.target_key, targetDisplay: r.target_display, sourceDisplay: r.source_display });
     }
-    for (const r of labelsDb.prepare("SELECT key, year FROM album_years").all()) {
-      if (r.year) albumYearCache.set(r.key, r.year);
+    for (const r of labelsDb.prepare("SELECT key, year, src FROM album_years").all()) {
+      if (r.year) {
+        albumYearCache.set(r.key, r.year);
+        if (r.src) albumYearSource.set(r.key, r.src);
+      }
     }
     migrateOldJsonCaches();
     if (DEBUG) console.log(
@@ -1607,13 +1634,79 @@ function purgeFanartLogoMisses() {
   }
   return cleared;
 }
+// Where a stored year came from. Higher wins: a better source may CORRECT a
+// worse one, a worse one may never overwrite a better one.
+//
+// This exists because "first writer wins" is not safe when the writers race.
+// The local file scan walks the disk for minutes while the Qobuz/TIDAL
+// favourites come back in seconds, so on a rescan the services would land
+// first and their edition dates would stick permanently — a TIDAL 2011
+// remaster of a 1973 album filed under the 2010s, with the user's own
+// ORIGINALDATE tag arriving too late to correct it.
+//
+// The ranking is about how close the source is to the release the user owns:
+//   file    — their own tags, describing their own copy. Nothing beats this.
+//   release — a date the source explicitly calls the ORIGINAL release
+//             (MusicBrainz, Qobuz release_date_original).
+//   edition — a date that may be this edition's rather than the original's
+//             (TIDAL releaseDate, Qobuz stream/download dates).
+//   catalog — a matched catalogue entry (iTunes, TheAudioDB, Discogs).
+// Anything already stored without a source (rows written before this existed)
+// ranks 0, so the first identified source corrects it.
+// A function, not a lookup table, so tests can exercise the shipping ranking
+// rather than a copy of it injected alongside.
+function yearSourceRank(src) {
+  switch (src) {
+    case "file":    return 4;
+    case "release": return 3;
+    case "edition": return 2;
+    case "catalog": return 1;
+    default:        return 0;   // written before provenance was recorded
+  }
+}
+const albumYearSource = new Map();   // album key → source name, mirrors album_years.src
+
 // Persist a release year for an album key (4-digit). Powers the Decade filter.
-function setAlbumYear(key, year) {
-  bumpLibraryMeta();   // ordered library views join on years — drop stale orderings
+// Returns whether anything actually changed, so bulk callers can bump the
+// library-view cache ONCE instead of once per album.
+//
+// The bump used to happen unconditionally at the top, before the value was even
+// validated — so a rejected year still threw away every memoised ordering, and
+// the bulk harvest below would have done that thousands of times per sync.
+function setAlbumYear(key, year, opts) {
   const y = String(year || "").slice(0, 4);
-  if (!/^\d{4}$/.test(y)) return; // only store a plausible 4-digit year
+  if (!/^\d{4}$/.test(y)) return false;   // only store a plausible 4-digit year
+  const src     = (opts && opts.src) || null;
+  const newRank = yearSourceRank(src);
+  const oldRank = yearSourceRank(albumYearSource.get(key));
+  const known   = albumYearCache.has(key);
+  // Same value, and no better provenance to record — nothing to do.
+  if (known && albumYearCache.get(key) === y && newRank <= oldRank) return false;
+  // A source no better than the one already on file may not overwrite it.
+  if (known && newRank <= oldRank) return false;
   albumYearCache.set(key, y);
-  if (labelsDb && stmtInsertYear) stmtInsertYear.run(key, y);
+  if (src) albumYearSource.set(key, src); else albumYearSource.delete(key);
+  if (labelsDb && stmtInsertYear) stmtInsertYear.run(key, y, src);
+  // ordered library views join on years — drop stale orderings
+  if (!(opts && opts.deferBump)) bumpLibraryMeta();
+  return true;
+}
+
+// A release year noticed while the label scan was doing something else.
+// The scan iterates the library snapshot, so callers pass ROON's own title and
+// artist — which means this can write straight into the year-cache key space
+// with no join needed.
+//
+// Deferred bump on purpose: this fires for essentially every album of the
+// iTunes pass, and an immediate bump would clear the memoised library
+// orderings several times a second for the hours a first scan runs, so every
+// Library page would re-sort the whole library from scratch. bumpLibraryMeta
+// is throttled instead.
+function rememberScanYear(title, artist, date, src) {
+  const y = yearOfDate(date);
+  if (!y || !title) return;
+  const key = normalize(title) + "||" + normalize(artist || "");
+  if (setAlbumYear(key, y, { src: src || "catalog", deferBump: true })) scheduleLibraryMetaBump();
 }
 
 openLabelsDb();
@@ -1833,6 +1926,20 @@ async function fetchLabelFromiTunes(title, artist) {
       const normArtist = normalize(artist);
       match = results.find(r => normalize(r.artistName || "") === normArtist);
     }
+    // A year is recorded only from a match verified on BOTH title and artist.
+    // The fallbacks below are fine for a label — a wrong label is cosmetic and
+    // gets overwritten on the next scan — but a year is written to album_years
+    // and read by the Decade filter, so a loose match files an album under the
+    // wrong decade permanently. The title-only branch matches any artist's
+    // "Greatest Hits"; the artist-only branch matches any album by that artist;
+    // and results[0] is whatever iTunes ranked first for a free-text query, so
+    // an album with no artist credit (common on classical and box sets) would
+    // take a stranger's release date.
+    const strict = artist
+      ? results.find(r => normalize(r.collectionName || "") === normTitle &&
+                          normalize(r.artistName || "") === normalize(artist))
+      : null;
+    if (strict) rememberScanYear(title, artist, strict.releaseDate, "catalog");
     if (!match) match = results[0];
     const label = match && match.recordLabel;
     if (!label || isLikelyNotALabel(label)) return null;
@@ -1960,7 +2067,13 @@ async function fetchLabelFromTheAudioDB(title, artist) {
     const albums = json && json.album;
     if (!Array.isArray(albums) || !albums.length) return null;
     const normTitle = normalize(title);
-    const match = albums.find(a => normalize(a.strAlbum || "") === normTitle) || albums[0];
+    const exact = albums.find(a => normalize(a.strAlbum || "") === normTitle);
+    // Year only from the EXACT title match — see the iTunes note. The query
+    // constrains the artist, so albums[0] is at least by the right artist, but
+    // it is a different album: "Live at Leeds" not found under that exact
+    // spelling would take the year of "My Generation" and land in the 1960s.
+    if (exact) rememberScanYear(title, artist, exact.intYearReleased, "catalog");
+    const match = exact || albums[0];
     const label = match && match.strLabel;
     if (!label || isLikelyNotALabel(label)) return null;
     return label;
@@ -2049,6 +2162,15 @@ loadLocalAlbumKeys();
 const STREAM_ALBUMS_FILE = path.join(__dirname, "data", "stream-albums.json");
 let qobuzAlbumKeys = new Set();
 let tidalAlbumKeys = new Set();
+// Release years harvested from those same payloads — see harvestAlbumYears
+// below for what they are and why they are keyed this way. Declared HERE, beside
+// the key sets they are filled alongside, rather than next to the harvest code:
+// refreshStreamAlbumKeys assigns them, and a `let` sitting hundreds of lines
+// BELOW its assignment is a ReferenceError waiting for the day that call stops
+// being deferred by a setTimeout. (The v1.5.66 startup crash, exactly.)
+let fileAlbumYears  = new Map();   // albumKey → "YYYY", from /music file tags
+let qobuzAlbumYears = new Map();   // albumKey → "YYYY", from Qobuz favourites
+let tidalAlbumYears = new Map();   // albumKey → "YYYY", from TIDAL favourites
 function loadStreamAlbumKeys() {
   try {
     const raw = JSON.parse(fs.readFileSync(STREAM_ALBUMS_FILE, "utf8"));
@@ -2165,6 +2287,10 @@ async function refreshStreamAlbumKeys(reason) {
         // the first 500 favourites and left the rest looking unmatched.
         const PAGE = 500, MAX_PAGES = 20;
         const keys = new Set();
+        // Harvested alongside the keys from the SAME response — Qobuz's album
+        // objects carry their release date, so the Decade filter gets it for
+        // free rather than needing a lookup pass of its own.
+        const years = new Map();
         let fetched = 0, skipped = 0;
         for (let page = 0; page < MAX_PAGES; page++) {
           const items = await qobuzWithToken((t) => qobuz.getFavoriteAlbums(t, PAGE, page * PAGE));
@@ -2172,8 +2298,10 @@ async function refreshStreamAlbumKeys(reason) {
           fetched += items.length;
           for (const a of items) {
             const before = keys.size;
-            addFavouriteKeys(keys, a.title, a.version,
-              [(a.artist && a.artist.name), (a.performer && a.performer.name)]);
+            const artists = [(a.artist && a.artist.name), (a.performer && a.performer.name)];
+            addFavouriteKeys(keys, a.title, a.version, artists);
+            addHarvestedYear(years, a.title, a.version, artists,
+              a.release_date_original || a.release_date_stream || a.release_date_download);
             if (keys.size === before) skipped++;
           }
           if (items.length < PAGE) break;
@@ -2181,8 +2309,10 @@ async function refreshStreamAlbumKeys(reason) {
         // Assigned even when EMPTY — the user may have un-favourited everything,
         // and keeping the old set would badge albums that are no longer theirs.
         qobuzAlbumKeys = keys;
+        qobuzAlbumYears = years;
         console.log("[stream] Qobuz favourites: " + keys.size + " albums from " + fetched +
-                    " favourites (" + reason + ")" + (skipped ? ", " + skipped + " unkeyable" : ""));
+                    " favourites (" + reason + ")" + (skipped ? ", " + skipped + " unkeyable" : "") +
+                    ", " + years.size + " dated");
       } catch (e) {
         // Left untouched on failure: a network blip must not wipe working badges.
         console.error("[stream] Qobuz favourites failed (keys kept):", e.message);
@@ -2195,23 +2325,32 @@ async function refreshStreamAlbumKeys(reason) {
         const rows = await tidalWithToken((token, cc) =>
           tidal.getFavoriteAlbums(token, cc, tidalUserId));
         const keys = new Set();
+        const years = new Map();   // free release dates — see the Qobuz note above
         let skipped = 0;
         for (const row of rows) {
           const a = (row && row.item) ? row.item : row;
           if (!a || !a.title) continue;
           const before = keys.size;
-          addFavouriteKeys(keys, a.title, a.version,
-            [(a.artist && a.artist.name)].concat((a.artists || []).map(x => x && x.name)));
+          const artists = [(a.artist && a.artist.name)]
+            .concat((a.artists || []).map(x => x && x.name));
+          addFavouriteKeys(keys, a.title, a.version, artists);
+          addHarvestedYear(years, a.title, a.version, artists, a.releaseDate);
           if (keys.size === before) skipped++;
         }
         tidalAlbumKeys = keys;   // empty is a valid answer — see the Qobuz note
+        tidalAlbumYears = years;
         console.log("[stream] Tidal favourites: " + keys.size + " albums from " + rows.length +
-                    " favourites (" + reason + ")" + (skipped ? ", " + skipped + " unkeyable" : ""));
+                    " favourites (" + reason + ")" + (skipped ? ", " + skipped + " unkeyable" : "") +
+                    ", " + years.size + " dated");
       } catch (e) {
         console.error("[stream] Tidal favourites failed (keys kept):", e.message);
       }
     }
     saveStreamAlbumKeys();
+    // Join the freshly harvested dates onto the snapshot. No-ops when the index
+    // isn't built yet (startup, "service connected") — the library sync calls
+    // this again once it is.
+    harvestAlbumYears("stream favourites: " + reason);
   } finally {
     _streamRefreshInFlight = false;
     if (_streamRefreshQueued) {
@@ -2262,6 +2401,126 @@ function withSource(a, rec) {
   return a;
 }
 
+// ---------------------------------------------------------------------------
+// Release years harvested from data we already fetch.
+//
+// Roon's browse API exposes no release year at all (title, subtitle, image_key,
+// item_key and nothing else), so every year here comes from somewhere else. The
+// API passes that used to supply them are gated on an album LACKING A LABEL —
+// so once an album's label was cached it could never acquire a year, and on an
+// established install the year passes stopped running altogether. That, not any
+// API limitation, is why the Decade focus only ever saw a fraction of a library.
+//
+// These three maps close that hole at zero API cost, because all three payloads
+// are already being fetched for something else:
+//   * the local file scan already reads tags for labels and the "local" badge;
+//   * the Qobuz and TIDAL favourites pages already stream in for source badges,
+//     and every album object in them carries its own release date.
+//
+// They are keyed in the SOURCE-BADGE key space (albumKey → canonText/canonArtist),
+// NOT the year-cache key space, so the join below can use each album's existing
+// srcKeys — the same tolerant identity matcher the badges use. Writing the
+// service's own spelling straight into the year cache would only land when Roon
+// and the service normalise identically, which is exactly the mismatch that
+// already loses most of the file-tag years.
+// First 4 digits of anything date-shaped ("1975", "1975-03-21", 1975).
+function yearOfDate(v) {
+  const y = String(v == null ? "" : v).trim().slice(0, 4);
+  return /^\d{4}$/.test(y) ? y : null;
+}
+
+// Which of a file's date tags is the album's ORIGINAL release year, given
+// music-metadata's `common` block.
+//
+// ORIGINALDATE first. music-metadata derives `common.year` from DATE, and on a
+// remaster DATE is the REISSUE year — so preferring `year` (as this did) filed
+// every remaster under the decade it was reissued in and only consulted
+// ORIGINALDATE when there was no DATE at all, which is backwards. A tagger that
+// sets ORIGINALDATE is telling us exactly what the Decade filter wants to know.
+function fileTagYear(common) {
+  if (!common) return null;
+  return yearOfDate(common.originaldate) ||
+         yearOfDate(common.year) ||
+         yearOfDate(common.date);
+}
+// Record a harvested year under every identity the source can offer, mirroring
+// addFavouriteKeys so the join keys line up with the badge keys exactly.
+function addHarvestedYear(map, title, version, artists, year) {
+  const y = yearOfDate(year);
+  if (!y || !title) return;
+  const titles = version ? [title, title + " " + version] : [title];
+  for (const t of titles) {
+    for (const artist of artists) {
+      if (!artist) continue;
+      const key = albumKey(t, artist);
+      // First writer wins: the earliest page of favourites is as good a source
+      // as any, and this keeps the map stable across re-runs.
+      if (key && !map.has(key)) map.set(key, y);
+    }
+  }
+}
+
+// Join the harvested years onto the library snapshot. Runs after the index is
+// built and after every favourites refresh; cheap enough to be unconditional
+// (one Map lookup per album per identity, no I/O beyond the SQLite writes for
+// years that are genuinely new).
+//
+// Only fills GAPS — an album that already has a year keeps it, so a service's
+// reissue date can never overwrite a year read from the user's own file tags.
+function harvestAlbumYears(reason) {
+  if (!albumIndex.albums.length) return 0;      // nothing to join onto yet
+  // Each map carries its provenance, so setAlbumYear can let a better source
+  // correct a worse one. Best first: a user's own tags describe the copy they
+  // actually own, Qobuz names an explicit ORIGINAL release date, and TIDAL only
+  // offers this edition's date (a remaster's date on a remaster).
+  const sources = [
+    { map: fileAlbumYears,  src: "file" },
+    { map: qobuzAlbumYears, src: "release" },
+    { map: tidalAlbumYears, src: "edition" },
+  ];
+  if (!sources.some(s => s.map.size)) return 0;
+  let added = 0;
+  const run = () => {
+    for (const al of albumIndex.albums) {
+      const ykey = al.nTitle + "||" + al.nArtist;   // the key albumYearOf reads
+      let found = null, foundSrc = null;
+      for (const key of (al.srcKeys || [])) {
+        // Same suppression withSource applies: an identity shared by two library
+        // albums can't be resolved to one of them, so don't guess a year either.
+        if (ambiguousAlbumKeys.has(key)) continue;
+        for (const s of sources) {
+          const y = s.map.get(key);
+          if (y) { found = y; foundSrc = s.src; break; }
+        }
+        if (found) break;
+      }
+      // deferBump: one cache invalidation at the end, not one per album.
+      // setAlbumYear decides whether this source is allowed to write — it fills
+      // a gap, or corrects a year from a source that ranks lower.
+      if (found && setAlbumYear(ykey, found, { src: foundSrc, deferBump: true })) added++;
+    }
+  };
+  // One transaction for the whole join, matching how the other bulk loads here
+  // write. The first run on a large library fills thousands of rows, and
+  // unwrapped that is one implicit transaction — and one fsync — per album.
+  try {
+    if (labelsDb) labelsDb.transaction(run)(); else run();
+  } catch (e) {
+    // A SQLite failure rolls the rows back but leaves albumYearCache holding
+    // whatever was written, so the bump below still has to happen. Swallowed
+    // rather than rethrown because every caller is mid-sync: an exception here
+    // used to abort buildAlbumIndex's post-processing and silently stop the
+    // Qobuz/TIDAL badge refresh for that sync.
+    console.error("[years] harvest failed (" + reason + "):", e.message);
+  }
+  if (added) {
+    bumpLibraryMeta();
+    console.log("[years] harvested " + added + " release years (" + reason + "); " +
+                albumYearCache.size + " known");
+  }
+  return added;
+}
+
 // Identities held by more than one library album (duplicate rips, a local copy
 // alongside a streaming copy Roon didn't group). Any badge on those would be a
 // coin flip, so they're suppressed. Rebuilt with the snapshot.
@@ -2290,6 +2549,16 @@ async function buildFileLabelMap(onProgress) {
   // directory (not just ones that yielded a label), since presence on disk is
   // the whole question.
   const localKeys = new Set();
+  // Built LOCALLY and published at the end, never cleared in place. This walk
+  // takes minutes, while the Qobuz/TIDAL favourites come back in seconds — and
+  // harvestAlbumYears fills gaps only, so whichever source lands first used to
+  // win permanently. Blanking the shared map at the start of the walk handed
+  // the services an open goal on every rescan: they would fill in the years the
+  // last file scan had found, and the freshly-read tags would arrive to find
+  // every album already dated. (Source precedence in setAlbumYear is the real
+  // guard; this keeps the map itself from ever being observed half-built.)
+  const fileYears = new Map();
+  let yearsWritten = 0;
   if (!musicDirMounted()) return { labelMap: map, bandcampMap, localKeys };
   let mm;
   try { mm = await import("music-metadata"); } catch (e) {
@@ -2357,11 +2626,26 @@ async function buildFileLabelMap(onProgress) {
           if (!map.has(key)) map.set(key, label);
         }
         // Capture the release year from file tags too (powers the Decade filter).
-        const fyear = meta.common.year
-          || String(meta.common.originaldate || meta.common.date || "").slice(0, 4);
+        const fyear = fileTagYear(meta.common);
         if (album && fyear) {
+          // Direct write under the TAG-derived key. Kept because it costs
+          // nothing and lands immediately whenever the tags and Roon agree.
           const ykey = normalize(album) + "||" + normalize(albumartist || "");
-          if (!albumYearCache.has(ykey)) setAlbumYear(ykey, fyear);
+          if (setAlbumYear(ykey, fyear, { src: "file", deferBump: true })) yearsWritten++;
+          // ...and again in the badge key space, so harvestAlbumYears can reach
+          // it through the album's srcKeys when they DON'T agree. Roon renames
+          // albums ("(Deluxe Edition)"), reads a different album artist, and
+          // credits collaborations its own way — every one of those used to
+          // strand a perfectly good file-tag year under a key nothing looks up.
+          // These mirror the keys the "local files" badge matches on, with one
+          // exception: the badge also keys an album with NO artist tag at all,
+          // which is too weak an identity to hang a year on.
+          addHarvestedYear(fileYears, album, null, [albumartist || ""], fyear);
+          const isComp = /various|soundtrack|ost\b/i.test(albumartist || "") ||
+                         meta.common.compilation === true;
+          if (meta.common.artist && !isComp) {
+            addHarvestedYear(fileYears, album, null, [meta.common.artist], fyear);
+          }
         }
         // Extract Bandcamp album page URL from COMMENT tags (embedded by Bandcamp downloader).
         // Scan all comment entries — the URL may not be in slot 0 if other tags share the field.
@@ -2391,7 +2675,18 @@ async function buildFileLabelMap(onProgress) {
   } catch (e) {
     if (DEBUG) console.error("[labels:files] scan error:", e.message);
   }
-  if (DEBUG) console.log("[labels:files] file scan found", map.size, "labels,", bandcampMap.size, "Bandcamp URLs");
+  if (DEBUG) console.log("[labels:files] file scan found", map.size, "labels,", bandcampMap.size,
+                         "Bandcamp URLs,", fileYears.size, "dated identities");
+  // Publish in one assignment, so the join never sees a partial walk.
+  fileAlbumYears = fileYears;
+  // The direct tag-key writes above all deferred their bump, and the only other
+  // flush is harvestAlbumYears' `if (added)` — which counts ONLY the albums the
+  // srcKeys join filled. A well-tagged library whose tags agree with Roon lands
+  // every year through the direct write, leaving added === 0 and no
+  // invalidation at all: the Library would keep serving a memoised ordering in
+  // which thousands of albums are still undated, while the Focus sheet
+  // simultaneously reported them as dated.
+  if (yearsWritten) bumpLibraryMeta();
   return { labelMap: map, bandcampMap, localKeys };
 }
 
@@ -2442,6 +2737,11 @@ async function runLabelsIndexScan(force) {
   // Only replace the known-local set when the scan actually saw the mount —
   // an unmounted /music must not wipe badges earned by a previous scan.
   if (localKeys && localKeys.size) setLocalAlbumKeys(localKeys);
+  // Pass 0 just re-read every album's tags, so join its years on now. This runs
+  // BEFORE the "all albums already cached" early return below, which is the
+  // whole point: that return is what used to stop years being collected on an
+  // established install.
+  harvestAlbumYears("file tags");
   if (fileLabelMap.size) {
     let overrideCount = 0;
     for (const [key, fileLabel] of fileLabelMap) {
@@ -2572,11 +2872,11 @@ async function runLabelsIndexScan(force) {
           const result = await fetchLabelFromBandcamp(url, al.subtitle);
           if (result && result.label && !isLikelyNotALabel(result.label)) {
             await saveLabelEntry(key, result.label, null, al);
-            if (result.year && !albumYearCache.has(key)) setAlbumYear(key, result.year);
+            if (result.year) setAlbumYear(key, result.year, { src: "release" });
             bcResolved++;
             bcConsec = 0;
           } else {
-            if (result && result.year && !albumYearCache.has(key)) setAlbumYear(key, result.year);
+            if (result && result.year) setAlbumYear(key, result.year, { src: "release" });
             needsItunes.push(al);
             bcConsec = 0;
           }
@@ -2677,7 +2977,7 @@ async function runLabelsIndexScan(force) {
       const key = normalize(al.title) + "||" + normalize(al.subtitle);
       try {
         const q = await fetchQobuz(al.title, al.subtitle);
-        if (q && q.year && !albumYearCache.has(key)) setAlbumYear(key, q.year);
+        if (q && q.year) setAlbumYear(key, q.year, { src: "release" });
         if (q && q.label && !isLikelyNotALabel(q.label)) { await saveLabelEntry(key, q.label, null, al); qobuzConsec = 0; }
         else { needsTadb.push(al); qobuzConsec = 0; }
       } catch (e) {
@@ -2774,7 +3074,7 @@ async function runLabelsIndexScan(force) {
       const mbResult = await fetchLabelFromMusicBrainz(al.title, al.subtitle);
       if (mbResult) {
         await saveLabelEntry(key, mbResult.label, mbResult.mbid, al);
-        if (mbResult.year && !albumYearCache.has(key)) setAlbumYear(key, mbResult.year);
+        if (mbResult.year) setAlbumYear(key, mbResult.year, { src: "release" });
         mbConsec = 0;
       }
       else { needsDiscogs.push(al); mbConsec = 0; }
@@ -3911,8 +4211,14 @@ async function buildAlbumIndex() {
     // Thumbnails ride along with every sync: warm the disk store as soon as the
     // snapshot lands (fire-and-forget; it self-aborts if a newer build starts).
     prewarmAlbumArt().catch(e => { if (DEBUG) console.error("[art] prewarm:", e.message); });
+    // Join whatever release years are already in hand onto the new snapshot,
+    // BEFORE the favourites refresh below — the file-tag years from the last
+    // scan survive a rebuild and should apply immediately, without waiting on
+    // a network round trip that may never come back.
+    harvestAlbumYears("library sync");
     // So do the streaming favourites that decide the Qobuz/Tidal badges — the
-    // library just changed, so which albums came from where may have too.
+    // library just changed, so which albums came from where may have too. That
+    // call harvests its own years and re-runs the join when it lands.
     refreshStreamAlbumKeys("library sync").catch(e => {
       if (DEBUG) console.error("[stream] refresh:", e.message);
     });
@@ -4550,11 +4856,27 @@ function parseFilter(src) {
 
 // Decades that actually have albums, from the per-album years collected during
 // scanning / browsing. Purely in-memory (no Roon call); populates gradually.
-app.get("/api/filters/decades", (req, res) => {
+//
+// Counted over the LIBRARY, not over the year cache. The cache is keyed by
+// album identity and is never pruned, so it also holds years for albums the
+// user has removed and — via /api/album/extras — for Qobuz releases they merely
+// looked at and don't own. Counting its values advertised totals this filter
+// could not deliver, since the filter itself (like the Focus sheet) resolves
+// years per album through albumYearOf.
+app.get("/api/filters/decades", async (req, res) => {
+  // Counting over the library means the library has to exist. Answer 503 while
+  // it doesn't, exactly as /api/library/facets does — an empty decade list and
+  // "not ready yet" are very different answers, and returning [] for both told
+  // the user their library has no dated albums during every restart window.
+  if (!core && !isIndexBuilt()) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  // ensureAlbumIndex only builds when the snapshot is EMPTY (first pair), so
+  // this can't trigger a Roon scan on an ordinary user action.
+  await ensureAlbumIndex();
+  if (!isIndexBuilt()) return res.status(503).json({ error: "Library index is still building" });
   const counts = new Map();
-  for (const year of albumYearCache.values()) {
-    const y = parseInt(year, 10);
-    if (!Number.isFinite(y)) continue;
+  for (const al of albumIndex.albums) {
+    const y = albumYearOf(al);
+    if (y === null) continue;
     const d = Math.floor(y / 10) * 10;
     counts.set(d, (counts.get(d) || 0) + 1);
   }
@@ -4747,10 +5069,13 @@ function libraryView(q) {
     out = known.concat(unknown);
   } else {
     out = list.slice().sort(cmp);
-    // "Most played"/"Last played" read naturally as highest-first, so their
-    // default direction is inverted relative to the alphabetical sorts.
-    const invert = (sort === "plays" || sort === "lastplayed") ? !desc : desc;
-    if (invert) out.reverse();
+    // `dir` means the same thing for every sort: asc = the comparator's own
+    // order, desc = reversed. "Most played"/"Last played" used to be inverted
+    // here so that asc produced highest-first, which made one arrow control
+    // point two different ways depending on the sort. The CLIENT now picks the
+    // sensible default direction per sort (desc for the quantitative ones), so
+    // the server no longer has to special-case anything.
+    if (desc) out.reverse();
   }
 
   if (libraryViewCache.size >= LIBRARY_VIEW_CACHE_MAX) {
@@ -4767,14 +5092,20 @@ app.get("/api/library/facets", async (req, res) => {
   try {
     await ensureAlbumIndex();
     const decades = new Map(), sources = new Map();
+    let dated = 0;
     for (const al of albumIndex.albums) {
       const y = albumYearOf(al);
-      if (y !== null) { const d = Math.floor(y / 10) * 10; decades.set(d, (decades.get(d) || 0) + 1); }
+      if (y !== null) { dated++; const d = Math.floor(y / 10) * 10; decades.set(d, (decades.get(d) || 0) + 1); }
       const s = withSource({ title: al.title, subtitle: al.subtitle }, al).source || "none";
       sources.set(s, (sources.get(s) || 0) + 1);
     }
     res.json({
       total: albumIndex.albums.length,
+      // Roon publishes no release year, so every one of these had to be found
+      // elsewhere and coverage is never guaranteed to be complete. The sheet
+      // says so rather than quietly showing a decade list that doesn't add up
+      // to the library.
+      dated,
       decades: [...decades.entries()].sort((a, b) => b[0] - a[0]).map(([d, n]) => ({ value: d, label: d + "s", count: n })),
       sources: ["local", "qobuz", "tidal"].filter(s => sources.get(s))
                  .map(s => ({ value: s, label: { local: "Local files", qobuz: "Qobuz", tidal: "TIDAL" }[s], count: sources.get(s) })),
@@ -6750,7 +7081,7 @@ app.get("/api/album/extras", async (req, res) => {
     // Opportunistically record the year so it feeds the Decade filter too.
     if (year) {
       const exKey = normalize(title) + "||" + normalize(artist);
-      if (!albumYearCache.has(exKey)) setAlbumYear(exKey, year);
+      setAlbumYear(exKey, year, { src: "release" });
     }
     // Prefer MusicBrainz's first-release year (the album's original release)
     // over Qobuz's edition date, which can be a later reissue.

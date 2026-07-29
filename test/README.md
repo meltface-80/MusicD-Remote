@@ -28,7 +28,7 @@ node --test test/unit/credits.test.js
 > `node --test <directory>` is **not** supported on every Node 22 build — it tries to
 > `require()` the directory. `run.sh` expands each suite to explicit files instead.
 
-Current state: **111 tests, all passing** (static 16, unit 88, dom 7).
+Current state: **188 tests, all passing** (static 16, unit 139, dom 33).
 
 ---
 
@@ -106,6 +106,46 @@ evidence-gated on purpose. Matching is whole-name equality: `Prince` must not ma
 Bush/Kate Bush, Air/Air Supply, Sting/Stinger, Yes/Yesterday.
 Each test states the library it assumes, because the splitter reads `knownArtistSet()`.
 
+**`libraryview.test.js`** — `libraryView`, the Library wall's sort + focus engine. Two
+things here fail invisibly, because a wrongly-ordered list still looks like a list:
+undated albums must sort **last in both directions** (v1.6.57 reversed the whole list and
+floated them to the top of "newest first"), and `dir` must mean the same thing for every
+sort (the server used to invert plays/lastplayed, so one arrow control would point two
+ways). Also covers decade filtering and stable seeded shuffling — paging a random wall
+re-requests it, so an unstable order shows duplicates and holes as the user scrolls.
+
+**`years.test.js`** — `yearOfDate`, `fileTagYear`, `yearSourceRank`, `setAlbumYear`,
+`addHarvestedYear`, `harvestAlbumYears`. Roon
+publishes no release year, so the Decade filter's data is harvested from payloads fetched
+for other reasons and joined onto the snapshot through each album's `srcKeys`. The join is
+what has to be right: the year must be written under **Roon's** key (`nTitle||nArtist`),
+never the service's, or it is stored and never found again. Pins the tolerant matching
+(`&`/`and`, leading `The`, one artist of a multi-artist credit), the gap-only rule (a
+service's reissue date must never overwrite a year read from the user's own file tags),
+and the ambiguous-identity suppression `withSource` already applies to badges.
+
+Source **precedence** is the other half. Gap-only is not safe when the sources race — the
+disk walk takes minutes while the favourites come back in seconds, so on any rescan the
+streaming services land first and their edition dates would stick permanently. The tests
+pin the whole matrix: file tags are never overwritten, a lower-ranked source may not
+displace a higher-ranked one, a file-tag year *corrects* a service year that arrived
+first, and a year with no recorded provenance is upgraded by any identified source (that
+last one is how an install poisoned by the old unvalidated matches repairs itself).
+
+> **Two things in this file are extracted rather than injected, because injecting them
+> put a hole in the suite.** `setAlbumYear` was originally a hand-written stub that was
+> *stricter* than the shipping function — it skipped any key already present, while the
+> real one overwrites when the value differs, and it ignored `deferBump` entirely. Two
+> mutations passed against it. Separately, `yearSourceRank` began as an injected lookup
+> table, which **shadowed the real ranking**: a mutation that reordered the shipping table
+> to put edition dates above file tags changed nothing and the suite stayed green. It is a
+> function in `index.js` now specifically so the tests can reach it. A stub that is
+> stricter than production, or a constant that shadows one, is not a simplification.
+>
+> `fileTagYear` exists for the same reason: the ORIGINALDATE-beats-DATE rule used to be an
+> inline expression inside `buildFileLabelMap`, which is too entangled to extract, so
+> reverting it was a mutation nothing could see.
+
 **`source.test.js`** — `withSource`. Badge precedence (local beats streaming),
 ambiguity suppression (an identity held by two library albums gets no badge, and that
 outranks even a local match), dual-service unknowability, the precomputed `rec.srcKeys`
@@ -136,6 +176,47 @@ with two independent detectors:
 A **control click before** the round trip proves the detector works at all, so a
 failure can never be dismissed as "the harness can't detect clicks". Artist → artist →
 Back chaining is covered too.
+
+**`library-sheet.test.js`** — the v1.6.58 "Sort/Focus sheets open under the now-playing
+bar" regression. A **stacking-order** bug: markup, layout and listeners were all correct,
+and the sheet's controls were simply painted over by the mini transport bar (backdrop
+`z-index: 60` vs the bar's `70`), leaving them invisible and untappable.
+
+Nothing else in this suite could see it — every other check asks whether a node exists
+or whether a handler fires, not whether the user can **reach** the node.
+`document.elementFromPoint` is the only check that answers that, so this test walks up
+from the hit-tested element at each control's centre and fails if it lands on the
+transport bar instead of the sheet. It runs at a **phone viewport** (`windowSize:
+"390x844"`, new in `harness.js`) against a stubbed zone that is genuinely playing, so
+`app.js` reveals the bar through its own poll loop.
+
+Its controls are the load-bearing part. The test asserts the bar is on screen **and
+overlaps the sheet's rectangle at the moment of each probe** — not at boot. The first
+draft measured the bar once after load and **passed against the un-fixed CSS**, because
+the transport poll had re-hidden the bar by the time the Focus sheet opened. Without a
+live control, "nothing is covered" is vacuously true.
+
+**`library-sort.test.js`** — the v1.6.58 sort controls. An arrow is only honest if the
+request it produces matches what it draws, so **every assertion pairs the glyph with the
+`dir=` actually sent**: an arrow that flips on screen while the server keeps sorting the
+old way looks completely normal. Covers all four orderings from the one control, the
+per-sort default directions, in-place reversal inside the sheet, and Random's reshuffle.
+
+A second case boots the app with a **v1.6.57 saved view already in localStorage** — the
+migration path no other test can reach, since a fresh browser has no saved view at all,
+and the one that runs for every existing user exactly once. `assertNoPageError` is the
+real assertion there: the migration runs at module-init time and calls
+`libSortDefaultDir()`, so a mis-ordered `const` would throw a ReferenceError during
+`app.js` init and leave a blank app rather than a failed check. It earned its keep
+immediately — it caught that the migrated view was never written back, so the migration
+re-ran on every load and kept resetting the direction the user had just chosen.
+
+> **A renamed class can empty a query and take its assertions with it.** When the sort
+> sheet's rows moved from `.lib-row` to `.lib-sort-row`, `library-sheet.test.js` went red
+> with *"the sheet rendered no controls"* — its selector had stopped matching anything, so
+> "no control is covered by the transport bar" was about to become true for the wrong
+> reason. That failure is why the selector list is a maintained list with a comment on it,
+> and why the test asserts a non-zero control count before checking coverage.
 
 ### `test/static/` — the CLAUDE.md pre-flight, automated
 
@@ -176,7 +257,7 @@ that is the intended fix, not deleting the check.
 | Anything calling the live Roon API — `buildAlbumIndex`, `browse`/`load`, playback, zones, the stale-offset resolver | No Core in CI. The *pure* decision logic those paths use (`creditHasArtist`, `albumKeys`) is covered; the transport is not. |
 | Discogs / FanArt.tv / Qobuz / TIDAL / Pitchfork network calls | External services. Would need an HTTP-layer fixture. |
 | `better-sqlite3` persistence, settings load/save, the thumbnail store | Touches the data volume. |
-| CSS and visual layout, mobile rendering | `index.html` loads its stylesheet from `/style.css`; the DOM harness asserts on structure, classes and behaviour, not computed styles or pixels. |
+| CSS and visual layout, mobile rendering — **except reachability** | The DOM harness asserts on structure, classes and behaviour, not on computed styles or pixel-perfect appearance. The one layout property it does test is whether a control can be **reached**: `library-sheet.test.js` hit-tests each control against the real stylesheet at a phone viewport. Colours, spacing and typography are still unverified. |
 | The release workflow actually producing a tag and release | Static checks confirm the workflow *parses and its expressions are valid* — the v1.6.52-55 failure mode. They cannot confirm GitHub ran it. Still verify the release exists after every merge. |
 
 ---
@@ -199,11 +280,42 @@ cp -r public /tmp/mutant-public
 #   in /tmp/mutant-public/app.js, replace  grid.appendChild(saved.gridNodes);  with:
 #   { const t = document.createElement("div"); t.appendChild(saved.gridNodes); grid.innerHTML = t.innerHTML; }
 MUSICD_PUBLIC_DIR=/tmp/mutant-public node --test test/dom/artist-back.test.js
+
+# dom — put the sheets back under the transport bar
+cp -r public /tmp/mutant-public2
+#   in /tmp/mutant-public2/style.css, change .lib-sheet-backdrop's z-index: 90 to 60
+MUSICD_PUBLIC_DIR=/tmp/mutant-public2 node --test test/dom/library-sheet.test.js
 ```
 
-All three mutations were run against this suite and produced failures:
+All of these mutations were run against this suite and produced failures:
 substring matching → 4 failures; removing the blank-title guards in
-`albumKey`/`albumKeys` → 5 failures; the `innerHTML` round trip → 3 failures.
+`albumKey`/`albumKeys` → 5 failures; the `innerHTML` round trip → 3 failures;
+the sheet `z-index` → 4 failures, naming the exact controls the user's bug report
+showed (`Order: A → Z (tap to reverse)`, `Clear all`, `Show albums`).
+
+For v1.6.58's sort and year work:
+
+| Mutation | Result |
+|---|---|
+| Restore the `plays`/`lastplayed` direction inversion | 5 failures |
+| Restore v1.6.57's whole-list reverse for `year` | 3 failures |
+| Harvest writes the **service's** key instead of Roon's | 3 failures |
+| Harvest bumps the view cache per album instead of once | 2 failures |
+| Drop the ambiguous-identity guard from the harvest | 2 failures |
+| Harvest overwrites years that already exist | 2 failures |
+| Stop indexing the edition-suffixed title | 2 failures |
+| Accept any date-ish string as a year | 5 failures |
+| Revert to gap-only (first writer wins) | 3 failures |
+| Let any source overwrite any other | 3 failures |
+| Rank edition dates above file tags | 4 failures |
+| Harvest drops provenance | 4 failures |
+| Prefer DATE over ORIGINALDATE again | 2 failures |
+| Over-broad v2 migration / no refocus / no shape coercion | 6 failures |
+
+Two of those — *bump per album* and *overwrite existing years* — **initially survived**,
+because the tests stubbed `setAlbumYear` by hand and the stub was more conservative than
+the shipping function. Extracting the real one made both fail. A stub that is stricter
+than production is not a safe simplification; it is a hole in the suite.
 
 The `innerHTML` mutation is the instructive one: the *"Back restores the wall's tiles"*
 assertion still **passed** — the markup came back looking perfect — while the identity
