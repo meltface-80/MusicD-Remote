@@ -28,7 +28,7 @@ node --test test/unit/credits.test.js
 > `node --test <directory>` is **not** supported on every Node 22 build — it tries to
 > `require()` the directory. `run.sh` expands each suite to explicit files instead.
 
-Current state: **243 tests, all passing** (static 22, unit 157, dom 64).
+Current state: **291 tests, all passing** (static 22, unit 157, dom 112).
 
 ---
 
@@ -263,6 +263,30 @@ wrong breakpoint and the rows either stay inset or hang off the screen; and
 The tablet case is the only thing that catches that. Both cases also assert the row content
 still lines up with the summary line above it, since the bleed has to be paid back as row
 padding, and that the page never gains a horizontal scrollbar.
+
+**`themes.test.js`** — the four themes and the picker that chooses between them.
+
+Two separate things. First, **contrast is computed, not eyeballed**: every theme's real
+applied tokens are read off the document and run through the WCAG formula in Node, then
+asserted. Contrast is worth automating precisely because it is invisible to review — a
+palette that fails looks fine to whoever chose the colours, and the failure only lands on
+the people who could least afford it. The two original themes ship a `--text-faint` that
+fails AA, so they are asserted at the level they *actually* meet, with the gap named in a
+`FLOORS` table; a test that pretended they passed would be worse than none. The two new
+palettes are held to the real bar.
+
+Second, **the picker must remain a picker**: selecting a row must not apply it, only Apply
+does. That is the entire point of the control and exactly the behaviour that silently
+decays back into an instant toggle. Also covered: each swatch previews its *own* palette
+(if they inherited the applied theme they would all look identical and the picker would
+give the user nothing to choose by), and a v1 saved theme migrates to the new key without
+moving the user onto a palette they never chose.
+
+> This file found a real bug on its first run: **28 `showToast()` calls inside
+> `initSettings` were throwing `ReferenceError`**. `showToast` is declared in a different
+> top-level IIFE, so every message in the Settings sheet — token saves, display settings,
+> the whole Qobuz and TIDAL connect flow — failed silently, and the `catch` blocks that
+> tried to report the failure threw again. Nothing else in the suite touched that scope.
 
 > **A renamed class can empty a query and take its assertions with it.** When the sort
 > sheet's rows moved from `.lib-row` to `.lib-sort-row`, `library-sheet.test.js` went red
