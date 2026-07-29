@@ -28,7 +28,7 @@ node --test test/unit/credits.test.js
 > `node --test <directory>` is **not** supported on every Node 22 build — it tries to
 > `require()` the directory. `run.sh` expands each suite to explicit files instead.
 
-Current state: **111 tests, all passing** (static 16, unit 88, dom 7).
+Current state: **116 tests, all passing** (static 16, unit 88, dom 12).
 
 ---
 
@@ -137,6 +137,25 @@ A **control click before** the round trip proves the detector works at all, so a
 failure can never be dismissed as "the harness can't detect clicks". Artist → artist →
 Back chaining is covered too.
 
+**`library-sheet.test.js`** — the v1.6.58 "Sort/Focus sheets open under the now-playing
+bar" regression. A **stacking-order** bug: markup, layout and listeners were all correct,
+and the sheet's controls were simply painted over by the mini transport bar (backdrop
+`z-index: 60` vs the bar's `70`), leaving them invisible and untappable.
+
+Nothing else in this suite could see it — every other check asks whether a node exists
+or whether a handler fires, not whether the user can **reach** the node.
+`document.elementFromPoint` is the only check that answers that, so this test walks up
+from the hit-tested element at each control's centre and fails if it lands on the
+transport bar instead of the sheet. It runs at a **phone viewport** (`windowSize:
+"390x844"`, new in `harness.js`) against a stubbed zone that is genuinely playing, so
+`app.js` reveals the bar through its own poll loop.
+
+Its controls are the load-bearing part. The test asserts the bar is on screen **and
+overlaps the sheet's rectangle at the moment of each probe** — not at boot. The first
+draft measured the bar once after load and **passed against the un-fixed CSS**, because
+the transport poll had re-hidden the bar by the time the Focus sheet opened. Without a
+live control, "nothing is covered" is vacuously true.
+
 ### `test/static/` — the CLAUDE.md pre-flight, automated
 
 - **step 1** — `node --check` on every shipped `.js` (`index.js`, `launcher.js`,
@@ -176,7 +195,7 @@ that is the intended fix, not deleting the check.
 | Anything calling the live Roon API — `buildAlbumIndex`, `browse`/`load`, playback, zones, the stale-offset resolver | No Core in CI. The *pure* decision logic those paths use (`creditHasArtist`, `albumKeys`) is covered; the transport is not. |
 | Discogs / FanArt.tv / Qobuz / TIDAL / Pitchfork network calls | External services. Would need an HTTP-layer fixture. |
 | `better-sqlite3` persistence, settings load/save, the thumbnail store | Touches the data volume. |
-| CSS and visual layout, mobile rendering | `index.html` loads its stylesheet from `/style.css`; the DOM harness asserts on structure, classes and behaviour, not computed styles or pixels. |
+| CSS and visual layout, mobile rendering — **except reachability** | The DOM harness asserts on structure, classes and behaviour, not on computed styles or pixel-perfect appearance. The one layout property it does test is whether a control can be **reached**: `library-sheet.test.js` hit-tests each control against the real stylesheet at a phone viewport. Colours, spacing and typography are still unverified. |
 | The release workflow actually producing a tag and release | Static checks confirm the workflow *parses and its expressions are valid* — the v1.6.52-55 failure mode. They cannot confirm GitHub ran it. Still verify the release exists after every merge. |
 
 ---
@@ -199,11 +218,18 @@ cp -r public /tmp/mutant-public
 #   in /tmp/mutant-public/app.js, replace  grid.appendChild(saved.gridNodes);  with:
 #   { const t = document.createElement("div"); t.appendChild(saved.gridNodes); grid.innerHTML = t.innerHTML; }
 MUSICD_PUBLIC_DIR=/tmp/mutant-public node --test test/dom/artist-back.test.js
+
+# dom — put the sheets back under the transport bar
+cp -r public /tmp/mutant-public2
+#   in /tmp/mutant-public2/style.css, change .lib-sheet-backdrop's z-index: 90 to 60
+MUSICD_PUBLIC_DIR=/tmp/mutant-public2 node --test test/dom/library-sheet.test.js
 ```
 
-All three mutations were run against this suite and produced failures:
+All four mutations were run against this suite and produced failures:
 substring matching → 4 failures; removing the blank-title guards in
-`albumKey`/`albumKeys` → 5 failures; the `innerHTML` round trip → 3 failures.
+`albumKey`/`albumKeys` → 5 failures; the `innerHTML` round trip → 3 failures;
+the sheet `z-index` → 4 failures, naming the exact controls the user's bug report
+showed (`Order: A → Z (tap to reverse)`, `Clear all`, `Show albums`).
 
 The `innerHTML` mutation is the instructive one: the *"Back restores the wall's tiles"*
 assertion still **passed** — the markup came back looking perfect — while the identity

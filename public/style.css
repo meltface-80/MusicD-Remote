@@ -3104,12 +3104,25 @@ input.vol-range::-moz-range-thumb {
 }
 
 .lib-sheet-backdrop {
-  position: fixed; inset: 0; z-index: 60;
+  position: fixed; inset: 0;
+  /* 90 = the bottom-sheet layer (.settings-overlay). It MUST beat
+     .mini-transport (70) and its volume popover (71): the transport bar is
+     fixed to the bottom of the viewport, and at the old z-index of 60 it
+     painted straight over the foot of this sheet — hiding the last sort rows
+     and the whole Clear all / Show albums footer, and eating their taps. */
+  z-index: 90;
   background: rgba(0,0,0,.55);
   display: flex; align-items: flex-end; justify-content: center;
 }
 .lib-sheet {
-  width: 100%; max-width: 560px; max-height: 82vh;
+  width: 100%; max-width: 560px;
+  max-height: 82vh;
+  /* dvh follows mobile Safari's collapsing toolbars; the vh above is the
+     fallback for browsers without it. vh alone means the LARGE viewport, so
+     with the toolbar showing a full sheet is taller than the visible area —
+     and because it is bottom-anchored, the overflow pushes its title off the
+     TOP of the screen. */
+  max-height: 82dvh;
   display: flex; flex-direction: column;
   background: var(--bg-elev); color: var(--text);
   border-radius: 16px 16px 0 0;
@@ -3121,12 +3134,18 @@ input.vol-range::-moz-range-thumb {
 .lib-sheet-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 14px 14px 8px; border-bottom: 1px solid var(--panel-hairline);
+  flex: 0 0 auto;
 }
 .lib-sheet-head h3 { font-size: 16px; font-weight: 700; margin: 0; }
-.lib-sheet-body { overflow-y: auto; padding: 8px 14px 14px; }
+/* Explicit flex sizing across head/body/foot: only the body scrolls, and the
+   head and footer are never shrunk to make room for a long facet list.
+   Chromium already behaves this way at today's list lengths — this states the
+   intent so a future longer Focus list can't quietly squeeze the buttons. */
+.lib-sheet-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 14px 14px; }
 .lib-sheet-foot {
   display: flex; gap: 8px; padding: 10px 14px 14px;
   border-top: 1px solid var(--panel-hairline);
+  flex: 0 0 auto;
 }
 .lib-sheet-foot .action-btn { flex: 1 1 0; }
 .lib-row {

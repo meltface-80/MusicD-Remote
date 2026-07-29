@@ -164,9 +164,13 @@ function buildHtml({ stub, driver }) {
  * @param {string}  opts.driver   async JS body run on load; report with T(key, value).
  * @param {number} [opts.budgetMs] virtual time budget (default 20000).
  * @param {string} [opts.name]     used for the temp file name.
+ * @param {string} [opts.windowSize] "WxH" viewport, e.g. "390x844" for a phone.
+ *                                   Layout tests need this — Chromium's default
+ *                                   800x600 is neither phone nor desktop, and
+ *                                   vh/dvh-sized panels behave differently.
  * @returns {object} the reported results; `__error` / `__pageErrors` if the page failed.
  */
-function renderPage({ stub, driver, budgetMs = 20000, name = "page" }) {
+function renderPage({ stub, driver, budgetMs = 20000, name = "page", windowSize }) {
   if (!available) throw new Error("no chromium binary found — set CHROMIUM_BIN");
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "musicd-dom-"));
@@ -181,6 +185,7 @@ function renderPage({ stub, driver, budgetMs = 20000, name = "page" }) {
       "--disable-gpu",
       "--disable-dev-shm-usage",
       "--allow-file-access-from-files",
+      ...(windowSize ? [`--window-size=${windowSize.replace("x", ",")}`] : []),
       `--virtual-time-budget=${budgetMs}`,
       "--dump-dom",
       file,

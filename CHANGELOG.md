@@ -2,6 +2,41 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.58] — 2026-07-29
+
+### Fixed
+
+- **Library Sort and Focus sheets no longer open underneath the now-playing bar.**
+  Whenever something was playing, the mini transport bar painted over the foot of both
+  sheets: the "Random" sort option and the A→Z direction row were cut off, and Focus's
+  **Clear all** / **Show albums** buttons were completely hidden — and untappable, since
+  the bar was also swallowing the taps.
+  - Root cause: a **stacking-order** error, not a layout one. The sheet's backdrop sat at
+    `z-index: 60` while the transport bar sits at `70`, so the bar was drawn on top of it.
+    The sheets now sit on `90` — the same layer every other bottom sheet in the app already
+    uses (Settings, Filter, label unmerge), all of which clear the bar correctly.
+  - Also switched the sheets' height cap from `vh` to `dvh`, so on mobile Safari a full
+    sheet is measured against the *visible* viewport rather than the toolbar-hidden one —
+    previously the overflow pushed the sheet's title off the top of the screen.
+
+### Added
+
+- **DOM regression test for the sheets** (`test/dom/library-sheet.test.js`). It drives the
+  real UI headlessly at a phone viewport with a genuinely playing zone, opens each sheet
+  from the Library wall, and hit-tests every control: any control the transport bar covers
+  fails the test. Test count: 111 → 116.
+  - Class of error: **stacking context / z-index regression** — a bug where the markup,
+    the layout and the listeners are all correct and the element is simply painted over.
+    Nothing in the existing suite could see it, because every prior check asked whether a
+    node existed or whether a click handler fired, not whether the user could reach it.
+    The new probe uses `document.elementFromPoint`, which is the only check that answers
+    that question.
+  - The test carries **controls that fail loudly** if it stops being able to detect the
+    bug: it asserts the transport bar is on screen and genuinely overlaps the sheet at the
+    moment of each probe. An earlier draft measured the bar once at boot and passed against
+    the un-fixed CSS, because the transport poll had hidden the bar again by the time the
+    Focus sheet opened.
+
 ## [1.6.57] — 2026-07-28
 
 ### Added
