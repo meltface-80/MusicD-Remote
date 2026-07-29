@@ -28,7 +28,7 @@ node --test test/unit/credits.test.js
 > `node --test <directory>` is **not** supported on every Node 22 build — it tries to
 > `require()` the directory. `run.sh` expands each suite to explicit files instead.
 
-Current state: **188 tests, all passing** (static 16, unit 139, dom 33).
+Current state: **215 tests, all passing** (static 16, unit 157, dom 42).
 
 ---
 
@@ -146,6 +146,15 @@ last one is how an install poisoned by the old unvalidated matches repairs itsel
 > inline expression inside `buildFileLabelMap`, which is too entangled to extract, so
 > reverting it was a mutation nothing could see.
 
+**`creditlinks.test.js`** — `creditLinks`, `linkableArtistSet`. The now-playing screen's
+artist links. Two rules: the split stays the library-validated one (AC/DC must not become
+two links just because the credit now comes from a track rather than an album), and each
+name is flagged with whether the library can actually open a screen for it. That second
+flag exists only here because Roon's `line2` is the **track** artist — on a compilation
+most track artists have no album of their own, and a link to them opens an empty page.
+Matching is whole-name (`Prince` is not made linkable by `Bonnie "Prince" Billy`) and
+tolerates a leading `The`, so any link that renders leads somewhere.
+
 **`source.test.js`** — `withSource`. Badge precedence (local beats streaming),
 ambiguity suppression (an identity held by two library albums gets no badge, and that
 outranks even a local match), dual-service unknowability, the precomputed `rec.srcKeys`
@@ -210,6 +219,27 @@ real assertion there: the migration runs at module-init time and calls
 `app.js` init and leave a blank app rather than a failed check. It earned its keep
 immediately — it caught that the migrated view was never written back, so the migration
 re-ran on every load and kept resetting the direction the user had just chosen.
+
+**`np-artist-links.test.js`** — the v1.6.60 per-artist links on the Now playing screen,
+driven through the real UI: open the screen from the mini transport, read the rendered
+row, tap a link, and check where it lands. Three things it pins that a "do the links
+exist?" check would miss:
+
+1. **The 1.5s poll must not rebuild the row.** The screen is repainted every tick, and
+   rebuilding a row of buttons each time drops keyboard focus mid-press. Detected with a
+   JS expando on the live button plus a focus check across several ticks — and balanced by
+   a second case proving a genuine **track change still re-renders**, so the guard can't be
+   "fixed" by simply never updating.
+2. **The modal must be closed before navigating.** `#np-screen` lives inside the album
+   modal, and `showArtistAlbums` parks the grid/top bar/labels but knows nothing about the
+   modal — leave it open and the artist grid renders behind a full-screen overlay with
+   body scroll still locked. Asserted on `body.style.overflow`, not just on appearance.
+3. **Unlinkable names render as text.** A track artist the library has no screen for must
+   not be offered as a link.
+
+The file carries a second test for the **album view**, which shares the extracted
+renderer. It is the caller that already worked, so it is the one a refactor regression
+would break silently.
 
 > **A renamed class can empty a query and take its assertions with it.** When the sort
 > sheet's rows moved from `.lib-row` to `.lib-sort-row`, `library-sheet.test.js` went red
@@ -311,6 +341,14 @@ For v1.6.58's sort and year work:
 | Harvest drops provenance | 4 failures |
 | Prefer DATE over ORIGINALDATE again | 2 failures |
 | Over-broad v2 migration / no refocus / no shape coercion | 6 failures |
+
+For v1.6.60's now-playing artist links:
+
+| Mutation | Result |
+|---|---|
+| Drop the poll signature guard (rebuild every 1.5s) | 2 failures |
+| Navigate without closing the modal first | 2 failures |
+| Link every name regardless of `linkable` | 2 failures |
 
 Two of those — *bump per album* and *overwrite existing years* — **initially survived**,
 because the tests stubbed `setAlbumYear` by hand and the stub was more conservative than

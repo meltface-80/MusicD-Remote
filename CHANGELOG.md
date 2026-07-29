@@ -2,6 +2,45 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.60] — 2026-07-29
+
+### Added
+
+- **Artist names on the Now playing screen are clickable links**, the same control the
+  album view already offers. A multi-artist credit becomes one link per artist, split the
+  same library-validated way — so "T-Bone Walker / Big Joe Turner / Otis Spann" gives
+  three links while **AC/DC stays one**, and "Earth, Wind & Fire" isn't torn into three.
+  Tapping one leaves the Now playing screen and opens that artist's albums, exactly as it
+  does from the album view. The album title beside it was already a link; now the whole
+  credit block is.
+  - **Names the library can't open are shown as plain text, not as links.** This screen's
+    credit is Roon's *track* artist, which on a compilation, soundtrack or classical disc
+    is usually not the album's credit at all — most of those performers have no album of
+    their own, and a link to them would open an empty page. Each name is checked against
+    the artists the library can actually show a screen for, and only those become links.
+    The album view doesn't need this: an album credit always belongs to at least the album
+    it came from.
+  - Matching is whole-name, never substring, and tolerates a leading "The" — the same rule
+    the artist screen uses, so a link that appears always leads somewhere.
+  - Costs **no extra requests**. The split rides along on the zone poll the screen already
+    runs, and is memoised server-side, so the same credit isn't re-split every 1.5 seconds.
+
+### Changed
+
+- The album view and the Now playing screen now share **one** artist-link renderer instead
+  of having two implementations to keep in step.
+
+### Notes
+
+- Styled to the Now playing screen's own convention — plain text with an underline on
+  hover/focus, like the album title below it — rather than the album modal's accent
+  colour, so the Roon-parity look of that screen is unchanged.
+- **Back from an artist opened this way returns to the screen underneath, not to Now
+  playing.** The artist view parks the grid, top bar and labels browser, but has never
+  known anything about the modal the Now playing screen lives in. Left as-is deliberately:
+  changing what that view parks is how the v1.6.52 "albums untappable after Back" bug
+  happened, and it isn't worth risking for this.
+
 ## [1.6.59] — 2026-07-29
 
 ### Fixed

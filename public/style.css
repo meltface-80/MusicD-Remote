@@ -1363,7 +1363,37 @@ main {
   font-size: 17px; font-weight: 600; line-height: 1.25;
   color: var(--text-dim); margin-top: 3px;
 }
-.np-artist { font-size: 18px; color: var(--text); margin-top: 8px; }
+/* The artist line is now a row of per-artist links rather than one text node.
+   It stays a plain block so the buttons flow inline and wrap naturally under
+   the parent's text-align:center — a flex row here would need its own gap and
+   would fight the separator spans. max-width caps it as a shrink-to-fit flex
+   item under .np-screen's align-items:center, and break-word matches .np-track
+   so a long credit can't push the column wider than the artwork. */
+.np-artist {
+  font-size: 18px; color: var(--text); margin-top: 8px;
+  max-width: 100%; word-break: break-word;
+}
+/* Styled to THIS screen's convention, not the album modal's accent colour:
+   #np-album directly below is already a link and reads as plain text with an
+   underline on hover, and the Roon-parity look here is deliberately quiet.
+
+   padding/margin 0 is load-bearing. The artist block sits in the no-scroll
+   screen's fixed-height group (see the .modal.np-mode.tab-album .modal-body
+   contract above), so any vertical padding added here comes straight out of
+   the artwork — and, on a short viewport, out of the transport controls. */
+.np-artist-link {
+  font: inherit; color: inherit;
+  background: none; border: 0; padding: 0; margin: 0;
+  cursor: pointer; text-decoration: none;
+  transition: color .15s;
+}
+.np-artist-link:hover,
+.np-artist-link:focus-visible { text-decoration: underline; }
+/* A name the library has no screen for — same size and weight as the links so
+   the line reads as one credit, just without the affordance. */
+.np-artist-plain { color: inherit; }
+.np-artist-sep   { color: var(--text-dim); }
+.np-artist:empty { display: none; }
 .np-album {
   font-size: 14px; color: var(--text-dim); margin-top: 3px;
   background: none; border: none; padding: 0; cursor: pointer;
