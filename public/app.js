@@ -1708,26 +1708,69 @@
     const parts = validated
       ? names
       : subtitle.split(/ \/ | feat\.? | featuring | ft\.? /i).map(s => s.trim()).filter(Boolean);
+    // Album credits are always linkable: the credit came from a library album,
+    // so at minimum that album is on the artist's screen.
+    renderArtistLinks(box, parts.map(name => ({ name, linkable: true })), {
+      separator: validated ? " · " : " / ",
+      linkClass: "modal-artist-link",
+      sepClass:  "modal-subtitle-year",
+    });
+  }
+
+  // The per-artist link row, shared by the album view and the now-playing
+  // screen so both behave identically — one implementation, one set of
+  // listeners, one navigation rule.
+  //
+  // `parts` is [{ name, linkable }]. A non-linkable name renders as plain text
+  // rather than a button: the library has no screen for it, and a link that
+  // opens an empty page is worse than no link. The album view marks everything
+  // linkable (see above); the now-playing screen doesn't, because its credit is
+  // the track artist.
+  function renderArtistLinks(box, parts, opts) {
+    opts = opts || {};
+    const sep        = opts.separator || " · ";
+    const linkClass  = opts.linkClass || "modal-artist-link";
+    const sepClass   = opts.sepClass  || "modal-subtitle-year";
+    // Non-linkable names default to the separator's muted tone, but the
+    // now-playing screen overrides it: on a compilation EVERY track artist can
+    // be unlinkable, and dimming the whole line reads as a rendering fault
+    // rather than as information.
+    const plainClass = opts.plainClass || sepClass;
+    box.innerHTML = "";
     parts.forEach((part, i) => {
       if (i > 0) {
-        const sep = document.createElement("span");
-        sep.className = "modal-subtitle-year";
-        sep.textContent = validated ? " · " : " / ";
-        box.appendChild(sep);
+        const s = document.createElement("span");
+        s.className = sepClass;
+        s.textContent = sep;
+        box.appendChild(s);
+      }
+      if (!part.linkable) {
+        const span = document.createElement("span");
+        span.className = plainClass;
+        span.textContent = part.name;
+        box.appendChild(span);
+        return;
       }
       const btn = document.createElement("button");
-      btn.className = "modal-artist-link";
-      btn.textContent = part;
+      btn.type = "button";
+      btn.className = linkClass;
+      btn.textContent = part.name;
       btn.addEventListener("click", () => {
+        // Close FIRST. showArtistAlbums parks the grid/topbar/labels but knows
+        // nothing about the album modal, so with the modal still open the
+        // artist grid renders behind it and body scroll stays locked.
         closeModal();
         // The artist view PARKS the labels browser itself (see showArtistAlbums)
         // so its Back can restore it — tearing it down here would lose the open
         // label and leave the restored grid without its labels bar.
-        window.__showArtistAlbums && window.__showArtistAlbums(part);
+        window.__showArtistAlbums && window.__showArtistAlbums(part.name);
       });
       box.appendChild(btn);
     });
   }
+  // The now-playing screen lives inside this modal but is rendered by the
+  // transport IIFE, which has no access to closeModal or this renderer.
+  window.__renderArtistLinks = renderArtistLinks;
 
   function openAlbum(album, opts) {
     opts = opts || {};
@@ -3683,6 +3726,38 @@
     }
   }
 
+  // The artist line, as individual links — the same control the album view
+  // offers, driven by the same library-validated split (the server sends it on
+  // now_playing.artists, see creditLinks).
+  //
+  // Signature-gated like setNpTrack: this runs on the 1.5s poll, and rebuilding
+  // a row of buttons every tick would drop keyboard focus mid-press and thrash
+  // the DOM behind the artwork.
+  let lastNpArtistSig = null;
+  function setNpArtists(np) {
+    const parts = (np && Array.isArray(np.artists) && np.artists.length)
+      ? np.artists
+      // Older server, or a credit the server couldn't split (no library yet):
+      // show the raw line as plain text rather than nothing.
+      : ((np && np.line2) ? [{ name: np.line2, linkable: false }] : []);
+    const sig = JSON.stringify(parts);
+    if (sig === lastNpArtistSig) return;
+    lastNpArtistSig = sig;
+    if (!parts.length) { npArtist.textContent = ""; return; }
+    if (window.__renderArtistLinks) {
+      window.__renderArtistLinks(npArtist, parts, {
+        separator: " · ",
+        linkClass:  "np-artist-link",
+        sepClass:   "np-artist-sep",
+        plainClass: "np-artist-plain",
+      });
+    } else {
+      // The modal IIFE didn't export the renderer — never expected, but the
+      // artist line must still say who is playing.
+      npArtist.textContent = parts.map(p => p.name).join(" · ");
+    }
+  }
+
   // Populate the Roon-style now-playing screen from the live zone state.
   function updateNpScreen() {
     // Big art + ambient glow track the playing album on BOTH np-mode tabs —
@@ -3701,10 +3776,10 @@
     }
 
     if (!npTrack || !onNowPlayingScreen()) return;
-    if (!np) { setNpTrack(null); npArtist.textContent = ""; npAlbum.textContent = ""; return; }
+    if (!np) { setNpTrack(null); setNpArtists(null); npAlbum.textContent = ""; return; }
 
     setNpTrack(np.line1);
-    npArtist.textContent = np.line2 || "";
+    setNpArtists(np);
     npAlbum.textContent  = np.line3 || "";
     if (npAlbum) npAlbum.setAttribute("aria-label", "Open album: " + (np.line3 || ""));
 

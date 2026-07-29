@@ -4124,6 +4124,60 @@ function splitCreditIntoArtists(subtitle) {
 // Deliberately NOT albumKeys(): that splits every separator ungated, which is
 // safe there only because the album TITLE must match too. Here the artist name
 // is the only factor, so the split has to stay evidence-gated.
+// Every artist identity the library can actually SHOW a screen for — the union
+// of every album's credited names, in canonArtist() space.
+//
+// This is the exact predicate /api/artist-albums applies (`names.includes(q)`,
+// else `al.cArtist === q`), lifted into a set so a caller can ask "would a link
+// for this name lead anywhere?" without scanning the library per name.
+//
+// It matters most on the now-playing screen, where the credit is the TRACK
+// artist. On a compilation almost every track artist is someone the library has
+// no album for, and linking them all would be a screenful of dead ends. Album
+// credits rarely have that problem, which is why the album view never needed it.
+//
+// Cached against albumIndex.builtAt like knownArtistSet, and for the same
+// reason: cCredits is only populated by rebuildCreditIdentities AFTER builtAt
+// moves, so caching on anything else hands back the previous library's set.
+let _linkableArtistCache = { builtAt: -1, set: new Set() };
+function linkableArtistSet() {
+  if (_linkableArtistCache.builtAt !== albumIndex.builtAt) {
+    const set = new Set();
+    for (const al of albumIndex.albums) {
+      if (al.cArtist === undefined) applyCreditIdentities(al);   // built outside the pass
+      if (al.cCredits) for (const n of al.cCredits) set.add(n);
+      else if (al.cArtist) set.add(al.cArtist);
+    }
+    _linkableArtistCache = { builtAt: albumIndex.builtAt, set };
+  }
+  return _linkableArtistCache.set;
+}
+
+// Split a credit into individually linkable artists, flagging which of them the
+// library can actually open a screen for.
+//
+// Memoised because the caller is /api/zone-state, which every open client polls
+// every 1.5s. The work is small but it is not free, and the same handful of
+// credits repeat for the length of an album.
+const _creditLinkCache = new Map();     // builtAt|credit -> [{ name, linkable }]
+const CREDIT_LINK_CACHE_MAX = 300;
+function creditLinks(credit) {
+  const whole = String(credit || "").trim();
+  if (!whole) return [];
+  if (!albumIndex.count) return [{ name: whole, linkable: false }];  // no library yet
+  const sig = albumIndex.builtAt + "|" + whole;
+  const hit = _creditLinkCache.get(sig);
+  if (hit) return hit;
+  const linkable = linkableArtistSet();
+  const out = splitCreditIntoArtists(whole)
+    .map(name => ({ name, linkable: linkable.has(canonArtist(name)) }));
+  if (_creditLinkCache.size >= CREDIT_LINK_CACHE_MAX) {
+    _creditLinkCache.delete(_creditLinkCache.keys().next().value);
+  }
+  _creditLinkCache.set(sig, out);
+  return out;
+}
+
 function creditIdentities(subtitle) {
   const whole = String(subtitle || "").trim();
   const c = canonArtist(whole);
@@ -7938,6 +7992,17 @@ app.get("/api/zone-state", (req, res) => {
         line1:     tl.line1 || ol.line1 || "",   // track
         line2:     tl.line2 || "",               // artist
         line3:     tl.line3 || "",               // album
+        // line2 split into individually linkable artists, the same
+        // library-validated way /api/album splits an album credit — so the
+        // now-playing screen can offer the artist links the album view has.
+        // Memoised (creditLinks), because this endpoint is polled every 1.5s by
+        // every open client and the same credit repeats for a whole album.
+        //
+        // `linkable` says whether the library can actually open a screen for
+        // that name. It matters here and not on the album view because line2 is
+        // the TRACK artist: on a compilation most track artists have no album
+        // of their own, and linking them all would be a row of dead ends.
+        artists:   creditLinks(tl.line2),
         image_key: np.image_key || null,
         length:    np.length || null,
         seek_position: np.seek_position || null
