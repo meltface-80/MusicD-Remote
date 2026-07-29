@@ -216,7 +216,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
 - The README contains version references (install commands, tarball URLs, `docker build` tags).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.6.55** (until the user says otherwise).
+- Current stable version in the README: **v1.6.59** (until the user says otherwise).
 - The extension is being renamed **MusicD Remote** ("for Roon" is descriptive, not part of the name). The Roon `extension_id` must NEVER change — it would force every user to re-authorize.
 
 ---
@@ -339,4 +339,8 @@ docker run -d \
 | v1.6.52 | stable (superseded) | Fixed albums going untappable after Back from an artist view — screens are restored by moving live nodes, never via an innerHTML string (pre-flight step 4 added) |
 | v1.6.53 | stable (superseded) | Per-artist links on unspaced-slash credits (evidence-gated, AC/DC safe); "local files" badge from the /music scan |
 | v1.6.54 | stable (superseded) | Qobuz + TIDAL source badges from the services' own favourites |
-| v1.6.55 | **Latest (stable)** | Badge review pass: closed three wrong-badge paths (empty-normalising titles, dual-service albums, duplicate library identities), badges cleared on disconnect, Qobuz favourites paged, per-artist identity matching + "&"/"and"/edition tolerance, badges on every screen — README points here |
+| v1.6.55 | stable (superseded) | Badge review pass: closed three wrong-badge paths (empty-normalising titles, dual-service albums, duplicate library identities), badges cleared on disconnect, Qobuz favourites paged, per-artist identity matching + "&"/"and"/edition tolerance, badges on every screen |
+| v1.6.56 | stable (superseded) | Eradicated substring artist matching across 13 call sites ("Also appears on" listing the wrong artists); 5 self-inflicted regressions caught by review and fixed in the same version |
+| v1.6.57 | stable (superseded) | Library Sort + Focus (album/artist/year/plays/last played/random; decade, source, listening facets) computed from the snapshot — zero Core calls; first test suite (111 tests, zero new dependencies) |
+| v1.6.58 | stable (superseded) | Sort/Focus sheets no longer opened underneath the now-playing bar — a stacking-order bug (backdrop z-index 60 vs the transport's 70), not a layout one; first hit-test-based DOM regression test |
+| v1.6.59 | **Latest (stable)** | Decade focus finally has data: release years harvested from the Qobuz/TIDAL favourites and file tags already being fetched, joined via srcKeys, with source precedence so file tags beat service reissue dates; Library sorting reduced to one ARC-style arrow; `dir` means the same thing for every sort; 188 tests — README points here |
