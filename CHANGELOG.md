@@ -2,6 +2,49 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.62] — 2026-07-29
+
+### Changed
+
+- **The album view and the Queue are flat, in Roon's layout** — the same treatment Home
+  got in v1.6.61. The tinted panels and their decorative watermarks are gone from the app
+  **entirely**; nothing is a card any more.
+  - **Album view.** The Tracks and About panels lose their tint, corners and watermark.
+    Track rows are now full-width, separated by the app's standard hairline. The artwork
+    is square and unshadowed, and the album title is larger and heavier — at 22px it read
+    as a caption above the button row rather than the heading of the screen.
+  - **Queue.** Rows run **edge to edge**, and the now-playing row is a full-bleed block
+    rather than an inset rounded pill. Taller rows, a larger square thumbnail, and a bold
+    title over the artist, as Roon has them.
+  - **Button layout is unchanged, as asked** — same four actions, same equal-width row.
+    Only the finish moved: the secondary actions are outlined on the page background
+    instead of filled chips, and the primary carries more weight. Scoped to the album
+    view's row, because `.action-btn` is shared with five other places (the logo sheet,
+    the label merge bar, the multi-select bar, the Library Focus sheet, Settings).
+  - **The ambient cover glow is off.** Roon's album and queue screens are flat black, and
+    a blurred cover wash behind flat rows was the last of the card-era look. The element
+    and its JS are left in place, so restoring it is a one-line change.
+
+### Fixed
+
+- A comment lost its closing `*/` during the above and silently swallowed the next
+  comment's opener. Harmless in outcome, but caught by the CSS integrity check added in
+  v1.6.61 — which is the second time that check has earned its place in two versions.
+
+### Added
+
+- **10 more tests** (233 → 243). `test/dom/home-flat.test.js` is now
+  `test/dom/flat-ui.test.js` and asserts the end state across **all eight surfaces** in
+  both themes: nothing tinted, nothing card-cornered, no watermarks.
+  - New cases cover the queue's edge-to-edge rows at **a phone width and a tablet width**.
+    The tablet case is the one that matters: `.modal.np-mode .modal-info` caps every
+    now-playing pane at 460px, so a "full-width" queue looks perfect on a 390px phone and
+    floats mid-screen on a tablet. Also asserted: row content still lines up with the
+    header above it (the bleed has to be paid back as row padding), and the page never
+    gains a horizontal scrollbar.
+  - Five mutations run against them — dropping the column-cap lift, the bleed, the padding
+    payback, the full-bleed highlight, and re-tinting the panel — all five fail the suite.
+
 ## [1.6.61] — 2026-07-29
 
 ### Changed

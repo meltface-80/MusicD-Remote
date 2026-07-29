@@ -18,9 +18,6 @@
   --accent:       #4cb7e6;
   --accent-soft:  rgba(76,183,230,.15);
   --danger:       #e06464;
-  --home-unplayed-bg: #2b3037;   /* pale grey panel on dark */
-  --home-random-bg:   #24322e;   /* teal-grey panel on dark */
-  --home-lotw-bg:     #2f2a38;   /* violet-grey panel on dark */
   --panel-hairline: rgba(255,255,255,.07);  /* row separators on tinted panels */
   --shadow-card:  0 2px 6px rgba(0,0,0,.45), 0 10px 24px rgba(0,0,0,.35);
   --shadow-modal: 0 24px 64px rgba(0,0,0,.6);
@@ -36,9 +33,6 @@
   --text-faint:   #8c919a;
   --accent:       #1f8fc1;
   --accent-soft:  rgba(31,143,193,.12);
-  --home-unplayed-bg: #d9e8fb;   /* soft blue panel on light */
-  --home-random-bg:   #d6f0e4;   /* soft teal panel on light */
-  --home-lotw-bg:     #ece0f7;   /* soft violet panel on light */
   --panel-hairline: rgba(26,39,64,.12);     /* row separators on tinted panels */
   --danger:       #c0392b;
   --shadow-card:  0 1px 2px rgba(0,0,0,.06), 0 6px 16px rgba(0,0,0,.08);
@@ -671,17 +665,22 @@ main {
   width: 100%; max-width: 280px; margin: 0 auto;
   aspect-ratio: 1 / 1;
   background: var(--bg-elev-2);
-  border-radius: 8px; overflow: hidden;
-  box-shadow: var(--shadow-card);
+  /* Square and flat, as Roon has it — the drop shadow belonged to the
+     card-era look. np-mode's Now playing tab overrides both of these on the
+     img itself (see .modal.np-mode.tab-album .modal-art), so this only
+     affects the album view. */
+  border-radius: 3px; overflow: hidden;
   flex-shrink: 0;
 }
 .modal-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 .modal-info { display: flex; flex-direction: column; min-width: 0; }
 .modal-info h2 {
-  margin: 4px 0 4px;
-  font-size: 22px; font-weight: 500; line-height: 1.2;
-  letter-spacing: -.01em; word-break: break-word;
+  margin: 14px 0 6px;
+  /* Larger and heavier than the old 22px/500 — Roon leads its album screen
+     with the title, and at 22px it read as a caption above the button row. */
+  font-size: 27px; font-weight: 700; line-height: 1.15;
+  letter-spacing: -.02em; word-break: break-word;
 }
 .modal-subtitle {
   margin: 0 0 20px;
@@ -733,8 +732,36 @@ main {
 [data-theme="light"] .action-btn.primary { color: #fff; }
 .action-btn[disabled] { opacity: .55; cursor: not-allowed; }
 
+/* Album-view action row, Roon-styled. SCOPED to .modal-actions on purpose:
+   .action-btn is shared with the logo sheet, the label merge bar, the album
+   multi-select bar, the Library Focus sheet, the Settings rescan button and
+   the per-track buttons — restyling the base class would move all of them.
+   The layout is deliberately unchanged (same four buttons, same equal-width
+   row); only the finish moves: Roon's secondary actions are outlined on the
+   page background rather than filled chips, and its primary carries more
+   weight than the rest. */
+.modal-actions .action-btn {
+  background: transparent;
+  border-color: var(--border);
+  font-weight: 600;
+  padding: 11px 8px;
+}
+.modal-actions .action-btn:hover { background: var(--bg-elev-2); filter: none; }
+.modal-actions .action-btn.primary {
+  background: var(--accent);
+  border-color: transparent;
+  font-weight: 700;
+}
+.modal-actions .action-btn.primary:hover { background: var(--accent); filter: brightness(1.08); }
+
+/* Section heading on the flat album view. Same language as the Home sections
+   and the modal tab strip: uppercase, tracked out, over a hairline — so
+   "TRACKS" and "ABOUT THIS ALBUM" read as section breaks now that no panel
+   encloses them. */
 .section-label {
-  margin: 0 0 8px;
+  margin: 0 0 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
   font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
   color: var(--text-faint); font-weight: 600;
 }
@@ -2627,7 +2654,6 @@ input.vol-range::-moz-range-thumb {
 .pf-action-primary { background: var(--accent); border-color: var(--accent); color: #04121a; font-weight: 600; }
 .pf-action-link { color: var(--accent); background: none; border-color: transparent; }
 
-
 /* Tidal device-authorization pending block (settings sheet) */
 .tidal-auth-pending {
   display: flex; flex-direction: column; align-items: center; gap: 8px;
@@ -2761,16 +2787,6 @@ input.vol-range::-moz-range-thumb {
 .home-section-link:hover::after { transform: translateX(3px); }
 .home-section-link:focus-visible { outline: 2px solid var(--accent, #4a90d9); outline-offset: 3px; border-radius: 4px; }
 
-/* The album modal's Tracks (.track-list-wrap), About (#album-bio-section) and
-   Queue (#tab-queue) panels keep the tinted-panel recipe below. The Home
-   sections used to share it and no longer do — hence the selector lists here
-   are shorter than they read historically. */
-.track-list-wrap,
-#album-bio-section,
-#tab-queue {
-  border-radius: 16px;
-  padding: 14px 14px 12px;
-}
 /* The two below-the-fold sections skip rendering until scrolled near — on a
    phone the first paint only lays out the unplayed + random rows. The
    intrinsic size reserves roughly one carousel row so the scrollbar doesn't
@@ -2782,54 +2798,6 @@ input.vol-range::-moz-range-thumb {
   contain-intrinsic-size: auto 320px;
 }
 
-/* Faint themed watermark for a section's panel — a large, rotated, SOLID-fill
-   line-art motif CROPPED by the panel's top-left corner (overflow:hidden) so it
-   reads as a bold cut-off detail contained entirely WITHIN the coloured section
-   (never spilling onto the page). Each section carries a motif matching its theme:
-   "Not played in 6 months" -> a clock (time gone by); "Random albums" -> a vinyl
-   record; "Label of the week" -> a price/luggage tag; "Browse by genre" -> a
-   beamed music note. Solid silhouettes (not thin outlines) so they stand out.
-   The art sits behind the title + carousel (z-index:0 vs 1), never intercepts
-   taps (pointer-events:none), and — thanks to overflow:hidden — can never
-   produce a scrollbar. Shared placement lives in the grouped rules; only the
-   mask-image differs per section, and background-color differs per theme —
-   each motif ships ONE opaque-white SVG used as a mask (not a background
-   image), so the theme swap is a color change rather than a second SVG. */
-.track-list-wrap,
-#album-bio-section,
-#tab-queue { position: relative; overflow: hidden; }
-.track-list-wrap > *,
-#album-bio-section > *,
-#tab-queue > * { position: relative; z-index: 1; }
-.track-list-wrap::before,
-#album-bio-section::before,
-#tab-queue::before {
-  content: "";
-  position: absolute;
-  top: -92px;
-  left: -84px;
-  width: 400px;
-  height: 400px;
-  transform: rotate(-14deg);
-  -webkit-mask-position: center; mask-position: center;
-  -webkit-mask-size: contain;    mask-size: contain;
-  -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
-  background-color: #ffffff;
-  opacity: .11;
-  pointer-events: none;
-  z-index: 0;
-}
-[data-theme="light"] .track-list-wrap::before,
-[data-theme="light"] #album-bio-section::before,
-[data-theme="light"] #tab-queue::before {
-  opacity: .14;
-  background-color: #1a2740;
-}
-/* The album modal's Tracks panel — vinyl record. */
-.track-list-wrap::before {
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M100%2028%20a72%2072%200%201%200%200%20144%20a72%2072%200%201%200%200%20-144%20Z%20M100%2075%20a25%2025%200%201%200%200%2050%20a25%2025%200%201%200%200%20-50%20Z'%2F%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M100%2081%20a19%2019%200%201%200%200%2038%20a19%2019%200%201%200%200%20-38%20Z%20M100%2095.5%20a4.5%204.5%200%201%200%200%209%20a4.5%204.5%200%201%200%200%20-9%20Z'%2F%3E%3C%2Fsvg%3E");
-          mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M100%2028%20a72%2072%200%201%200%200%20144%20a72%2072%200%201%200%200%20-144%20Z%20M100%2075%20a25%2025%200%201%200%200%2050%20a25%2025%200%201%200%200%20-50%20Z'%2F%3E%3Cpath%20fill-rule%3D'evenodd'%20d%3D'M100%2081%20a19%2019%200%201%200%200%2038%20a19%2019%200%201%200%200%20-38%20Z%20M100%2095.5%20a4.5%204.5%200%201%200%200%209%20a4.5%204.5%200%201%200%200%20-9%20Z'%2F%3E%3C%2Fsvg%3E");
-}
 .home-carousel {
   display: grid;
   grid-auto-flow: column;
@@ -2979,12 +2947,12 @@ input.vol-range::-moz-range-thumb {
 /* Light theme: a blurred cover over a white panel reads stronger than the
    same opacity over near-black, so pull it back further. */
 [data-theme="light"] .modal-ambient { opacity: .17; }
-/* The Roon-style Now playing screen keeps its own clean look — but the Queue
-   tab opts back in: its big art is hidden there, so the glow (kept in sync
-   with the playing track by the transport poll) is what ties the list back
-   to the current album. */
-.modal.np-mode .modal-ambient { display: none; }
-.modal.np-mode.tab-queue .modal-ambient { display: block; }
+/* Off on every screen now: Roon's album and queue screens are flat black, and
+   a blurred cover wash behind flat rows is the last piece of the card-era look.
+   The element, its JS (setModalAmbient / window.__setModalAmbient) and the
+   transport poll that keeps it pointed at the playing track are all left in
+   place, so restoring it is a one-line change rather than a rebuild. */
+.modal-ambient { display: none; }
 
 /* 2 — Home-style tinted panels. The panel shell, watermark placement, theme
    flip, and the Tracks panel's vinyl motif are all SHARED with the Home
@@ -2992,43 +2960,22 @@ input.vol-range::-moz-range-thumb {
    here. Tracks reuses the Random-albums teal (vinyl motif matches it);
    About this album reuses the Label-of-the-week violet; the Queue tab
    reuses the Not-played blue-grey. */
-.track-list-wrap    { background: var(--home-random-bg); }
-#album-bio-section  { background: var(--home-lotw-bg); }
-#tab-queue          { background: var(--home-unplayed-bg); }
 
 /* Watermarks sit under dense text here (unlike Home's tile rows), so run
    them fainter than Home's .11 dark / .14 light. Same specificity as the
    shared rules, later in the file — these win by source order. */
-.track-list-wrap::before,
-#album-bio-section::before,
-#tab-queue::before { opacity: .07; }
-[data-theme="light"] .track-list-wrap::before,
-[data-theme="light"] #album-bio-section::before,
-[data-theme="light"] #tab-queue::before { opacity: .08; }
 
-/* About this album — oversized quotation marks (editorial voice). */
-#album-bio-section::before {
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20d%3D'M62%2058%20C44%2058%2030%2072%2030%2092%20C30%20112%2044%20124%2060%20124%20C61%20124%2062%20124%2063%20124%20C58%20138%2046%20146%2034%20148%20L34%20162%20C64%20158%2088%20136%2088%2098%20C88%2074%2077%2058%2062%2058%20Z%20M142%2058%20C124%2058%20110%2072%20110%2092%20C110%20112%20124%20124%20140%20124%20C141%20124%20142%20124%20143%20124%20C138%20138%20126%20146%20114%20148%20L114%20162%20C144%20158%20168%20136%20168%2098%20C168%2074%20157%2058%20142%2058%20Z'%2F%3E%3C%2Fsvg%3E");
-          mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Cpath%20d%3D'M62%2058%20C44%2058%2030%2072%2030%2092%20C30%20112%2044%20124%2060%20124%20C61%20124%2062%20124%2063%20124%20C58%20138%2046%20146%2034%20148%20L34%20162%20C64%20158%2088%20136%2088%2098%20C88%2074%2077%2058%2062%2058%20Z%20M142%2058%20C124%2058%20110%2072%20110%2092%20C110%20112%20124%20124%20140%20124%20C141%20124%20142%20124%20143%20124%20C138%20138%20126%20146%20114%20148%20L114%20162%20C144%20158%20168%20136%20168%2098%20C168%2074%20157%2058%20142%2058%20Z'%2F%3E%3C%2Fsvg%3E");
-}
+/* 3 — Track rows on the flat album view: full-width rows separated by the
+   app's standard hairline, as Roon has them. --border, not --panel-hairline:
+   the latter was tuned to sit on the tinted panel this list used to live in
+   and is nearly invisible on the page background (same reasoning as the Home
+   section rules). The list keeps its framing border-top now that no panel
+   frames it, and the last row's border is what closes the list. */
+.track-list-wrap .track-list li { border-bottom: 1px solid var(--border); }
 
-/* 3 — Track rows: translucent hairlines instead of the solid --border,
-   which fights the tinted background; the framing border-top goes — the
-   panel itself now frames the list. Last row keeps the panel's bottom
-   padding clean. */
-.track-list-wrap .track-list { border-top: 0; }
-.track-list-wrap .track-list li { border-bottom: 1px solid var(--panel-hairline); }
-.track-list-wrap .track-list li:last-child { border-bottom: 0; }
-
-/* 4 — Queue tab (np-mode): same panel language as the Tracks/About panels.
-   Motif: a play queue — stacked list bars with a play triangle. */
-#tab-queue::before {
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Crect%20x%3D'28'%20y%3D'46'%20width%3D'144'%20height%3D'16'%20rx%3D'8'%2F%3E%3Crect%20x%3D'28'%20y%3D'90'%20width%3D'144'%20height%3D'16'%20rx%3D'8'%2F%3E%3Crect%20x%3D'28'%20y%3D'134'%20width%3D'76'%20height%3D'16'%20rx%3D'8'%2F%3E%3Cpath%20d%3D'M128%20118%20L174%20143%20L128%20168%20Z'%2F%3E%3C%2Fsvg%3E");
-          mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20viewBox%3D'0%200%20200%20200'%20fill%3D'%23ffffff'%3E%3Crect%20x%3D'28'%20y%3D'46'%20width%3D'144'%20height%3D'16'%20rx%3D'8'%2F%3E%3Crect%20x%3D'28'%20y%3D'90'%20width%3D'144'%20height%3D'16'%20rx%3D'8'%2F%3E%3Crect%20x%3D'28'%20y%3D'134'%20width%3D'76'%20height%3D'16'%20rx%3D'8'%2F%3E%3Cpath%20d%3D'M128%20118%20L174%20143%20L128%20168%20Z'%2F%3E%3C%2Fsvg%3E");
-}
-/* 5 — Selectable tracks (v1.6.10): each row in the Tracks panel expands on
+/* 4 — Selectable tracks (v1.6.10): each row in the Tracks panel expands on
    tap to reveal Play now / Queue for that single track. Hover/selection
-   washes are translucent to sit on the tinted panel. The buttons ARE
+   washes are translucent to sit on the flat page. The buttons ARE
    .action-btn (shared recipe: colors, primary, hover, disabled) with a
    row-scale override — flex:none undoes .action-btn's stretch-to-fill,
    and min-height keeps the tap target at the app's 38-40px norm. */
@@ -3055,24 +3002,59 @@ input.vol-range::-moz-range-thumb {
   font-size: 12.5px; font-weight: 600;
 }
 
-/* Queue rows: the same translucent hairlines as the Tracks panel, replacing
-   the solid --border that fights the tint. The id selector (1,1,1) outguns
-   `.queue-list li.is-now` (0,2,1), so the now-playing row's transparent
-   border is restated below it. (The q-divider row needs no restatement:
-   its border-bottom-STYLE stays `none` from the base rule — a color on a
-   none-style border paints nothing.) */
-#tab-queue .queue-list li { border-bottom-color: var(--panel-hairline); }
-#tab-queue .queue-list li.is-now { border-bottom-color: transparent; }
-#tab-queue .q-divider-line { background: rgba(255,255,255,.10); }
-#tab-queue .queue-list li.is-tappable:hover { background: rgba(255,255,255,.05); }
+/* ------------------------------------------------------------------ */
+/*  Queue tab — flat, full-bleed rows (Roon parity)                     */
+/* ------------------------------------------------------------------ */
+/* The rows run edge to edge. .modal-body's horizontal padding is shared with
+   the album view and the Now playing screen, so it is cancelled HERE with a
+   negative margin rather than removed there, and paid back as row padding so
+   the text still lines up. --queue-gutter tracks .modal-body's padding, which
+   is 18px and becomes 28px at >=720px (see the @media block on .modal-body). */
+#tab-queue {
+  --queue-gutter: 18px;
+  margin-inline: calc(var(--queue-gutter) * -1);
+}
+@media (min-width: 720px) { #tab-queue { --queue-gutter: 28px; } }
+/* The summary line keeps the text gutter; only the ROWS go full-bleed. */
+#tab-queue .queue-summary { padding-inline: var(--queue-gutter); }
+#tab-queue .queue-list li { padding-inline: var(--queue-gutter); }
+#tab-queue .q-divider { padding-inline: var(--queue-gutter); }
+
+/* Hairlines on the flat background: --border, the app's standard, not the
+   --panel-hairline that was tuned for the tint this list used to sit on. */
+#tab-queue .queue-list li { border-bottom-color: var(--border); }
+#tab-queue .q-divider-line { background: var(--border); }
+
+/* The now-playing row is a full-bleed block, edge to edge — Roon highlights
+   the whole row rather than insetting a rounded pill. The radius and the
+   accent tint both belonged to the inset look. */
+#tab-queue .queue-list li.is-now {
+  background: var(--bg-elev-2);
+  border-radius: 0;
+  border-bottom-color: var(--border);
+}
+
+/* Washes re-tuned for a flat background — the old values were mixed against
+   the panel tint and are too faint without it. */
+#tab-queue .queue-list li.is-tappable { border-radius: 0; }
+#tab-queue .queue-list li.is-tappable:hover { background: rgba(255,255,255,.06); }
 /* :active must be restated after :hover — during a press both match, and the
-   id-scoped hover rule (1,3,1) would otherwise out-rank the base accent
-   flash `.queue-list li.is-tappable:active` (0,3,1). --accent-soft is
-   themed, so one rule covers both themes. */
+   id-scoped hover rule would otherwise out-rank the base accent flash. */
 #tab-queue .queue-list li.is-tappable:active { background: var(--accent-soft); }
-[data-theme="light"] #tab-queue .q-divider-line { background: rgba(26,39,64,.15); }
 [data-theme="light"] #tab-queue .queue-list li.is-tappable:hover { background: rgba(26,39,64,.06); }
 [data-theme="light"] #tab-queue .queue-list li.is-tappable:active { background: var(--accent-soft); }
+
+/* Roon's queue rows are taller, with a bold title over the artist and a
+   larger square thumbnail. */
+#tab-queue .queue-list li { padding-block: 10px; gap: 14px; }
+#tab-queue .queue-list .q-art { width: 52px; height: 52px; border-radius: 3px; }
+#tab-queue .queue-list .q-title { font-size: 15px; font-weight: 600; }
+
+/* Full-width rows need the np-mode column cap lifted — .modal.np-mode
+   .modal-info caps every np pane at 460px, which would leave the queue
+   floating in the middle of a tablet screen. Scoped to the queue tab so the
+   Now playing screen keeps its centred column. */
+.modal.np-mode.tab-queue .modal-info { max-width: none; }
 
 /* ------------------------------------------------------------------ */
 /*  Library wall — sort + focus                                        */
