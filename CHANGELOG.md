@@ -2,6 +2,37 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.0] — 2026-07-29
+
+A minor-version bump rather than another point release, because the app looks and behaves
+differently enough that "1.6.x" would undersell it. No new code over v1.6.63 — this is the
+version number the UI work ships under.
+
+### What changed since v1.6.60
+
+- **The interface is flat.** Every screen used to wrap its content in a softly-tinted
+  rounded panel with a decorative watermark behind it. Those are gone — from Home
+  (v1.6.61), and from the album view and Queue (v1.6.62). Sections are now separated by a
+  title, a hairline and whitespace, in Roon's layout: rows run to the screen edge so the
+  next tile peeks, and the currently-playing queue row is a full-bleed block rather than an
+  inset pill.
+- **Four themes instead of two** (v1.6.63). The original dark and light are unchanged, and
+  two new ones are drawn from the MusicD site's own colours: **Copper dark** (charcoal and
+  copper) and **Brass light** (warm parchment and brass). Settings → Appearance is now a
+  picker: choose one, see a swatch of its actual colours, press **Apply**.
+- **Contrast is measurably better**, and now machine-checked. Three places printed white
+  text on the accent fill at 2.28:1; both new palettes fix the faint-text failure the
+  originals ship. Every theme's ratios are computed from the real applied tokens by the
+  test suite.
+- **Artist names on the Now playing screen are links** (v1.6.60), matching the album view.
+
+### Known and deliberate
+
+- Track rows in the album view keep their numbers; Roon uses a per-row play button.
+- The Queue's "Now playing" divider stays centred; Roon left-aligns it.
+- Back from an artist opened via the Now playing screen returns to the screen underneath,
+  not to Now playing.
+
 ## [1.6.63] — 2026-07-29
 
 ### Added
