@@ -146,7 +146,11 @@ const DRIVER = `
     T(label + "_bar_visible_now", live.height > 40);
     T(label + "_bar_overlaps_sheet", live.top < r.bottom && live.bottom > r.top);
 
-    var controlsIn = sheet.querySelectorAll(".lib-row, .lib-chip, .lib-sheet-foot button");
+    // Every tappable thing in the sheet. Keep this list in step with the sheet
+    // builders — a renamed row class silently empties it, and "no control is
+    // covered" would then be true because no control was looked at.
+    var controlsIn = sheet.querySelectorAll(
+      ".lib-row, .lib-sort-row, .lib-chip, .lib-sheet-foot button");
     T(label + "_control_count", controlsIn.length);
 
     var covered = [];

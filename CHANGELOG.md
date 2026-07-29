@@ -2,6 +2,152 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.6.59] — 2026-07-29
+
+### Fixed
+
+- **The Decade focus was missing most of the library — now it collects release years
+  from data already being fetched.** Roon's browse API publishes no release year at all
+  (title, subtitle, cover, item key, and nothing else), so every year the Decade filter
+  uses has to be found elsewhere. It used to be picked up only as a **by-product of the
+  label scan**, and that scan's work list is "albums with no cached label" — so the
+  moment an album got a label it could never acquire a year, and on an established
+  install the year lookups stopped running altogether. Coverage froze at a fraction of
+  the library. Nothing about it was visible: a short decade list looks like a short
+  decade list.
+  - **Qobuz and TIDAL now supply years, at no API cost.** The extension already pages
+    your favourites from both services to decide the source badges, and every album in
+    those responses carries its own release date — it was simply being discarded. Those
+    dates are now harvested from the same responses and matched to your library through
+    the **same identity matcher the badges use**, so "The Beatles" vs "Beatles" and
+    "&" vs "and" still line up. No extra requests to either service.
+  - **File-tag years are no longer stranded.** The `/music` scanner already read a year
+    from your tags, but stored it under the *tag's* spelling while the filter looked it
+    up under *Roon's*. Every album Roon renamed ("(Deluxe Edition)"), re-credited, or
+    filed under a different album artist lost its year to that mismatch. Those years are
+    now matched the same way the "local files" badge is — anything the badge can find,
+    the year can now find.
+  - **iTunes and TheAudioDB stop throwing their years away.** Both already return a
+    release date alongside the record label during a scan; it's now kept. Captured
+    *before* the label is validated, so an album with an unusable label still keeps its
+    year.
+  - Coverage is joined onto the library on every sync, rescan and favourites refresh —
+    no longer once-ever.
+- **The Decade chips in the main filter counted albums you don't own.** They were
+  counted over the year cache, which is keyed by album identity and never pruned — so it
+  included albums removed from the library and Qobuz releases you had merely *looked at*
+  in the browser. Counted over the actual library now, matching what the filter returns.
+
+### Changed
+
+- **Library sorting is now one arrow, as in Roon ARC.** The wordy
+  "Order: A → Z (tap to reverse)" row is gone. A single arrow sits beside the Sort pill:
+  tap it and the order reverses, tap it again and it goes back. That gives all four
+  orderings — **A→Z, Z→A, newest→oldest, oldest→newest** — from one control, without
+  opening anything.
+  - In the Sort sheet, only the **selected** option carries an ↑/↓ arrow, and tapping
+    that option flips it in place instead of re-selecting it. Tapping a different option
+    switches to it.
+  - Each sort now opens the way you'd expect it to: alphabetical sorts start A→Z, while
+    **Release year starts newest-first** and **Most played / Last played start
+    highest-first**. Previously a sort inherited whatever direction the last one used.
+  - **Random** has no direction, so its slot becomes a reshuffle button.
+  - The words didn't disappear entirely — they moved to the arrow's tooltip and
+    screen-reader name ("Newest first", "Most played first"), so the control still
+    explains itself without putting a sentence on screen.
+- **`dir` now means the same thing for every sort.** The server used to invert
+  Most played / Last played, so `asc` produced *most*-played-first there and
+  *least*-first everywhere else. One arrow cannot point two ways, so the inversion is
+  gone and each sort's sensible default direction is chosen up front. A saved view from
+  v1.6.57 has its stored direction reset once, on first load, and is rewritten at the
+  new version so it only happens once.
+- **The Focus sheet now says how complete the Decade data is** — "4,120 of 6,800 albums
+  have a release year so far" — instead of silently showing chips that don't add up to
+  the library.
+
+### Review fixes (found before release, in the same version)
+
+A review of the above turned up two ways it could have written the **wrong** year — worse
+than the missing years it set out to fix, because a wrong year is saved and then never
+looked at again. Both are fixed here, and every fix below is pinned by a test that fails
+without it.
+
+- **Years now record where they came from, and a better source can correct a worse one.**
+  Filling gaps only sounds safe, but the sources race: the disk walk takes minutes while
+  the Qobuz/TIDAL favourites come back in seconds. On any rescan the services landed
+  first, so a TIDAL 2011 remaster date would stick to a 1973 album **permanently** — the
+  user's own ORIGINALDATE tag arriving too late to correct it. Each year now carries its
+  provenance (your file tags > an explicit original-release date > an edition date > a
+  catalogue match), and a higher-ranked source may overwrite a lower-ranked one. Years
+  stored before this existed rank lowest, so the first identified source repairs them.
+- **iTunes and TheAudioDB no longer record years from unverified matches.** Both fall
+  back to "first result" when they can't find an exact match — which is fine for a label
+  (wrong labels are cosmetic and get overwritten) but not for a year. An album with no
+  artist credit, common on classical and box sets, would take a stranger's release date
+  and keep it. Years are now recorded only from a match verified on title *and* artist.
+- **File tags: ORIGINALDATE now beats DATE.** On a remaster DATE is the reissue year, and
+  the reissue was being preferred — filing remasters in the decade they were reissued in.
+- The Decade counts in the main filter now answer **503 while the library is still
+  loading** instead of reporting "no albums have a year", which is a very different claim.
+
+An 8-angle review of the sort UI turned up four more:
+
+- **The v2 migration was too broad.** It dropped the saved direction for *every* sort,
+  but only Most played / Last played changed meaning — so a Z→A wall would silently
+  come back A→Z, and because the migrated view is written straight back, the preference
+  was gone for good rather than just for that load. It now touches only those two sorts.
+- **The arrow destroyed the focus of the button you just pressed.** Every tap rebuilds
+  the controls row, so with a keyboard one Enter reversed the order and the next did
+  nothing — focus had fallen to the page body. Focus now moves to the replacement
+  control, which also announces the new direction to a screen reader.
+- **A malformed saved view could brick the Library wall.** A blob can be valid JSON and
+  still the wrong shape (a partial write, a synced value); the loader's `try/catch` only
+  covered the parse, so a bad `decade` threw later, at render time, inside an un-awaited
+  handler — the wall opened empty with no error and no way out short of clearing site
+  data. Every field is now range-checked on load.
+- **The sort row could overflow sideways** at narrow widths rather than truncating the
+  label, because a grid `1fr` track won't shrink below its content.
+- Switching **to** Random now re-rolls the seed. Previously the first shuffle on a fresh
+  install always ran on the default seed, so "random" gave every device the same order
+  until the reshuffle button was tapped.
+- The year harvest runs in **one database transaction**. Unwrapped, the first run on a
+  large library is one implicit transaction — and one disk sync — per album (measured at
+  35× slower on this container, and far worse on a Pi with a USB disk).
+- **The library ordering cache is invalidated reliably again.** A well-tagged library
+  could write thousands of years during a scan and never flush it, so the Library kept
+  serving an ordering in which those albums were still undated while the Focus sheet
+  simultaneously reported them as dated. Conversely, the scan's per-year invalidation is
+  now coalesced — it was clearing the cache several times a second for the hours a first
+  scan runs, so every Library page re-sorted the whole library from scratch.
+- A failure inside the year harvest no longer aborts the rest of the library sync (it
+  used to silently stop the Qobuz/TIDAL badge refresh for that sync).
+- The three harvest maps were declared far below the code that assigns them — safe only
+  because those calls happen to be deferred. Moved up beside the data they belong to;
+  that arrangement is the v1.5.66 startup-crash shape and shouldn't be left lying around.
+- Dead CSS from the old sort rows removed, and the decade filter now shares `albumYearOf`
+  instead of keeping a fourth hand-written copy of the key expression.
+
+### Added
+
+- **77 more tests** (111 → 188), covering the two things above that fail invisibly:
+  - `test/unit/libraryview.test.js` — every sort in both directions, undated albums
+    always sorting last, decade filtering, and stable seeded shuffling. Mutation-checked:
+    restoring the old plays/lastplayed inversion fails 5 subtests; restoring v1.6.57's
+    whole-list reverse fails 3.
+  - `test/unit/years.test.js` — date parsing, harvest keying, and the join. Six
+    mutations were run against it, including "write the service's key instead of Roon's"
+    and "overwrite years that already exist"; all six fail the suite.
+  - `test/dom/library-sort.test.js` — drives the real arrow in a headless browser and
+    pairs every glyph with the `dir=` actually sent, because an arrow that flips on
+    screen while the server keeps sorting the old way looks completely normal.
+    Also boots the app with a **v1.6.57 saved view** in localStorage — the migration path
+    no other test reaches, and the one that runs for every existing user exactly once.
+    That test found a real bug before release: the migrated view wasn't written back, so
+    it re-ran on every load and kept resetting the direction the user had just chosen.
+  - `setAlbumYear` is now extracted from `index.js` rather than stubbed in tests. The
+    hand-written stub was more conservative than the shipping function and silently hid
+    two of the six mutations above.
+
 ## [1.6.58] — 2026-07-29
 
 ### Fixed

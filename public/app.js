@@ -601,12 +601,97 @@
   // sort/dir/focus persist so the wall reopens exactly as the user left it.
   // Roon's own Sort/Focus run on a private API — these are built from the
   // extension's own snapshot, so changing them costs no Roon calls at all.
+  // ---- Library wall: sort + focus options ---------------------------------
+  // Roon's Sort/Focus live on a private API, so these are built from this
+  // extension's own snapshot.
+  //
+  // Declared HERE, above libView, because the persisted-state migration below
+  // calls libSortDefaultDir(). A `const` referenced before its declaration is a
+  // ReferenceError, not undefined — with these left further down the file the
+  // app would fail to boot the moment a v1 blob was in localStorage.
+  //
+  // `asc`/`desc` are the human meanings of the two arrow directions for that
+  // sort, and `dir` is which one you get when you first pick it: alphabetical
+  // sorts open A→Z, everything quantitative opens with the biggest/newest
+  // first, which is what people mean by "sort by year" or "most played".
+  const LIB_SORT_OPTIONS = [
+    { id: "album",      label: "Album name",   dir: "asc",
+      asc: "A → Z", desc: "Z → A" },
+    { id: "artist",     label: "Artist",       dir: "asc",
+      asc: "A → Z", desc: "Z → A" },
+    { id: "year",       label: "Release year", dir: "desc",
+      asc: "Oldest first", desc: "Newest first",
+      note: "from years collected during scanning" },
+    { id: "plays",      label: "Most played",  dir: "desc",
+      asc: "Least played first", desc: "Most played first",
+      note: "from plays MusicD Remote has seen" },
+    { id: "lastplayed", label: "Last played",  dir: "desc",
+      asc: "Longest ago first", desc: "Most recent first",
+      note: "from plays MusicD Remote has seen" },
+    { id: "random",     label: "Random",       dir: "asc" }   // no direction
+  ];
+  const LIB_PLAYED_OPTIONS = [
+    { id: "any",   label: "Any" },
+    { id: "never", label: "Never played" },
+    { id: "6",     label: "Not in 6 months" },
+    { id: "12",    label: "Not in 12 months" }
+  ];
+  // Random has no meaningful direction, so the arrow control hides for it.
+  const libSortHasDir = (id) => id !== "random";
+  // A seed the server hasn't just served, so a reshuffle visibly reorders
+  // instead of repainting the same shuffle. 1..100000: the server does
+  // `parseInt(seed) || 1`, so 0 would silently mean "the default seed".
+  function libNextSeed(current) {
+    let next = current;
+    while (next === current) next = Math.floor(Math.random() * 100000) + 1;
+    return next;
+  }
+  function libSortDefaultDir(id) {
+    const o = LIB_SORT_OPTIONS.find(x => x.id === id);
+    return o ? o.dir : "asc";
+  }
+
   const LIB_VIEW_KEY = "rra-library-view";
+  // v2 changed what `dir` MEANS for Most played / Last played, and ONLY those
+  // two: the server used to invert them, so "asc" produced most-played-first.
+  // Now "desc" means descending for every sort. Album/Artist/Release year meant
+  // the same thing in v1, so a v1 blob keeps its direction for those — dropping
+  // it wholesale would silently reset someone's Z→A wall to A→Z and, because
+  // the migrated blob is written straight back, lose the preference for good.
+  const LIB_VIEW_VERSION = 2;
+  const LIB_V1_INVERTED_SORTS = ["plays", "lastplayed"];
   const libWall = { offset: 0, loading: false, done: false, seq: 0, total: 0 };
-  let libView = { sort: "album", dir: "asc", seed: 1, decade: [], source: [], played: "any" };
+  let libView = { v: LIB_VIEW_VERSION, sort: "album", dir: "asc", seed: 1,
+                  decade: [], source: [], played: "any" };
   try {
     const saved = JSON.parse(localStorage.getItem(LIB_VIEW_KEY) || "null");
-    if (saved && typeof saved === "object") libView = Object.assign(libView, saved);
+    if (saved && typeof saved === "object") {
+      const stale = saved.v !== LIB_VIEW_VERSION;
+      const dirChangedMeaning = stale && LIB_V1_INVERTED_SORTS.indexOf(saved.sort) > -1;
+      if (dirChangedMeaning) delete saved.dir;
+      libView = Object.assign(libView, saved, { v: LIB_VIEW_VERSION });
+      if (dirChangedMeaning) libView.dir = libSortDefaultDir(libView.sort);
+      // A blob is JSON, so it can be well-formed and still the wrong SHAPE —
+      // a partial write or a synced/hand-edited value. Object.assign copies it
+      // verbatim, and the try/catch here only covers the parse, so an
+      // unvalidated `decade: null` throws later, at render time, inside an
+      // un-awaited async handler: the wall opens empty with no error and no way
+      // out of it short of clearing site data. Coerce instead.
+      if (!Array.isArray(libView.decade)) libView.decade = [];
+      if (!Array.isArray(libView.source)) libView.source = [];
+      libView.decade = libView.decade.map(String);
+      libView.source = libView.source.map(String);
+      if (!LIB_PLAYED_OPTIONS.some(p => p.id === libView.played)) libView.played = "any";
+      if (libView.dir !== "asc" && libView.dir !== "desc") libView.dir = libSortDefaultDir(libView.sort);
+      if (!Number.isFinite(libView.seed)) libView.seed = 1;
+      if (stale) {
+        // Write the migrated blob back NOW rather than waiting for the user to
+        // change something. Without this the stored blob stays at v1, so the
+        // migration re-runs on every load and keeps resetting the direction
+        // they just chose.
+        saveLibView();
+      }
+    }
   } catch (e) { /* corrupt or unavailable — the defaults above stand */ }
   function saveLibView() {
     try { localStorage.setItem(LIB_VIEW_KEY, JSON.stringify(libView)); }
@@ -678,30 +763,17 @@
     }
   }
 
-  // ---- Library wall: sort + focus controls --------------------------------
-  // Roon's Sort/Focus live on a private API, so these are built from this
-  // extension's own snapshot. Sorts marked with a note are approximations and
-  // say so in the sheet rather than pretending to be Roon's.
-  const LIB_SORT_OPTIONS = [
-    { id: "album",      label: "Album name" },
-    { id: "artist",     label: "Artist" },
-    { id: "year",       label: "Release year", note: "from years collected during scanning" },
-    { id: "plays",      label: "Most played",  note: "from plays MusicD Remote has seen" },
-    { id: "lastplayed", label: "Last played",  note: "from plays MusicD Remote has seen" },
-    { id: "random",     label: "Random" }
-  ];
-  const LIB_PLAYED_OPTIONS = [
-    { id: "any",   label: "Any" },
-    { id: "never", label: "Never played" },
-    { id: "6",     label: "Not in 6 months" },
-    { id: "12",    label: "Not in 12 months" }
-  ];
   let libFacets = null;   // cached /api/library/facets payload
 
-  function libSortLabel() {
-    const o = LIB_SORT_OPTIONS.find(x => x.id === libView.sort);
-    const arrow = libView.dir === "desc" ? " ↓" : " ↑";
-    return (o ? o.label : "Album name") + (libView.sort === "random" ? "" : arrow);
+  function libSortOption(id) {
+    return LIB_SORT_OPTIONS.find(x => x.id === (id || libView.sort)) || LIB_SORT_OPTIONS[0];
+  }
+  function libSortLabel() { return libSortOption().label; }
+  // What the arrow currently means, in words — used for the button's tooltip
+  // and screen-reader name only. The visible control is the arrow alone.
+  function libDirLabel() {
+    const o = libSortOption();
+    return libView.dir === "desc" ? o.desc : o.asc;
   }
 
   // Re-run the wall from page 1 with the current view options.
@@ -725,6 +797,13 @@
       bar.className = "library-controls";
       grid.parentNode.insertBefore(bar, grid);
     }
+    // The arrow is a REPEAT-tap control, and this rebuild replaces the very
+    // button that was just pressed. Without restoring focus, one Enter on the
+    // arrow reverses the order and then drops focus to <body> — a second Enter
+    // does nothing and the user has to tab back through the row to find it.
+    const refocus = document.activeElement &&
+                    bar.contains(document.activeElement) &&
+                    document.activeElement.className;
     bar.innerHTML = "";
     const mk = (text, sub, onClick, active) => {
       const b = document.createElement("button");
@@ -737,9 +816,56 @@
       return b;
     };
     bar.appendChild(mk("Sort", libSortLabel(), openLibSortSheet, false));
+    bar.appendChild(buildLibDirButton());
     const n = libFocusCount();
     bar.appendChild(mk("Focus", n ? n + " active" : "None", openLibFocusSheet, n > 0));
     bar.classList.toggle("hidden", !libraryWallActive);
+    // Put focus back on the replacement of whatever was focused. The new
+    // button's aria-label already states the new direction, so focusing it is
+    // also what announces the change.
+    if (refocus) {
+      const again = bar.querySelector("." + String(refocus).split(" ")[0]);
+      if (again) again.focus();
+    }
+  }
+
+  // The direction control: one arrow, always visible beside the Sort pill.
+  // Tap it and the order reverses; tap again and it goes back. That is the
+  // whole interaction — no wording to read, matching Roon ARC.
+  //
+  // Random has no direction, so the slot becomes a reshuffle instead of an
+  // arrow that would do nothing.
+  function buildLibDirButton() {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "lib-dir-btn";
+    if (!libSortHasDir(libView.sort)) {
+      b.classList.add("is-shuffle");
+      b.textContent = "⟳";
+      b.title = "Shuffle again";
+      b.setAttribute("aria-label", "Shuffle again");
+      b.addEventListener("click", () => {
+        libView.seed = libNextSeed(libView.seed);
+        applyLibView();
+      });
+      return b;
+    }
+    // `desc` is captured at BUILD time and used by the handler below. That is
+    // only safe because every mutation of libView.sort/dir goes through
+    // applyLibView() → renderLibraryControls(), which rebuilds this button. Any
+    // future path that changes them without rebuilding leaves a handler that
+    // flips to the wrong value.
+    const desc = libView.dir === "desc";
+    b.textContent = desc ? "↓" : "↑";
+    // The words live here, not on screen: the tooltip and the accessible name
+    // still say what the arrow means for the current sort.
+    b.title = libDirLabel();
+    b.setAttribute("aria-label", "Reverse order — currently " + libDirLabel());
+    b.addEventListener("click", () => {
+      libView.dir = desc ? "asc" : "desc";
+      applyLibView();
+    });
+    return b;
   }
 
   // One sheet builder for both — same bottom-sheet language as the filter and
@@ -773,41 +899,82 @@
     document.body.appendChild(back);
   }
 
+  // Roon ARC's sort popover, in this app's bottom-sheet language: a plain list
+  // of fields, and the SELECTED one carries an arrow. Tapping the selected row
+  // flips that arrow instead of re-selecting; tapping any other row switches to
+  // it at its own default direction. There is no separate direction row and no
+  // sentence to read — the arrow is the whole affordance.
   function openLibSortSheet() {
-    openLibSheet("Sort", (body, close) => {
-      for (const opt of LIB_SORT_OPTIONS) {
-        const row = document.createElement("button");
-        row.type = "button";
-        row.className = "lib-row" + (libView.sort === opt.id ? " is-on" : "");
-        const main = document.createElement("div");
-        main.className = "lib-row-main";
-        main.textContent = opt.label;
-        row.appendChild(main);
-        if (opt.note) {
-          const sub = document.createElement("div");
-          sub.className = "lib-row-sub";
-          sub.textContent = opt.note;
-          row.appendChild(sub);
+    openLibSheet("Sort by", (body, close) => {
+      const paint = () => {
+        // Reversing in place replaces the row that was just activated — keep
+        // focus on its replacement so the row can be pressed again without
+        // tabbing back to it. Rows are rebuilt in a fixed order, so position
+        // identifies the replacement.
+        const rows = body.querySelectorAll(".lib-sort-row");
+        const focused = Array.prototype.indexOf.call(rows, document.activeElement);
+        body.innerHTML = "";
+        for (const opt of LIB_SORT_OPTIONS) {
+          const on = libView.sort === opt.id;
+          const row = document.createElement("button");
+          row.type = "button";
+          row.className = "lib-sort-row" + (on ? " is-on" : "");
+
+          // The arrow occupies a fixed column on every row, filled only on the
+          // selected one, so the labels stay on a single left edge.
+          const arrow = document.createElement("span");
+          arrow.className = "lib-sort-arrow";
+          arrow.setAttribute("aria-hidden", "true");
+          arrow.textContent = (on && libSortHasDir(opt.id))
+            ? (libView.dir === "desc" ? "↓" : "↑") : "";
+          row.appendChild(arrow);
+
+          const text = document.createElement("span");
+          text.className = "lib-sort-text";
+          const main = document.createElement("span");
+          main.className = "lib-sort-label";
+          main.textContent = opt.label;
+          text.appendChild(main);
+          if (opt.note) {
+            const sub = document.createElement("span");
+            sub.className = "lib-sort-note";
+            sub.textContent = opt.note;
+            text.appendChild(sub);
+          }
+          row.appendChild(text);
+
+          if (on && libSortHasDir(opt.id)) {
+            row.setAttribute("aria-label", opt.label + " — " + libDirLabel() + ", tap to reverse");
+          }
+          row.addEventListener("click", () => {
+            if (on) {
+              // Already selected: this tap means "reverse", exactly as in ARC.
+              // Random is the one row with nothing to reverse — re-tapping it
+              // reshuffles instead, which is the only useful thing it can do.
+              if (libSortHasDir(opt.id)) {
+                libView.dir = libView.dir === "desc" ? "asc" : "desc";
+              } else {
+                libView.seed = libNextSeed(libView.seed);
+                close();
+              }
+            } else {
+              libView.sort = opt.id;
+              libView.dir = libSortDefaultDir(opt.id);
+              // Switching TO Random re-rolls: without this the first shuffle on
+              // a fresh install always runs on the default seed, so "random"
+              // gives every device the identical order until ⟳ is tapped.
+              if (!libSortHasDir(opt.id)) libView.seed = libNextSeed(libView.seed);
+              close();
+            }
+            // Repaint before applying so a reverse-in-place shows its new arrow
+            // immediately; the wall reloads behind the open sheet.
+            if (document.body.contains(body)) paint();
+            applyLibView();
+          });
+          body.appendChild(row);
         }
-        row.addEventListener("click", () => {
-          if (libView.sort === "random" && opt.id === "random") libView.seed = Date.now() % 100000;
-          libView.sort = opt.id;
-          close(); applyLibView();
-        });
-        body.appendChild(row);
-      }
-      if (libView.sort !== "random") {
-        const dir = document.createElement("button");
-        dir.type = "button";
-        dir.className = "lib-row lib-row-dir";
-        dir.textContent = libView.dir === "asc" ? "Order: A → Z (tap to reverse)"
-                                                : "Order: Z → A (tap to reverse)";
-        dir.addEventListener("click", () => {
-          libView.dir = libView.dir === "asc" ? "desc" : "asc";
-          close(); applyLibView();
-        });
-        body.appendChild(dir);
-      }
+      };
+      paint();
     });
   }
 
@@ -859,6 +1026,19 @@
               const i = libView.decade.indexOf(v);
               if (i === -1) libView.decade.push(v); else libView.decade.splice(i, 1);
             });
+          }
+          // Roon's API publishes no release year, so every one of these was
+          // found elsewhere and the coverage is never guaranteed to be the
+          // whole library. Say so with the real numbers instead of leaving the
+          // user to notice that the chips don't add up.
+          if (f.dated != null && f.total && f.dated < f.total) {
+            const cov = document.createElement("div");
+            cov.className = "lib-facet-note";
+            cov.textContent = f.dated.toLocaleString() + " of " + f.total.toLocaleString() +
+              " albums have a release year so far — Roon doesn't publish them, so they're " +
+              "collected from your file tags and from Qobuz/TIDAL. Undated albums aren't " +
+              "in any decade.";
+            s.appendChild(cov);
           }
         }
         const ps = section("Listening");

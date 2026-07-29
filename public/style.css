@@ -3080,13 +3080,20 @@ input.vol-range::-moz-range-thumb {
 /*  language as the filter/settings sheets. Roon's own Sort/Focus run   */
 /*  on a private API; these are computed from the extension's snapshot. */
 /* ------------------------------------------------------------------ */
+/* Sort pill | direction arrow | Focus pill. The arrow is sized to content so
+   the two pills stay equal width whatever the sort label says. */
 .library-controls {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+  display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px;
   margin: 0 0 12px;
 }
 .library-controls.hidden { display: none; }
 .lib-pill {
   display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  /* A `1fr` track is minmax(auto, 1fr) and will not shrink below its content,
+     so without this the pill's own ellipsis never engages — the track grows and
+     the row overflows sideways instead. Only matters once a sort label is long
+     and the viewport narrow, which is exactly when it matters. */
+  min-width: 0;
   padding: 7px 12px; border-radius: 10px;
   background: var(--bg-elev); border: 1px solid var(--border);
   color: var(--text); font-family: inherit; cursor: pointer; text-align: left;
@@ -3102,6 +3109,21 @@ input.vol-range::-moz-range-thumb {
   font-size: 13px; font-weight: 600; color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
 }
+
+/* The direction arrow. One tap reverses the order, another puts it back —
+   the entire control, no wording (Roon ARC's pattern). 44px keeps it inside
+   the minimum touch target even though the glyph is small. */
+.lib-dir-btn {
+  min-width: 44px; min-height: 44px; padding: 0 12px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 10px;
+  background: var(--bg-elev); border: 1px solid var(--border);
+  color: var(--accent); font-family: inherit; font-size: 20px; line-height: 1;
+  cursor: pointer;
+}
+.lib-dir-btn:hover  { border-color: var(--accent); }
+.lib-dir-btn:active { background: var(--accent-soft); }
+.lib-dir-btn.is-shuffle { color: var(--text-dim); font-size: 19px; }
 
 .lib-sheet-backdrop {
   position: fixed; inset: 0;
@@ -3148,17 +3170,25 @@ input.vol-range::-moz-range-thumb {
   flex: 0 0 auto;
 }
 .lib-sheet-foot .action-btn { flex: 1 1 0; }
-.lib-row {
-  display: block; width: 100%; text-align: left;
-  padding: 11px 12px; margin-top: 6px; border-radius: 10px;
-  background: var(--bg-elev-2); border: 1px solid transparent;
-  color: var(--text); font-family: inherit; cursor: pointer;
+/* Sort rows — ARC's layout: a fixed arrow column, then the label. The arrow
+   is present only on the selected row, and tapping that row flips it. */
+.lib-sort-row {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; text-align: left;
+  padding: 13px 12px; margin-top: 4px; border-radius: 10px;
+  background: transparent; border: 1px solid transparent;
+  color: var(--text-dim); font-family: inherit; cursor: pointer;
 }
-.lib-row:hover { border-color: var(--border); }
-.lib-row.is-on { border-color: var(--accent); background: var(--accent-soft); }
-.lib-row-main { font-size: 14px; font-weight: 600; }
-.lib-row-sub  { font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
-.lib-row-dir  { font-size: 13px; font-weight: 600; color: var(--text-dim); }
+.lib-sort-row:hover { background: var(--bg-elev-2); }
+.lib-sort-row.is-on { color: var(--accent); background: var(--accent-soft); }
+.lib-sort-arrow {
+  flex: 0 0 20px; text-align: center;
+  font-size: 19px; line-height: 1; color: var(--accent);
+}
+.lib-sort-text { display: flex; flex-direction: column; min-width: 0; }
+.lib-sort-label { font-size: 15px; font-weight: 600; }
+.lib-sort-row.is-on .lib-sort-label { font-weight: 700; }
+.lib-sort-note { font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
 .lib-sheet-section { margin-top: 14px; }
 .lib-sheet-section-label {
   font-size: 10.5px; font-weight: 700; letter-spacing: .14em;
@@ -3175,5 +3205,11 @@ input.vol-range::-moz-range-thumb {
 .lib-chip.is-on { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
 .lib-sheet-note {
   margin-top: 16px; font-size: 11.5px; line-height: 1.5;
+  color: var(--text-faint);
+}
+/* Coverage caption under a facet's chips — same voice as .lib-sheet-note but
+   attached to the section it qualifies rather than the sheet as a whole. */
+.lib-facet-note {
+  margin-top: 8px; font-size: 11.5px; line-height: 1.5;
   color: var(--text-faint);
 }
