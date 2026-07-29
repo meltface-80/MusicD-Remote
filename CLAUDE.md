@@ -216,7 +216,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
 - The README contains version references (install commands, tarball URLs, `docker build` tags).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.6.60** (until the user says otherwise).
+- Current stable version in the README: **v1.7.0** (until the user says otherwise).
 - The extension is being renamed **MusicD Remote** ("for Roon" is descriptive, not part of the name). The Roon `extension_id` must NEVER change — it would force every user to re-authorize.
 
 ---
@@ -344,4 +344,8 @@ docker run -d \
 | v1.6.57 | stable (superseded) | Library Sort + Focus (album/artist/year/plays/last played/random; decade, source, listening facets) computed from the snapshot — zero Core calls; first test suite (111 tests, zero new dependencies) |
 | v1.6.58 | stable (superseded) | Sort/Focus sheets no longer opened underneath the now-playing bar — a stacking-order bug (backdrop z-index 60 vs the transport's 70), not a layout one; first hit-test-based DOM regression test |
 | v1.6.59 | superseded (stayed pre-release) | Decade focus finally has data: release years harvested from the Qobuz/TIDAL favourites and file tags already being fetched, joined via srcKeys, with source precedence so file tags beat service reissue dates; Library sorting reduced to one ARC-style arrow; `dir` means the same thing for every sort; 188 tests — README points here |
-| v1.6.60 | **Latest (stable)** | Per-artist artist links on the Now playing screen, sharing the album view's renderer and library-validated split; names the library can't open render as plain text because line2 is the TRACK artist; 215 tests — README points here |
+| v1.6.60 | stable (superseded) | Per-artist artist links on the Now playing screen, sharing the album view's renderer and library-validated split; names the library can't open render as plain text because line2 is the TRACK artist; 215 tests — README points here |
+| v1.6.61 | superseded | Home screen flattened to Roon's layout — tinted panels + watermarks out, bold title over a hairline, carousels bleeding to the edge; CSS integrity pre-flight added after an unterminated comment silently ate a rule |
+| v1.6.62 | superseded | Album view + Queue flattened to match; queue rows edge-to-edge with a full-bleed now-playing block; the tinted-panel system and every watermark now gone from the app |
+| v1.6.63 | superseded | Two new themes from the docs-site palette (Copper dark, Brass light) as `data-palette` alongside the untouched originals; Settings theme picker with Apply; `--on-accent`/`--accent-text` tokens; fixed 28 dead showToast() calls in Settings |
+| v1.7.0  | **Latest (stable)** | Version jump for the UI overhaul (v1.6.61–63): flat interface throughout, four themes, contrast machine-checked in the suite; 291 tests — README points here |
