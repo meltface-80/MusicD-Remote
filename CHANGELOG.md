@@ -2,6 +2,39 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.2] — 2026-07-30
+
+The last four unused Roon transport methods. With these, every capability the vendored
+extension SDK exposes is now wired up — nothing official is left on the table.
+
+### Added
+- **Device power.** A new "Device power…" sheet (from either zone picker) can put a device
+  into standby and switch it to its Roon input, via Roon's `standby` / `toggle_standby` /
+  `convenience_switch`. Roon can only do this through a *source control* the device itself
+  exposes — many network streamers and AVRs have one, plain audio endpoints don't — so the
+  sheet lists source controls rather than zones, and says so plainly when there are none
+  rather than opening empty and looking broken.
+  - Power is `toggle_standby` on one control, because that is how Roon defines it. A separate
+    "Put whole device into standby" appears only on a device with more than one
+    standby-capable control, where the keyless bulk `standby` form is genuinely a different
+    action.
+  - Controls with no `control_key` are dropped: they can't be addressed individually, so a
+    power button on one would have done nothing at all.
+  - Each control's state is spelled out ("On — Roon input selected", "In standby"), and an
+    unrecognised status reads as unknown rather than as a blank line.
+- **Pause all zones / Mute all zones / Unmute all zones** in the side menu, via Roon's
+  `pause_all` and `mute_all`. Mute and unmute are separate rows on purpose: the drawer closes
+  before the action runs, so a single toggling label could not be refreshed and would be wrong
+  half the time.
+
+### Tests
+- 21 new tests (345 total: static 22, unit 177, dom 146): `unit/zonemodes` gains the
+  source-control projection, `dom/device-power` covers the sheet (row element type, which
+  buttons appear, the live power state, the request bodies, the empty state) and the three
+  menu actions. Four more mutations planted — keyless controls kept, unknown status passed
+  through, Power shown regardless of `supports_standby`, and the bulk form sent with a
+  control_key — all four went red.
+
 ## [1.7.1] — 2026-07-29
 
 Roon parity from the official extension API. Six transport capabilities the SDK has always

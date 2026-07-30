@@ -4948,8 +4948,33 @@ function outputInfo(o) {
     display_name: o.display_name || "",
     can_group_with_output_ids: Array.isArray(o.can_group_with_output_ids)
       ? o.can_group_with_output_ids.slice()
-      : null
+      : null,
+    source_controls: sourceControls(o)
   };
+}
+
+// An output's source controls — Roon's handle on the physical device behind it:
+// the amp or DAC that can be put into standby, or switched to its Roon input.
+//
+// Only controls we can actually DO something with are returned. A control with
+// no `control_key` can't be addressed individually, and Roon's toggle_standby
+// is defined per control, so a keyless control would render a power button that
+// silently does nothing. `supports_standby` is Roon's own answer for the power
+// half; the convenience-switch half needs no capability flag.
+function sourceControls(o) {
+  const list = Array.isArray(o && o.source_controls) ? o.source_controls : [];
+  return list
+    .filter(sc => sc && sc.control_key)
+    .map(sc => ({
+      control_key:      sc.control_key,
+      display_name:     sc.display_name || o.display_name || "",
+      // 'selected' | 'deselected' | 'standby' | 'indeterminate'. Anything we
+      // don't recognise reads as indeterminate: the UI then offers the action
+      // without claiming to know the current state.
+      status:           ["selected", "deselected", "standby"].includes(sc.status)
+        ? sc.status : "indeterminate",
+      supports_standby: !!sc.supports_standby
+    }));
 }
 
 app.get("/api/zones", (req, res) => {
@@ -8192,6 +8217,101 @@ app.post("/api/group-outputs", (req, res) => {
       return res.status(500).json({ error: msg });
     }
     console.log(`[group-outputs] ok`);
+    res.json({ ok: true });
+  });
+});
+
+// Device power for one output's source control.
+// body: { output_id, control_key?, mode? }
+//   mode "toggle"  (default) — flip this control's standby state. Roon defines
+//                   toggle_standby per control, so a control_key is required.
+//   mode "standby" — put every standby-capable control on the output into
+//                    standby. This is the documented behaviour of standby()
+//                    with control_key omitted, and is how "all off" works.
+const STANDBY_MODES = ["toggle", "standby"];
+app.post("/api/output/standby", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  const { output_id, control_key } = req.body || {};
+  const mode = (req.body && req.body.mode) || "toggle";
+  if (!output_id) return res.status(400).json({ error: "output_id required" });
+  if (!STANDBY_MODES.includes(mode)) {
+    return res.status(400).json({ error: "invalid mode, allowed: " + STANDBY_MODES.join(", ") });
+  }
+  if (mode === "toggle" && !control_key) {
+    return res.status(400).json({ error: "control_key required for mode=toggle" });
+  }
+  if (control_key !== undefined && typeof control_key !== "string") {
+    return res.status(400).json({ error: "control_key must be a string" });
+  }
+
+  const t = core.services.RoonApiTransport;
+  const name = (outputs[output_id] && outputs[output_id].display_name) || output_id;
+  const opts = control_key ? { control_key } : {};
+  console.log(`[standby] ${mode} ${name}${control_key ? " (" + control_key + ")" : ""}`);
+  const done = (err) => {
+    if (err) {
+      const msg = typeof err === "string" ? err : JSON.stringify(err);
+      console.warn(`[standby] failed: ${msg}`);
+      return res.status(500).json({ error: msg });
+    }
+    res.json({ ok: true });
+  };
+  if (mode === "toggle") t.toggle_standby(output_id, opts, done);
+  else                   t.standby(output_id, opts, done);
+});
+
+// Switch a device's input to Roon, waking it from standby if needed.
+// body: { output_id, control_key? } — control_key omitted switches every
+// control on the output, which is what Roon's own API does.
+app.post("/api/output/convenience-switch", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  const { output_id, control_key } = req.body || {};
+  if (!output_id) return res.status(400).json({ error: "output_id required" });
+  if (control_key !== undefined && typeof control_key !== "string") {
+    return res.status(400).json({ error: "control_key must be a string" });
+  }
+  const name = (outputs[output_id] && outputs[output_id].display_name) || output_id;
+  console.log(`[convenience-switch] ${name}${control_key ? " (" + control_key + ")" : ""}`);
+  core.services.RoonApiTransport.convenience_switch(
+    output_id, control_key ? { control_key } : {}, (err) => {
+      if (err) {
+        const msg = typeof err === "string" ? err : JSON.stringify(err);
+        console.warn(`[convenience-switch] failed: ${msg}`);
+        return res.status(500).json({ error: msg });
+      }
+      res.json({ ok: true });
+    });
+});
+
+// Pause every zone. No body — Roon's pause_all takes no target.
+app.post("/api/pause-all", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  console.log("[pause-all]");
+  core.services.RoonApiTransport.pause_all((err) => {
+    if (err) {
+      const msg = typeof err === "string" ? err : JSON.stringify(err);
+      console.warn(`[pause-all] failed: ${msg}`);
+      return res.status(500).json({ error: msg });
+    }
+    res.json({ ok: true });
+  });
+});
+
+// Mute or unmute every zone that can be muted.  body: { how: "mute"|"unmute" }
+const MUTE_ALL_MODES = ["mute", "unmute"];
+app.post("/api/mute-all", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  const how = req.body && req.body.how;
+  if (!MUTE_ALL_MODES.includes(how)) {
+    return res.status(400).json({ error: "invalid how, allowed: " + MUTE_ALL_MODES.join(", ") });
+  }
+  console.log(`[mute-all] ${how}`);
+  core.services.RoonApiTransport.mute_all(how, (err) => {
+    if (err) {
+      const msg = typeof err === "string" ? err : JSON.stringify(err);
+      console.warn(`[mute-all] failed: ${msg}`);
+      return res.status(500).json({ error: msg });
+    }
     res.json({ ok: true });
   });
 });

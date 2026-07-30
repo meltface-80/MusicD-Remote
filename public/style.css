@@ -2386,6 +2386,30 @@ input.vol-range::-moz-range-thumb {
 }
 .group-row.is-on .group-note { color: inherit; opacity: .8; }
 
+/* --- Device power sheet (Roon standby / convenience switch) --------------- */
+/* A row here is NOT a button: the name is static and the actions inside it are
+   the controls, so it must not be a <button> containing buttons. */
+.dev-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px;
+  color: var(--text); font-size: 15px;
+}
+.dev-row + .dev-row { margin-top: 6px; }
+.dev-text { min-width: 0; flex: 1 1 auto; }
+.dev-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dev-status { display: block; margin-top: 2px; font-size: 12px; color: var(--text-faint); }
+.dev-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+.dev-btn {
+  padding: 7px 11px; border: 1px solid var(--border); border-radius: 999px;
+  background: transparent; color: var(--text-dim);
+  font-size: 13px; font-family: inherit; cursor: pointer; white-space: nowrap;
+}
+.dev-btn:hover { background: var(--bg-elev-2); color: var(--text); }
+.dev-btn:disabled { opacity: .5; cursor: not-allowed; }
+/* Powered up — the button reads as the live state, not as the action. */
+.dev-btn.is-on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
+.dev-all-off { width: 100%; margin-top: 6px; text-align: center; }
+
 .np-vol-fixed {
   display: flex; align-items: center; gap: 8px;
   color: var(--text-dim); font-size: 13px; padding: 2px 4px; white-space: nowrap;

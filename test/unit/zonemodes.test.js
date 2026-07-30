@@ -20,7 +20,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { loadIndexFunctions } = require("../lib/extract");
 
-const { zoneSettings, outputInfo } = loadIndexFunctions(["zoneSettings", "outputInfo"]);
+const { zoneSettings, outputInfo, sourceControls } =
+  loadIndexFunctions(["zoneSettings", "outputInfo", "sourceControls"]);
 
 test("zoneSettings normalises Roon's optional settings block", async (t) => {
   await t.test("a zone with no settings at all reads as everything off", () => {
@@ -74,8 +75,19 @@ test("outputInfo carries Roon's grouping capability", async (t) => {
         output_id: "o1", zone_id: "z1", display_name: "Kitchen",
         can_group_with_output_ids: ["o2", "o3"],
       }),
-      { output_id: "o1", zone_id: "z1", display_name: "Kitchen", can_group_with_output_ids: ["o2", "o3"] }
+      { output_id: "o1", zone_id: "z1", display_name: "Kitchen",
+        can_group_with_output_ids: ["o2", "o3"], source_controls: [] }
     );
+  });
+
+  await t.test("source controls ride along for the device-power sheet", () => {
+    const out = outputInfo({
+      output_id: "o1", display_name: "Amp",
+      source_controls: [{ control_key: "1", display_name: "Roon", status: "selected", supports_standby: true }],
+    });
+    assert.deepEqual(out.source_controls, [
+      { control_key: "1", display_name: "Roon", status: "selected", supports_standby: true },
+    ]);
   });
 
   await t.test("an absent can-group list becomes null, not an empty array", () => {
@@ -108,5 +120,60 @@ test("outputInfo carries Roon's grouping capability", async (t) => {
     // rather than explicitly empty.
     assert.equal(outputInfo({ output_id: "o1" }).zone_id, null);
     assert.equal(outputInfo({ output_id: "o1", display_name: undefined }).display_name, "");
+  });
+});
+
+test("sourceControls only returns controls we can actually act on", async (t) => {
+  await t.test("an output with no source controls yields an empty list", () => {
+    // Empty, never undefined: the sheet filters on .length and would throw.
+    assert.deepEqual(sourceControls({ output_id: "o1" }), []);
+    assert.deepEqual(sourceControls({ output_id: "o1", source_controls: null }), []);
+    assert.deepEqual(sourceControls(null), []);
+    assert.deepEqual(sourceControls({ source_controls: "nope" }), []);
+  });
+
+  await t.test("a control with no control_key is dropped", () => {
+    // Roon's toggle_standby is defined per control. A keyless control would
+    // render a Power button that silently does nothing at all.
+    assert.deepEqual(
+      sourceControls({ source_controls: [
+        { display_name: "Anonymous", supports_standby: true },
+        { control_key: "1", display_name: "Amp", supports_standby: true, status: "selected" },
+      ] }),
+      [{ control_key: "1", display_name: "Amp", status: "selected", supports_standby: true }]
+    );
+  });
+
+  await t.test("an unrecognised status becomes indeterminate, not passed through", () => {
+    // The sheet maps status to a sentence. An unknown value would render a
+    // blank line that reads as "nothing here" rather than "state unknown".
+    for (const bad of ["on", "OFF", "", null, 7, undefined]) {
+      assert.equal(
+        sourceControls({ source_controls: [{ control_key: "1", status: bad }] })[0].status,
+        "indeterminate", `status ${JSON.stringify(bad)} should be indeterminate`);
+    }
+    for (const good of ["selected", "deselected", "standby"]) {
+      assert.equal(
+        sourceControls({ source_controls: [{ control_key: "1", status: good }] })[0].status, good);
+    }
+  });
+
+  await t.test("supports_standby is coerced to a real boolean", () => {
+    // The client decides whether to render a Power button from this; a truthy
+    // string would render one on a device that cannot be powered.
+    const cs = sourceControls({ source_controls: [
+      { control_key: "1", supports_standby: 1 },
+      { control_key: "2" },
+    ] });
+    assert.equal(cs[0].supports_standby, true);
+    assert.equal(cs[1].supports_standby, false);
+    assert.equal(typeof cs[1].supports_standby, "boolean");
+  });
+
+  await t.test("a control with no name of its own falls back to the output's", () => {
+    assert.equal(
+      sourceControls({ display_name: "Living Room", source_controls: [{ control_key: "1" }] })[0]
+        .display_name, "Living Room");
+    assert.equal(sourceControls({ source_controls: [{ control_key: "1" }] })[0].display_name, "");
   });
 });

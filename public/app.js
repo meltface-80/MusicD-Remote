@@ -1334,6 +1334,160 @@
   }
   window.__openGroupSheet = openGroupSheet;
 
+  // ----- Device power (Roon standby / convenience switch) -------------------
+  //
+  // Roon can power the amp or DAC behind an output, but only through a SOURCE
+  // CONTROL the device itself exposes — most outputs have none, and for those
+  // there is nothing to show. So this sheet is a list of source controls, not of
+  // zones, and it is honest about an empty result rather than pretending the
+  // feature is missing.
+  //
+  // Unlike the grouping sheet these actions fire immediately: a power button
+  // that waits for an Apply is a power button people press twice.
+  const SOURCE_STATUS_LABEL = {
+    selected:      "On — Roon input selected",
+    deselected:    "On — another input selected",
+    standby:       "In standby",
+    indeterminate: "",
+  };
+
+  async function openDevicePowerSheet() {
+    let list = [];
+    try {
+      const r = await fetch("/api/outputs", { cache: "no-store" });
+      if (r.ok) { const j = await r.json(); if (Array.isArray(j.outputs)) list = j.outputs; }
+    } catch (e) { /* leaves `list` empty — the empty state below explains it */ }
+
+    openLibSheet("Device power", (body) => {
+      // Re-read after every action so the status lines reflect the device, not
+      // what we asked for — the same rule the mode buttons follow.
+      const refresh = async () => {
+        try {
+          const r = await fetch("/api/outputs", { cache: "no-store" });
+          if (r.ok) { const j = await r.json(); if (Array.isArray(j.outputs)) list = j.outputs; }
+        } catch (e) { /* keep the previous list; paint() still renders something */ }
+        paint();
+      };
+
+      const act = async (url, payload, btn) => {
+        btn.disabled = true;
+        try {
+          const r = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (!r.ok) {
+            const j = await r.json().catch(() => ({}));
+            showToast(j.error || "Roon refused that", "error");
+          }
+        } catch (e) {
+          showToast("Could not reach the extension", "error");
+        } finally {
+          btn.disabled = false;
+        }
+        // Roon reports the new status asynchronously; give it a moment.
+        setTimeout(refresh, 400);
+      };
+
+      const paint = () => {
+        body.innerHTML = "";
+        const withControls = list.filter(o => (o.source_controls || []).length);
+        if (!withControls.length) {
+          const note = document.createElement("div");
+          note.className = "lib-sheet-note";
+          note.textContent = list.length
+            ? "None of your outputs expose a source control, so Roon can't switch them " +
+              "on or off. This works with devices that report power state to Roon — many " +
+              "network streamers and AVRs do, plain audio endpoints don't."
+            : "No outputs available. Check that the extension is paired with your Roon Core.";
+          body.appendChild(note);
+          return;
+        }
+        for (const o of withControls) {
+          const controls = o.source_controls || [];
+          const sec = document.createElement("div");
+          sec.className = "lib-sheet-section";
+          const label = document.createElement("div");
+          label.className = "lib-sheet-section-label";
+          label.textContent = o.display_name;
+          sec.appendChild(label);
+
+          for (const sc of controls) {
+            const row = document.createElement("div");
+            row.className = "dev-row";
+            row.dataset.control = sc.control_key;
+
+            const text = document.createElement("div");
+            text.className = "dev-text";
+            const nm = document.createElement("span");
+            nm.className = "dev-name";
+            nm.textContent = sc.display_name;
+            text.appendChild(nm);
+            const st = SOURCE_STATUS_LABEL[sc.status] || "";
+            if (st) {
+              const stEl = document.createElement("span");
+              stEl.className = "dev-status";
+              stEl.textContent = st;
+              text.appendChild(stEl);
+            }
+            row.appendChild(text);
+
+            const actions = document.createElement("div");
+            actions.className = "dev-actions";
+            if (sc.supports_standby) {
+              const pwr = document.createElement("button");
+              pwr.type = "button";
+              pwr.className = "dev-btn" + (sc.status === "standby" ? "" : " is-on");
+              pwr.dataset.action = "standby";
+              pwr.textContent = "Power";
+              pwr.setAttribute("aria-label",
+                sc.status === "standby" ? "Wake " + sc.display_name
+                                        : "Put " + sc.display_name + " into standby");
+              pwr.addEventListener("click", () => act("/api/output/standby",
+                { output_id: o.output_id, control_key: sc.control_key, mode: "toggle" }, pwr));
+              actions.appendChild(pwr);
+            }
+            const sw = document.createElement("button");
+            sw.type = "button";
+            sw.className = "dev-btn";
+            sw.dataset.action = "switch";
+            sw.textContent = "Roon input";
+            sw.setAttribute("aria-label", "Switch " + sc.display_name + " to its Roon input");
+            sw.addEventListener("click", () => act("/api/output/convenience-switch",
+              { output_id: o.output_id, control_key: sc.control_key }, sw));
+            actions.appendChild(sw);
+            row.appendChild(actions);
+            sec.appendChild(row);
+          }
+
+          // Roon's standby() with no control_key covers every standby-capable
+          // control at once. That is only a distinct action on a device with
+          // more than one, so it appears only there.
+          if (controls.filter(sc => sc.supports_standby).length > 1) {
+            const all = document.createElement("button");
+            all.type = "button";
+            all.className = "dev-btn dev-all-off";
+            all.dataset.action = "all-off";
+            all.textContent = "Put whole device into standby";
+            all.addEventListener("click", () => act("/api/output/standby",
+              { output_id: o.output_id, mode: "standby" }, all));
+            sec.appendChild(all);
+          }
+          body.appendChild(sec);
+        }
+      };
+      paint();
+    }, (foot, close) => {
+      const done = document.createElement("button");
+      done.type = "button"; done.className = "action-btn primary";
+      done.textContent = "Done";
+      done.addEventListener("click", close);
+      foot.appendChild(done);
+    });
+  }
+  window.__openDevicePowerSheet = openDevicePowerSheet;
+
   async function showLibraryWall() {
     const m = enterFullWall("Library");
     libraryWallActive = true;
@@ -1924,6 +2078,16 @@
       if (npDevicePopover) npDevicePopover.classList.add("hidden");
       if (npDeviceBtn) npDeviceBtn.setAttribute("aria-expanded", "false");
       openGroupSheet();
+    });
+  }
+
+  const npPowerOpen = document.getElementById("np-power-open");
+  if (npPowerOpen) {
+    npPowerOpen.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (npDevicePopover) npDevicePopover.classList.add("hidden");
+      if (npDeviceBtn) npDeviceBtn.setAttribute("aria-expanded", "false");
+      openDevicePowerSheet();
     });
   }
 
@@ -4448,15 +4612,19 @@
       zonePop.classList.add("hidden");
       btnZone.setAttribute("aria-expanded", "false");
     });
-    const mtGroupOpen = document.getElementById("mt-group-open");
-    if (mtGroupOpen) {
-      mtGroupOpen.addEventListener("click", (e) => {
+    const popoverAction = (id, open) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener("click", (e) => {
         e.stopPropagation();
         zonePop.classList.add("hidden");
         btnZone.setAttribute("aria-expanded", "false");
-        if (window.__openGroupSheet) window.__openGroupSheet();
+        const fn = window[open];
+        if (fn) fn();
       });
-    }
+    };
+    popoverAction("mt-group-open", "__openGroupSheet");
+    popoverAction("mt-power-open", "__openDevicePowerSheet");
   }
 
   // Tap the info area (art + text) to open the now-playing album in the modal
@@ -7116,6 +7284,28 @@ initServiceBrowser({
     }
   }
 
+  // Roon's all-zone actions. The drawer is already closed by the time these
+  // run, so a toast is the only feedback channel — same as rescanLibrary above.
+  // Mute and unmute are separate rows rather than one toggle: the row's label
+  // can't be refreshed while the menu is shut, so a single "Mute all" would be
+  // wrong half the time.
+  async function allZones(url, body, pending, okMsg, failMsg) {
+    const toast = window.__showToast || (() => {});
+    toast(pending);
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {})
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return toast(j.error || failMsg, "error");
+      toast(okMsg);
+    } catch (e) {
+      toast(failMsg, "error");
+    }
+  }
+
   const openMenu  = () => overlay.classList.remove("hidden");
   const closeMenu = () => overlay.classList.add("hidden");
 
@@ -7146,6 +7336,21 @@ initServiceBrowser({
       }
       if (action === "rescan-library") {
         rescanLibrary();
+        return;
+      }
+      if (action === "pause-all") {
+        allZones("/api/pause-all", null, "Pausing every zone…",
+                 "All zones paused", "Could not pause all zones");
+        return;
+      }
+      if (action === "mute-all") {
+        allZones("/api/mute-all", { how: "mute" }, "Muting every zone…",
+                 "All zones muted", "Could not mute all zones");
+        return;
+      }
+      if (action === "unmute-all") {
+        allZones("/api/mute-all", { how: "unmute" }, "Unmuting every zone…",
+                 "All zones unmuted", "Could not unmute all zones");
         return;
       }
 
