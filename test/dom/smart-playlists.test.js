@@ -197,6 +197,43 @@ const DRIVER_EDIT = OPEN_WALL + `
   T("posts", window.__posts);
 `;
 
+
+// Abandoning an edit must not leave the next save pointed at that playlist.
+const DRIVER_ABANDON = OPEN_WALL + `
+  document.querySelectorAll("#album-grid .album")[0].click();
+  await window.__sleep(800);
+  Array.prototype.filter.call(document.querySelectorAll(".playlist-actions button"),
+    function (b) { return b.textContent === "Edit"; })[0].click();
+  await window.__sleep(600);
+
+  // Close the editor WITHOUT saving — the X button.
+  var sheet = document.querySelector(".lib-sheet-backdrop");
+  sheet.querySelector(".lib-sheet-head .icon-btn").click();
+  await window.__sleep(400);
+  T("sheet_closed", !document.querySelector(".lib-sheet-backdrop"));
+
+  // Now reach the Library wall the way a user does, and open Focus from there.
+  document.getElementById("menu-toggle").click();
+  await window.__sleep(200);
+  document.querySelector('[data-action="home"]').click();
+  await window.__sleep(500);
+  document.getElementById("home-library-title").click();
+  await window.__sleep(700);
+  var focusBtn = Array.prototype.filter.call(
+    document.querySelectorAll(".library-controls .lib-pill"),
+    function (b) { return /Focus/.test(b.textContent); })[0];
+  T("focus_btn_found", !!focusBtn);
+  focusBtn.click();
+  await window.__sleep(600);
+  var sheet2 = document.querySelector(".lib-sheet-backdrop");
+  var save2 = Array.prototype.filter.call(sheet2.querySelectorAll(".lib-sheet-foot button"),
+    function (b) { return b.textContent === "Save as…"; })[0];
+  window.prompt = function (msg, suggested) { T("prompt_default2", suggested); return "Brand new"; };
+  save2.click();
+  await window.__sleep(700);
+  T("posts", window.__posts);
+`;
+
 test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concurrency: 1 }, async (t) => {
   if (!harness.available) {
     t.skip("no chromium binary available");
@@ -281,5 +318,24 @@ test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concur
     assert.equal(save.id, "sp1");
     assert.equal(save.view.sort, "year");
     assert.deepEqual(save.view.decade, [1990]);
+  });
+
+  const ab = harness.renderPage({
+    stub: stubFor([SAVED]), driver: DRIVER_ABANDON,
+    name: "smart-abandon", windowSize: "390x844",
+  });
+  harness.assertNoPageError(assert, ab);
+
+  await t.test("abandoning an edit doesn't hijack the next save (v1.7.14)", () => {
+    assert.equal(ab.sheet_closed, true);
+    assert.equal(ab.focus_btn_found, true, "couldn't reach Focus from the library screen");
+    // The default name proves which record the save is aimed at: the edited
+    // playlist's name here would mean the abandoned edit is still in effect.
+    assert.notEqual(ab.prompt_default2, "Nineties, unheard",
+      "an abandoned edit must not pre-fill the next save with its name");
+    const save = ab.posts.find(p => p.name === "Brand new");
+    assert.ok(save, "no save was posted");
+    assert.ok(!save.id,
+      "the save carried the abandoned playlist's id — it would overwrite it");
   });
 });

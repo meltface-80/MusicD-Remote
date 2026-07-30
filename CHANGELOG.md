@@ -2,6 +2,31 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.14] — 2026-07-30
+
+Two defects found reviewing the playlist work, both introduced by it.
+
+### Fixed
+- **An abandoned edit could hijack the next save.** `smartEditTarget` was a module-level variable
+  set by a smart playlist's Edit button and cleared only on save. Closing the editor without
+  saving — the X, the backdrop, or "Show albums" — left it set, so a later "Save as…" from the
+  Library screen's Focus bar would silently overwrite the playlist edited earlier, with no
+  indication anything had happened to it.
+  - The edit target is now a parameter of `openLibFocusSheet`, so it cannot outlive the sheet it
+    was opened for. The Focus-bar entry point is wrapped rather than passed by reference, because
+    `mk()` hands its callback an event object, which would otherwise arrive as "a playlist to
+    save over".
+- **The playlist art cache could drop an entry.** `loadPlaylistArtCache()` handed back a fresh
+  `{}` when no cache existed. Mosaics are fetched by two workers at once, so on a first run both
+  would build their own object and the second save would discard the first's entry — costing a
+  re-walk on the next visit. It now installs the map into the settings object on first use, so
+  both writers share the reference `savePersistedSettings` mutates in place.
+
+### Tests
+- 1 new test (402 total; the count fell from 414 as the Roon smart-playlist tests were removed in
+  v1.7.12). It walks the real UI path — edit, close with X, Home, Library, Focus, Save as — and a
+  mutation reintroducing the leaked target went red.
+
 ## [1.7.13] — 2026-07-30
 
 ### Added

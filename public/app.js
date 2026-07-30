@@ -76,7 +76,6 @@
   let smartWallActive = false;      // viewing the smart-playlist wall?
   let smartDetailActive = false;    // viewing one smart playlist's tracks?
   let smartSeq = 0;                 // orphans in-flight smart-playlist fetches
-  let smartEditTarget = null;       // the smart playlist "Save as…" writes back to
   let playlistsActive = false;      // viewing the Roon playlist list?
   let playlistDetailActive = false; // viewing one playlist's tracks?
   let playlistSeq = 0;              // orphans in-flight playlist fetches
@@ -1158,7 +1157,9 @@
     bar.appendChild(mk("Sort", libSortLabel(), openLibSortSheet, false));
     bar.appendChild(buildLibDirButton());
     const n = libFocusCount();
-    bar.appendChild(mk("Focus", n ? n + " active" : "None", openLibFocusSheet, n > 0));
+    // Wrapped, not passed by reference: mk() hands its callback an event, which
+    // would arrive as editTarget and be treated as a playlist to save over.
+    bar.appendChild(mk("Focus", n ? n + " active" : "None", () => openLibFocusSheet(null), n > 0));
     bar.classList.toggle("hidden", !libraryWallActive);
     // Put focus back on the replacement of whatever was focused. The new
     // button's aria-label already states the new direction, so focusing it is
@@ -1318,7 +1319,12 @@
     });
   }
 
-  async function openLibFocusSheet() {
+  // `editTarget` (a smart playlist) makes this sheet's "Save as…" an
+  // update-in-place. Passed in rather than held in a module variable: an
+  // abandoned edit — closing the sheet with X, the backdrop, or Show albums —
+  // would otherwise leave that variable set, and the NEXT save from the Focus
+  // bar would silently overwrite the playlist edited earlier.
+  async function openLibFocusSheet(editTarget) {
     if (!libFacets) {
       try {
         const r = await fetch("/api/library/facets");
@@ -1403,15 +1409,7 @@
       const save = document.createElement("button");
       save.type = "button"; save.className = "action-btn";
       save.textContent = "Save as…";
-      save.addEventListener("click", () => {
-        // One-shot: an edit target set by editSmartPlaylist() makes this an
-        // update-in-place. Cleared either way so the next save can't silently
-        // overwrite the playlist edited some time ago.
-        const target = smartEditTarget;
-        smartEditTarget = null;
-        close();
-        saveSmartPlaylistPrompt(target);
-      });
+      save.addEventListener("click", () => { close(); saveSmartPlaylistPrompt(editTarget); });
       const show = document.createElement("button");
       show.type = "button"; show.className = "action-btn primary";
       show.textContent = "Show albums";
@@ -1731,8 +1729,7 @@
       }
     }
     saveLibView();
-    smartEditTarget = sp;
-    openLibFocusSheet();
+    openLibFocusSheet(sp);
   }
 
   async function deleteSmartPlaylist(sp) {

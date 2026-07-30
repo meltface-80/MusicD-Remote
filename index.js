@@ -6600,9 +6600,17 @@ app.get("/api/playlists", async (req, res) => {
 // given playlist barely changes, and a wrong-but-stale mosaic is a cosmetic miss
 // on a tile whose name is still correct.
 const PLAYLIST_ART_MAX = 300;   // a cache, not a database
+// Installs the map into the settings object on first use rather than handing
+// back a fresh {}. Mosaics are fetched by two workers at once, and with a
+// throwaway object each of the first two writers would build its own copy and
+// the second save would drop the first's entry. Sharing one reference — the
+// same one savePersistedSettings mutates in place — makes that impossible.
 function loadPlaylistArtCache() {
-  const raw = loadPersistedSettings().playlistArt;
-  return (raw && typeof raw === "object" && !Array.isArray(raw)) ? raw : {};
+  const s = loadPersistedSettings();
+  if (!s.playlistArt || typeof s.playlistArt !== "object" || Array.isArray(s.playlistArt)) {
+    s.playlistArt = {};
+  }
+  return s.playlistArt;
 }
 function savePlaylistArt(title, keys) {
   const cache = loadPlaylistArtCache();
