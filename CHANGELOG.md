@@ -2,6 +2,23 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.9] — 2026-07-30
+
+### Fixed
+- **A Roon smart playlist opened with "no tracks".** The playlist browse walk passed no
+  `zone_or_output_id`. Roon needs a zone for hierarchies it has to *resolve* rather than merely
+  list, and a smart playlist is computed at browse time — this is the same omission that made
+  v1.6.48's search fallback resolve 0/12 in production. The zone now travels with the read, from
+  the client's live zone selector through to every browse call in the walk.
+- **A playlist that returns nothing now logs what Roon actually sent** — the raw item hints and
+  titles, always on, because this is the one failure a user cannot diagnose from the screen.
+- The empty state no longer flatly claims the playlist has no tracks; a Roon smart playlist is
+  computed when opened, so it can legitimately resolve to nothing in your library.
+
+### Tests
+- The playlists DOM test now pins the zone onto the read (399 total). A mutation dropping it went
+  red.
+
 ## [1.7.8] — 2026-07-30
 
 ### Added

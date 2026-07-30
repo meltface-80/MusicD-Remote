@@ -836,8 +836,14 @@
     const mySeq = ++playlistSeq;
     let j = null;
     try {
+      // The zone travels with the read: Roon needs one to resolve a SMART
+      // playlist's contents, and without it the list comes back empty.
+      const zsel = document.getElementById("zone-select");
+      const zid = (zsel && zsel.value) || selectedZoneId || "";
       const r = await fetch(`/api/playlist?offset=${encodeURIComponent(p.offset)}` +
-                            `&title=${encodeURIComponent(p.title || "")}`, { cache: "no-store" });
+                            `&title=${encodeURIComponent(p.title || "")}` +
+                            (zid ? `&zone=${encodeURIComponent(zid)}` : ""),
+                            { cache: "no-store" });
       if (!playlistDetailActive || mySeq !== playlistSeq) return;
       j = await r.json().catch(() => ({}));
       if (!playlistDetailActive || mySeq !== playlistSeq) return;
@@ -927,7 +933,9 @@
     if (!tracks.length) {
       const note = document.createElement("div");
       note.className = "playlist-empty";
-      note.textContent = "This playlist has no tracks.";
+      note.textContent = "Roon returned no tracks for this playlist. A Roon smart " +
+                         "playlist is computed when it's opened, so this can also mean " +
+                         "nothing in your library currently matches it.";
       wrap.appendChild(note);
     } else {
       const ol = document.createElement("ol");

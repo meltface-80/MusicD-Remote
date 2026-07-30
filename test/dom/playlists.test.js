@@ -155,12 +155,15 @@ test("Roon playlists list, open and play (v1.7.7)", { concurrency: 1 }, async (t
     assert.deepEqual(r.asks_after_list, ["/api/playlists"]);
   });
 
-  await t.test("opening one sends BOTH offset and title", () => {
+  await t.test("opening one sends offset, title AND zone", () => {
     assert.equal(r.detail_open, true);
     assert.equal(r.detail_title, "Late Night");
     const open = r.detail_asks.find(u => u.startsWith("/api/playlist?"));
     assert.ok(open, "no /api/playlist request was made");
     assert.match(open, /offset=0/);
+    // Roon needs a zone to RESOLVE a smart playlist's contents — without it the
+    // playlist opens with no tracks at all (v1.7.9).
+    assert.match(open, /zone=z1/, "the zone must travel with the read");
     // The title is the check that makes a drifted offset safe. Without it the
     // server would open whatever moved into position 0.
     assert.match(open, /title=Late(%20|\+)Night/,

@@ -1303,9 +1303,17 @@ async function listPlaylists() {
 // Navigate a session into one playlist and return its contents. `expectTitle`
 // is verified against the item actually found at `offset`; on drift we re-locate
 // by title rather than opening whatever moved into that slot.
-async function loadPlaylistSession(sessionKey, offset, expectTitle) {
+// `zoneId` is passed on every browse in this walk. Roon requires a zone for
+// hierarchies it has to RESOLVE rather than merely list — v1.6.48's search
+// fallback resolved 0/12 in production for exactly this reason, and a Roon
+// SMART playlist is computed at browse time, so it is the same shape of call.
+// Harmless when Roon doesn't need it; the difference between a populated
+// playlist and "no tracks" when it does.
+async function loadPlaylistSession(sessionKey, offset, expectTitle, zoneId) {
   const hierarchy = "playlists";
-  await browse({ hierarchy, pop_all: true, multi_session_key: sessionKey });
+  const zone = zoneId || undefined;
+  await browse({ hierarchy, pop_all: true, multi_session_key: sessionKey,
+                 zone_or_output_id: zone });
 
   let item = null;
   if (Number.isFinite(offset) && offset >= 0) {
@@ -1316,7 +1324,8 @@ async function loadPlaylistSession(sessionKey, offset, expectTitle) {
   if (want && (!item || playlistKeyOf(item.title) !== want)) {
     // The offset drifted (a playlist was added/renamed/removed above it).
     console.log(`[playlists] offset ${offset} drifted, re-locating "${expectTitle}"`);
-    await browse({ hierarchy, pop_all: true, multi_session_key: sessionKey });
+    await browse({ hierarchy, pop_all: true, multi_session_key: sessionKey,
+                   zone_or_output_id: zone });
     item = await findItemByTitle(sessionKey, hierarchy, expectTitle, PLAYLIST_MAX, PLAYLIST_CTX);
   }
   if (!item) {
@@ -1325,7 +1334,8 @@ async function loadPlaylistSession(sessionKey, offset, expectTitle) {
     throw err;
   }
 
-  const d = await browse({ hierarchy, item_key: item.item_key, multi_session_key: sessionKey });
+  const d = await browse({ hierarchy, item_key: item.item_key, multi_session_key: sessionKey,
+                           zone_or_output_id: zone });
   // Same guard as drillActionMenu: without it a non-list response would leave
   // the follow-up load reading the CURRENT level, and we'd report the playlist
   // list itself as the playlist's tracks.
@@ -1343,13 +1353,27 @@ async function loadPlaylistSession(sessionKey, offset, expectTitle) {
        i.hint === "action_list" && !i.subtitle
   );
   const total = (inside.list && inside.list.count) || items.length;
+
+  // A playlist that comes back with no usable tracks is the one failure a user
+  // can't diagnose from the screen — a Roon SMART playlist is computed, so it
+  // can legitimately resolve to nothing, and it can also fail for reasons the
+  // browse call reports nowhere. Always log what Roon actually returned.
+  if (!items.filter(t => isTrackItem(t, playMenu)).length) {
+    console.warn(`[playlist] "${item.title || ""}" returned no tracks` +
+                 ` (zone=${zone || "none"}, raw items=${items.length}, list count=${total})`);
+    for (const it of items.slice(0, 10)) {
+      console.warn(`  - hint=${it.hint || "<none>"} title=${JSON.stringify(it.title)}` +
+                   ` subtitle=${JSON.stringify(it.subtitle || "")}`);
+    }
+  }
   return { hierarchy, item, items, playMenu, total };
 }
 
 // Play or queue a WHOLE playlist through its own Play menu.
 async function invokePlaylistAction(offset, title, zoneOrOutputId, kind) {
   return withBrowseSession(async (sessionKey) => {
-    const { hierarchy, item, playMenu } = await loadPlaylistSession(sessionKey, offset, title);
+    const { hierarchy, item, playMenu } =
+      await loadPlaylistSession(sessionKey, offset, title, zoneOrOutputId);
     if (!playMenu) throw new Error("This playlist offers no play action");
     const actions = await drillActionMenu(hierarchy, sessionKey, playMenu.item_key);
     const action = matchAction(actions, kind);
@@ -1373,7 +1397,8 @@ async function invokePlaylistAction(offset, title, zoneOrOutputId, kind) {
 // index.
 async function invokePlaylistTrackAction(offset, title, trackIndex, trackTitle, zoneOrOutputId, kind) {
   return withBrowseSession(async (sessionKey) => {
-    const { hierarchy, items, playMenu } = await loadPlaylistSession(sessionKey, offset, title);
+    const { hierarchy, items, playMenu } =
+      await loadPlaylistSession(sessionKey, offset, title, zoneOrOutputId);
     const trackItems = items.filter(t => isTrackItem(t, playMenu));
 
     const wanted = normalize(trackTitle || "");
@@ -6450,12 +6475,15 @@ app.get("/api/playlist", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   const offset = parseInt(req.query.offset, 10);
   const title  = String(req.query.title || "");
+  // Optional, but the client always sends it: Roon needs a zone to resolve a
+  // SMART playlist's contents (see loadPlaylistSession).
+  const zone   = String(req.query.zone || "") || null;
   if (!Number.isFinite(offset) || offset < 0) {
     return res.status(400).json({ error: "Valid offset query parameter required" });
   }
   try {
     const { items, playMenu, item, total } =
-      await withBrowseSession(sk => loadPlaylistSession(sk, offset, title));
+      await withBrowseSession(sk => loadPlaylistSession(sk, offset, title, zone));
     const tracks = items.filter(t => isTrackItem(t, playMenu)).map((t, i) => ({
       index:    i,
       title:    stripTrackNumber(t.title),
