@@ -5284,7 +5284,69 @@ app.get("/api/random-albums", async (req, res) => {
 // alone would serve a stale ordering for hours.
 // ---------------------------------------------------------------------------
 
-const LIB_SORTS = new Set(["album", "artist", "year", "plays", "lastplayed", "random"]);
+// The library view vocabulary, as FUNCTIONS so the sanitiser below can be
+// tested against the shipping list instead of a copy injected beside it. A
+// duplicated vocabulary is how a mutation adding a bogus sort would slip past
+// the suite (the v1.6.59 year-source-ranking hole, in a new place).
+function libSortIds()   { return ["album", "artist", "year", "plays", "lastplayed", "random"]; }
+function libPlayedIds() { return ["any", "never", "6", "12"]; }
+function smartNameMax() { return 60; }
+const LIB_SORTS = new Set(libSortIds());
+
+// ---------------------------------------------------------------------------
+// Smart playlists — named, saved library views.
+//
+// A smart playlist is nothing but a saved `libraryView` query. It is
+// re-evaluated every time it is opened, so it follows the library as it grows,
+// and it costs ZERO Roon calls: libraryView filters the in-memory album index,
+// exactly as the Library Sort + Focus screen has since v1.6.57. Storing one adds
+// no Core traffic and no Core memory at all.
+// ---------------------------------------------------------------------------
+
+// Sanitise a saved view against the SAME vocabulary libraryView accepts, so a
+// hand-edited or half-written settings.json can't produce a query that silently
+// returns the whole library (or nothing). Anything unrecognised falls back to
+// the default rather than being passed through.
+function sanitizeLibView(v) {
+  v = (v && typeof v === "object") ? v : {};
+  const asList = (x) => (x === undefined || x === null ? [] : (Array.isArray(x) ? x : [x]));
+  const decade = asList(v.decade)
+    .map(d => parseInt(d, 10))
+    .filter(d => Number.isFinite(d) && d >= 1000 && d <= 3000 && d % 10 === 0);
+  const source = asList(v.source).map(String).filter(Boolean).slice(0, 12);
+  const seed = parseInt(v.seed, 10);
+  return {
+    sort:   libSortIds().includes(String(v.sort)) ? String(v.sort) : "album",
+    dir:    String(v.dir) === "desc" ? "desc" : "asc",
+    seed:   Number.isFinite(seed) && seed > 0 ? seed : 1,
+    decade: [...new Set(decade)],
+    source: [...new Set(source)],
+    played: libPlayedIds().includes(String(v.played)) ? String(v.played) : "any",
+  };
+}
+
+const SMART_NAME_MAX = smartNameMax();
+const SMART_MAX      = 50;   // a picker, not a database
+
+// Normalise one stored record. Returns null when it can't be salvaged, so a
+// corrupt entry is dropped rather than crashing the list for the good ones.
+function smartPlaylistRecord(p) {
+  if (!p || typeof p !== "object") return null;
+  const name = String(p.name || "").trim().slice(0, smartNameMax());
+  const id   = String(p.id || "").trim();
+  if (!name || !id) return null;
+  return { id, name, view: sanitizeLibView(p.view) };
+}
+
+function loadSmartPlaylists() {
+  const raw = loadPersistedSettings().smartPlaylists;
+  return (Array.isArray(raw) ? raw : []).map(smartPlaylistRecord).filter(Boolean);
+}
+
+function saveSmartPlaylists(list) {
+  return savePersistedSettings({ smartPlaylists: list.slice(0, SMART_MAX) });
+}
+
 
 function albumYearOf(al) {
   const y = parseInt(albumYearCache.get(al.nTitle + "||" + al.nArtist) || "", 10);
@@ -6321,6 +6383,55 @@ app.get("/api/image/:image_key", async (req, res) => {
 });
 
 // Album detail: requires ?offset=N
+// Smart playlists — saved library views. No Roon involvement at all, so these
+// answer even while unpaired.
+app.get("/api/smart-playlists", (req, res) => {
+  res.json({ playlists: loadSmartPlaylists() });
+});
+
+// Create or rename/update one.  body: { id?, name, view }
+// An omitted id creates; a known id replaces in place (so "save over" works).
+app.post("/api/smart-playlists", (req, res) => {
+  const body = req.body || {};
+  const name = String(body.name || "").trim().slice(0, SMART_NAME_MAX);
+  if (!name) return res.status(400).json({ error: "name required" });
+
+  const list = loadSmartPlaylists();
+  const id = String(body.id || "").trim();
+  const record = { id: id || ("sp_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)),
+                   name, view: sanitizeLibView(body.view) };
+
+  const at = id ? list.findIndex(p => p.id === id) : -1;
+  if (at >= 0) {
+    list[at] = record;
+  } else {
+    // Same name twice is a rename-in-place, not a duplicate — the picker is a
+    // flat list and two identical rows would be indistinguishable.
+    const byName = list.findIndex(p => p.name.toLowerCase() === name.toLowerCase());
+    if (byName >= 0) { record.id = list[byName].id; list[byName] = record; }
+    else {
+      if (list.length >= SMART_MAX) {
+        return res.status(400).json({ error: `That's the limit of ${SMART_MAX} smart playlists` });
+      }
+      list.push(record);
+    }
+  }
+  if (!saveSmartPlaylists(list)) return res.status(500).json({ error: "Couldn't save" });
+  console.log(`[smart] saved "${name}"`);
+  res.json({ ok: true, playlist: record, playlists: list });
+});
+
+app.post("/api/smart-playlists/delete", (req, res) => {
+  const id = String((req.body && req.body.id) || "").trim();
+  if (!id) return res.status(400).json({ error: "id required" });
+  const list = loadSmartPlaylists();
+  const next = list.filter(p => p.id !== id);
+  if (next.length === list.length) return res.status(404).json({ error: "No such smart playlist" });
+  if (!saveSmartPlaylists(next)) return res.status(500).json({ error: "Couldn't save" });
+  console.log(`[smart] deleted ${id}`);
+  res.json({ ok: true, playlists: next });
+});
+
 // Every Roon playlist. One browse walk, so the client should open this on
 // demand (the side menu) rather than on every Home load.
 app.get("/api/playlists", async (req, res) => {

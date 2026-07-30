@@ -2,6 +2,40 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.8] — 2026-07-30
+
+### Added
+- **Smart playlists.** Set up a sort and focus on the Library screen, then **Focus → Save as…**
+  to keep it under a name. A new "Smart playlists" entry in the side menu lists them; opening one
+  applies its view and shows the library wall. They re-run every time they're opened, so they
+  follow the library as it grows.
+  - **Zero Roon calls.** A smart playlist is nothing but a saved `libraryView` query, and
+    `libraryView` filters the extension's own in-memory album index — the same engine the Library
+    Sort + Focus screen has used since v1.6.57. Saving one adds no Core traffic and no Core
+    memory.
+  - Each row describes what the view *does* ("Year ↓ · 1990s · not played in 12 months"), not
+    just what it was named — a name alone can't be checked against reality.
+  - Saved to `settings.json` on the data volume, so they survive container recreation. Saving
+    under an existing name replaces it rather than creating an indistinguishable duplicate.
+  - Every saved view is re-sanitised on load against the same vocabulary `libraryView` accepts.
+    `settings.json` is a plain file that can be hand-edited or half-written, and a view that got
+    through with a bogus field wouldn't error — it would quietly return the whole library, or
+    nothing.
+
+### Changed
+- The library-view vocabulary (`libSortIds`, `libPlayedIds`) is now exposed as functions rather
+  than bare constants, so the sanitiser's tests read the **shipping** list instead of a copy
+  injected beside them. A duplicated vocabulary is how a mutation adding a bogus sort would slip
+  past the suite — the v1.6.59 year-source-ranking hole in a new place.
+
+### Tests
+- 22 new tests (398 total: static 22, unit 213, dom 163). The unit tests cover the sanitiser
+  exhaustively (unknown sorts, non-decade years, runaway lists, extra keys, corrupt records) and
+  the DOM test covers the save → list → open → delete round trip, asserting the **query the wall
+  actually fetches with** rather than merely that a row was clicked. Three mutations planted — a
+  bogus sort added to the shipping vocabulary, extra keys leaking through, and a nameless record
+  kept — all three went red.
+
 ## [1.7.7] — 2026-07-30
 
 ### Added

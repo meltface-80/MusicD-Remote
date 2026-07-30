@@ -2386,6 +2386,14 @@ input.vol-range::-moz-range-thumb {
 }
 .group-row.is-on .group-note { color: inherit; opacity: .8; }
 
+/* Smart-playlist rows reuse .dev-row; the name is the tappable part. */
+.smart-open {
+  flex: 1 1 auto; min-width: 0;
+  background: transparent; border: 0; padding: 0;
+  text-align: left; cursor: pointer; color: inherit; font: inherit;
+}
+.smart-open:hover .dev-name { color: var(--accent-text); }
+
 /* --- Roon playlist detail (read + play) ----------------------------------- */
 /* Rendered into the shared grid container, so it must span every column
    rather than sitting in one cell. */

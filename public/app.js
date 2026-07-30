@@ -1309,13 +1309,173 @@
         libView.decade = []; libView.source = []; libView.played = "any";
         close(); applyLibView();
       });
+      const save = document.createElement("button");
+      save.type = "button"; save.className = "action-btn";
+      save.textContent = "Save as…";
+      save.addEventListener("click", () => { close(); saveSmartPlaylistPrompt(); });
       const show = document.createElement("button");
       show.type = "button"; show.className = "action-btn primary";
       show.textContent = "Show albums";
       show.addEventListener("click", () => { close(); applyLibView(); });
-      foot.appendChild(clear); foot.appendChild(show);
+      foot.appendChild(clear); foot.appendChild(save); foot.appendChild(show);
     });
   }
+
+  // ----- Smart playlists ---------------------------------------------------
+  //
+  // A smart playlist is just a saved library view (sort + focus), re-evaluated
+  // every time it's opened. It runs entirely on the extension's own album
+  // snapshot — the same engine as the Library screen — so it makes NO Roon calls
+  // and adds nothing to the Core's memory. Opening one applies its view and
+  // shows the library wall; there is no separate screen to maintain.
+  const SMART_VIEW_KEYS = ["sort", "dir", "seed", "decade", "source", "played"];
+
+  function currentLibViewSnapshot() {
+    const out = {};
+    for (const k of SMART_VIEW_KEYS) {
+      out[k] = Array.isArray(libView[k]) ? libView[k].slice() : libView[k];
+    }
+    return out;
+  }
+
+  // A one-line human description, so the picker says what a saved view DOES
+  // rather than only what it was named.
+  function describeLibView(v) {
+    const bits = [];
+    const sortOpt = LIB_SORT_OPTIONS.find(o => o.id === v.sort);
+    if (sortOpt) bits.push(sortOpt.label + (v.dir === "desc" ? " ↓" : " ↑"));
+    if (v.decade && v.decade.length) bits.push(v.decade.map(d => d + "s").join(", "));
+    if (v.source && v.source.length) bits.push(v.source.join(", "));
+    if (v.played && v.played !== "any") {
+      bits.push(v.played === "never" ? "never played" : "not played in " + v.played + " months");
+    }
+    return bits.join(" · ");
+  }
+
+  async function fetchSmartPlaylists() {
+    try {
+      const r = await fetch("/api/smart-playlists", { cache: "no-store" });
+      if (!r.ok) return [];
+      const j = await r.json();
+      return Array.isArray(j.playlists) ? j.playlists : [];
+    } catch (e) {
+      return [];   // the sheet shows its empty state; nothing else depends on this
+    }
+  }
+
+  function saveSmartPlaylistPrompt(existing) {
+    const suggested = (existing && existing.name) || describeLibView(libView) || "My smart playlist";
+    const name = window.prompt("Name this smart playlist", suggested);
+    if (name === null) return;                 // cancelled
+    const trimmed = String(name).trim();
+    if (!trimmed) { showToast("Give it a name", "error"); return; }
+    (async () => {
+      try {
+        const r = await fetch("/api/smart-playlists", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: existing && existing.id, name: trimmed,
+                                 view: currentLibViewSnapshot() })
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { showToast(j.error || "Couldn't save that", "error"); return; }
+        showToast(`Saved "${trimmed}"`);
+      } catch (e) {
+        showToast("Couldn't save that", "error");
+      }
+    })();
+  }
+
+  async function openSmartPlaylists() {
+    let list = await fetchSmartPlaylists();
+    openLibSheet("Smart playlists", (body, close) => {
+      const paint = () => {
+        body.innerHTML = "";
+        if (!list.length) {
+          const note = document.createElement("div");
+          note.className = "lib-sheet-note";
+          note.textContent = "No smart playlists yet. Set up a sort and focus on the Library " +
+                             "screen, then use Focus → Save as… to keep it here. They re-run " +
+                             "every time you open them, so they follow your library.";
+          body.appendChild(note);
+          return;
+        }
+        for (const p of list) {
+          const row = document.createElement("div");
+          row.className = "dev-row";
+          row.dataset.smart = p.id;
+
+          const text = document.createElement("button");
+          text.type = "button";
+          text.className = "smart-open";
+          const nm = document.createElement("span");
+          nm.className = "dev-name";
+          nm.textContent = p.name;
+          text.appendChild(nm);
+          const desc = describeLibView(p.view);
+          if (desc) {
+            const d = document.createElement("span");
+            d.className = "dev-status";
+            d.textContent = desc;
+            text.appendChild(d);
+          }
+          text.addEventListener("click", () => {
+            // Apply the saved view, then hand off to the existing library wall.
+            for (const k of SMART_VIEW_KEYS) {
+              if (p.view[k] !== undefined) {
+                libView[k] = Array.isArray(p.view[k]) ? p.view[k].slice() : p.view[k];
+              }
+            }
+            saveLibView();
+            close();
+            // showLibraryWall(), not applyLibView(): the sheet can be opened
+            // from anywhere, and applyLibView only re-fetches — it doesn't put
+            // the library wall on screen, so from Home it would page tiles into
+            // a view the user isn't looking at.
+            showLibraryWall();
+          });
+          row.appendChild(text);
+
+          const del = document.createElement("button");
+          del.type = "button"; del.className = "dev-btn";
+          del.dataset.action = "delete";
+          del.textContent = "Delete";
+          del.setAttribute("aria-label", "Delete " + p.name);
+          del.addEventListener("click", async () => {
+            del.disabled = true;
+            try {
+              const r = await fetch("/api/smart-playlists/delete", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id: p.id })
+              });
+              const j = await r.json().catch(() => ({}));
+              if (!r.ok) { showToast(j.error || "Couldn't delete that", "error"); return; }
+              list = Array.isArray(j.playlists) ? j.playlists : list.filter(x => x.id !== p.id);
+              paint();
+            } catch (e) {
+              showToast("Couldn't delete that", "error");
+            } finally {
+              del.disabled = false;
+            }
+          });
+          const actions = document.createElement("div");
+          actions.className = "dev-actions";
+          actions.appendChild(del);
+          row.appendChild(actions);
+          body.appendChild(row);
+        }
+      };
+      paint();
+    }, (foot, close) => {
+      const done = document.createElement("button");
+      done.type = "button"; done.className = "action-btn primary";
+      done.textContent = "Done";
+      done.addEventListener("click", close);
+      foot.appendChild(done);
+    });
+  }
+  window.__openSmartPlaylists = openSmartPlaylists;
 
   // A zone row's label. Grouped zones get a second line naming their outputs,
   // as Roon's own remote does — without it a zone called "Kitchen + Study" and
@@ -7559,6 +7719,10 @@ initServiceBrowser({
       }
       if (action === "rescan-library") {
         rescanLibrary();
+        return;
+      }
+      if (action === "smart-playlists") {
+        if (window.__openSmartPlaylists) window.__openSmartPlaylists();
         return;
       }
       if (action === "playlists") {
