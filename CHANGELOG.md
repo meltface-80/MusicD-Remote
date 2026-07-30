@@ -2,6 +2,53 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.16] — 2026-07-30
+
+Review findings against v1.7.6–v1.7.15. Five confirmed defects, all introduced by the playlist
+work, one of which made a shipped feature fail on every use.
+
+### Fixed
+- **Every smart-playlist track tap returned HTTP 400 — nothing could be played.** The track row
+  posted the *playlist* route's field names (`track_index` / `track_title`) to the *album* route,
+  which destructures `track` / `title`. The DOM test asserted the same wrong names against a stub
+  that accepts any body, so it stayed green while the feature was entirely broken. The success
+  toast also read a `j.invoked` the route never returns.
+- **Editing a smart playlist permanently rewrote the Library screen.** `editSmartPlaylist` copied
+  the playlist's view into `libView` and called `saveLibView()` immediately, so opening Edit and
+  closing it again left the user's own Library sort and focus silently replaced. The view is now
+  applied without persisting, and restored if the sheet is abandoned — `openLibSheet` gained an
+  `onClose` hook that fires on every dismissal path.
+- **Decades were written into the live view as numbers.** The server stores them as numbers while
+  the whole client compares against `String(decade)`, so Edit opened with the active decade's chip
+  showing *off*, and tapping it pushed a duplicate (`[1990, "1990"]`) instead of toggling.
+- **Four screens took over the shared grid without orphaning playlist work** (`showWall`, the two
+  label screens, the artist view). A late `/api/playlists` response could paint its tiles over the
+  labels or artist screen, and `fillPlaylistMosaics` kept firing a browse walk per playlist at the
+  Core after the user had left. Centralised as `leavePlaylistScreens()` so a future screen calls
+  one thing instead of remembering four flags.
+- **Every Roon playlist claimed to be truncated.** `truncated` compared the browse level's row
+  count against the track count, and the level includes the play-menu row — so a fully loaded
+  20-track playlist reported "showing the first 20 of 21". It now reports truncation only when the
+  read ceiling is actually reached.
+- A failed track page left a "Load more" button that did nothing, and a network blip on the smart
+  playlist list rendered "No smart playlists yet", which reads as *your saved playlists are gone*.
+  The two states are now distinguished.
+
+### Added
+- **A static guard against client/server field-name drift.** For each guarded route, the client's
+  POST body must carry every field the handler 400s without. This is the class of bug above, and
+  it is invisible to a DOM test whose stub accepts any body.
+  - Worth recording: the first version of this guard was **vacuous**. Its regex
+    (`/if\s*\(([^)]*?)\)\s*return\s+res\.status\(400\)/`) could not match
+    `if (!Number.isFinite(offset))` because of the nested paren, so it asserted nothing and passed.
+    Only re-introducing the real bug exposed that. It now scans line by line.
+
+### Not changed
+- v1.7.15 hardened the playlist art cache against a read-modify-write race. Review showed the race
+  is unreachable — `savePlaylistArt` is synchronous end to end, so Node cannot interleave the two
+  mosaic workers inside it. The hardening is harmless and stays, but it guarded a window that did
+  not exist.
+
 ## [1.7.15] — 2026-07-30
 
 ### Added

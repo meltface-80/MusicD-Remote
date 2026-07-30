@@ -245,3 +245,83 @@ test("CSS integrity", async (t) => {
     });
   }
 });
+
+// --- API field-name drift between client and server ------------------------
+// v1.7.16: every smart-playlist track tap returned HTTP 400 because the client
+// posted the PLAYLIST route's field names (`track_index`/`track_title`) to the
+// ALBUM route, which destructures `track`/`title`. The DOM test was green
+// throughout — its stub accepts any body, so only the real names bite.
+//
+// A route's required fields are the ones it 400s on, so that is what this
+// checks: for each guarded route, the client's POST body must contain every
+// field the handler refuses to run without.
+function requiredFieldsOf(indexSrc, route) {
+  const at = indexSrc.indexOf(`app.post("${route}"`);
+  if (at < 0) return null;
+  const end = indexSrc.indexOf('\napp.', at + 10);
+  const body = indexSrc.slice(at, end < 0 ? indexSrc.length : end);
+  // Only names the route actually takes OUT of req.body count — a 400 guard can
+  // just as easily test a local derived from them (play-multi guards on `list`,
+  // which it builds from `items`/`offsets`).
+  const fromBody = new Set();
+  for (const m of body.matchAll(/const\s*\{([^}]*)\}\s*=\s*req\.body/g)) {
+    for (const part of m[1].split(",")) {
+      const n = part.split("=")[0].trim();
+      if (n) fromBody.add(n);
+    }
+  }
+  // Scanned line by line, NOT with a paren-matching regex: an earlier version
+  // used /if\s*\(([^)]*?)\)\s*return\s+res\.status\(400\)/ and silently matched
+  // nothing, because a guard like `if (!Number.isFinite(offset))` contains a
+  // nested ")". The test passed while asserting absolutely nothing.
+  const need = new Set();
+  for (const line of body.split("\n")) {
+    if (!/res\.status\(400\)/.test(line)) continue;
+    const cond = line.slice(0, line.indexOf("res.status(400)"));
+    for (const id of cond.matchAll(/\b([a-z_][a-z0-9_]*)\b/gi)) {
+      if (fromBody.has(id[1])) need.add(id[1]);
+    }
+  }
+  return need;
+}
+
+function clientBodiesFor(appSrc, route) {
+  const out = [];
+  let i = 0;
+  while ((i = appSrc.indexOf(`"${route}"`, i)) > -1) {
+    const open = appSrc.indexOf("JSON.stringify({", i);
+    if (open < 0) break;
+    // Balanced scan from the object's brace — bodies here contain nested calls.
+    let depth = 0, j = appSrc.indexOf("{", open);
+    for (; j < appSrc.length; j++) {
+      if (appSrc[j] === "{") depth++;
+      else if (appSrc[j] === "}") { depth--; if (!depth) break; }
+    }
+    out.push(appSrc.slice(open, j + 1));
+    i = j;
+  }
+  return out;
+}
+
+test("checklist — POST bodies carry the fields their route requires", async (t) => {
+  const index = read("index.js");
+  const app   = read("public/app.js");
+
+  // Routes whose 400 guards name concrete body fields.
+  for (const route of ["/api/play-track", "/api/play-multi", "/api/control"]) {
+    await t.test(route, () => {
+      const need = requiredFieldsOf(index, route);
+      assert.ok(need, `${route} not found in index.js`);
+      const bodies = clientBodiesFor(app, route);
+      assert.ok(bodies.length, `no client call to ${route} found — update this test`);
+      for (const body of bodies) {
+        for (const field of need) {
+          // `kind:` or ES6 shorthand `kind,` / `kind}` — both are the field.
+          assert.ok(new RegExp("\\b" + field + "\\s*[:,}]").test(body),
+            `${route}: a client body omits "${field}", which the route 400s without.\n` +
+            `body was:\n${body}`);
+        }
+      }
+    });
+  }
+});

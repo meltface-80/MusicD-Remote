@@ -309,10 +309,7 @@
     { const c = document.getElementById("library-controls"); if (c) c.classList.add("hidden"); }
     unplayedWallActive = false;
     libraryWallActive = false;
-    playlistsActive = false;
-    playlistDetailActive = false;
-    smartWallActive = false;
-    smartDetailActive = false;
+    leavePlaylistScreens();
     if (window.__clearSearchIfActive) window.__clearSearchIfActive();  // drop stale search results
     if (window.__exitLabels) window.__exitLabels();   // leave the labels browser if active
     // Discard, don't restore: this function is establishing its own screen and
@@ -357,6 +354,7 @@
   // don't leave an empty grid behind, without racing actions that render their
   // own content, e.g. labels/search).
   function showWall(opts) {
+    leavePlaylistScreens();   // this screen owns the grid now
     { const c = document.getElementById("library-controls"); if (c) c.classList.add("hidden"); }
     unplayedWallActive = false;
     libraryWallActive = false;
@@ -613,10 +611,7 @@
     libraryWallActive = false;
     // Cleared here as well as by the caller: every other wall's entry point must
     // orphan an in-flight playlist fetch, or its response paints into this one.
-    playlistsActive = false;
-    playlistDetailActive = false;
-    smartWallActive = false;
-    smartDetailActive = false;
+    leavePlaylistScreens();
     // The library wall's sort/focus row belongs to that wall only.
     { const c = document.getElementById("library-controls"); if (c) c.classList.add("hidden"); }
     exitAlbumSelectMode();   // a stale multi-select bar must not survive into a new wall
@@ -1053,6 +1048,22 @@
     grid.appendChild(wrap);
   }
 
+  // Any screen that takes over the shared grid must orphan in-flight playlist and
+  // smart-playlist work. Two things go wrong otherwise: a late response paints
+  // its tiles over whatever screen is now showing, and fillPlaylistMosaics keeps
+  // firing a browse walk per playlist at the Core long after the user has left.
+  // Centralised so a future screen can call one thing instead of remembering
+  // four flags.
+  function leavePlaylistScreens() {
+    playlistsActive = false;
+    playlistDetailActive = false;
+    smartWallActive = false;
+    smartDetailActive = false;
+    playlistSeq++;
+    smartSeq++;
+  }
+  window.__leavePlaylistScreens = leavePlaylistScreens;
+
   function leaveLibraryWall() { const was = libraryWallActive; libraryWallActive = false; return was; }
   window.__leaveLibraryWall = leaveLibraryWall;
   window.__restoreLibraryWall = (was) => { libraryWallActive = !!was; };
@@ -1211,7 +1222,9 @@
 
   // One sheet builder for both — same bottom-sheet language as the filter and
   // settings sheets, built as live nodes (never restored from an HTML string).
-  function openLibSheet(title, buildBody, footer) {
+  // `onClose` fires on EVERY dismissal path — X, backdrop, and the footer
+  // buttons — so a caller that mutated shared state on open can undo it.
+  function openLibSheet(title, buildBody, footer, onClose) {
     const back = document.createElement("div");
     back.className = "lib-sheet-backdrop";
     const sheet = document.createElement("div");
@@ -1226,7 +1239,7 @@
     const body = document.createElement("div");
     body.className = "lib-sheet-body";
     sheet.appendChild(head); sheet.appendChild(body);
-    const close = () => { back.remove(); };
+    const close = () => { back.remove(); if (onClose) onClose(); };
     buildBody(body, close);
     if (footer) {
       const f = document.createElement("div");
@@ -1325,6 +1338,11 @@
   // would otherwise leave that variable set, and the NEXT save from the Focus
   // bar would silently overwrite the playlist edited earlier.
   async function openLibFocusSheet(editTarget) {
+    // Snapshot BEFORE the edited view is applied, so abandoning the sheet can
+    // put the user's own Library view back exactly as it was.
+    const viewBefore = editTarget ? currentLibViewSnapshot() : null;
+    if (editTarget) applyViewToLibView(editTarget.view);
+    let committed = false;
     if (!libFacets) {
       try {
         const r = await fetch("/api/library/facets");
@@ -1403,18 +1421,27 @@
       clear.type = "button"; clear.className = "action-btn";
       clear.textContent = "Clear all";
       clear.addEventListener("click", () => {
+        committed = true;
         libView.decade = []; libView.source = []; libView.played = "any";
         close(); applyLibView();
       });
       const save = document.createElement("button");
       save.type = "button"; save.className = "action-btn";
       save.textContent = "Save as…";
-      save.addEventListener("click", () => { close(); saveSmartPlaylistPrompt(editTarget); });
+      save.addEventListener("click", () => {
+        committed = true;
+        close(); saveSmartPlaylistPrompt(editTarget);
+      });
       const show = document.createElement("button");
       show.type = "button"; show.className = "action-btn primary";
       show.textContent = "Show albums";
-      show.addEventListener("click", () => { close(); applyLibView(); });
+      show.addEventListener("click", () => { committed = true; close(); applyLibView(); });
       foot.appendChild(clear); foot.appendChild(save); foot.appendChild(show);
+    }, () => {
+      // Abandoned (X or backdrop) while editing a saved playlist — put the
+      // user's own Library view back. Never persisted in the first place, so
+      // there is nothing on disk to undo.
+      if (editTarget && !committed && viewBefore) applyViewToLibView(viewBefore);
     });
   }
 
@@ -1449,14 +1476,17 @@
     return bits.join(" · ");
   }
 
+  // Returns null on failure, [] for a genuinely empty list. The caller must tell
+  // them apart: rendering "No smart playlists yet" after a network blip reads as
+  // "your saved playlists are gone".
   async function fetchSmartPlaylists() {
     try {
       const r = await fetch("/api/smart-playlists", { cache: "no-store" });
-      if (!r.ok) return [];
+      if (!r.ok) return null;
       const j = await r.json();
-      return Array.isArray(j.playlists) ? j.playlists : [];
+      return Array.isArray(j.playlists) ? j.playlists : null;
     } catch (e) {
-      return [];   // the sheet shows its empty state; nothing else depends on this
+      return null;
     }
   }
 
@@ -1500,6 +1530,11 @@
     const list = await fetchSmartPlaylists();
     if (!smartWallActive || mySeq !== smartSeq) return;
     grid.innerHTML = "";
+    if (list === null) {
+      setBanner("Couldn't read your smart playlists — the extension didn't answer. " +
+                "They're still saved; try again.", true);
+      return;
+    }
     if (!list.length) {
       setBanner("No smart playlists yet — set a sort and focus on the Library screen, " +
                 "then use Focus → Save as…", false);
@@ -1603,7 +1638,12 @@
         if (!smartDetailActive || mySeq !== smartSeq) return;
         const j = await r.json().catch(() => ({}));
         if (!smartDetailActive || mySeq !== smartSeq) return;
-        if (!r.ok) { status.textContent = j.error || "Couldn't read this playlist."; done = true; return; }
+        if (!r.ok) {
+          status.textContent = j.error || "Couldn't read this playlist.";
+          done = true;
+          more.classList.add("hidden");   // it would no-op; don't offer it
+          return;
+        }
 
         for (const t of (j.tracks || [])) ol.appendChild(smartTrackRow(t));
         shown += (j.tracks || []).length;
@@ -1672,14 +1712,17 @@
         const r = await fetch("/api/play-track", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          // These are /api/play-track's names — `track`/`title`, NOT the
+          // playlist route's `track_index`/`track_title`. Sending the wrong
+          // pair 400s on every tap.
           body: JSON.stringify({
-            offset: t.album_offset, track_index: t.track_index, track_title: t.title,
+            offset: t.album_offset, track: t.track_index, title: t.title,
             zone_or_output_id: zone, kind: "play_now"
           })
         });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) showToast(j.error || "Couldn't play that track", "error");
-        else showToast(j.invoked || "Playing");
+        else showToast(j.action || "Playing");
       } catch (e) {
         showToast("Couldn't reach the extension", "error");
       }
@@ -1773,13 +1816,22 @@
   // Edit reuses the Focus sheet: load the saved view into the live one, then
   // open the editor with this playlist as the save target, so "Save as…" writes
   // back to the same record instead of creating a duplicate.
-  function editSmartPlaylist(sp) {
+  // Copy a saved view into the live one. Decades are normalised to STRINGS: the
+  // server stores them as numbers, while the whole client compares against
+  // String(decade) — the Focus chips would render off for a decade that IS
+  // active, and tapping one would push a duplicate rather than toggle it.
+  function applyViewToLibView(view) {
     for (const k of SMART_VIEW_KEYS) {
-      if (sp.view[k] !== undefined) {
-        libView[k] = Array.isArray(sp.view[k]) ? sp.view[k].slice() : sp.view[k];
-      }
+      if (view[k] === undefined) continue;
+      libView[k] = Array.isArray(view[k]) ? view[k].map(String) : view[k];
     }
-    saveLibView();
+  }
+
+  // NOT saved here. editSmartPlaylist used to commit the playlist's view to
+  // localStorage immediately, so opening Edit and closing it again silently and
+  // permanently re-sorted the user's Library screen. openLibFocusSheet restores
+  // the previous view if the sheet is abandoned.
+  function editSmartPlaylist(sp) {
     openLibFocusSheet(sp);
   }
 
@@ -4229,6 +4281,7 @@
     }
 
     async function showLabelsList(isRepoll = false) {
+      if (window.__leavePlaylistScreens) window.__leavePlaylistScreens();
       if (!isRepoll) {
         if (window.__clearSearchIfActive) window.__clearSearchIfActive();  // drop stale search results
         exitAlbumSelectMode(); closeLabelLogoSheet(); currentLabelName = null; currentLabelLogoUrl = null;
@@ -4399,6 +4452,7 @@
     }
 
     async function showLabelAlbums(name, fromLabelsList = false) {
+      if (window.__leavePlaylistScreens) window.__leavePlaylistScreens();
       if (window.__clearSearchIfActive) window.__clearSearchIfActive();  // drop stale search results
       if (fromLabelsList) {
         // Came from a tap on the Labels grid — remember the grid scroll position.
@@ -7765,6 +7819,7 @@ initServiceBrowser({
   }
 
   async function showArtistAlbums(artistName) {
+    if (window.__leavePlaylistScreens) window.__leavePlaylistScreens();
     if (!artistName) return;
     // Drop any active/pending search (incl. the delayed external-sources fetch)
     // — reachable from the album-modal artist link with a search still live,

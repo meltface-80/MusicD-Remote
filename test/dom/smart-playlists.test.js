@@ -326,8 +326,11 @@ test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concur
     const track = r.posts.find(p => p.url === "/api/play-track");
     assert.ok(track, "tapping a track must play it");
     assert.equal(track.body.offset, 10, "played from the album the track came from");
-    assert.equal(track.body.track_index, 1);
-    assert.equal(track.body.track_title, "I Would Hurt a Fly");
+    // /api/play-track destructures `track` and `title`. Asserting the playlist
+    // route's `track_index`/`track_title` here is what let a 400-on-every-tap
+    // ship green — the stub accepts any body, so only the real names bite.
+    assert.equal(track.body.track, 1);
+    assert.equal(track.body.title, "I Would Hurt a Fly");
   });
 
   const ed = harness.renderPage({
@@ -347,7 +350,9 @@ test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concur
     // record and the user ends up with two near-identical playlists.
     assert.equal(save.id, "sp1");
     assert.equal(save.view.sort, "year");
-    assert.deepEqual(save.view.decade, [1990]);
+    // Strings: the client compares decades against String(value) throughout, so
+    // the edited view must hand them back in that form. The server parses them.
+    assert.deepEqual(save.view.decade, ["1990"]);
   });
 
   const ab = harness.renderPage({

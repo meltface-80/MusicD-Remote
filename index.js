@@ -6727,7 +6727,12 @@ app.get("/api/playlist", async (req, res) => {
       tracks,
       // Roon reports the real length; we only read PLAYLIST_ITEMS of it, so say
       // so rather than letting a long playlist look truncated for no reason.
-      total, truncated: total > tracks.length && tracks.length > 0,
+      total,
+      // Only truncated if we actually hit the read ceiling. `total` is the
+      // browse LEVEL's row count, which includes the play-menu row that
+      // isTrackItem excludes — comparing the two made every playlist with a
+      // Play action report "showing the first N of N+1".
+      truncated: tracks.length >= PLAYLIST_ITEMS,
       can_play: !!playMenu
     });
   } catch (e) {
