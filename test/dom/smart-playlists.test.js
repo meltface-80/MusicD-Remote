@@ -174,6 +174,19 @@ const DRIVER_MAIN = OPEN_WALL + `
     function (b) { return b.textContent === "Play now"; })[0].click();
   await window.__sleep(600);
 
+  // Send to Roon: fills the queue so Roon's own "save queue as playlist" can
+  // finish the job the API refuses to do.
+  Array.prototype.filter.call(document.querySelectorAll(".playlist-actions button"),
+    function (b) { return b.textContent === "Send to Roon"; })[0].click();
+  await window.__sleep(300);
+  // It warns first that the queue is about to be replaced — confirm it.
+  T("send_confirm_shown",
+    !document.getElementById("confirm-overlay").classList.contains("hidden"));
+  T("send_confirm_msg", (document.getElementById("confirm-msg") || {}).textContent || "");
+  document.getElementById("confirm-yes").click();
+  await window.__sleep(700);
+  T("toast_after_send", (document.querySelector(".toast") || {}).textContent || "");
+
   // Tapping a track plays that track from its album.
   document.querySelectorAll(".playlist-tracks .track-row")[1].click();
   await window.__sleep(500);
@@ -281,7 +294,24 @@ test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concur
   });
 
   await t.test("it offers the same actions an album does, plus edit and delete", () => {
-    assert.deepEqual(r.action_buttons, ["Play now", "Queue", "Edit", "Delete"]);
+    assert.deepEqual(r.action_buttons,
+      ["Play now", "Queue", "Send to Roon", "Edit", "Delete"]);
+  });
+
+  await t.test("Send to Roon queues the albums and says what to do next", () => {
+    // Roon's API cannot create a playlist, so the only honest outcome is a
+    // filled queue plus the two taps that finish it in Roon.
+    // Replacing the queue is destructive, so it must be confirmed and must say so.
+    assert.equal(r.send_confirm_shown, true, "Send to Roon must confirm before replacing the queue");
+    assert.match(String(r.send_confirm_msg), /replaces what's in the queue/i);
+    assert.match(String(r.send_confirm_msg), /Add the queue to a Playlist/i,
+      "the confirm should spell out the Roon-side step");
+    const sends = r.posts.filter(p => p.url === "/api/play-multi");
+    assert.equal(sends.length, 2, "Play now and Send to Roon should each queue once");
+    assert.deepEqual(sends[1].body.items.map(i => i.offset), [10, 20],
+      "the queue must be built in the saved view's order");
+    assert.match(String(r.toast_after_send), /save the queue as a playlist in Roon/i,
+      "the user must be told the step only Roon can do");
   });
 
   await t.test("Play now goes through play-multi; a track plays from its album", () => {

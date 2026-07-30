@@ -1567,6 +1567,7 @@
     };
     mkBtn("Play now", "action-btn primary", (b) => playSmartPlaylist(sp, "play_now", b));
     mkBtn("Queue",    "action-btn",         (b) => playSmartPlaylist(sp, "queue", b));
+    mkBtn("Send to Roon", "action-btn",     (b) => sendSmartPlaylistToRoon(sp, b));
     mkBtn("Edit",     "action-btn",         () => editSmartPlaylist(sp));
     mkBtn("Delete",   "action-btn",         () => deleteSmartPlaylist(sp));
     wrap.appendChild(actions);
@@ -1712,6 +1713,56 @@
       const pj = await pr.json().catch(() => ({}));
       if (!pr.ok) showToast(pj.error || "Roon refused that", "error");
       else showToast(kind === "queue" ? `Queued ${albums.length} albums` : `Playing ${sp.name}`);
+    } catch (e) {
+      showToast("Couldn't reach the extension", "error");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // Turn a smart playlist into a real Roon playlist.
+  //
+  // Roon's extension API has NO playlist write of any kind — no create, add,
+  // remove or reorder, and no "Add to Playlist" action anywhere in the browse
+  // tree. Roon has left that request unanswered since 2017. What Roon DOES
+  // offer is saving the current queue as a playlist from its own remote, so the
+  // extension does the half it can (assembling the queue in the right order)
+  // and then says exactly which two taps finish the job.
+  async function sendSmartPlaylistToRoon(sp, btn) {
+    const zsel = document.getElementById("zone-select");
+    const zone = (zsel && zsel.value) || selectedZoneId;
+    if (!zone) { showToast("Choose a zone first", "error"); return; }
+
+    const ok = await confirmDialog(
+      `Queue "${sp.name}" to ${(zsel && zsel.selectedOptions[0] && zsel.selectedOptions[0].textContent) || "this zone"}?\n\n` +
+      "Roon's API can't create playlists, so this fills the queue instead. " +
+      "Then in Roon: open the queue, tap the 3 dots above it, and choose " +
+      "\"Add the queue to a Playlist\".\n\nThis replaces what's in the queue now.");
+    if (!ok) return;
+
+    btn.disabled = true;
+    try {
+      const r = await fetch(`/api/smart-playlist/albums?id=${encodeURIComponent(sp.id)}&max=200`,
+                            { cache: "no-store" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { showToast(j.error || "Couldn't read this playlist", "error"); return; }
+      const albums = j.albums || [];
+      if (!albums.length) { showToast("Nothing matches this smart playlist", "error"); return; }
+
+      const pr = await fetch("/api/play-multi", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: albums.map(a => ({ offset: a.offset, title: a.title, subtitle: a.subtitle })),
+          zone_or_output_id: zone,
+          // play_now on the first album, queue for the rest — that is what
+          // play-multi does, and it is what builds an ordered queue.
+          kind: "play_now"
+        })
+      });
+      const pj = await pr.json().catch(() => ({}));
+      if (!pr.ok) { showToast(pj.error || "Roon refused that", "error"); return; }
+      showToast(`Queued ${albums.length} albums — now save the queue as a playlist in Roon`);
     } catch (e) {
       showToast("Couldn't reach the extension", "error");
     } finally {

@@ -2,6 +2,28 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.15] — 2026-07-30
+
+### Added
+- **"Send to Roon" on a smart playlist.** Roon's extension API has no playlist write of any kind —
+  no create, add, remove or reorder, and no "Add to Playlist" action anywhere in the browse tree.
+  Three independent extension authors report the same, and Roon Labs has left the request
+  unanswered since 2017. What Roon *does* offer is saving the current queue as a playlist from its
+  own remote, so this does the half an extension can: it fills the queue in the saved view's
+  order, then says exactly which two taps finish the job (queue → 3 dots → "Add the queue to a
+  Playlist"). Confirms first, because it replaces the queue.
+- **The debug browse probe can now drill an action menu, and can be zone-scoped.**
+  `?album=<n>&action=<i>&zone=<id>` lists the actions Roon offers on an item. This exists because
+  the browse tree *does* carry non-playback actions — "Add to Library" is one — so "there is no
+  playlist action" is worth confirming against a real Core rather than assumed. Roon gates some
+  items on a zone, so a probe without one can only prove absence *without* a zone. Still
+  read-only: menus are listed, nothing is invoked.
+
+### Tests
+- 1 new test (403 total) covering Send to Roon: the confirm naming the destructive effect and the
+  Roon-side step, the queue built in the saved order, and the toast telling the user what only
+  Roon can do.
+
 ## [1.7.14] — 2026-07-30
 
 Two defects found reviewing the playlist work, both introduced by it.

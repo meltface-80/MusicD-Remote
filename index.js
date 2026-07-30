@@ -6133,11 +6133,18 @@ app.get("/api/debug/filter", async (req, res) => {
 //   /api/debug/browse-probe                                   → list browse root
 //   /api/debug/browse-probe?path=Qobuz                        → list the Qobuz section
 //   /api/debug/browse-probe?path=Qobuz/New%20Releases         → list those albums (count)
+//   ...&album=0&zone=<zone_id>                                → drill an album, zone-scoped
+//   ...&album=0&action=3&zone=<zone_id>                       → list item 3's ACTION MENU
+//
+// The action drill answers "does Roon offer an extension any playlist action?"
+// — "Add to Library" is known to appear in these menus, so their absence of an
+// "Add to Playlist" is worth confirming on a real Core rather than assuming.
 //   /api/debug/browse-probe?path=Qobuz/New%20Releases&album=0 → dump album 0's actions
 app.get("/api/debug/browse-probe", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   const hierarchy = "browse";
   const segments = (req.query.path || "").toString().split("/").map(s => s.trim()).filter(Boolean);
+  const zone = String(req.query.zone || "") || undefined;
   const albumRaw = req.query.album;
   const albumIdx = albumRaw === undefined ? -1 : parseInt(albumRaw, 10);
   if (albumRaw !== undefined && (!Number.isFinite(albumIdx) || albumIdx < 0)) {
@@ -6181,16 +6188,50 @@ app.get("/api/debug/browse-probe", async (req, res) => {
         } else if (!target.item_key) {
           out.album = { error: 'Item "' + (target.title || "") + '" has no item_key to drill into' };
         } else {
-          // Read-only drill: browse the album item with NO zone, then list its
-          // contents (top-level action_list items + tracks). Nothing is invoked.
-          await browse({ hierarchy, item_key: target.item_key, multi_session_key: sessionKey });
+          // Read-only drill: browse the album item, then list its contents
+          // (top-level action_list items + tracks). Nothing is invoked.
+          //
+          // `zone` matters here: Roon gates some browse items on a zone, so a
+          // probe without one cannot prove an action is absent — only that it is
+          // absent WITHOUT a zone. Pass ?zone=<id> to rule that out.
+          await browse({ hierarchy, item_key: target.item_key, multi_session_key: sessionKey,
+                         zone_or_output_id: zone });
           const inside = await load({ hierarchy, offset: 0, count: 500, multi_session_key: sessionKey });
           out.album = {
             title: target.title || null,
             subtitle: target.subtitle || null,
             list_title: (inside.list && inside.list.title) || null,
-            items: (inside.items || []).map(mapItem)
+            zone_scoped: !!zone,
+            items: (inside.items || []).map((it, idx) => Object.assign({ idx }, mapItem(it)))
           };
+
+          // ?action=<idx> drills ONE level further, into that item's own action
+          // menu — where a per-track "Add to Playlist" would live if Roon
+          // offered one to extensions. Still read-only: the menu is listed, and
+          // nothing in it is invoked.
+          const actionRaw = req.query.action;
+          if (actionRaw !== undefined) {
+            const ai = parseInt(actionRaw, 10);
+            const sub = (inside.items || [])[ai];
+            if (!sub || !sub.item_key) {
+              out.album.action = { error: "No item with an item_key at index " + actionRaw };
+            } else {
+              const d = await browse({ hierarchy, item_key: sub.item_key,
+                                       multi_session_key: sessionKey,
+                                       zone_or_output_id: zone });
+              if (d.action !== "list") {
+                out.album.action = { of: sub.title || null, browse_action: d.action,
+                                     note: "not a list — nothing to enumerate" };
+              } else {
+                const acts = await load({ hierarchy, multi_session_key: sessionKey });
+                out.album.action = {
+                  of: sub.title || null,
+                  zone_scoped: !!zone,
+                  items: (acts.items || []).map(mapItem)
+                };
+              }
+            }
+          }
         }
       }
       res.json(out);
