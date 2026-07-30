@@ -1098,18 +1098,10 @@ function isTrackItem(t, playMenu) {
   if (t === playMenu)                          return false;
   if (t.hint === "action_list" && !t.subtitle) return false;
   if (t.hint === "header")                     return false;
+  // No item_key means nothing can be invoked on it, so it cannot be a track —
+  // rendering one produces a row that silently does nothing when tapped.
+  if (!t.item_key)                             return false;
   return true;
-}
-
-// Roon's stand-in for content it won't hand over: a lone item titled "Not Found"
-// with no item_key, returned alongside a list count of the REAL size. It is not
-// a track — nothing can be done with it — so it must never reach a track list,
-// where it would render as a row that silently does nothing.
-//
-// Matched on the missing item_key as well as the title, so a genuine track that
-// happens to be called "Not Found" is still playable.
-function isPlaceholderItem(t) {
-  return !!t && !t.item_key && String(t.title || "").trim().toLowerCase() === "not found";
 }
 
 // Roon prefixes track titles with "N. "; the UI renders its own counter.
@@ -1314,12 +1306,8 @@ async function listPlaylists() {
 // Navigate a session into one playlist and return its contents. `expectTitle`
 // is verified against the item actually found at `offset`; on drift we re-locate
 // by title rather than opening whatever moved into that slot.
-// `zoneId` is passed on every browse in this walk. Roon requires a zone for
-// hierarchies it has to RESOLVE rather than merely list — v1.6.48's search
-// fallback resolved 0/12 in production for exactly this reason, and a Roon
-// SMART playlist is computed at browse time, so it is the same shape of call.
-// Harmless when Roon doesn't need it; the difference between a populated
-// playlist and "no tracks" when it does.
+// `zoneId` is passed on every browse in this walk: the Browse API documents it
+// as required for playback-related functionality, and it costs nothing to carry.
 async function loadPlaylistSession(sessionKey, offset, expectTitle, zoneId) {
   const hierarchy = "playlists";
   const zone = zoneId || undefined;
@@ -1365,14 +1353,8 @@ async function loadPlaylistSession(sessionKey, offset, expectTitle, zoneId) {
   );
   const total = (inside.list && inside.list.count) || items.length;
 
-  // Roon answers a playlist it will not resolve for us with a PLACEHOLDER: the
-  // list reports its true count (e.g. 35) but the items are a single entry
-  // titled "Not Found". Observed on a Roon SMART playlist. Left alone it renders
-  // as a track row that does nothing when tapped, which reads as our bug rather
-  // than Roon declining — so it is detected here and reported as unresolved.
-  const realTracks = items.filter(t => isTrackItem(t, playMenu) && !isPlaceholderItem(t));
-  const unresolved = realTracks.length === 0 && total > 0;
-  if (unresolved || !realTracks.length) {
+  const realTracks = items.filter(t => isTrackItem(t, playMenu));
+  if (!realTracks.length) {
     console.warn(`[playlist] "${item.title || ""}" resolved ${realTracks.length} track(s)` +
                  ` (zone=${zone || "none"}, raw items=${items.length}, list count=${total})`);
     for (const it of items.slice(0, 10)) {
@@ -1381,7 +1363,7 @@ async function loadPlaylistSession(sessionKey, offset, expectTitle, zoneId) {
                    ` item_key=${it.item_key ? "yes" : "no"}`);
     }
   }
-  return { hierarchy, item, items, playMenu, total, unresolved };
+  return { hierarchy, item, items, playMenu, total };
 }
 
 // Play or queue a WHOLE playlist through its own Play menu.
@@ -6425,8 +6407,115 @@ app.get("/api/image/:image_key", async (req, res) => {
 // Album detail: requires ?offset=N
 // Smart playlists — saved library views. No Roon involvement at all, so these
 // answer even while unpaired.
+// One smart playlist, expanded to TRACKS.
+//   ?id=<sp id>&offset=<album offset into the view>&count=<albums to expand>
+//
+// The saved view yields ALBUMS (that is what the snapshot indexes), so tracks
+// only exist by opening each album on the Core. That is the expensive part —
+// roughly half a dozen Roon calls per album — so it is paged by ALBUM and the
+// client asks for more as it scrolls. Nothing is expanded until the playlist is
+// opened, and the album list itself still costs zero Roon calls.
+//
+// Each track carries its own album's `image_key`, so a track row can show the
+// artwork it came from without a second lookup.
+const SMART_ALBUM_PAGE = 8;
+app.get("/api/smart-playlist", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  const id = String(req.query.id || "").trim();
+  if (!id) return res.status(400).json({ error: "id required" });
+  const sp = loadSmartPlaylists().find(p => p.id === id);
+  if (!sp) return res.status(404).json({ error: "No such smart playlist" });
+
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+  const count  = Math.max(1, Math.min(SMART_ALBUM_PAGE,
+                                      parseInt(req.query.count, 10) || SMART_ALBUM_PAGE));
+  const zone   = String(req.query.zone || "") || null;
+
+  try {
+    await ensureAlbumIndex();
+    if (!isIndexBuilt()) return res.status(503).json({ error: "Library index is still building" });
+
+    // The saved view, re-evaluated now — that is what makes it "smart".
+    const view = libraryView(sp.view);
+    const slice = view.slice(offset, offset + count);
+
+    const tracks = [];
+    for (const al of slice) {
+      // One album at a time, deliberately: an uncapped Promise.all here would
+      // open half a dozen browse sessions per album against the Core at once.
+      // Same reasoning as /api/play-multi's batching.
+      try {
+        const got = await withBrowseSession(sk => loadAlbumSession(
+          sk, al.offset, null, { title: al.title, subtitle: al.subtitle }, zone));
+        const items = (got.items || []).filter(t => isTrackItem(t, got.playMenu));
+        items.forEach((t, i) => {
+          tracks.push({
+            album_offset: got.offset,
+            album_title:  al.title,
+            album_artist: al.subtitle,
+            image_key:    al.image_key || null,   // the album's art, for the row
+            track_index:  i,
+            title:        stripTrackNumber(t.title),
+            subtitle:     t.subtitle || al.subtitle || ""
+          });
+        });
+      } catch (e) {
+        // One unreadable album must not empty the whole playlist — skip it and
+        // say so in the log. A stale offset is the usual cause.
+        console.warn(`[smart] "${sp.name}": skipped album "${al.title}" — ${e.message}`);
+      }
+    }
+
+    res.json({
+      id: sp.id, name: sp.name, view: sp.view,
+      tracks,
+      album_offset: offset,
+      albums_expanded: slice.length,
+      album_total: view.length,
+      done: offset + slice.length >= view.length
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// The ALBUMS a smart playlist resolves to, for play-all / queue-all. Zero Roon
+// calls — the client hands these straight to /api/play-multi, which already
+// batches and carries the stale-offset defense.
+app.get("/api/smart-playlist/albums", async (req, res) => {
+  const id = String(req.query.id || "").trim();
+  if (!id) return res.status(400).json({ error: "id required" });
+  const sp = loadSmartPlaylists().find(p => p.id === id);
+  if (!sp) return res.status(404).json({ error: "No such smart playlist" });
+  try {
+    await ensureAlbumIndex();
+    if (!isIndexBuilt()) return res.status(503).json({ error: "Library index is still building" });
+    const view = libraryView(sp.view);
+    const max = Math.max(1, Math.min(200, parseInt(req.query.max, 10) || 100));
+    res.json({
+      id: sp.id, name: sp.name,
+      albums: view.slice(0, max).map(a => ({
+        offset: a.offset, title: a.title, subtitle: a.subtitle, image_key: a.image_key
+      })),
+      total: view.length
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get("/api/smart-playlists", (req, res) => {
-  res.json({ playlists: loadSmartPlaylists() });
+  // Each row carries its album count so the tile can read like a playlist tile
+  // ("48 Albums"). Costs nothing — libraryView is in-memory and cached.
+  const list = loadSmartPlaylists();
+  let counted = list;
+  if (isIndexBuilt()) {
+    counted = list.map(p => {
+      try { return Object.assign({}, p, { album_total: libraryView(p.view).length }); }
+      catch (e) { return p; }   // a bad view must not take the whole list down
+    });
+  }
+  res.json({ playlists: counted });
 });
 
 // Create or rename/update one.  body: { id?, name, view }
@@ -6490,16 +6579,15 @@ app.get("/api/playlist", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   const offset = parseInt(req.query.offset, 10);
   const title  = String(req.query.title || "");
-  // Optional, but the client always sends it: Roon needs a zone to resolve a
-  // SMART playlist's contents (see loadPlaylistSession).
+  // Optional, but the client always sends it (see loadPlaylistSession).
   const zone   = String(req.query.zone || "") || null;
   if (!Number.isFinite(offset) || offset < 0) {
     return res.status(400).json({ error: "Valid offset query parameter required" });
   }
   try {
-    const { items, playMenu, item, total, unresolved } =
+    const { items, playMenu, item, total } =
       await withBrowseSession(sk => loadPlaylistSession(sk, offset, title, zone));
-    const tracks = items.filter(t => isTrackItem(t, playMenu) && !isPlaceholderItem(t)).map((t, i) => ({
+    const tracks = items.filter(t => isTrackItem(t, playMenu)).map((t, i) => ({
       index:    i,
       title:    stripTrackNumber(t.title),
       subtitle: t.subtitle || "",
@@ -6512,9 +6600,6 @@ app.get("/api/playlist", async (req, res) => {
       // Roon reports the real length; we only read PLAYLIST_ITEMS of it, so say
       // so rather than letting a long playlist look truncated for no reason.
       total, truncated: total > tracks.length && tracks.length > 0,
-      // Roon reported a size but handed over nothing usable — say so, rather
-      // than letting it look like an empty playlist.
-      unresolved: !!unresolved,
       can_play: !!playMenu
     });
   } catch (e) {

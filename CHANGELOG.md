@@ -2,66 +2,46 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
-## [1.7.11] — 2026-07-30
+## [1.7.12] — 2026-07-30
 
-Research corrections. Roon Smart Playlists are **not accessible through Roon's extension API at
-all** — confirmed independently by the authors of the Apple TV "Roon TV:Remote" extension, the
-Home Assistant Roon integration, and rooExtend/rooMax, with a captured payload identical in shape
-to ours. The Core returns a single synthetic "Not Found" row *and omits the Play action*, because
-the browse layer serving extensions predates Smart Playlists (Roon 2.0.42) and was never extended
-to enumerate them. There is no parameter, hierarchy, zone or navigation order that unlocks it.
+### Removed
+- **All handling of Roon's own Smart Playlists.** Roon's extension API cannot open them — the
+  Core returns a placeholder row and omits the play action — and that is confirmed by the authors
+  of three other extensions, not something this app can work around. The special-case detection,
+  messaging and comments are gone. What remains is a general rule that earns its place on its
+  own: a browse item with no `item_key` cannot be invoked, so it is not a track and never reaches
+  a track list.
 
-### Fixed
-- **The explanation shown for an unresolvable playlist was wrong in two ways.** It claimed Play
-  now and Queue would still work — they can't, because Roon omits the play action too. And it
-  quoted a track count taken from `list.count`, which on this response is `1` (the placeholder),
-  not the playlist's real size. It now states the limitation plainly, notes it affects every
-  extension rather than this one, and points at the extension's own Smart playlists instead.
+### Changed
+- **Smart playlists now open like playlists, not like the library.** Previously, tapping one
+  applied its saved view and showed the library wall — the query working exactly right, and
+  reading as "it just took me to the library screen".
+  - The side menu now shows a **wall of tiles** (name + album count) instead of a cramped sheet.
+  - Opening one shows a **detail screen listing tracks**, in the saved sort order, with **Play
+    now**, **Queue**, **Edit** and **Delete**.
+  - **Every track row carries the artwork of the album it came from** — for Roon playlists too,
+    which previously rendered as bare text.
+  - Tapping a track plays that track from its album.
+- Play now / Queue resolve the view to albums (no Roon calls) and hand them to `/api/play-multi`,
+  which already batches and carries the stale-offset defense.
+- **Edit** reopens the Focus editor with the saved view loaded and writes back to the **same**
+  record, so editing can't leave two near-identical playlists behind.
+- The name prompt no longer suggests the view's description — the sheet was printing the same
+  string as both a row's title and its subtitle.
 
-### Corrected
-- **v1.7.9 attributed this to a missing `zone_or_output_id`. That was wrong.** Omitting the zone
-  produces a completely different and unmistakable failure — `action: "message"`,
-  `is_error: true`, `message: "Zone not found"` at the browse step — not a successful list
-  containing a placeholder. The zone is still passed (it is correct for playback and harmless
-  otherwise), but it was never the cause and did not fix this.
-
-## [1.7.10] — 2026-07-30
-
-### Fixed
-- **A Roon smart playlist rendered a dead "Not Found" row.** Roon answers a playlist it won't
-  resolve for an extension with a *placeholder*: the list reports its true count (35 tracks)
-  while the items are a single entry titled "Not Found" with no `item_key`. That entry was
-  passing the track filter, so it rendered as a track row that did nothing when tapped — which
-  reads as our bug rather than Roon declining.
-  - The placeholder is now recognised and kept out of the track list. It's matched on the
-    missing `item_key` as well as the title, so a genuine track called "Not Found" stays
-    playable.
-  - The screen now explains what happened, including that **Play now and Queue still work** —
-    those hand the whole playlist to Roon, which resolves it internally even when it won't list
-    it for us.
-  - The diagnostic now fires on this case too. It previously only logged when *zero* items came
-    back, so the one shape that actually occurs went unlogged.
+### Added
+- `GET /api/smart-playlist` expands a saved view to tracks, **paged by album**. Albums only yield
+  tracks by being opened on the Core (~half a dozen calls each), so nothing is expanded until a
+  playlist is opened and the screen fills a batch at a time with a Load more control. One
+  unreadable album is skipped and logged rather than emptying the whole playlist.
+- `GET /api/smart-playlist/albums` resolves a view to its albums for play-all — zero Roon calls.
 
 ### Tests
-- 4 new tests (403 total). A mutation matching the placeholder on its title alone — which would
-  hide a real track of that name — went red.
-
-## [1.7.9] — 2026-07-30
-
-### Fixed
-- **A Roon smart playlist opened with "no tracks".** The playlist browse walk passed no
-  `zone_or_output_id`. Roon needs a zone for hierarchies it has to *resolve* rather than merely
-  list, and a smart playlist is computed at browse time — this is the same omission that made
-  v1.6.48's search fallback resolve 0/12 in production. The zone now travels with the read, from
-  the client's live zone selector through to every browse call in the walk.
-- **A playlist that returns nothing now logs what Roon actually sent** — the raw item hints and
-  titles, always on, because this is the one failure a user cannot diagnose from the screen.
-- The empty state no longer flatly claims the playlist has no tracks; a Roon smart playlist is
-  computed when opened, so it can legitimately resolve to nothing in your library.
-
-### Tests
-- The playlists DOM test now pins the zone onto the read (399 total). A mutation dropping it went
-  red.
+- The smart-playlist DOM test is rewritten for the new screen (411 total): tiles not a sheet, a
+  detail screen not the library wall, tracks with their album artwork, paging that resumes at the
+  right album, the action set, the play-multi payload, and an edit that keeps the same id. Two
+  mutations planted — reverting to the library wall, and an edit that mints a duplicate — both
+  went red.
 
 ## [1.7.8] — 2026-07-30
 

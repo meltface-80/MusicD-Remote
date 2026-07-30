@@ -305,33 +305,3 @@ test("sourceControls only returns controls we can actually act on", async (t) =>
     assert.equal(sourceControls({ source_controls: [{ control_key: "1" }] })[0].display_name, "");
   });
 });
-
-// v1.7.10: Roon answers a playlist it won't resolve for an extension with a
-// PLACEHOLDER — the list reports its true count (35 tracks) while the items are
-// a single entry titled "Not Found" with no item_key. Observed on a Roon smart
-// playlist. Left in the track list it renders as a row that does nothing when
-// tapped, which reads as our bug rather than Roon declining.
-test("isPlaceholderItem spots Roon's Not Found stand-in without eating real tracks", async (t) => {
-  const { isPlaceholderItem } = loadIndexFunctions(["isPlaceholderItem"]);
-
-  await t.test("the placeholder Roon actually sends is caught", () => {
-    assert.equal(isPlaceholderItem({ title: "Not Found" }), true);
-    assert.equal(isPlaceholderItem({ title: "not found" }), true);
-    assert.equal(isPlaceholderItem({ title: "  Not Found  " }), true);
-  });
-
-  await t.test("a real track called \"Not Found\" is left alone", () => {
-    // The item_key is what makes a row actionable, so it's the honest
-    // discriminator — matching on the title alone would hide a playable track.
-    assert.equal(isPlaceholderItem({ title: "Not Found", item_key: "k1" }), false);
-  });
-
-  await t.test("ordinary tracks are never mistaken for it", () => {
-    assert.equal(isPlaceholderItem({ title: "Teen Age Riot", item_key: "k1" }), false);
-    assert.equal(isPlaceholderItem({ title: "Teen Age Riot" }), false);
-    assert.equal(isPlaceholderItem({ title: "" }), false);
-    assert.equal(isPlaceholderItem({}), false);
-    assert.equal(isPlaceholderItem(null), false);
-    assert.equal(isPlaceholderItem(undefined), false);
-  });
-});

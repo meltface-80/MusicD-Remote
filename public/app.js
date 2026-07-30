@@ -73,6 +73,10 @@
   // showHome() and enterFullWall() read them and both can run during boot,
   // which with a `let` further down the file is a ReferenceError, not a
   // harmless undefined (CLAUDE.md: declaration before use).
+  let smartWallActive = false;      // viewing the smart-playlist wall?
+  let smartDetailActive = false;    // viewing one smart playlist's tracks?
+  let smartSeq = 0;                 // orphans in-flight smart-playlist fetches
+  let smartEditTarget = null;       // the smart playlist "Save as…" writes back to
   let playlistsActive = false;      // viewing the Roon playlist list?
   let playlistDetailActive = false; // viewing one playlist's tracks?
   let playlistSeq = 0;              // orphans in-flight playlist fetches
@@ -308,6 +312,8 @@
     libraryWallActive = false;
     playlistsActive = false;
     playlistDetailActive = false;
+    smartWallActive = false;
+    smartDetailActive = false;
     if (window.__clearSearchIfActive) window.__clearSearchIfActive();  // drop stale search results
     if (window.__exitLabels) window.__exitLabels();   // leave the labels browser if active
     // Discard, don't restore: this function is establishing its own screen and
@@ -610,6 +616,8 @@
     // orphan an in-flight playlist fetch, or its response paints into this one.
     playlistsActive = false;
     playlistDetailActive = false;
+    smartWallActive = false;
+    smartDetailActive = false;
     // The library wall's sort/focus row belongs to that wall only.
     { const c = document.getElementById("library-controls"); if (c) c.classList.add("hidden"); }
     exitAlbumSelectMode();   // a stale multi-select bar must not survive into a new wall
@@ -933,40 +941,44 @@
     if (!tracks.length) {
       const note = document.createElement("div");
       note.className = "playlist-empty";
-      // Roon's extension API predates Smart Playlists (Roon 2.0.42) and was never
-      // extended to enumerate them: the Core returns a single "Not Found"
-      // placeholder AND omits the Play action, so there is nothing to list and
-      // nothing to invoke. Confirmed across several third-party extensions, not
-      // specific to this one — so say that plainly instead of implying a fault
-      // here or offering a play button that cannot work.
-      // Deliberately cites no track count: on this response Roon sets list.count
-      // to 1 (the placeholder), so the real size is only in the playlist row's
-      // own subtitle above. Quoting our `total` here would print "1 track".
-      note.textContent = j.unresolved
-        ? "Roon's extension API can't open Smart Playlists — it returns a placeholder " +
-          "row and no play action. " +
-          "That's a known Roon limitation affecting every extension, not something this app " +
-          "can work around. Ordinary playlists open normally. Use Smart playlists in the side " +
-          "menu for the same idea built on your own library."
-        : "Roon returned no tracks for this playlist.";
+      note.textContent = "Roon returned no tracks for this playlist.";
       wrap.appendChild(note);
     } else {
       const ol = document.createElement("ol");
       ol.className = "track-list playlist-tracks";
       for (const t of tracks) {
         const li = document.createElement("li");
-        li.className = "track-row";
+        li.className = "track-row track-row-art";
         li.dataset.index = String(t.index);
+        // Roon gives each playlist track its own image_key; fall back to the
+        // playlist's own art so a row is never a bare gap.
+        const art = document.createElement("span");
+        art.className = "track-art";
+        const key = t.image_key || j.image_key;
+        if (key) art.dataset.artKey = key;
+        if (key) {
+          const img = document.createElement("img");
+          img.loading = "lazy"; img.alt = "";
+          img.src = `/api/image/${encodeURIComponent(key)}?size=80`;
+          img.onerror = () => { art.classList.add("no-image"); img.remove(); };
+          art.appendChild(img);
+        } else {
+          art.classList.add("no-image");
+        }
+        li.appendChild(art);
+        const text = document.createElement("div");
+        text.className = "track-text";
         const tt = document.createElement("div");
         tt.className = "track-title";
         tt.textContent = t.title || "";
-        li.appendChild(tt);
+        text.appendChild(tt);
         if (t.subtitle) {
           const ts = document.createElement("div");
           ts.className = "track-artist";
           ts.textContent = t.subtitle;
-          li.appendChild(ts);
+          text.appendChild(ts);
         }
+        li.appendChild(text);
         li.addEventListener("click", () => act("/api/playlist/play-track", {
           offset: p.offset, title: p.title || "",
           track_index: t.index, track_title: t.title || "", kind: "play_now"
@@ -1333,7 +1345,15 @@
       const save = document.createElement("button");
       save.type = "button"; save.className = "action-btn";
       save.textContent = "Save as…";
-      save.addEventListener("click", () => { close(); saveSmartPlaylistPrompt(); });
+      save.addEventListener("click", () => {
+        // One-shot: an edit target set by editSmartPlaylist() makes this an
+        // update-in-place. Cleared either way so the next save can't silently
+        // overwrite the playlist edited some time ago.
+        const target = smartEditTarget;
+        smartEditTarget = null;
+        close();
+        saveSmartPlaylistPrompt(target);
+      });
       const show = document.createElement("button");
       show.type = "button"; show.className = "action-btn primary";
       show.textContent = "Show albums";
@@ -1385,7 +1405,9 @@
   }
 
   function saveSmartPlaylistPrompt(existing) {
-    const suggested = (existing && existing.name) || describeLibView(libView) || "My smart playlist";
+    // NOT describeLibView(): using the description as the default name printed
+    // the same string as both the row's title and its subtitle.
+    const suggested = (existing && existing.name) || "My smart playlist";
     const name = window.prompt("Name this smart playlist", suggested);
     if (name === null) return;                 // cancelled
     const trimmed = String(name).trim();
@@ -1401,102 +1423,274 @@
         const j = await r.json().catch(() => ({}));
         if (!r.ok) { showToast(j.error || "Couldn't save that", "error"); return; }
         showToast(`Saved "${trimmed}"`);
+        // Editing an existing one lands back on it so the change is visible
+        // immediately; a brand new one goes to the list.
+        if (j.playlist && existing) openSmartPlaylist(j.playlist);
+        else showSmartPlaylists();
       } catch (e) {
         showToast("Couldn't save that", "error");
       }
     })();
   }
 
-  async function openSmartPlaylists() {
-    let list = await fetchSmartPlaylists();
-    openLibSheet("Smart playlists", (body, close) => {
-      const paint = () => {
-        body.innerHTML = "";
-        if (!list.length) {
-          const note = document.createElement("div");
-          note.className = "lib-sheet-note";
-          note.textContent = "No smart playlists yet. Set up a sort and focus on the Library " +
-                             "screen, then use Focus → Save as… to keep it here. They re-run " +
-                             "every time you open them, so they follow your library.";
-          body.appendChild(note);
-          return;
-        }
-        for (const p of list) {
-          const row = document.createElement("div");
-          row.className = "dev-row";
-          row.dataset.smart = p.id;
-
-          const text = document.createElement("button");
-          text.type = "button";
-          text.className = "smart-open";
-          const nm = document.createElement("span");
-          nm.className = "dev-name";
-          nm.textContent = p.name;
-          text.appendChild(nm);
-          const desc = describeLibView(p.view);
-          if (desc) {
-            const d = document.createElement("span");
-            d.className = "dev-status";
-            d.textContent = desc;
-            text.appendChild(d);
-          }
-          text.addEventListener("click", () => {
-            // Apply the saved view, then hand off to the existing library wall.
-            for (const k of SMART_VIEW_KEYS) {
-              if (p.view[k] !== undefined) {
-                libView[k] = Array.isArray(p.view[k]) ? p.view[k].slice() : p.view[k];
-              }
-            }
-            saveLibView();
-            close();
-            // showLibraryWall(), not applyLibView(): the sheet can be opened
-            // from anywhere, and applyLibView only re-fetches — it doesn't put
-            // the library wall on screen, so from Home it would page tiles into
-            // a view the user isn't looking at.
-            showLibraryWall();
-          });
-          row.appendChild(text);
-
-          const del = document.createElement("button");
-          del.type = "button"; del.className = "dev-btn";
-          del.dataset.action = "delete";
-          del.textContent = "Delete";
-          del.setAttribute("aria-label", "Delete " + p.name);
-          del.addEventListener("click", async () => {
-            del.disabled = true;
-            try {
-              const r = await fetch("/api/smart-playlists/delete", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ id: p.id })
-              });
-              const j = await r.json().catch(() => ({}));
-              if (!r.ok) { showToast(j.error || "Couldn't delete that", "error"); return; }
-              list = Array.isArray(j.playlists) ? j.playlists : list.filter(x => x.id !== p.id);
-              paint();
-            } catch (e) {
-              showToast("Couldn't delete that", "error");
-            } finally {
-              del.disabled = false;
-            }
-          });
-          const actions = document.createElement("div");
-          actions.className = "dev-actions";
-          actions.appendChild(del);
-          row.appendChild(actions);
-          body.appendChild(row);
-        }
-      };
-      paint();
-    }, (foot, close) => {
-      const done = document.createElement("button");
-      done.type = "button"; done.className = "action-btn primary";
-      done.textContent = "Done";
-      done.addEventListener("click", close);
-      foot.appendChild(done);
-    });
+  // Smart playlists get the same shape as Roon playlists: a wall of tiles, and a
+  // detail screen listing TRACKS with each track's album artwork. They used to
+  // open the library wall with the view applied, which was the query working
+  // correctly but reading as "it just took me to the library".
+  async function showSmartPlaylists() {
+    enterFullWall("Smart playlists");
+    smartWallActive = true;
+    const mySeq = ++smartSeq;
+    const list = await fetchSmartPlaylists();
+    if (!smartWallActive || mySeq !== smartSeq) return;
+    grid.innerHTML = "";
+    if (!list.length) {
+      setBanner("No smart playlists yet — set a sort and focus on the Library screen, " +
+                "then use Focus → Save as…", false);
+      return;
+    }
+    setBanner(null);
+    const frag = document.createDocumentFragment();
+    for (const p of list) {
+      const n = p.album_total;
+      const tile = buildAlbumTile({
+        title: p.name,
+        subtitle: (n === undefined || n === null)
+          ? describeLibView(p.view)
+          : `${n} Album${n === 1 ? "" : "s"}`,
+        image_key: null
+      }, () => openSmartPlaylist(p));
+      frag.appendChild(tile);
+    }
+    grid.appendChild(frag);
   }
-  window.__openSmartPlaylists = openSmartPlaylists;
+  window.__showSmartPlaylists = showSmartPlaylists;
+
+  async function openSmartPlaylist(sp) {
+    enterFullWall(sp.name || "Smart playlist");
+    smartDetailActive = true;
+    const mySeq = ++smartSeq;
+
+    setBanner(null);
+    grid.innerHTML = "";
+    clearWallGridSizing();
+
+    const wrap = document.createElement("div");
+    wrap.className = "playlist-detail";
+
+    const back = document.createElement("button");
+    back.type = "button"; back.className = "action-btn playlist-back";
+    back.textContent = "← Smart playlists";
+    back.addEventListener("click", () => { smartDetailActive = false; showSmartPlaylists(); });
+    wrap.appendChild(back);
+
+    const head = document.createElement("div");
+    head.className = "playlist-head";
+    const h = document.createElement("h2");
+    h.className = "playlist-title";
+    h.textContent = sp.name || "Smart playlist";
+    head.appendChild(h);
+    const sub = document.createElement("div");
+    sub.className = "playlist-sub";
+    sub.textContent = describeLibView(sp.view);
+    head.appendChild(sub);
+    wrap.appendChild(head);
+
+    const actions = document.createElement("div");
+    actions.className = "playlist-actions";
+    const mkBtn = (label, cls, fn) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = cls; b.textContent = label;
+      b.addEventListener("click", () => fn(b));
+      actions.appendChild(b);
+      return b;
+    };
+    mkBtn("Play now", "action-btn primary", (b) => playSmartPlaylist(sp, "play_now", b));
+    mkBtn("Queue",    "action-btn",         (b) => playSmartPlaylist(sp, "queue", b));
+    mkBtn("Edit",     "action-btn",         () => editSmartPlaylist(sp));
+    mkBtn("Delete",   "action-btn",         () => deleteSmartPlaylist(sp));
+    wrap.appendChild(actions);
+
+    const ol = document.createElement("ol");
+    ol.className = "track-list playlist-tracks";
+    wrap.appendChild(ol);
+
+    const status = document.createElement("div");
+    status.className = "playlist-empty";
+    status.textContent = "Reading tracks from Roon…";
+    wrap.appendChild(status);
+
+    const more = document.createElement("button");
+    more.type = "button"; more.className = "action-btn playlist-more hidden";
+    more.textContent = "Load more";
+    wrap.appendChild(more);
+    grid.appendChild(wrap);
+
+    // Tracks are paged by ALBUM: each one has to be opened on the Core, so the
+    // screen fills a batch at a time rather than stalling on a long playlist.
+    let albumOffset = 0, loading = false, done = false, shown = 0;
+    const loadPage = async () => {
+      if (loading || done) return;
+      loading = true;
+      more.disabled = true;
+      try {
+        const zsel = document.getElementById("zone-select");
+        const zid = (zsel && zsel.value) || selectedZoneId || "";
+        const r = await fetch(`/api/smart-playlist?id=${encodeURIComponent(sp.id)}` +
+                              `&offset=${albumOffset}` + (zid ? `&zone=${encodeURIComponent(zid)}` : ""),
+                              { cache: "no-store" });
+        if (!smartDetailActive || mySeq !== smartSeq) return;
+        const j = await r.json().catch(() => ({}));
+        if (!smartDetailActive || mySeq !== smartSeq) return;
+        if (!r.ok) { status.textContent = j.error || "Couldn't read this playlist."; done = true; return; }
+
+        for (const t of (j.tracks || [])) ol.appendChild(smartTrackRow(t));
+        shown += (j.tracks || []).length;
+        albumOffset += (j.albums_expanded || 0);
+        done = !!j.done || !(j.albums_expanded > 0);
+        status.textContent = done
+          ? (shown ? `${shown} track${shown === 1 ? "" : "s"} from ${j.album_total} album${j.album_total === 1 ? "" : "s"}`
+                   : "Nothing in your library matches this smart playlist right now.")
+          : `${shown} tracks so far — ${j.album_total - albumOffset} album(s) left`;
+        more.classList.toggle("hidden", done);
+      } catch (e) {
+        if (!smartDetailActive || mySeq !== smartSeq) return;
+        status.textContent = "Couldn't read this playlist.";
+        done = true;
+      } finally {
+        loading = false;
+        more.disabled = false;
+      }
+    };
+    more.addEventListener("click", loadPage);
+    loadPage();
+  }
+  window.__openSmartPlaylist = openSmartPlaylist;
+
+  // A track row carrying the artwork of the album it came from. Tapping it plays
+  // that track via the album path already used by the album view.
+  function smartTrackRow(t) {
+    const li = document.createElement("li");
+    li.className = "track-row track-row-art";
+    li.dataset.albumOffset = String(t.album_offset);
+    li.dataset.trackIndex  = String(t.track_index);
+
+    const art = document.createElement("span");
+    art.className = "track-art";
+    // The key stays on the element even if the <img> is removed by onerror, so
+    // "which artwork was this row given" is answerable after the fact.
+    if (t.image_key) art.dataset.artKey = t.image_key;
+    if (t.image_key) {
+      const img = document.createElement("img");
+      img.loading = "lazy"; img.alt = "";
+      img.src = `/api/image/${encodeURIComponent(t.image_key)}?size=80`;
+      img.onerror = () => { art.classList.add("no-image"); img.remove(); };
+      art.appendChild(img);
+    } else {
+      art.classList.add("no-image");
+    }
+    li.appendChild(art);
+
+    const text = document.createElement("div");
+    text.className = "track-text";
+    const tt = document.createElement("div");
+    tt.className = "track-title";
+    tt.textContent = t.title || "";
+    text.appendChild(tt);
+    const ta = document.createElement("div");
+    ta.className = "track-artist";
+    ta.textContent = [t.subtitle, t.album_title].filter(Boolean).join(" · ");
+    text.appendChild(ta);
+    li.appendChild(text);
+
+    li.addEventListener("click", async () => {
+      const zsel = document.getElementById("zone-select");
+      const zone = (zsel && zsel.value) || selectedZoneId;
+      if (!zone) { showToast("Choose a zone first", "error"); return; }
+      try {
+        const r = await fetch("/api/play-track", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            offset: t.album_offset, track_index: t.track_index, track_title: t.title,
+            zone_or_output_id: zone, kind: "play_now"
+          })
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) showToast(j.error || "Couldn't play that track", "error");
+        else showToast(j.invoked || "Playing");
+      } catch (e) {
+        showToast("Couldn't reach the extension", "error");
+      }
+    });
+    return li;
+  }
+
+  // Play or queue the whole thing. The albums come from the snapshot (no Roon
+  // calls), then /api/play-multi does the work with its existing batching and
+  // stale-offset defense.
+  async function playSmartPlaylist(sp, kind, btn) {
+    const zsel = document.getElementById("zone-select");
+    const zone = (zsel && zsel.value) || selectedZoneId;
+    if (!zone) { showToast("Choose a zone first", "error"); return; }
+    btn.disabled = true;
+    try {
+      const r = await fetch(`/api/smart-playlist/albums?id=${encodeURIComponent(sp.id)}`,
+                            { cache: "no-store" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { showToast(j.error || "Couldn't read this playlist", "error"); return; }
+      const albums = (j.albums || []);
+      if (!albums.length) { showToast("Nothing matches this smart playlist", "error"); return; }
+      const pr = await fetch("/api/play-multi", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: albums.map(a => ({ offset: a.offset, title: a.title, subtitle: a.subtitle })),
+          zone_or_output_id: zone, kind
+        })
+      });
+      const pj = await pr.json().catch(() => ({}));
+      if (!pr.ok) showToast(pj.error || "Roon refused that", "error");
+      else showToast(kind === "queue" ? `Queued ${albums.length} albums` : `Playing ${sp.name}`);
+    } catch (e) {
+      showToast("Couldn't reach the extension", "error");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // Edit reuses the Focus sheet: load the saved view into the live one, then
+  // open the editor with this playlist as the save target, so "Save as…" writes
+  // back to the same record instead of creating a duplicate.
+  function editSmartPlaylist(sp) {
+    for (const k of SMART_VIEW_KEYS) {
+      if (sp.view[k] !== undefined) {
+        libView[k] = Array.isArray(sp.view[k]) ? sp.view[k].slice() : sp.view[k];
+      }
+    }
+    saveLibView();
+    smartEditTarget = sp;
+    openLibFocusSheet();
+  }
+
+  async function deleteSmartPlaylist(sp) {
+    const ok = await confirmDialog(`Delete the smart playlist "${sp.name}"?`);
+    if (!ok) return;
+    try {
+      const r = await fetch("/api/smart-playlists/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: sp.id })
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { showToast(j.error || "Couldn't delete that", "error"); return; }
+      showToast(`Deleted "${sp.name}"`);
+      smartDetailActive = false;
+      showSmartPlaylists();
+    } catch (e) {
+      showToast("Couldn't delete that", "error");
+    }
+  }
 
   // A zone row's label. Grouped zones get a second line naming their outputs,
   // as Roon's own remote does — without it a zone called "Kitchen + Study" and
@@ -7743,7 +7937,7 @@ initServiceBrowser({
         return;
       }
       if (action === "smart-playlists") {
-        if (window.__openSmartPlaylists) window.__openSmartPlaylists();
+        if (window.__showSmartPlaylists) window.__showSmartPlaylists();
         return;
       }
       if (action === "playlists") {

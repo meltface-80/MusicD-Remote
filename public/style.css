@@ -2415,6 +2415,22 @@ input.vol-range::-moz-range-thumb {
 .playlist-tracks .track-row:hover { background: var(--bg-elev); }
 .playlist-tracks .track-title { color: var(--text); font-size: 15px; }
 .playlist-tracks .track-artist { color: var(--text-dim); font-size: 13px; margin-top: 2px; }
+.playlist-more { align-self: flex-start; }
+.playlist-more.hidden { display: none; }
+
+/* Track rows that carry the artwork of the album they came from. */
+.track-row-art { display: flex; align-items: center; gap: 12px; }
+.track-art {
+  flex: 0 0 auto; width: 44px; height: 44px; border-radius: 4px;
+  overflow: hidden; background: var(--bg-elev-2);
+}
+.track-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.track-art.no-image { background: var(--bg-elev-2); }
+.track-text { min-width: 0; flex: 1 1 auto; }
+.track-row-art .track-title,
+.track-row-art .track-artist {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* --- Device power sheet (Roon standby / convenience switch) --------------- */
 /* A row here is NOT a button: the name is static and the actions inside it are
