@@ -39,12 +39,20 @@ function stubFor(playlists) {
   return `
 window.__playlists = ${JSON.stringify(playlists)};
 window.__asks = [];
+window.__artCalls = [];
 window.__posts = [];
 try { localStorage.setItem("rra-zone", "z1"); } catch (e) {}
 window.__installFetch(function (url, opts) {
   if (url.indexOf("/api/playlists") > -1) {
     window.__asks.push(url.replace(/^.*\\/api\\//, "/api/"));
     return window.__json({ playlists: window.__playlists, total: window.__playlists.length });
+  }
+  if (url.indexOf("/api/playlist/art") > -1) {
+    window.__artCalls.push(url.replace(/^.*\\/api\\//, "/api/"));
+    var t = /title=([^&]*)/.exec(url);
+    var name = t ? decodeURIComponent(t[1].replace(/\\+/g, " ")) : "";
+    return window.__json({ title: name,
+      art_keys: name === "Late Night" ? ["a1", "a2", "a3", "a4"] : [] });
   }
   if (url.indexOf("/api/playlist/play-track") > -1 || url.indexOf("/api/playlist/play") > -1) {
     window.__posts.push({ url: url.replace(/^.*\\/api\\//, "/api/"),
@@ -94,6 +102,18 @@ const OPEN = `
 const DRIVER_MAIN = OPEN + `
   T("tiles", tiles());
   T("asks_after_list", window.__asks.slice());
+
+  // The mosaics fill in behind the grid; give the throttled workers a moment.
+  await window.__sleep(800);
+  T("art_calls_titles", window.__artCalls.map(function (u) {
+    var m = /title=([^&]*)/.exec(u);
+    return m ? decodeURIComponent(m[1].replace(/\\+/g, " ")) : "";
+  }));
+  var wraps = document.querySelectorAll("#album-grid .album .album-art-wrap");
+  T("mosaic_keys", wraps[0] ? (wraps[0].dataset.artKeys || "") : null);
+  T("mosaic_flag", wraps[0] ? (wraps[0].dataset.mosaic || null) : null);
+  T("second_tile_keys", wraps[1] ? (wraps[1].dataset.artKeys || "") : null);
+  T("second_tile_placeholder", wraps[1] ? wraps[1].classList.contains("no-image") : null);
 
   // Drill into the first playlist.
   document.querySelectorAll("#album-grid .album")[0].click();
@@ -152,7 +172,20 @@ test("Roon playlists list, open and play (v1.7.7)", { concurrency: 1 }, async (t
   await t.test("the side menu opens the playlist list", () => {
     assert.equal(r.menu_entry_exists, true, "no Playlists entry in the side menu");
     assert.deepEqual(r.tiles, ["Late Night", "Road Trip"]);
-    assert.deepEqual(r.asks_after_list, ["/api/playlists"]);
+    assert.equal(r.asks_after_list[0], "/api/playlists",
+      "the list must be fetched first, before any artwork");
+  });
+
+  await t.test("playlist tiles get a cover mosaic built from their tracks", () => {
+    // Roon gives a playlist no image_key of its own, so without this every tile
+    // is a music-note placeholder.
+    assert.deepEqual(r.art_calls_titles, ["Late Night", "Road Trip"],
+      "artwork should be requested once per playlist that has none");
+    assert.equal(r.mosaic_keys, "a1,a2,a3,a4", "four distinct covers should fill the tile");
+    assert.equal(r.mosaic_flag, "4", "four covers should be laid out as a 2x2");
+    // The playlist with no artwork keeps its placeholder rather than going blank.
+    assert.equal(r.second_tile_keys, "");
+    assert.equal(r.second_tile_placeholder, true);
   });
 
   await t.test("opening one sends offset, title AND zone", () => {

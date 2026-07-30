@@ -32,7 +32,7 @@ const ZONE = {
 };
 
 const SAVED = {
-  id: "sp1", name: "Nineties, unheard", album_total: 3,
+  id: "sp1", name: "Nineties, unheard", album_total: 3, art_keys: ["k1", "k2", "k3", "k4"],
   view: { sort: "year", dir: "desc", seed: 1, decade: [1990], source: [], played: "12" },
 };
 
@@ -125,8 +125,10 @@ const OPEN_WALL = `
   await window.__sleep(700);
   function tiles() {
     return Array.prototype.map.call(document.querySelectorAll("#album-grid .album"), function (b) {
+      var w = b.querySelector(".album-art-wrap");
       return { title: (b.querySelector(".album-title") || {}).textContent || "",
-               sub:   (b.querySelector(".album-artist") || {}).textContent || "" };
+               sub:   (b.querySelector(".album-artist") || {}).textContent || "",
+               art:   w ? (w.dataset.artKeys || "") : null };
     });
   }
 `;
@@ -210,7 +212,8 @@ test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concur
   await t.test("the side menu shows a wall of tiles, not a sheet", () => {
     assert.equal(r.menu_entry_exists, true);
     assert.equal(r.no_lib_sheet, true, "the cramped sheet must be gone");
-    assert.deepEqual(r.tiles, [{ title: "Nineties, unheard", sub: "3 Albums" }]);
+    assert.deepEqual(r.tiles, [{ title: "Nineties, unheard", sub: "3 Albums",
+                                 art: "k1,k2,k3,k4" }]);
   });
 
   await t.test("opening one shows a playlist detail screen, not the library wall", () => {

@@ -2,6 +2,29 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.13] — 2026-07-30
+
+### Added
+- **Playlist tiles show a cover mosaic**, built from the artwork of the first few tracks, the way
+  Roon draws them. Every playlist tile was a music-note placeholder before, because Roon hands an
+  extension no artwork for a playlist at the list level.
+  - Four distinct covers make a 2×2; two make halves; one fills the tile — a lone quarter-sized
+    sleeve in an empty square looks broken. Covers are de-duplicated, so a playlist drawn from one
+    album doesn't show the same sleeve four times.
+  - **Smart playlists get this for free** — the first few albums their view resolves to are already
+    in the snapshot, so the keys cost no Roon calls at all.
+  - **Roon playlists cost a browse walk each**, so the grid renders immediately and the mosaics
+    fill in behind it, two at a time. An unthrottled sweep would fire a browse walk per playlist at
+    the Core at once. Results are cached on the data volume and keyed by playlist name, so only the
+    first visit pays; a playlist with no artwork is cached as empty rather than being re-walked
+    every time.
+
+### Tests
+- 3 new tests (414 total) covering the mosaic on both playlist types, the artwork request firing
+  once per playlist that lacks it, and a playlist with no artwork keeping its placeholder instead
+  of going blank. Two mutations planted — never fetching mosaics, and using a single cover — both
+  went red.
+
 ## [1.7.12] — 2026-07-30
 
 ### Removed

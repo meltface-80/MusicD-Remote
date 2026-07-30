@@ -828,8 +828,14 @@
       }
       setBanner(null);
       const frag = document.createDocumentFragment();
-      for (const p of list) frag.appendChild(buildAlbumTile(p, () => openPlaylist(p)));
+      const tiles = new Map();
+      for (const p of list) {
+        const tile = buildAlbumTile(p, () => openPlaylist(p));
+        tiles.set(p.title, tile);
+        frag.appendChild(tile);
+      }
       grid.appendChild(frag);
+      fillPlaylistMosaics(list, tiles, mySeq);
     } catch (e) {
       if (!playlistsActive || mySeq !== playlistSeq) return;
       grid.innerHTML = "";
@@ -837,6 +843,58 @@
     }
   }
   window.__showPlaylists = showPlaylists;
+
+  // Roon gives a playlist no cover of its own, so a mosaic has to come from the
+  // tracks inside — one browse walk per playlist. Far too slow to block the grid
+  // on, so the tiles appear immediately and fill in behind, TWO AT A TIME: an
+  // unthrottled sweep would fire a browse walk per playlist at the Core all at
+  // once. The server caches each result, so this only really runs the first time.
+  async function fillPlaylistMosaics(list, tiles, mySeq) {
+    const pending = list.filter(p => !(Array.isArray(p.art_keys) && p.art_keys.length));
+    let i = 0;
+    const worker = async () => {
+      while (i < pending.length) {
+        const p = pending[i++];
+        if (!playlistsActive || mySeq !== playlistSeq) return;   // left the screen
+        try {
+          const r = await fetch(`/api/playlist/art?offset=${encodeURIComponent(p.offset)}` +
+                                `&title=${encodeURIComponent(p.title || "")}`, { cache: "no-store" });
+          if (!r.ok) continue;
+          const j = await r.json();
+          if (!playlistsActive || mySeq !== playlistSeq) return;
+          const keys = (j && j.art_keys) || [];
+          if (!keys.length) continue;
+          const tile = tiles.get(p.title);
+          if (!tile || !tile.isConnected) continue;
+          repaintTileArt(tile, keys);
+        } catch (e) { /* one missing mosaic is cosmetic — keep going */ }
+      }
+    };
+    await Promise.all([worker(), worker()]);
+  }
+
+  // Swap a placeholder tile's artwork for a mosaic in place, without rebuilding
+  // the tile — it carries the click handler that opens the playlist.
+  function repaintTileArt(tile, keys) {
+    const wrap = tile.querySelector(".album-art-wrap");
+    if (!wrap) return;
+    for (const img of Array.from(wrap.querySelectorAll("img"))) img.remove();
+    wrap.classList.remove("no-image");
+    const use = keys.filter(Boolean).slice(0, 4);
+    if (use.length >= 2) {
+      wrap.classList.add("album-art-mosaic");
+      wrap.dataset.mosaic = String(use.length);
+    }
+    wrap.dataset.artKeys = use.join(",");
+    for (const k of use) {
+      const img = document.createElement("img");
+      img.loading = "lazy"; img.alt = "";
+      img.src = `/api/image/${encodeURIComponent(k)}?size=${TILE_IMG_SIZE}`;
+      img.onerror = () => img.remove();
+      wrap.appendChild(img);
+    }
+    if (!use.length) wrap.classList.add("no-image");
+  }
 
   async function openPlaylist(p) {
     enterFullWall(p.title || "Playlist");
@@ -1458,7 +1516,11 @@
         subtitle: (n === undefined || n === null)
           ? describeLibView(p.view)
           : `${n} Album${n === 1 ? "" : "s"}`,
-        image_key: null
+        image_key: null,
+        // A smart playlist has no cover either — the mosaic comes from the first
+        // few albums it resolves to, which the server reads straight out of the
+        // snapshot at no cost.
+        art_keys: p.art_keys || []
       }, () => openSmartPlaylist(p));
       frag.appendChild(tile);
     }
@@ -2349,10 +2411,28 @@
     // source couldn't be determined, not that it's missing.
     const srcBadge = sourceBadge(a);
     if (srcBadge) artWrap.appendChild(srcBadge);
-    if (a.image_key) {
+    // A playlist has no cover of its own, so it gets a mosaic of the artwork
+    // from the first few tracks — the way Roon draws them. Two or more distinct
+    // covers make a 2x2; a single one just fills the tile, because a lone
+    // quarter-sized sleeve in an empty square looks broken.
+    const mosaic = Array.isArray(a.art_keys) ? a.art_keys.filter(Boolean) : [];
+    if (mosaic.length >= 2) {
+      artWrap.classList.add("album-art-mosaic");
+      artWrap.dataset.mosaic = String(Math.min(mosaic.length, 4));
+      // Keys recorded on the element so "what artwork was this tile given" is
+      // answerable even after a failed <img> removes itself.
+      artWrap.dataset.artKeys = mosaic.slice(0, 4).join(",");
+      for (const k of mosaic.slice(0, 4)) {
+        const img = document.createElement("img");
+        img.loading = "lazy"; img.alt = "";
+        img.src = `/api/image/${encodeURIComponent(k)}?size=${TILE_IMG_SIZE}`;
+        img.onerror = () => img.remove();
+        artWrap.appendChild(img);
+      }
+    } else if (mosaic.length === 1 || a.image_key) {
       const img = document.createElement("img");
       img.loading = "lazy"; img.alt = "";
-      img.src = `/api/image/${encodeURIComponent(a.image_key)}?size=${TILE_IMG_SIZE}`;
+      img.src = `/api/image/${encodeURIComponent(mosaic[0] || a.image_key)}?size=${TILE_IMG_SIZE}`;
       img.onerror = () => { artWrap.classList.add("no-image"); img.remove(); };
       artWrap.appendChild(img);
     } else {

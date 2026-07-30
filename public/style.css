@@ -2394,6 +2394,20 @@ input.vol-range::-moz-range-thumb {
 }
 .smart-open:hover .dev-name { color: var(--accent-text); }
 
+/* Playlist tiles: a 2x2 mosaic of the first few tracks' covers, as Roon draws
+   them. The wrap already sizes and clips the tile, so the grid just fills it.
+   Three covers leave the last cell empty rather than stretching one to fit. */
+.album-art-mosaic {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 1px;
+}
+/* The base .album-art-wrap img rule (100%/cover) already sizes each one to its
+   grid cell, so nothing more is needed here. */
+/* Two covers read better as halves than as a half-empty 2x2. */
+.album-art-mosaic[data-mosaic="2"] { grid-template-rows: 1fr; }
+
 /* --- Roon playlist detail (read + play) ----------------------------------- */
 /* Rendered into the shared grid container, so it must span every column
    rather than sitting in one cell. */
