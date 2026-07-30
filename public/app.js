@@ -933,11 +933,21 @@
     if (!tracks.length) {
       const note = document.createElement("div");
       note.className = "playlist-empty";
+      // Roon's extension API predates Smart Playlists (Roon 2.0.42) and was never
+      // extended to enumerate them: the Core returns a single "Not Found"
+      // placeholder AND omits the Play action, so there is nothing to list and
+      // nothing to invoke. Confirmed across several third-party extensions, not
+      // specific to this one — so say that plainly instead of implying a fault
+      // here or offering a play button that cannot work.
+      // Deliberately cites no track count: on this response Roon sets list.count
+      // to 1 (the placeholder), so the real size is only in the playlist row's
+      // own subtitle above. Quoting our `total` here would print "1 track".
       note.textContent = j.unresolved
-        ? `Roon says this playlist has ${j.total} track${j.total === 1 ? "" : "s"} but won't ` +
-          "list them for an extension — it answered with a placeholder instead. Roon smart " +
-          "playlists behave this way; ordinary playlists list normally. Play now and Queue " +
-          "below still hand the whole playlist to Roon, which resolves it itself."
+        ? "Roon's extension API can't open Smart Playlists — it returns a placeholder " +
+          "row and no play action. " +
+          "That's a known Roon limitation affecting every extension, not something this app " +
+          "can work around. Ordinary playlists open normally. Use Smart playlists in the side " +
+          "menu for the same idea built on your own library."
         : "Roon returned no tracks for this playlist.";
       wrap.appendChild(note);
     } else {

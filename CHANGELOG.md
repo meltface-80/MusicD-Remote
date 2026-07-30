@@ -2,6 +2,29 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.11] — 2026-07-30
+
+Research corrections. Roon Smart Playlists are **not accessible through Roon's extension API at
+all** — confirmed independently by the authors of the Apple TV "Roon TV:Remote" extension, the
+Home Assistant Roon integration, and rooExtend/rooMax, with a captured payload identical in shape
+to ours. The Core returns a single synthetic "Not Found" row *and omits the Play action*, because
+the browse layer serving extensions predates Smart Playlists (Roon 2.0.42) and was never extended
+to enumerate them. There is no parameter, hierarchy, zone or navigation order that unlocks it.
+
+### Fixed
+- **The explanation shown for an unresolvable playlist was wrong in two ways.** It claimed Play
+  now and Queue would still work — they can't, because Roon omits the play action too. And it
+  quoted a track count taken from `list.count`, which on this response is `1` (the placeholder),
+  not the playlist's real size. It now states the limitation plainly, notes it affects every
+  extension rather than this one, and points at the extension's own Smart playlists instead.
+
+### Corrected
+- **v1.7.9 attributed this to a missing `zone_or_output_id`. That was wrong.** Omitting the zone
+  produces a completely different and unmistakable failure — `action: "message"`,
+  `is_error: true`, `message: "Zone not found"` at the browse step — not a successful list
+  containing a placeholder. The zone is still passed (it is correct for playback and harmless
+  otherwise), but it was never the cause and did not fix this.
+
 ## [1.7.10] — 2026-07-30
 
 ### Fixed
