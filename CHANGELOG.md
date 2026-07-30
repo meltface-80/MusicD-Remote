@@ -2,6 +2,27 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.10] — 2026-07-30
+
+### Fixed
+- **A Roon smart playlist rendered a dead "Not Found" row.** Roon answers a playlist it won't
+  resolve for an extension with a *placeholder*: the list reports its true count (35 tracks)
+  while the items are a single entry titled "Not Found" with no `item_key`. That entry was
+  passing the track filter, so it rendered as a track row that did nothing when tapped — which
+  reads as our bug rather than Roon declining.
+  - The placeholder is now recognised and kept out of the track list. It's matched on the
+    missing `item_key` as well as the title, so a genuine track called "Not Found" stays
+    playable.
+  - The screen now explains what happened, including that **Play now and Queue still work** —
+    those hand the whole playlist to Roon, which resolves it internally even when it won't list
+    it for us.
+  - The diagnostic now fires on this case too. It previously only logged when *zero* items came
+    back, so the one shape that actually occurs went unlogged.
+
+### Tests
+- 4 new tests (403 total). A mutation matching the placeholder on its title alone — which would
+  hide a real track of that name — went red.
+
 ## [1.7.9] — 2026-07-30
 
 ### Fixed

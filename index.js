@@ -1101,6 +1101,17 @@ function isTrackItem(t, playMenu) {
   return true;
 }
 
+// Roon's stand-in for content it won't hand over: a lone item titled "Not Found"
+// with no item_key, returned alongside a list count of the REAL size. It is not
+// a track — nothing can be done with it — so it must never reach a track list,
+// where it would render as a row that silently does nothing.
+//
+// Matched on the missing item_key as well as the title, so a genuine track that
+// happens to be called "Not Found" is still playable.
+function isPlaceholderItem(t) {
+  return !!t && !t.item_key && String(t.title || "").trim().toLowerCase() === "not found";
+}
+
 // Roon prefixes track titles with "N. "; the UI renders its own counter.
 function stripTrackNumber(title) {
   return (title || "").replace(/^\d+\.\s+/, "");
@@ -1354,19 +1365,23 @@ async function loadPlaylistSession(sessionKey, offset, expectTitle, zoneId) {
   );
   const total = (inside.list && inside.list.count) || items.length;
 
-  // A playlist that comes back with no usable tracks is the one failure a user
-  // can't diagnose from the screen — a Roon SMART playlist is computed, so it
-  // can legitimately resolve to nothing, and it can also fail for reasons the
-  // browse call reports nowhere. Always log what Roon actually returned.
-  if (!items.filter(t => isTrackItem(t, playMenu)).length) {
-    console.warn(`[playlist] "${item.title || ""}" returned no tracks` +
+  // Roon answers a playlist it will not resolve for us with a PLACEHOLDER: the
+  // list reports its true count (e.g. 35) but the items are a single entry
+  // titled "Not Found". Observed on a Roon SMART playlist. Left alone it renders
+  // as a track row that does nothing when tapped, which reads as our bug rather
+  // than Roon declining — so it is detected here and reported as unresolved.
+  const realTracks = items.filter(t => isTrackItem(t, playMenu) && !isPlaceholderItem(t));
+  const unresolved = realTracks.length === 0 && total > 0;
+  if (unresolved || !realTracks.length) {
+    console.warn(`[playlist] "${item.title || ""}" resolved ${realTracks.length} track(s)` +
                  ` (zone=${zone || "none"}, raw items=${items.length}, list count=${total})`);
     for (const it of items.slice(0, 10)) {
       console.warn(`  - hint=${it.hint || "<none>"} title=${JSON.stringify(it.title)}` +
-                   ` subtitle=${JSON.stringify(it.subtitle || "")}`);
+                   ` subtitle=${JSON.stringify(it.subtitle || "")}` +
+                   ` item_key=${it.item_key ? "yes" : "no"}`);
     }
   }
-  return { hierarchy, item, items, playMenu, total };
+  return { hierarchy, item, items, playMenu, total, unresolved };
 }
 
 // Play or queue a WHOLE playlist through its own Play menu.
@@ -6482,9 +6497,9 @@ app.get("/api/playlist", async (req, res) => {
     return res.status(400).json({ error: "Valid offset query parameter required" });
   }
   try {
-    const { items, playMenu, item, total } =
+    const { items, playMenu, item, total, unresolved } =
       await withBrowseSession(sk => loadPlaylistSession(sk, offset, title, zone));
-    const tracks = items.filter(t => isTrackItem(t, playMenu)).map((t, i) => ({
+    const tracks = items.filter(t => isTrackItem(t, playMenu) && !isPlaceholderItem(t)).map((t, i) => ({
       index:    i,
       title:    stripTrackNumber(t.title),
       subtitle: t.subtitle || "",
@@ -6496,7 +6511,10 @@ app.get("/api/playlist", async (req, res) => {
       tracks,
       // Roon reports the real length; we only read PLAYLIST_ITEMS of it, so say
       // so rather than letting a long playlist look truncated for no reason.
-      total, truncated: total > tracks.length,
+      total, truncated: total > tracks.length && tracks.length > 0,
+      // Roon reported a size but handed over nothing usable — say so, rather
+      // than letting it look like an empty playlist.
+      unresolved: !!unresolved,
       can_play: !!playMenu
     });
   } catch (e) {

@@ -933,9 +933,12 @@
     if (!tracks.length) {
       const note = document.createElement("div");
       note.className = "playlist-empty";
-      note.textContent = "Roon returned no tracks for this playlist. A Roon smart " +
-                         "playlist is computed when it's opened, so this can also mean " +
-                         "nothing in your library currently matches it.";
+      note.textContent = j.unresolved
+        ? `Roon says this playlist has ${j.total} track${j.total === 1 ? "" : "s"} but won't ` +
+          "list them for an extension — it answered with a placeholder instead. Roon smart " +
+          "playlists behave this way; ordinary playlists list normally. Play now and Queue " +
+          "below still hand the whole playlist to Roon, which resolves it itself."
+        : "Roon returned no tracks for this playlist.";
       wrap.appendChild(note);
     } else {
       const ol = document.createElement("ol");
