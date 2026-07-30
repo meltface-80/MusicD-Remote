@@ -8308,16 +8308,18 @@ app.post("/api/output/standby", (req, res) => {
   const name = (outputs[output_id] && outputs[output_id].display_name) || output_id;
   const opts = control_key ? { control_key } : {};
   console.log(`[standby] ${mode} ${name}${control_key ? " (" + control_key + ")" : ""}`);
-  const fail = (err) => {
+  // On a not-found, dump what the Core actually told us about this output's
+  // controls — the only way to see the real key shape, and exactly the moment it
+  // matters. `alreadyDumped` keeps a failure that was dumped before a retry
+  // decision from printing the same block twice.
+  const dumpControls = () => {
+    console.warn("[standby] core reported source_controls:",
+                 JSON.stringify((outputs[output_id] || {}).source_controls || null));
+  };
+  const fail = (err, alreadyDumped) => {
     const raw = typeof err === "string" ? err : JSON.stringify(err);
     console.warn(`[standby] failed: ${raw}`);
-    // On a not-found, dump what the Core actually told us about this output's
-    // controls. It is the only way to see the real key shape, and this is
-    // exactly the moment it matters.
-    if (raw === "SourceControlNotFound") {
-      console.warn("[standby] core reported source_controls:",
-                   JSON.stringify((outputs[output_id] || {}).source_controls || null));
-    }
+    if (!alreadyDumped && raw === "SourceControlNotFound") dumpControls();
     res.status(500).json(roonErrorPayload(err));
   };
 
@@ -8325,18 +8327,22 @@ app.post("/api/output/standby", (req, res) => {
     return t.standby(output_id, opts, (err) => err ? fail(err) : res.json({ ok: true }));
   }
 
-  // Keyed toggle first. If the Core can't resolve the key — which happens on
-  // device-provided source controls, see shouldRetryKeyless — fall back to the
-  // keyless call that matches the intent behind the press.
+  // Keyed toggle first. In production this is the path that works — a WiiM's
+  // device-provided control accepts keyed toggle_standby with the very key it
+  // refuses for convenience_switch, so the two calls resolve differently inside
+  // the Core. The fallback below is cover for devices where it doesn't, not a
+  // workaround for an observed failure on this one.
   t.toggle_standby(output_id, opts, (err) => {
     if (!err) return res.json({ ok: true, form: "toggle-keyed" });
     const raw = typeof err === "string" ? err : JSON.stringify(err);
-    if (!shouldRetryKeyless(raw, true)) return fail(err);
+    const notFound = raw === "SourceControlNotFound";
+    if (notFound) dumpControls();
+    if (!shouldRetryKeyless(raw, true)) return fail(err, notFound);
 
     const status = controlStatusOf(outputs[output_id], control_key);
     const want = keylessStandbyFallback(status);
     console.warn(`[standby] keyed toggle refused; status=${status || "unknown"} fallback=${want || "none"}`);
-    if (!want) return fail(err);
+    if (!want) return fail(err, notFound);
 
     const after = (e2) => e2 ? fail(e2) : res.json({ ok: true, form: "keyless-" + want });
     if (want === "wake") t.convenience_switch(output_id, {}, after);
@@ -8372,11 +8378,15 @@ app.post("/api/output/convenience-switch", (req, res) => {
       if (!err) return res.json({ ok: true, form: label });
       const raw = typeof err === "string" ? err : JSON.stringify(err);
       console.warn(`[convenience-switch] ${label} failed: ${raw}`);
-      if (onFail && shouldRetryKeyless(raw, true)) return onFail();
+      // Dump BEFORE deciding to retry. Behind the retry it never fired at all:
+      // the keyed attempt always retries on a not-found, so the one diagnostic
+      // that explains the failure was unreachable in the only case it existed
+      // for. A recovered failure is still the failure worth recording.
       if (raw === "SourceControlNotFound") {
         console.warn("[convenience-switch] core reported source_controls:",
                      JSON.stringify((outputs[output_id] || {}).source_controls || null));
       }
+      if (onFail && shouldRetryKeyless(raw, true)) return onFail();
       res.status(500).json(roonErrorPayload(err));
     });
   };

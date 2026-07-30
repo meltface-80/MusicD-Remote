@@ -2,29 +2,59 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
-## [1.7.4] — 2026-07-30
+## [1.7.5] — 2026-07-30
 
-Follow-up to v1.7.3, from reading the other side of Roon's source-control contract.
+Production logs from a real Core, which confirmed one fix and disproved one assumption.
 
-`control_key` is minted by the *provider* extension — it defaults to the literal `"1"` and is
-only unique within one provider — so a Core with several providers must disambiguate keys
-internally while still publishing the provider-local key to us. That matches what the SDK
-documents: `control_key` is **not** a documented field of `Output.source_controls` at all, and
-it is optional on all three power calls. The keyless form is the documented, universally
-supported one; the keyed form is the fragile one.
+**Confirmed:** the v1.7.3 keyless retry works. A WiiM/Linkplay output rejected keyed
+`convenience_switch` in 1 ms (`SourceControlNotFound`), the keyless fallback ran, and the call
+succeeded in 519 ms — real work on the device, not a silent no-op.
+
+**Disproved:** v1.7.4's premise that the Power button shared the weakness. Keyed
+`toggle_standby` succeeds on that same output with that same `control_key` — every attempt
+returned 200 with no fallback. So `control_key` is *valid*; `toggle_standby` and
+`convenience_switch` simply resolve down different paths inside the Core. The v1.7.4 entry has
+been corrected, and its fallback is now described as defensive cover rather than a bug fix.
 
 ### Fixed
-- **The Power button had the same weakness as "Roon input".** It uses keyed `toggle_standby`,
-  and the server *required* a key for it, so on a device whose key the Core won't resolve it
-  would have failed exactly the same way. It now falls back to a keyless call.
+- **The `source_controls` diagnostic never actually printed.** It sat *after* the retry
+  decision, and a keyed not-found always retries — so the one log line that explains the
+  failure was unreachable in the only situation it was written for. It now prints when the
+  error arrives, before the retry, in both power routes. A recovered failure is still the
+  failure worth recording.
+- A not-found that recovers no longer logs the same block twice.
+
+### Changed
+- The comment above the keyed-toggle path no longer claims device-provided controls fail it —
+  production shows the opposite.
+
+## [1.7.4] — 2026-07-30
+
+Follow-up to v1.7.3, hardening the Power button against the failure "Roon input" hit.
+
+**Corrected after testing against a real Core (see v1.7.5).** This entry originally claimed the
+Power button "had the same weakness as Roon input". Production logs disproved that: keyed
+`toggle_standby` succeeds on the very device and `control_key` that keyed `convenience_switch`
+rejects with `SourceControlNotFound`. The key is valid; the two calls simply resolve down
+different paths inside the Core. The fallback below is therefore **defensive cover for other
+devices, not a fix for an observed bug** — nothing was broken on this path.
+
+The reasoning that motivated it still holds and is worth recording: `control_key` is minted by
+the *provider* extension, defaults to the literal `"1"`, and is only unique within one
+provider — and the SDK documents it neither as a field of `Output.source_controls` nor as a
+required argument to any of the three power calls.
+
+### Added
+- **A keyless fallback for the Power button.** If keyed `toggle_standby` is ever refused with
+  `SourceControlNotFound`, it retries keyless rather than surfacing an error.
   - `toggle_standby` is the one power call with no documented keyless form, so there is no
     like-for-like retry — the fallback has to infer what the press meant. In standby → wake
     (`convenience_switch`, which Roon documents as taking a device out of standby). On →
     `standby`. **Anything else refuses and reports the error**, because guessing on an unknown
     status is how a Power button turns a device the wrong way.
-- **A `SourceControlNotFound` now logs what the Core actually said.** Both power routes dump
-  the raw `source_controls` for that output on a not-found, so `docker logs` shows the real key
-  shape instead of leaving it to guesswork.
+- **A `SourceControlNotFound` logs what the Core actually said** — both power routes dump the
+  raw `source_controls` for that output, so `docker logs` shows the real key shape.
+  (v1.7.5 moves this ahead of the retry, where it actually fires.)
 
 ### Tests
 - 10 new tests (365 total: static 22, unit 197, dom 146) over the fallback's intent mapping and
