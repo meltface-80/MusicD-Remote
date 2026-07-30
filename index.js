@@ -8221,6 +8221,41 @@ app.post("/api/group-outputs", (req, res) => {
   });
 });
 
+// Roon's transport errors arrive as bare names ("SourceControlNotFound"). Those
+// are useful in a log and useless in a toast, so the ones a user can actually
+// hit get a sentence that says what it means for them. Anything unmapped falls
+// through unchanged rather than being hidden behind a generic apology.
+// A function rather than a lookup table so the tests exercise THIS mapping
+// instead of a copy injected beside it — the hole that let a v1.6.59 mutation
+// reorder the year-source ranking without a single test noticing.
+function roonErrorText(name) {
+  switch (name) {
+    case "SourceControlNotFound":
+      return "This device didn't accept that from Roon — its source control doesn't offer it.";
+    case "ZoneNotFound":   return "That zone is no longer available.";
+    case "OutputNotFound": return "That output is no longer available.";
+    case "NotAllowed":     return "Roon wouldn't allow that right now.";
+    case "InvalidRequest": return "Roon rejected the request.";
+    case "NetworkError":   return "Lost contact with the Roon Core.";
+    default:               return null;   // unmapped — pass the raw name through
+  }
+}
+// Whether a failed keyed convenience_switch should be retried as the keyless
+// (all-controls) form. Extracted so the rule is testable: only
+// SourceControlNotFound qualifies, and only when we actually addressed a key.
+// Any other error means Roon FOUND the control and refused on its own terms, and
+// retrying as a broadcast would act on outputs the user never tapped.
+function shouldRetryKeyless(roonErrorName, hadControlKey) {
+  return !!hadControlKey && roonErrorName === "SourceControlNotFound";
+}
+
+function roonErrorPayload(err) {
+  const name = typeof err === "string" ? err : JSON.stringify(err);
+  const text = roonErrorText(name);
+  // `error` is what the UI shows; `roon_error` keeps the raw name for support.
+  return { error: text || name, roon_error: name };
+}
+
 // Device power for one output's source control.
 // body: { output_id, control_key?, mode? }
 //   mode "toggle"  (default) — flip this control's standby state. Roon defines
@@ -8250,9 +8285,8 @@ app.post("/api/output/standby", (req, res) => {
   console.log(`[standby] ${mode} ${name}${control_key ? " (" + control_key + ")" : ""}`);
   const done = (err) => {
     if (err) {
-      const msg = typeof err === "string" ? err : JSON.stringify(err);
-      console.warn(`[standby] failed: ${msg}`);
-      return res.status(500).json({ error: msg });
+      console.warn(`[standby] failed: ${typeof err === "string" ? err : JSON.stringify(err)}`);
+      return res.status(500).json(roonErrorPayload(err));
     }
     res.json({ ok: true });
   };
@@ -8271,16 +8305,34 @@ app.post("/api/output/convenience-switch", (req, res) => {
     return res.status(400).json({ error: "control_key must be a string" });
   }
   const name = (outputs[output_id] && outputs[output_id].display_name) || output_id;
-  console.log(`[convenience-switch] ${name}${control_key ? " (" + control_key + ")" : ""}`);
-  core.services.RoonApiTransport.convenience_switch(
-    output_id, control_key ? { control_key } : {}, (err) => {
-      if (err) {
-        const msg = typeof err === "string" ? err : JSON.stringify(err);
-        console.warn(`[convenience-switch] failed: ${msg}`);
-        return res.status(500).json({ error: msg });
-      }
-      res.json({ ok: true });
+  const t = core.services.RoonApiTransport;
+
+  // Roon defines TWO forms of this call: addressed at one source control by
+  // control_key, or — with the key omitted — at every control on the output.
+  // A real WiiM/Linkplay endpoint answered the keyed form with
+  // SourceControlNotFound while happily reporting that very control_key to us,
+  // so the keyed form is not universally honoured by device-provided source
+  // controls. Rather than pick one and hope, try the keyed form and fall back to
+  // the keyless one, which is the broader request and can only do more.
+  //
+  // The retry rule itself lives in shouldRetryKeyless() so it can be tested.
+  const attempt = (opts, label, onFail) => {
+    console.log(`[convenience-switch] ${name} ${label}`);
+    t.convenience_switch(output_id, opts, (err) => {
+      if (!err) return res.json({ ok: true, form: label });
+      const raw = typeof err === "string" ? err : JSON.stringify(err);
+      console.warn(`[convenience-switch] ${label} failed: ${raw}`);
+      if (onFail && shouldRetryKeyless(raw, true)) return onFail();
+      res.status(500).json(roonErrorPayload(err));
     });
+  };
+
+  if (control_key) {
+    attempt({ control_key }, "keyed(" + control_key + ")",
+            () => attempt({}, "keyless-fallback", null));
+  } else {
+    attempt({}, "keyless", null);
+  }
 });
 
 // Pause every zone. No body — Roon's pause_all takes no target.

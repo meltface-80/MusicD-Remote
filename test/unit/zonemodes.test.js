@@ -20,8 +20,12 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { loadIndexFunctions } = require("../lib/extract");
 
-const { zoneSettings, outputInfo, sourceControls } =
-  loadIndexFunctions(["zoneSettings", "outputInfo", "sourceControls"]);
+const { zoneSettings, outputInfo, sourceControls,
+        shouldRetryKeyless, roonErrorText, roonErrorPayload } =
+  loadIndexFunctions([
+    "zoneSettings", "outputInfo", "sourceControls",
+    "shouldRetryKeyless", "roonErrorText", "roonErrorPayload",
+  ]);
 
 test("zoneSettings normalises Roon's optional settings block", async (t) => {
   await t.test("a zone with no settings at all reads as everything off", () => {
@@ -120,6 +124,73 @@ test("outputInfo carries Roon's grouping capability", async (t) => {
     // rather than explicitly empty.
     assert.equal(outputInfo({ output_id: "o1" }).zone_id, null);
     assert.equal(outputInfo({ output_id: "o1", display_name: undefined }).display_name, "");
+  });
+});
+
+// A real WiiM/Linkplay endpoint answered a KEYED convenience_switch with
+// SourceControlNotFound while reporting that very control_key to us in its own
+// source_controls array — so the keyed form is not universally honoured by
+// device-provided source controls. The fix retries as the keyless
+// (all-controls) form, and these tests fence in when that is allowed.
+test("shouldRetryKeyless only broadens the request when Roon lost the control", async (t) => {
+  await t.test("SourceControlNotFound on a keyed call retries", () => {
+    assert.equal(shouldRetryKeyless("SourceControlNotFound", true), true);
+  });
+
+  await t.test("a call that had no key never retries", () => {
+    // It was already the keyless form — retrying would just repeat it.
+    assert.equal(shouldRetryKeyless("SourceControlNotFound", false), false);
+    assert.equal(shouldRetryKeyless("SourceControlNotFound", undefined), false);
+    assert.equal(shouldRetryKeyless("SourceControlNotFound", ""), false);
+  });
+
+  await t.test("any other error does NOT retry", () => {
+    // These mean Roon FOUND the control and refused on its own terms. Retrying
+    // as a broadcast would then act on outputs the user never tapped — the one
+    // genuinely harmful outcome available here.
+    for (const name of ["NotAllowed", "OutputNotFound", "ZoneNotFound",
+                        "InvalidRequest", "NetworkError", "", null, undefined]) {
+      assert.equal(shouldRetryKeyless(name, true), false,
+        `${JSON.stringify(name)} must not broaden the request`);
+    }
+  });
+
+  await t.test("the return value is a real boolean", () => {
+    assert.equal(typeof shouldRetryKeyless("SourceControlNotFound", "yes"), "boolean");
+  });
+});
+
+test("Roon's bare error names are turned into something a person can read", async (t) => {
+  await t.test("SourceControlNotFound explains itself", () => {
+    const p = roonErrorPayload("SourceControlNotFound");
+    assert.notEqual(p.error, "SourceControlNotFound", "the raw name is not an explanation");
+    assert.match(p.error, /device/i);
+    // The raw name still travels, so a support log can identify the failure.
+    assert.equal(p.roon_error, "SourceControlNotFound");
+  });
+
+  await t.test("every mapped name yields a sentence, not a symbol", () => {
+    for (const name of ["SourceControlNotFound", "ZoneNotFound", "OutputNotFound",
+                        "NotAllowed", "InvalidRequest", "NetworkError"]) {
+      const text = roonErrorText(name);
+      assert.ok(text, `${name} should map to a sentence`);
+      assert.notEqual(text, name);
+      assert.match(text, /[a-z] [a-z]/, `${name} maps to "${text}", which is not a sentence`);
+    }
+  });
+
+  await t.test("an unmapped name passes through unchanged rather than being swallowed", () => {
+    // Hiding an unknown failure behind a generic apology is how a new Roon
+    // error becomes unreportable.
+    assert.equal(roonErrorText("SomeFutureRoonError"), null);
+    assert.deepEqual(roonErrorPayload("SomeFutureRoonError"),
+      { error: "SomeFutureRoonError", roon_error: "SomeFutureRoonError" });
+  });
+
+  await t.test("a non-string error is still reported", () => {
+    const p = roonErrorPayload({ weird: true });
+    assert.equal(p.error, '{"weird":true}');
+    assert.equal(p.roon_error, '{"weird":true}');
   });
 });
 

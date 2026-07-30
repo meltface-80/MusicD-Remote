@@ -2,6 +2,33 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.3] — 2026-07-30
+
+### Fixed
+- **"Roon input" failed with `SourceControlNotFound` on a WiiM/Linkplay endpoint.** Roon
+  defines two forms of `convenience_switch`: addressed at one source control by `control_key`,
+  or — with the key omitted — at every control on the output. The device answered the keyed
+  form with `SourceControlNotFound` while reporting that exact `control_key` to us in its own
+  `source_controls` array, so the keyed form is not universally honoured by device-provided
+  source controls. The keyed call is now retried as the keyless form.
+  - Only `SourceControlNotFound` retries. Every other error means Roon *found* the control and
+    refused on its own terms, and repeating the call as a broadcast would act on outputs the
+    user never tapped — the one genuinely harmful outcome available here.
+  - Both attempts are logged with which form was used, so `docker logs` gives a one-line
+    diagnosis instead of a bare error name.
+- **Roon's bare error names no longer leak into the interface.** `SourceControlNotFound` is a
+  useful log line and a useless toast. The names a user can actually hit now map to a sentence,
+  while the raw name still travels in the response for support. An *unmapped* name passes
+  through unchanged rather than being swallowed by a generic apology — hiding an unknown
+  failure is how a new Roon error becomes unreportable.
+
+### Tests
+- 10 new tests (355 total: static 22, unit 187, dom 146). The retry rule and the error mapping
+  are both extracted top-level functions so the suite exercises the shipping code — the error
+  text is a `switch`, not a lookup table, specifically so an injected copy can't shadow it (the
+  hole that let a v1.6.59 mutation reorder the year-source ranking unnoticed). Two mutations
+  planted — retry on any error, and unmapped errors swallowed — both went red.
+
 ## [1.7.2] — 2026-07-30
 
 The last four unused Roon transport methods. With these, every capability the vendored
