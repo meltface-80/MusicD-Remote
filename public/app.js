@@ -2296,6 +2296,19 @@
     if (name === "queue") loadQueue();
     if (typeof window.__refreshTransport === "function") window.__refreshTransport();
   }
+  // Switching zones with the Queue tab already open has to repaint it — the
+  // fix above makes the FETCH follow the live zone, but nothing was asking it
+  // to fetch again, so the stale list stayed on screen until you left the tab
+  // and came back.
+  {
+    const zs = document.getElementById("zone-select");
+    if (zs) zs.addEventListener("change", () => {
+      if (modal && !modal.classList.contains("hidden") && modal.classList.contains("tab-queue")) {
+        loadQueue();
+      }
+    });
+  }
+
   document.querySelectorAll(".modal-tab").forEach(b => {
     b.addEventListener("click", () => showTab(b.dataset.tab));
   });
@@ -2338,8 +2351,25 @@
     }
   }
 
+  // A queue belongs to a ZONE, and the zone the user is pointed at can change
+  // while this screen stays open. currentSourceZoneId is a snapshot taken in
+  // openAlbum(), so reading it here showed the queue of whichever zone happened
+  // to be selected when the screen was opened — switch from Sonos to WPP
+  // without moving playback and you kept looking at the Sonos queue, and
+  // "Play from here" acted on it too.
+  //
+  // The live zone selector is the single source of truth every other control
+  // already follows (the transport bar and now-playing screen both read it), so
+  // the queue follows it as well. The snapshot stays as a last-resort fallback
+  // for the case where the selector isn't populated yet.
+  function queueZoneId() {
+    const sel = document.getElementById("zone-select");
+    return (sel && sel.value) || selectedZoneId || currentSourceZoneId || null;
+  }
+
   async function loadQueue() {
-    if (!currentSourceZoneId) return;
+    const zoneId = queueZoneId();
+    if (!zoneId) return;
     const summary = document.getElementById("queue-summary");
     const list    = document.getElementById("queue-list");
     const empty   = document.getElementById("queue-empty");
@@ -2347,7 +2377,7 @@
     list.innerHTML = "";
     empty.classList.add("hidden");
     try {
-      const r = await fetch(`/api/queue?zone=${encodeURIComponent(currentSourceZoneId)}`);
+      const r = await fetch(`/api/queue?zone=${encodeURIComponent(zoneId)}`);
       const j = await r.json();
       const items = j.items || [];
       if (!items.length) {
@@ -2396,7 +2426,10 @@
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                  zone_or_output_id: currentSourceZoneId,
+                  // Re-read at click time: the rows on screen belong to
+                  // queueZoneId()'s queue, so the action must target that same
+                  // zone, not the one captured when the screen opened.
+                  zone_or_output_id: queueZoneId(),
                   queue_item_id: it.queue_item_id
                 })
               });

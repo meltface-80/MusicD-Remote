@@ -2,6 +2,29 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.6] — 2026-07-30
+
+### Fixed
+- **The Queue tab showed the wrong zone's queue.** Playing to a Sonos zone, switching the
+  extension's zone selector to another zone *without* moving playback left the Queue tab still
+  showing the Sonos queue — and "Play from here" acted on it, so tapping a row played on the
+  zone you thought you'd left.
+  - Root cause: `currentSourceZoneId` is a snapshot taken in `openAlbum()`, so the queue was
+    pinned to whichever zone was selected when the screen was *opened*. A queue belongs to a
+    zone, and the zone the user is pointed at changes underneath an open screen.
+  - The queue now reads the live zone selector — the single source of truth the transport bar
+    and now-playing screen already follow — and "Play from here" re-reads it at click time, so
+    the action can't target a different zone from the rows on screen.
+  - Switching zones with the Queue tab open now refetches immediately. Fixing only the fetch
+    would have left the stale list on screen until you left the tab and came back, so the test
+    holds both halves separately.
+
+### Tests
+- 4 new tests (369 total: static 22, unit 197, dom 150) reproducing the reported scenario
+  end-to-end — two zones with distinct queues, switch the selector without moving playback,
+  assert the rows swap and the tab doesn't bounce. Two mutations planted (the original snapshot
+  bug, and a fetch-only half-fix with no refetch); both went red.
+
 ## [1.7.5] — 2026-07-30
 
 Production logs from a real Core, which confirmed one fix and disproved one assumption.
