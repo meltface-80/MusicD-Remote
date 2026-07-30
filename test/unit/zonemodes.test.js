@@ -20,11 +20,11 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { loadIndexFunctions } = require("../lib/extract");
 
-const { zoneSettings, outputInfo, sourceControls,
-        shouldRetryKeyless, roonErrorText, roonErrorPayload } =
+const { zoneSettings, outputInfo, sourceControls, shouldRetryKeyless,
+        roonErrorText, roonErrorPayload, controlStatusOf, keylessStandbyFallback } =
   loadIndexFunctions([
-    "zoneSettings", "outputInfo", "sourceControls",
-    "shouldRetryKeyless", "roonErrorText", "roonErrorPayload",
+    "zoneSettings", "outputInfo", "sourceControls", "shouldRetryKeyless",
+    "roonErrorText", "roonErrorPayload", "controlStatusOf", "keylessStandbyFallback",
   ]);
 
 test("zoneSettings normalises Roon's optional settings block", async (t) => {
@@ -157,6 +157,63 @@ test("shouldRetryKeyless only broadens the request when Roon lost the control", 
 
   await t.test("the return value is a real boolean", () => {
     assert.equal(typeof shouldRetryKeyless("SourceControlNotFound", "yes"), "boolean");
+  });
+});
+
+// toggle_standby is the one power call with no documented keyless form, so a
+// refused keyed toggle has no like-for-like retry — the fallback has to infer
+// what the press MEANT. Getting this wrong powers a device the wrong way, which
+// is the worst thing in this whole feature, so the unknown cases must refuse.
+test("the keyless power fallback follows the intent, or refuses to guess", async (t) => {
+  await t.test("a device in standby was asked to wake", () => {
+    assert.equal(keylessStandbyFallback("standby"), "wake");
+  });
+
+  await t.test("a device that is on was asked to switch off", () => {
+    assert.equal(keylessStandbyFallback("selected"), "standby");
+    assert.equal(keylessStandbyFallback("deselected"), "standby");
+  });
+
+  await t.test("an unknown state refuses rather than picking a direction", () => {
+    for (const s of ["indeterminate", null, undefined, "", "on", 1, {}]) {
+      assert.equal(keylessStandbyFallback(s), null,
+        `status ${JSON.stringify(s)} must not be guessed at`);
+    }
+  });
+
+  await t.test("the two directions are never the same value", () => {
+    // A mutation collapsing these would silently power everything one way.
+    assert.notEqual(keylessStandbyFallback("standby"), keylessStandbyFallback("selected"));
+  });
+});
+
+test("controlStatusOf reads the live status out of the raw cached output", async (t) => {
+  const output = { source_controls: [
+    { control_key: "1", status: "selected" },
+    { control_key: "2", status: "standby" },
+  ] };
+
+  await t.test("it finds the right control, not just the first", () => {
+    assert.equal(controlStatusOf(output, "1"), "selected");
+    assert.equal(controlStatusOf(output, "2"), "standby");
+  });
+
+  await t.test("an unknown key yields null, so the caller refuses to guess", () => {
+    assert.equal(controlStatusOf(output, "9"), null);
+    assert.equal(controlStatusOf(output, undefined), null);
+  });
+
+  await t.test("a missing or malformed output does not throw", () => {
+    // This runs on a failure path, where the cache may be anything at all.
+    assert.equal(controlStatusOf(null, "1"), null);
+    assert.equal(controlStatusOf({}, "1"), null);
+    assert.equal(controlStatusOf({ source_controls: null }, "1"), null);
+    assert.equal(controlStatusOf({ source_controls: "nope" }, "1"), null);
+    assert.equal(controlStatusOf({ source_controls: [null, undefined] }, "1"), null);
+  });
+
+  await t.test("a control with no status reads as null, not undefined", () => {
+    assert.equal(controlStatusOf({ source_controls: [{ control_key: "1" }] }, "1"), null);
   });
 });
 

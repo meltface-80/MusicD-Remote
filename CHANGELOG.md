@@ -2,6 +2,36 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.4] — 2026-07-30
+
+Follow-up to v1.7.3, from reading the other side of Roon's source-control contract.
+
+`control_key` is minted by the *provider* extension — it defaults to the literal `"1"` and is
+only unique within one provider — so a Core with several providers must disambiguate keys
+internally while still publishing the provider-local key to us. That matches what the SDK
+documents: `control_key` is **not** a documented field of `Output.source_controls` at all, and
+it is optional on all three power calls. The keyless form is the documented, universally
+supported one; the keyed form is the fragile one.
+
+### Fixed
+- **The Power button had the same weakness as "Roon input".** It uses keyed `toggle_standby`,
+  and the server *required* a key for it, so on a device whose key the Core won't resolve it
+  would have failed exactly the same way. It now falls back to a keyless call.
+  - `toggle_standby` is the one power call with no documented keyless form, so there is no
+    like-for-like retry — the fallback has to infer what the press meant. In standby → wake
+    (`convenience_switch`, which Roon documents as taking a device out of standby). On →
+    `standby`. **Anything else refuses and reports the error**, because guessing on an unknown
+    status is how a Power button turns a device the wrong way.
+- **A `SourceControlNotFound` now logs what the Core actually said.** Both power routes dump
+  the raw `source_controls` for that output on a not-found, so `docker logs` shows the real key
+  shape instead of leaving it to guesswork.
+
+### Tests
+- 10 new tests (365 total: static 22, unit 197, dom 146) over the fallback's intent mapping and
+  the live-status lookup, including that the two directions can never collapse to one value and
+  that a malformed cache can't throw on the failure path. Two mutations planted — an unknown
+  status guessed at, and the status lookup ignoring the key — both went red.
+
 ## [1.7.3] — 2026-07-30
 
 ### Fixed

@@ -8249,6 +8249,31 @@ function shouldRetryKeyless(roonErrorName, hadControlKey) {
   return !!hadControlKey && roonErrorName === "SourceControlNotFound";
 }
 
+// The live status of one source control, read from the raw cached Output. Pure
+// so it can be tested; the route passes outputs[output_id] in.
+function controlStatusOf(output, control_key) {
+  const list = (output && Array.isArray(output.source_controls)) ? output.source_controls : [];
+  const sc = list.find(s => s && s.control_key === control_key);
+  return (sc && sc.status) || null;
+}
+
+// `toggle_standby` is the only one of the three transport power calls with NO
+// documented keyless form, so when a keyed toggle is refused with
+// SourceControlNotFound there is no like-for-like retry — we have to pick the
+// keyless call that matches what the user meant by pressing Power:
+//
+//   in standby        -> they meant wake  -> convenience_switch (documented to
+//                                            take a device out of standby)
+//   selected/deselected -> they meant off -> standby
+//
+// Anything else returns null and the error is reported instead. Guessing on an
+// unknown status is how a Power button turns a device the wrong way.
+function keylessStandbyFallback(status) {
+  if (status === "standby") return "wake";
+  if (status === "selected" || status === "deselected") return "standby";
+  return null;
+}
+
 function roonErrorPayload(err) {
   const name = typeof err === "string" ? err : JSON.stringify(err);
   const text = roonErrorText(name);
@@ -8283,15 +8308,40 @@ app.post("/api/output/standby", (req, res) => {
   const name = (outputs[output_id] && outputs[output_id].display_name) || output_id;
   const opts = control_key ? { control_key } : {};
   console.log(`[standby] ${mode} ${name}${control_key ? " (" + control_key + ")" : ""}`);
-  const done = (err) => {
-    if (err) {
-      console.warn(`[standby] failed: ${typeof err === "string" ? err : JSON.stringify(err)}`);
-      return res.status(500).json(roonErrorPayload(err));
+  const fail = (err) => {
+    const raw = typeof err === "string" ? err : JSON.stringify(err);
+    console.warn(`[standby] failed: ${raw}`);
+    // On a not-found, dump what the Core actually told us about this output's
+    // controls. It is the only way to see the real key shape, and this is
+    // exactly the moment it matters.
+    if (raw === "SourceControlNotFound") {
+      console.warn("[standby] core reported source_controls:",
+                   JSON.stringify((outputs[output_id] || {}).source_controls || null));
     }
-    res.json({ ok: true });
+    res.status(500).json(roonErrorPayload(err));
   };
-  if (mode === "toggle") t.toggle_standby(output_id, opts, done);
-  else                   t.standby(output_id, opts, done);
+
+  if (mode !== "toggle") {
+    return t.standby(output_id, opts, (err) => err ? fail(err) : res.json({ ok: true }));
+  }
+
+  // Keyed toggle first. If the Core can't resolve the key — which happens on
+  // device-provided source controls, see shouldRetryKeyless — fall back to the
+  // keyless call that matches the intent behind the press.
+  t.toggle_standby(output_id, opts, (err) => {
+    if (!err) return res.json({ ok: true, form: "toggle-keyed" });
+    const raw = typeof err === "string" ? err : JSON.stringify(err);
+    if (!shouldRetryKeyless(raw, true)) return fail(err);
+
+    const status = controlStatusOf(outputs[output_id], control_key);
+    const want = keylessStandbyFallback(status);
+    console.warn(`[standby] keyed toggle refused; status=${status || "unknown"} fallback=${want || "none"}`);
+    if (!want) return fail(err);
+
+    const after = (e2) => e2 ? fail(e2) : res.json({ ok: true, form: "keyless-" + want });
+    if (want === "wake") t.convenience_switch(output_id, {}, after);
+    else                 t.standby(output_id, {}, after);
+  });
 });
 
 // Switch a device's input to Roon, waking it from standby if needed.
@@ -8323,6 +8373,10 @@ app.post("/api/output/convenience-switch", (req, res) => {
       const raw = typeof err === "string" ? err : JSON.stringify(err);
       console.warn(`[convenience-switch] ${label} failed: ${raw}`);
       if (onFail && shouldRetryKeyless(raw, true)) return onFail();
+      if (raw === "SourceControlNotFound") {
+        console.warn("[convenience-switch] core reported source_controls:",
+                     JSON.stringify((outputs[output_id] || {}).source_controls || null));
+      }
       res.status(500).json(roonErrorPayload(err));
     });
   };
