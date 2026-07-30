@@ -2386,6 +2386,28 @@ input.vol-range::-moz-range-thumb {
 }
 .group-row.is-on .group-note { color: inherit; opacity: .8; }
 
+/* --- Roon playlist detail (read + play) ----------------------------------- */
+/* Rendered into the shared grid container, so it must span every column
+   rather than sitting in one cell. */
+.playlist-detail { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 14px; }
+.playlist-back { align-self: flex-start; }
+.playlist-head { display: flex; flex-direction: column; gap: 4px; }
+.playlist-title {
+  margin: 0; font-size: 22px; font-weight: 700; color: var(--text);
+  border-bottom: 1px solid var(--panel-hairline); padding-bottom: 8px;
+}
+.playlist-sub { font-size: 14px; color: var(--text-dim); }
+.playlist-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.playlist-empty { font-size: 14px; color: var(--text-faint); }
+.playlist-tracks { list-style: none; margin: 0; padding: 0; }
+.playlist-tracks .track-row {
+  padding: 11px 2px; border-bottom: 1px solid var(--border); cursor: pointer;
+}
+.playlist-tracks .track-row:last-child { border-bottom: 0; }
+.playlist-tracks .track-row:hover { background: var(--bg-elev); }
+.playlist-tracks .track-title { color: var(--text); font-size: 15px; }
+.playlist-tracks .track-artist { color: var(--text-dim); font-size: 13px; margin-top: 2px; }
+
 /* --- Device power sheet (Roon standby / convenience switch) --------------- */
 /* A row here is NOT a button: the name is static and the actions inside it are
    the controls, so it must not be a <button> containing buttons. */

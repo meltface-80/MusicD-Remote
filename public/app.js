@@ -69,6 +69,13 @@
   let labelsActive = false;        // viewing the record-label browser?
   let unplayedWallActive = false;  // viewing the full "Not played in 6 months" grid?
   let libraryWallActive = false;   // viewing the full A-Z library grid?
+  // Declared up here with the other view flags, NOT beside showPlaylists():
+  // showHome() and enterFullWall() read them and both can run during boot,
+  // which with a `let` further down the file is a ReferenceError, not a
+  // harmless undefined (CLAUDE.md: declaration before use).
+  let playlistsActive = false;      // viewing the Roon playlist list?
+  let playlistDetailActive = false; // viewing one playlist's tracks?
+  let playlistSeq = 0;              // orphans in-flight playlist fetches
   let albumSelectMode = false;
   let albumSelected = [];          // [{offset,title,subtitle}] albums chosen in select mode
   // The filter that the currently-open album modal belongs to. Usually the
@@ -299,6 +306,8 @@
     { const c = document.getElementById("library-controls"); if (c) c.classList.add("hidden"); }
     unplayedWallActive = false;
     libraryWallActive = false;
+    playlistsActive = false;
+    playlistDetailActive = false;
     if (window.__clearSearchIfActive) window.__clearSearchIfActive();  // drop stale search results
     if (window.__exitLabels) window.__exitLabels();   // leave the labels browser if active
     // Discard, don't restore: this function is establishing its own screen and
@@ -597,6 +606,10 @@
   function enterFullWall(title) {
     unplayedWallActive = false;
     libraryWallActive = false;
+    // Cleared here as well as by the caller: every other wall's entry point must
+    // orphan an in-flight playlist fetch, or its response paints into this one.
+    playlistsActive = false;
+    playlistDetailActive = false;
     // The library wall's sort/focus row belongs to that wall only.
     { const c = document.getElementById("library-controls"); if (c) c.classList.add("hidden"); }
     exitAlbumSelectMode();   // a stale multi-select bar must not survive into a new wall
@@ -773,6 +786,183 @@
   // the wall's infinite scroll can't append library tiles into that view.
   // Returns whether the wall WAS active, so a view that only borrows the grid
   // (the artist view, which restores it on Back) can re-arm paging afterwards.
+  // ----- Roon playlists (read + play) --------------------------------------
+  //
+  // Reached from the side menu, not a Home row: listing playlists is a Roon
+  // browse walk, and a Home row would pay for it on every Home load.
+  //
+  // A playlist is identified across requests by (offset, title) — never an
+  // item_key, which is session-scoped server-side. The title is what makes a
+  // drifted offset safe, so every call carries it.
+  async function showPlaylists() {
+    enterFullWall("Playlists");
+    playlistsActive = true;
+    const mySeq = ++playlistSeq;
+    try {
+      const r = await fetch("/api/playlists", { cache: "no-store" });
+      // Re-check after EVERY await: a late response must not paint into a
+      // screen the user has since navigated away from.
+      if (!playlistsActive || mySeq !== playlistSeq) return;
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        if (!playlistsActive || mySeq !== playlistSeq) return;
+        grid.innerHTML = "";
+        setBanner(j.error || "Couldn't read playlists from Roon.", true);
+        return;
+      }
+      const j = await r.json();
+      if (!playlistsActive || mySeq !== playlistSeq) return;
+      const list = (j && j.playlists) || [];
+      grid.innerHTML = "";
+      if (!list.length) {
+        setBanner("No playlists in your Roon library.", false);
+        return;
+      }
+      setBanner(null);
+      const frag = document.createDocumentFragment();
+      for (const p of list) frag.appendChild(buildAlbumTile(p, () => openPlaylist(p)));
+      grid.appendChild(frag);
+    } catch (e) {
+      if (!playlistsActive || mySeq !== playlistSeq) return;
+      grid.innerHTML = "";
+      setBanner("Couldn't read playlists from Roon.", true);
+    }
+  }
+  window.__showPlaylists = showPlaylists;
+
+  async function openPlaylist(p) {
+    enterFullWall(p.title || "Playlist");
+    playlistDetailActive = true;
+    const mySeq = ++playlistSeq;
+    let j = null;
+    try {
+      const r = await fetch(`/api/playlist?offset=${encodeURIComponent(p.offset)}` +
+                            `&title=${encodeURIComponent(p.title || "")}`, { cache: "no-store" });
+      if (!playlistDetailActive || mySeq !== playlistSeq) return;
+      j = await r.json().catch(() => ({}));
+      if (!playlistDetailActive || mySeq !== playlistSeq) return;
+      if (!r.ok) {
+        grid.innerHTML = "";
+        setBanner(j.error || "Couldn't open that playlist.", true);
+        return;
+      }
+    } catch (e) {
+      if (!playlistDetailActive || mySeq !== playlistSeq) return;
+      grid.innerHTML = "";
+      setBanner("Couldn't open that playlist.", true);
+      return;
+    }
+
+    setBanner(null);
+    grid.innerHTML = "";
+    clearWallGridSizing();
+
+    const wrap = document.createElement("div");
+    wrap.className = "playlist-detail";
+
+    // Its own Back, because the topbar's Back goes to Home and drilling two
+    // levels deep should not throw the user all the way out.
+    const back = document.createElement("button");
+    back.type = "button"; back.className = "action-btn playlist-back";
+    back.textContent = "← Playlists";
+    back.addEventListener("click", () => { playlistDetailActive = false; showPlaylists(); });
+    wrap.appendChild(back);
+
+    const head = document.createElement("div");
+    head.className = "playlist-head";
+    const h = document.createElement("h2");
+    h.className = "playlist-title";
+    h.textContent = j.title || p.title || "Playlist";
+    head.appendChild(h);
+    if (j.subtitle) {
+      const sub = document.createElement("div");
+      sub.className = "playlist-sub";
+      sub.textContent = j.subtitle;
+      head.appendChild(sub);
+    }
+    wrap.appendChild(head);
+
+    const zoneOf = () => {
+      const sel = document.getElementById("zone-select");
+      return (sel && sel.value) || selectedZoneId || null;
+    };
+    const act = async (url, body, btn) => {
+      const zone = zoneOf();
+      if (!zone) { showToast("Choose a zone first", "error"); return; }
+      btn.disabled = true;
+      try {
+        const r = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(Object.assign({ zone_or_output_id: zone }, body))
+        });
+        const jr = await r.json().catch(() => ({}));
+        if (!r.ok) showToast(jr.error || "Roon refused that", "error");
+        else showToast(jr.invoked ? jr.invoked : "Sent to Roon");
+      } catch (e) {
+        showToast("Couldn't reach the extension", "error");
+      } finally {
+        btn.disabled = false;
+      }
+    };
+
+    if (j.can_play) {
+      const actions = document.createElement("div");
+      actions.className = "playlist-actions";
+      for (const [label, kind, cls] of [
+        ["Play now", "play_now", "action-btn primary"],
+        ["Queue",    "queue",    "action-btn"],
+      ]) {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = cls;
+        b.textContent = label;
+        b.addEventListener("click", () => act("/api/playlist/play",
+          { offset: p.offset, title: p.title || "", kind }, b));
+        actions.appendChild(b);
+      }
+      wrap.appendChild(actions);
+    }
+
+    const tracks = (j && j.tracks) || [];
+    if (!tracks.length) {
+      const note = document.createElement("div");
+      note.className = "playlist-empty";
+      note.textContent = "This playlist has no tracks.";
+      wrap.appendChild(note);
+    } else {
+      const ol = document.createElement("ol");
+      ol.className = "track-list playlist-tracks";
+      for (const t of tracks) {
+        const li = document.createElement("li");
+        li.className = "track-row";
+        li.dataset.index = String(t.index);
+        const tt = document.createElement("div");
+        tt.className = "track-title";
+        tt.textContent = t.title || "";
+        li.appendChild(tt);
+        if (t.subtitle) {
+          const ts = document.createElement("div");
+          ts.className = "track-artist";
+          ts.textContent = t.subtitle;
+          li.appendChild(ts);
+        }
+        li.addEventListener("click", () => act("/api/playlist/play-track", {
+          offset: p.offset, title: p.title || "",
+          track_index: t.index, track_title: t.title || "", kind: "play_now"
+        }, li));
+        ol.appendChild(li);
+      }
+      wrap.appendChild(ol);
+      if (j.truncated) {
+        const note = document.createElement("div");
+        note.className = "playlist-empty";
+        note.textContent = `Showing the first ${tracks.length} of ${j.total} tracks.`;
+        wrap.appendChild(note);
+      }
+    }
+    grid.appendChild(wrap);
+  }
+
   function leaveLibraryWall() { const was = libraryWallActive; libraryWallActive = false; return was; }
   window.__leaveLibraryWall = leaveLibraryWall;
   window.__restoreLibraryWall = (was) => { libraryWallActive = !!was; };
@@ -7369,6 +7559,10 @@ initServiceBrowser({
       }
       if (action === "rescan-library") {
         rescanLibrary();
+        return;
+      }
+      if (action === "playlists") {
+        if (window.__showPlaylists) window.__showPlaylists();
         return;
       }
       if (action === "pause-all") {

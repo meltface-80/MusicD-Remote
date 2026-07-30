@@ -1251,6 +1251,161 @@ async function invokeTrackAction(offset, trackIndex, trackTitle, zoneOrOutputId,
 }
 
 // ---------------------------------------------------------------------------
+// Roon playlists — official API, read and play only.
+//
+// "playlists" is a first-class browse hierarchy, the same shape as "albums", so
+// every helper above works unchanged: the pooled sessions, the offset cache, the
+// action-menu drill. There is NO playlist write anywhere in the extension API —
+// no create, add, remove or reorder — so this is read-only by necessity, not
+// by choice.
+//
+// A playlist's cross-request identity is (offset, title), NEVER item_key.
+// item_keys are session-scoped and must not outlive the operation that read
+// them (see the browse session pool). The offset is a hint and the title is the
+// check, so a stale offset costs a re-scan and never opens the wrong playlist —
+// the same defense the album path grew over v1.6.38–.49.
+// ---------------------------------------------------------------------------
+const PLAYLIST_CTX  = "playlists:root";
+const PLAYLIST_MAX  = 5000;   // how far we'll scan for a playlist by title
+const PLAYLIST_ITEMS = 1000;  // tracks read per playlist (see /api/playlist)
+
+function playlistKeyOf(title) {
+  return String(title || "").trim().toLowerCase();
+}
+
+// Every playlist, with the offset each one sits at. Also refreshes the offset
+// cache so a later open can jump straight to its position.
+async function listPlaylists() {
+  return withBrowseSession(async (sessionKey) => {
+    await browse({ hierarchy: "playlists", pop_all: true, multi_session_key: sessionKey });
+    const { items, total } = await loadLevel(sessionKey, "playlists", PLAYLIST_MAX);
+    const ctx = browseOffsetCtx(PLAYLIST_CTX);
+    ctx.clear();
+    const out = [];
+    // The raw index IS the offset (loadLevel pages from 0), so headers are
+    // skipped for display without shifting anyone else's position.
+    items.forEach((it, i) => {
+      if (it.hint === "header") return;
+      const key = playlistKeyOf(it.title);
+      if (key) ctx.set(key, i);
+      out.push({
+        offset:    i,
+        title:     it.title || "",
+        subtitle:  it.subtitle || "",
+        image_key: it.image_key || null
+      });
+    });
+    console.log(`[playlists] listed ${out.length} playlist(s)`);
+    return { playlists: out, total };
+  });
+}
+
+// Navigate a session into one playlist and return its contents. `expectTitle`
+// is verified against the item actually found at `offset`; on drift we re-locate
+// by title rather than opening whatever moved into that slot.
+async function loadPlaylistSession(sessionKey, offset, expectTitle) {
+  const hierarchy = "playlists";
+  await browse({ hierarchy, pop_all: true, multi_session_key: sessionKey });
+
+  let item = null;
+  if (Number.isFinite(offset) && offset >= 0) {
+    const at = await load({ hierarchy, offset, count: 1, multi_session_key: sessionKey });
+    item = (at.items && at.items[0]) || null;
+  }
+  const want = playlistKeyOf(expectTitle);
+  if (want && (!item || playlistKeyOf(item.title) !== want)) {
+    // The offset drifted (a playlist was added/renamed/removed above it).
+    console.log(`[playlists] offset ${offset} drifted, re-locating "${expectTitle}"`);
+    await browse({ hierarchy, pop_all: true, multi_session_key: sessionKey });
+    item = await findItemByTitle(sessionKey, hierarchy, expectTitle, PLAYLIST_MAX, PLAYLIST_CTX);
+  }
+  if (!item) {
+    const err = new Error("Playlist not found — reopen the playlist list");
+    err.stale = true;
+    throw err;
+  }
+
+  const d = await browse({ hierarchy, item_key: item.item_key, multi_session_key: sessionKey });
+  // Same guard as drillActionMenu: without it a non-list response would leave
+  // the follow-up load reading the CURRENT level, and we'd report the playlist
+  // list itself as the playlist's tracks.
+  if (d.action !== "list") throw new Error("Unexpected browse action: " + d.action);
+
+  const inside = await load({
+    hierarchy, offset: 0, count: PLAYLIST_ITEMS, multi_session_key: sessionKey
+  });
+  const items = inside.items || [];
+  // Identical shape to an album's contents: the playlist's own Play menu comes
+  // back as a subtitle-less action_list alongside the tracks.
+  const playMenu = items.find(i =>
+       i.hint === "action_list" && !i.subtitle && /^play/i.test(i.title || "")
+  ) || items.find(i =>
+       i.hint === "action_list" && !i.subtitle
+  );
+  const total = (inside.list && inside.list.count) || items.length;
+  return { hierarchy, item, items, playMenu, total };
+}
+
+// Play or queue a WHOLE playlist through its own Play menu.
+async function invokePlaylistAction(offset, title, zoneOrOutputId, kind) {
+  return withBrowseSession(async (sessionKey) => {
+    const { hierarchy, item, playMenu } = await loadPlaylistSession(sessionKey, offset, title);
+    if (!playMenu) throw new Error("This playlist offers no play action");
+    const actions = await drillActionMenu(hierarchy, sessionKey, playMenu.item_key);
+    const action = matchAction(actions, kind);
+    if (!action) {
+      throw new Error("No matching action for '" + kind +
+                      "'. Available: " + actions.map(a => a.title).join(", "));
+    }
+    await browse({
+      hierarchy,
+      item_key: action.item_key,
+      zone_or_output_id: zoneOrOutputId,
+      multi_session_key: sessionKey
+    });
+    return { invoked: action.title, playlist: item.title || "" };
+  });
+}
+
+// Play or queue ONE track of a playlist. Mirrors invokeTrackAction: the tapped
+// title is verified against the re-resolved list, so a playlist edited since the
+// screen opened re-matches by title instead of firing whatever now sits at that
+// index.
+async function invokePlaylistTrackAction(offset, title, trackIndex, trackTitle, zoneOrOutputId, kind) {
+  return withBrowseSession(async (sessionKey) => {
+    const { hierarchy, items, playMenu } = await loadPlaylistSession(sessionKey, offset, title);
+    const trackItems = items.filter(t => isTrackItem(t, playMenu));
+
+    const wanted = normalize(trackTitle || "");
+    let item = trackItems[trackIndex];
+    if (!item || (wanted && normalize(stripTrackNumber(item.title)) !== wanted)) {
+      item = wanted
+        ? trackItems.find(t => normalize(stripTrackNumber(t.title)) === wanted)
+        : null;
+    }
+    if (!item) {
+      const err = new Error("Playlist changed — reopen it");
+      err.stale = true;
+      throw err;
+    }
+
+    const actions = await drillActionMenu(hierarchy, sessionKey, item.item_key);
+    const action = matchAction(actions, kind);
+    if (!action) {
+      throw new Error("No matching action for '" + kind +
+                      "'. Available: " + actions.map(a => a.title).join(", "));
+    }
+    await browse({
+      hierarchy,
+      item_key: action.item_key,
+      zone_or_output_id: zoneOrOutputId,
+      multi_session_key: sessionKey
+    });
+    return { invoked: action.title, track: stripTrackNumber(item.title) };
+  });
+}
+
+// ---------------------------------------------------------------------------
 // External metadata: MusicBrainz (release year), Qobuz + Wikipedia (bios).
 // Qobuz is preferred (rich editorial reviews) with Wikipedia as fallback.
 // Both candidates are verified against the album+artist name before display.
@@ -6166,6 +6321,90 @@ app.get("/api/image/:image_key", async (req, res) => {
 });
 
 // Album detail: requires ?offset=N
+// Every Roon playlist. One browse walk, so the client should open this on
+// demand (the side menu) rather than on every Home load.
+app.get("/api/playlists", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  try {
+    res.json(await listPlaylists());
+  } catch (e) {
+    console.warn("[playlists] list failed:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// One playlist's tracks.  ?offset=<n>&title=<name>
+// `title` is what makes the read safe — see loadPlaylistSession.
+app.get("/api/playlist", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  const offset = parseInt(req.query.offset, 10);
+  const title  = String(req.query.title || "");
+  if (!Number.isFinite(offset) || offset < 0) {
+    return res.status(400).json({ error: "Valid offset query parameter required" });
+  }
+  try {
+    const { items, playMenu, item, total } =
+      await withBrowseSession(sk => loadPlaylistSession(sk, offset, title));
+    const tracks = items.filter(t => isTrackItem(t, playMenu)).map((t, i) => ({
+      index:    i,
+      title:    stripTrackNumber(t.title),
+      subtitle: t.subtitle || "",
+      image_key: t.image_key || null
+    }));
+    res.json({
+      title: item.title || "", subtitle: item.subtitle || "",
+      image_key: item.image_key || null,
+      tracks,
+      // Roon reports the real length; we only read PLAYLIST_ITEMS of it, so say
+      // so rather than letting a long playlist look truncated for no reason.
+      total, truncated: total > tracks.length,
+      can_play: !!playMenu
+    });
+  } catch (e) {
+    if (e.stale) return res.status(409).json({ error: e.message, stale: true });
+    console.warn("[playlist] load failed:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Play or queue a whole playlist.
+// body: { offset, title, zone_or_output_id, kind }
+app.post("/api/playlist/play", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  const { title, zone_or_output_id, kind } = req.body || {};
+  const offset = parseInt(req.body && req.body.offset, 10);
+  if (!Number.isFinite(offset) || offset < 0) return res.status(400).json({ error: "offset required" });
+  if (!zone_or_output_id) return res.status(400).json({ error: "zone_or_output_id required" });
+  if (!kind)              return res.status(400).json({ error: "kind required" });
+  try {
+    res.json(await invokePlaylistAction(offset, title, zone_or_output_id, kind));
+  } catch (e) {
+    if (e.stale) return res.status(409).json({ error: e.message, stale: true });
+    console.warn("[playlist] play failed:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Play or queue one track of a playlist.
+// body: { offset, title, track_index, track_title, zone_or_output_id, kind }
+app.post("/api/playlist/play-track", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  const { title, track_title, zone_or_output_id, kind } = req.body || {};
+  const offset = parseInt(req.body && req.body.offset, 10);
+  const idx    = parseInt(req.body && req.body.track_index, 10);
+  if (!Number.isFinite(offset) || offset < 0) return res.status(400).json({ error: "offset required" });
+  if (!Number.isFinite(idx) || idx < 0)       return res.status(400).json({ error: "track_index required" });
+  if (!zone_or_output_id) return res.status(400).json({ error: "zone_or_output_id required" });
+  if (!kind)              return res.status(400).json({ error: "kind required" });
+  try {
+    res.json(await invokePlaylistTrackAction(offset, title, idx, track_title, zone_or_output_id, kind));
+  } catch (e) {
+    if (e.stale) return res.status(409).json({ error: e.message, stale: true });
+    console.warn("[playlist] play-track failed:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get("/api/album", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   const offset = parseInt(req.query.offset, 10);

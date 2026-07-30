@@ -2,6 +2,37 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.7] — 2026-07-30
+
+### Added
+- **Roon playlists.** A new "Playlists" entry in the side menu lists every playlist in your Roon
+  library; tapping one shows its tracks with **Play now** / **Queue** for the whole playlist, and
+  a tap on any track to play it.
+  - Uses `hierarchy: "playlists"` — a first-class browse hierarchy the extension had simply never
+    used. Every existing helper worked unchanged: the pooled browse sessions, the offset cache,
+    and the action-menu drill (`drillActionMenu` takes the hierarchy as a parameter, so Play Now /
+    Queue needed no new code).
+  - **Read and play only.** There is no playlist create, add, remove or reorder anywhere in the
+    Roon extension API — `playlists` appears exactly once in the whole browse SDK, as a hierarchy
+    value. This is a limit of the official API, not a decision.
+  - A playlist is identified across requests by **(offset, title)**, never `item_key` —
+    item_keys are session-scoped server-side. The offset is a hint and the title is the check, so
+    a playlist added or renamed above the one you tapped costs a re-scan instead of opening the
+    wrong playlist. Same defense the album path took v1.6.38–.49 to get right.
+  - Reached from the **side menu, not a Home row**: listing playlists is a Roon browse walk, and a
+    Home row would pay for it on every Home load.
+  - Play actions read the **live** zone selector, so switching zone before pressing play targets
+    the zone you're actually on (the defect fixed for the Queue tab in v1.7.6).
+  - Long playlists report how many of their tracks are shown rather than looking silently
+    truncated.
+
+### Tests
+- 7 new tests (376 total: static 22, unit 197, dom 157) covering the menu entry, that both offset
+  *and* title travel on every request, the track list, play-all and play-track payloads (with a
+  zone switch between them), Back returning to the playlist list rather than Home, and the empty
+  state explaining itself. Two mutations planted — the title dropped from the open request, and a
+  captured zone instead of the live one — both went red.
+
 ## [1.7.6] — 2026-07-30
 
 ### Fixed
