@@ -2,6 +2,49 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.23] — 2026-08-03
+
+The other half of Share: import. Plus the playlist store both it and "Add to playlist" needed.
+
+### Added
+- **Import a playlist.** Side menu → *Import a playlist*, paste the blob, and every entry is
+  matched against **your** library. A shared file names music, it doesn't carry it, so what you
+  get is whatever your own library can answer for. Resolution is entirely in memory — zero Roon
+  calls — so it answers in milliseconds however long the playlist is.
+- **The report is the deliverable.** "2 of 3 tracks found in your library", and the ones that
+  didn't match are *listed*, not just counted. Every tool in this space quietly substitutes the
+  wrong version; showing the misses is what makes it worth trusting. Saving is a separate, named
+  act, and an import that matched nothing doesn't offer to save nothing.
+- **My playlists** — an ordered list of specific tracks, stored by this extension on the data
+  volume. Play now, Queue, Share and Delete, with each row carrying its album's artwork.
+- **Add to playlist** in the multi-select menu, for tracks selected in the album view: add to an
+  existing playlist or name a new one.
+
+### Notes on what this is and isn't
+Roon's API cannot create or modify a playlist — verified against a live Core in v1.7.15, and
+unanswered on Roon's own tracker since 2017. So an imported playlist is a **MusicD Remote**
+playlist: it lives here, and it will not appear on other Roon remotes. Filling the Roon queue and
+using Roon's own *Add the queue to a Playlist* is still the only route to a real Roon playlist.
+
+Albums cannot be added to a playlist. A stored entry names a specific track, and an album's
+tracklist only exists on the Core — opening every selected album behind a menu tap would be
+seconds of Roon calls. Selecting albums and choosing *Add to playlist* says so rather than
+quietly doing something slower than expected.
+
+### Storage
+Imported playlists live in `data/playlists.json`, written atomically, **not** in `settings.json` —
+that file is written non-atomically, has no key whitelist, and holds the Qobuz password hash and
+the TIDAL refresh token. Third-party content has no business in it. Unlike the other versioned
+files on that volume, a version mismatch here **renames the file aside** rather than discarding
+it: those are derived caches that cost a rescan, this is the only copy of something the user made.
+
+### Safety
+An entry the resolver cannot identify with confidence is reported, never guessed at — two albums
+sharing a title is a coin flip, and a coin flip that silently puts the wrong record in someone's
+playlist is worse than a miss they can see. Nothing from a shared file reaches storage except
+through a fresh object literal built from a named field list, and a Roon `item_key` can never be
+stored: those are session-scoped and already invalid by the time anyone reads them back.
+
 ## [1.7.22] — 2026-08-03
 
 Multi-select, part one: the selection mechanics. "Add to playlist" and "Recently added" follow

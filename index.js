@@ -6753,6 +6753,184 @@ function encodeSharePayload(doc) {
   return shareMagic() + ":" + gz.toString("base64url");
 }
 
+// ---------------------------------------------------------------------------
+// User playlists — an ordered list of specific tracks, stored by this
+// extension.
+//
+// Roon's API cannot create or modify a playlist (verified against a live Core
+// in v1.7.15), so an imported playlist has nowhere else to live. Smart
+// playlists can't hold one either: a smart playlist stores a QUERY, which is
+// what makes it smart, and an imported playlist is a fixed list.
+//
+// This deliberately does NOT go in settings.json. That file is written
+// non-atomically, has no key whitelist, and holds the Qobuz password hash and
+// the TIDAL refresh token. Third-party content — which is exactly what an
+// import is — has no business in the same file.
+// ---------------------------------------------------------------------------
+const USER_PL_FILE = path.join(LABELS_DB_DIR, "playlists.json");
+function userPlVersion()   { return 1; }
+function userPlMax()       { return 50; }    // same ceiling as smart playlists
+function userPlTracksMax() { return 500; }
+function userPlAddMax()    { return 200; }
+function userPlNameMax()   { return 60; }
+
+// A stored track. Offsets are HINTS; the titles are the CHECK — the identity
+// contract the whole album path uses. `track_index` is likewise a hint:
+// invokeTrackAction re-matches by title when the index no longer holds, which
+// is what lets these survive a library that has shifted underneath them.
+function userTrackRecord(t) {
+  if (!t || typeof t !== "object") return null;
+  const title = shareText(t.title, shareTextMax());
+  const albumTitle = shareText(t.album_title, shareTextMax());
+  // Without an album we cannot open anything on the Core, so the entry could
+  // never be played. Storing it would inflate the count with dead rows.
+  if (!title || !albumTitle) return null;
+  const off = shareInt(t.album_offset, 0, 5000000);
+  if (off === null) return null;
+  return {
+    album_offset:   off,
+    album_title:    albumTitle,
+    album_subtitle: shareText(t.album_subtitle, shareTextMax()),
+    track_index:    shareInt(t.track_index, 0, 999) || 0,
+    title,
+    subtitle:       shareText(t.subtitle, shareTextMax()),
+    image_key:      shareText(t.image_key, 200) || null,
+    track_no:       shareInt(t.track_no, 1, 999),
+  };
+}
+
+function userPlaylistRecord(p) {
+  if (!p || typeof p !== "object") return null;
+  const name = shareText(p.name, userPlNameMax());
+  const id = shareText(p.id, 64);
+  if (!name || !id) return null;
+  const tracks = [];
+  for (const t of (Array.isArray(p.tracks) ? p.tracks : [])) {
+    if (tracks.length >= userPlTracksMax()) break;
+    const one = userTrackRecord(t);
+    if (one) tracks.push(one);
+  }
+  return {
+    id, name, tracks,
+    created_at: shareInt(p.created_at, 0, 4102444800000) || Date.now(),
+    updated_at: shareInt(p.updated_at, 0, 4102444800000) || Date.now(),
+  };
+}
+
+let userPlaylists = [];
+function loadUserPlaylists() {
+  let raw;
+  try { raw = JSON.parse(fs.readFileSync(USER_PL_FILE, "utf8")); }
+  catch (e) { return []; }   // absent or unreadable — a first run looks like this
+  if (!raw || raw.v !== userPlVersion()) {
+    // The other versioned files on this volume DISCARD on mismatch, because
+    // they are derived caches and the cost is a rescan. This one is the only
+    // copy of something the user made, so it is moved aside instead. Same
+    // stamp, opposite failure mode.
+    const bak = USER_PL_FILE.replace(/\.json$/, `.v${raw && raw.v}.json.bak`);
+    try { fs.renameSync(USER_PL_FILE, bak); console.warn("[uplaylist] version mismatch — kept a copy at " + bak); }
+    catch (e) { console.warn("[uplaylist] version mismatch and could not back up:", e.message); }
+    return [];
+  }
+  const out = [];
+  for (const p of (Array.isArray(raw.playlists) ? raw.playlists : [])) {
+    const one = userPlaylistRecord(p);
+    if (one) out.push(one);
+    if (out.length >= userPlMax()) break;
+  }
+  return out;
+}
+function saveUserPlaylists() {
+  writeJsonAtomic(USER_PL_FILE,
+    { v: userPlVersion(), playlists: userPlaylists.slice(0, userPlMax()) }, "[uplaylist]");
+}
+function newUserPlaylistId() {
+  return "up_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+userPlaylists = loadUserPlaylists();
+
+// Summary rows for the wall: never the tracks themselves, which can be 500 per
+// playlist across 50 playlists.
+function userPlaylistSummary(p) {
+  const keys = [];
+  for (const t of p.tracks) {
+    if (t.image_key && !keys.includes(t.image_key)) keys.push(t.image_key);
+    if (keys.length === 4) break;
+  }
+  return { id: p.id, name: p.name, track_total: p.tracks.length,
+           art_keys: keys, updated_at: p.updated_at };
+}
+
+// ---- Import ---------------------------------------------------------------
+// The counterpart to encodeSharePayload. Deliberately strict: a blob we cannot
+// positively identify is refused rather than guessed at.
+function decodeSharePayload(blob) {
+  const s = String(blob || "").trim();
+  const sep = s.indexOf(":");
+  if (sep < 0 || s.slice(0, sep) !== shareMagic()) {
+    throw new Error("That doesn't look like a MusicD Remote playlist");
+  }
+  let json;
+  try {
+    json = zlib.gunzipSync(Buffer.from(s.slice(sep + 1), "base64url")).toString("utf8");
+  } catch (e) {
+    throw new Error("That playlist is damaged — it may have been cut short in transit");
+  }
+  let doc;
+  try { doc = JSON.parse(json); }
+  catch (e) { throw new Error("That playlist is damaged — the contents didn't parse"); }
+  if (!doc || !doc.playlist || !Array.isArray(doc.playlist.track)) {
+    throw new Error("That playlist has no tracks in it");
+  }
+  return doc;
+}
+
+// Match a shared entry against this library's snapshot. ZERO Roon calls: the
+// snapshot already carries normalized title and artist for every album, so the
+// whole resolution is in memory.
+//
+// Deliberately conservative. `ambiguousAlbumKeys` holds identities owned by
+// more than one album — a duplicate rip, or a local copy beside a streaming
+// one — and resolving those would be a coin flip. Better to report an entry
+// as unmatched than to put the wrong record in someone's playlist.
+function resolveSharedTrack(entry) {
+  const title = shareText(entry && entry.title, shareTextMax());
+  if (!title) return null;
+  const albumTitle = shareText(entry && entry.album, shareTextMax());
+  const artist = shareText(entry && entry.creator, shareTextMax());
+  if (!albumTitle) return null;   // no album, nothing to open on the Core
+
+  const nT = normalize(albumTitle);
+  const nA = normalize(artist);
+  if (!nT) return null;
+
+  const keys = albumKeys(albumTitle, artist);
+  if (keys.length && keys.every(k => ambiguousAlbumKeys.has(k))) return null;
+
+  // Artist first, because two records can share a title.
+  let hit = nA ? albumIndex.albums.find(a => a.nTitle === nT && a.nArtist === nA) : null;
+  if (!hit) {
+    const byTitle = albumIndex.albums.filter(a => a.nTitle === nT);
+    // One match on title alone is safe; several is the coin flip again.
+    if (byTitle.length === 1) hit = byTitle[0];
+    else if (nA) hit = byTitle.find(a => creditHasArtist(a.subtitle || "", artist)) || null;
+  }
+  if (!hit) return null;
+
+  return userTrackRecord({
+    album_offset: hit.offset,
+    album_title: hit.title,
+    album_subtitle: hit.subtitle,
+    // A hint only. The share carries no index, and invokeTrackAction re-matches
+    // by title anyway, so 0 costs nothing and the title does the work.
+    track_index: 0,
+    title,
+    subtitle: artist,
+    image_key: hit.image_key,
+    track_no: shareInt(entry && entry.trackNum, 1, 999),
+  });
+}
+
 // Turn a playlist's tracks into a shareable blob.
 // body: { name, annotation?, tracks: [{title, artist, album, track_no, ...}] }
 app.post("/api/share/encode", (req, res) => {
@@ -6784,6 +6962,136 @@ app.post("/api/share/encode", (req, res) => {
     });
   } catch (e) {
     console.warn("[share] encode failed:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---- User playlist routes -------------------------------------------------
+// Every one of these costs ZERO Roon calls: a user playlist stores its tracks
+// rather than deriving them, unlike a smart playlist which has to open each
+// album on the Core to find out what is on it.
+
+app.get("/api/user-playlists", (req, res) => {
+  res.json({ playlists: userPlaylists.map(userPlaylistSummary) });
+});
+
+app.get("/api/user-playlist", (req, res) => {
+  const id = String(req.query.id || "").trim();
+  const p = userPlaylists.find(x => x.id === id);
+  if (!p) return res.status(404).json({ error: "No such playlist" });
+  res.json({ id: p.id, name: p.name, tracks: p.tracks, track_total: p.tracks.length });
+});
+
+// Create, or rename an existing one. body: { id?, name }
+app.post("/api/user-playlists", (req, res) => {
+  const body = req.body || {};
+  const name = shareText(body.name, userPlNameMax());
+  if (!name) return res.status(400).json({ error: "name required" });
+  const id = shareText(body.id, 64);
+  if (id) {
+    const p = userPlaylists.find(x => x.id === id);
+    if (!p) return res.status(404).json({ error: "No such playlist" });
+    p.name = name;
+    p.updated_at = Date.now();
+  } else {
+    if (userPlaylists.length >= userPlMax()) {
+      return res.status(400).json({ error: `That's ${userPlMax()} playlists — delete one first` });
+    }
+    userPlaylists.push({ id: newUserPlaylistId(), name, tracks: [],
+                         created_at: Date.now(), updated_at: Date.now() });
+  }
+  saveUserPlaylists();
+  res.json({ ok: true, playlists: userPlaylists.map(userPlaylistSummary) });
+});
+
+app.post("/api/user-playlists/delete", (req, res) => {
+  const id = shareText((req.body || {}).id, 64);
+  const at = userPlaylists.findIndex(x => x.id === id);
+  if (at === -1) return res.status(404).json({ error: "No such playlist" });
+  userPlaylists.splice(at, 1);
+  saveUserPlaylists();
+  res.json({ ok: true, playlists: userPlaylists.map(userPlaylistSummary) });
+});
+
+// Append tracks. body: { id? | name?, tracks: [...] }
+app.post("/api/user-playlists/add", (req, res) => {
+  const body = req.body || {};
+  const incoming = Array.isArray(body.tracks) ? body.tracks : [];
+  if (!incoming.length) return res.status(400).json({ error: "tracks required" });
+  if (incoming.length > userPlAddMax()) {
+    return res.status(400).json({ error: `Too many at once — ${userPlAddMax()} maximum` });
+  }
+  let p = null;
+  const id = shareText(body.id, 64);
+  if (id) {
+    p = userPlaylists.find(x => x.id === id);
+    if (!p) return res.status(404).json({ error: "No such playlist" });
+  } else {
+    const name = shareText(body.name, userPlNameMax());
+    if (!name) return res.status(400).json({ error: "id or name required" });
+    if (userPlaylists.length >= userPlMax()) {
+      return res.status(400).json({ error: `That's ${userPlMax()} playlists — delete one first` });
+    }
+    p = { id: newUserPlaylistId(), name, tracks: [], created_at: Date.now(), updated_at: Date.now() };
+    userPlaylists.push(p);
+  }
+  let added = 0, skipped = 0, full = false;
+  for (const t of incoming) {
+    if (p.tracks.length >= userPlTracksMax()) { full = true; break; }
+    const one = userTrackRecord(t);
+    if (one) { p.tracks.push(one); added++; }
+    else skipped++;
+  }
+  p.updated_at = Date.now();
+  saveUserPlaylists();
+  // `full` travels so the caller can say the playlist filled up rather than
+  // reporting a clean success for a partial add.
+  res.json({ ok: true, id: p.id, name: p.name, added, skipped, full,
+             track_total: p.tracks.length });
+});
+
+// Import a shared blob. Resolution is entirely in memory — no Roon calls — so
+// this answers in milliseconds however long the playlist is.
+app.post("/api/share/import", async (req, res) => {
+  const blob = (req.body || {}).blob;
+  if (typeof blob !== "string" || !blob.trim()) {
+    return res.status(400).json({ error: "blob required" });
+  }
+  let doc;
+  try { doc = decodeSharePayload(blob); }
+  catch (e) { return res.status(400).json({ error: e.message }); }
+
+  try {
+    await ensureAlbumIndex();
+    if (!isIndexBuilt()) {
+      return res.status(503).json({ error: "Library index is still building — try again shortly" });
+    }
+    const entries = doc.playlist.track.slice(0, userPlTracksMax());
+    const resolved = [];
+    const missing = [];
+    for (const e of entries) {
+      const hit = resolveSharedTrack(e);
+      if (hit) resolved.push(hit);
+      else {
+        // Reported, never silently dropped: "38 of 45" is the honest outcome
+        // and the missing 7 are the interesting part.
+        missing.push({
+          title: shareText(e && e.title, 200),
+          artist: shareText(e && e.creator, 200),
+          album: shareText(e && e.album, 200),
+        });
+      }
+    }
+    res.json({
+      ok: true,
+      name: shareText(doc.playlist.title, userPlNameMax()) || "Shared playlist",
+      total: doc.playlist.track.length,
+      truncated: doc.playlist.track.length > userPlTracksMax(),
+      resolved,
+      missing,
+    });
+  } catch (e) {
+    console.warn("[share] import failed:", e.message);
     res.status(500).json({ error: e.message });
   }
 });

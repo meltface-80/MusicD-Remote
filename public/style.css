@@ -3469,6 +3469,15 @@ input.vol-range::-moz-range-thumb {
 }
 .sel-menu-item:hover { background: var(--bg-elev); }
 .sel-menu-item[data-sel-act="clear"] { color: var(--text-dim); }
+
+/* Import report + the add-to-playlist picker rows. */
+.import-result { margin-top: 12px; }
+.import-missing {
+  margin: 6px 0 12px; padding-left: 18px;
+  color: var(--text-dim); font-size: 0.86rem; line-height: 1.5;
+}
+.import-save { width: 100%; margin-top: 8px; }
+.sheet-row { display: block; width: 100%; margin-bottom: 8px; text-align: left; }
 /* Share sheet — the blob is the payload, so it gets the room and the monospace
    face; everything above it is the honest accounting of what went in. */
 .share-sum { font-weight: 600; margin: 4px 0 6px; }
