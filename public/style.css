@@ -3478,6 +3478,21 @@ input.vol-range::-moz-range-thumb {
 }
 .import-save { width: 100%; margin-top: 8px; }
 .sheet-row { display: block; width: 100%; margin-bottom: 8px; text-align: left; }
+
+/* "Play something unheard", as the first tile of the Not-played row. Borrows
+   .album wholesale so it sizes with the carousel on every screen; only the
+   art square is different. */
+.unheard-art {
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+}
+.unheard-glyph { font-size: 2.4rem; line-height: 1; color: var(--accent-text); }
+.home-unheard-tile .album-title { color: var(--accent-text); }
+.home-unheard-tile:hover .unheard-art { background: var(--accent); }
+.home-unheard-tile:hover .unheard-glyph { color: var(--on-accent); }
+.home-unheard-tile.spinning .unheard-glyph { animation: unheard-spin 1s linear infinite; }
+@keyframes unheard-spin { to { transform: rotate(360deg); } }
 /* Share sheet — the blob is the payload, so it gets the room and the monospace
    face; everything above it is the honest accounting of what went in. */
 .share-sum { font-weight: 600; margin: 4px 0 6px; }

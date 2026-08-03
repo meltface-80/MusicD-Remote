@@ -2,6 +2,30 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.25] — 2026-08-03
+
+### Changed
+- **One Playlists screen.** "My playlists" is gone as a separate destination; playlists stored by
+  this extension now appear on the Playlists wall alongside Roon's, stored ones first. Imports
+  land there. Finding a fresh import buried under the Roon list would read as an import that
+  failed.
+- The two sources are fetched together but tolerated separately: **Roon being unreachable no
+  longer hides the playlists on this disk** — they render, with a banner saying the list is
+  incomplete.
+- **Side menu order** is now Dynamic playlists → Playlists → Import a playlist.
+- **Filter removed from the side menu.** It lives on the Library screen, which is the only place
+  it applies. "Random albums" already clears any active filter, so a random wall is a random wall.
+- **"Play something unheard" removed from the side menu** and put on Home, as the first tile of
+  the "Not played in 6 months" carousel. That row *is* the unheard albums, so the action and the
+  row it leads mean the same thing — and it sits at the top of Home without needing a slot of its
+  own. Built as a normal tile, so it inherits the carousel's sizing at every screen width instead
+  of carrying breakpoints of its own.
+
+### Fixed
+- The unheard action now spins **whichever control was pressed**. Forwarding the Home tile's click
+  to the hidden top-bar button would have left the pressed tile visibly inert for the two seconds
+  the pick takes.
+
 ## [1.7.24] — 2026-08-03
 
 ### Changed

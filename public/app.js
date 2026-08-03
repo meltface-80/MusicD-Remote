@@ -79,7 +79,6 @@
   let smartWallActive = false;      // viewing the smart-playlist wall?
   let smartDetailActive = false;    // viewing one smart playlist's tracks?
   let smartSeq = 0;                 // orphans in-flight smart-playlist fetches
-  let userPlActive = false;         // viewing the stored-playlist wall?
   let userPlDetailActive = false;   // viewing one stored playlist?
   let userPlSeq = 0;                // orphans in-flight stored-playlist fetches
   let playlistsActive = false;      // viewing the Roon playlist list?
@@ -449,6 +448,45 @@
     return tile;
   }
 
+  // The action that used to live in the side menu, as the first tile of the
+  // "Not played" row. It reuses .album so the grid/carousel sizing, the hover
+  // state and the art aspect ratio all come for free — only the inside of the
+  // art square differs.
+  function buildUnheardTile() {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "album home-unheard-tile";
+    btn.id = "home-unheard-tile";
+    btn.setAttribute("aria-label", "Play something you haven't heard");
+
+    const art = document.createElement("div");
+    art.className = "album-art-wrap unheard-art";
+    const glyph = document.createElement("span");
+    glyph.className = "unheard-glyph";
+    glyph.setAttribute("aria-hidden", "true");
+    glyph.textContent = "✧";
+    art.appendChild(glyph);
+    btn.appendChild(art);
+
+    const meta = document.createElement("div");
+    meta.className = "album-meta";
+    const t = document.createElement("div");
+    t.className = "album-title";
+    t.textContent = "Play something unheard";
+    const s = document.createElement("div");
+    s.className = "album-artist";
+    s.textContent = "Surprise me";
+    meta.appendChild(t); meta.appendChild(s);
+    btn.appendChild(meta);
+
+    // One implementation, two triggers: the request, the zone check and the
+    // spin all live in playUnheard, which spins whichever control was pressed.
+    btn.addEventListener("click", () => {
+      if (window.__playUnheard) window.__playUnheard(btn);
+    });
+    return btn;
+  }
+
   // Render helper shared by the live loader and the instant-open cache repaint.
   function renderHomeUnplayed(aotd, albums) {
     albums = albums || [];
@@ -458,6 +496,12 @@
       return;
     }
     const frag = document.createDocumentFragment();
+    // "Play something unheard" leads the row it belongs to: this carousel IS
+    // the unheard albums, so the action and the row mean the same thing, and
+    // it sits at the top of Home without needing a place of its own. Built as
+    // a tile so it inherits the carousel's sizing on every screen rather than
+    // carrying breakpoints of its own.
+    frag.appendChild(buildUnheardTile());
     if (aotd) {
       const tile = homeTile(aotd, "home-aotd");
       const wrap = tile.querySelector(".album-art-wrap");
@@ -826,45 +870,73 @@
   // A playlist is identified across requests by (offset, title) — never an
   // item_key, which is session-scoped server-side. The title is what makes a
   // drifted offset safe, so every call carries it.
+  // ONE playlist screen. From the user's side a playlist is a playlist; that
+  // some come from Roon and some are stored here is our problem, not something
+  // to make them navigate around. Stored ones lead, because they are the ones
+  // this app can actually change — imports, and anything added from a
+  // selection — and finding a fresh import buried under the Roon list would
+  // read as the import having failed.
+  //
+  // The two sources are fetched together but tolerated separately: Roon being
+  // unreachable must not hide playlists that live on this disk, and vice versa.
   async function showPlaylists() {
     enterFullWall("Playlists");
     playlistsActive = true;
     const mySeq = ++playlistSeq;
-    try {
-      const r = await fetch("/api/playlists", { cache: "no-store" });
-      // Re-check after EVERY await: a late response must not paint into a
-      // screen the user has since navigated away from.
-      if (!playlistsActive || mySeq !== playlistSeq) return;
-      if (!r.ok) {
-        const j = await r.json().catch(() => ({}));
-        if (!playlistsActive || mySeq !== playlistSeq) return;
-        grid.innerHTML = "";
-        setBanner(j.error || "Couldn't read playlists from Roon.", true);
-        return;
-      }
-      const j = await r.json();
-      if (!playlistsActive || mySeq !== playlistSeq) return;
-      const list = (j && j.playlists) || [];
-      grid.innerHTML = "";
-      if (!list.length) {
-        setBanner("No playlists in your Roon library.", false);
-        return;
-      }
-      setBanner(null);
-      const frag = document.createDocumentFragment();
-      const tiles = new Map();
-      for (const p of list) {
-        const tile = buildAlbumTile(p, () => openPlaylist(p), { selectable: false });
-        tiles.set(p.title, tile);
-        frag.appendChild(tile);
-      }
-      grid.appendChild(frag);
-      fillPlaylistMosaics(list, tiles, mySeq);
-    } catch (e) {
-      if (!playlistsActive || mySeq !== playlistSeq) return;
-      grid.innerHTML = "";
-      setBanner("Couldn't read playlists from Roon.", true);
+    grid.innerHTML = "";
+
+    // `null` means "this source did not answer", which is distinct from a
+    // source that answered with an empty list — one is a warning, the other is
+    // just an empty shelf.
+    const read = async (url) => {
+      try {
+        const r = await fetch(url, { cache: "no-store" });
+        if (!r.ok) return null;
+        return await r.json();
+      } catch (e) { return null; }
+    };
+    const [roon, mine] = await Promise.all([
+      read("/api/playlists"), read("/api/user-playlists"),
+    ]);
+    // Re-check after the await: a late response must not paint into a screen
+    // the user has since navigated away from.
+    if (!playlistsActive || mySeq !== playlistSeq) return;
+
+    const roonList = (roon && roon.playlists) || [];
+    const myList   = (mine && mine.playlists) || [];
+    grid.innerHTML = "";
+
+    if (!roonList.length && !myList.length) {
+      setBanner(roon === null
+        ? "Couldn't read playlists from Roon."
+        : "No playlists yet — import one, or select tracks and use Add to playlist.",
+        roon === null);
+      return;
     }
+    setBanner(roon === null
+      ? "Couldn't reach Roon — showing only the playlists stored here." : null, roon === null);
+
+    const frag = document.createDocumentFragment();
+    for (const p of myList) {
+      const n = p.track_total;
+      frag.appendChild(buildAlbumTile({
+        title: p.name,
+        subtitle: `${n} track${n === 1 ? "" : "s"}`,
+        image_key: null,
+        // Stored tracks carry their album's art, so the mosaic costs nothing.
+        art_keys: p.art_keys || []
+      }, () => openUserPlaylist(p), { selectable: false }));
+    }
+
+    const tiles = new Map();
+    for (const p of roonList) {
+      const tile = buildAlbumTile(p, () => openPlaylist(p), { selectable: false });
+      tiles.set(p.title, tile);
+      frag.appendChild(tile);
+    }
+    grid.appendChild(frag);
+    // Only Roon's need a mosaic walk; the stored ones already have their keys.
+    if (roonList.length) fillPlaylistMosaics(roonList, tiles, mySeq);
   }
   window.__showPlaylists = showPlaylists;
 
@@ -1108,7 +1180,6 @@
     playlistDetailActive = false;
     smartWallActive = false;
     smartDetailActive = false;
-    userPlActive = false;
     userPlDetailActive = false;
     playlistSeq++;
     smartSeq++;
@@ -1375,47 +1446,9 @@
       });
   }
 
-  // ----- My playlists (stored by this extension) ----------------------------
-  // Reads like the Roon playlist screen on purpose — from the user's side these
-  // are all just playlists, and the fact that Roon's API can't hold this one is
-  // our problem, not something to make them look at.
-  async function showUserPlaylists() {
-    enterFullWall("My playlists");
-    userPlActive = true;
-    const mySeq = ++userPlSeq;
-    setBanner(null);
-    grid.innerHTML = "";
-    clearWallGridSizing();
-    let list = [];
-    try {
-      const r = await fetch("/api/user-playlists", { cache: "no-store" });
-      const j = await r.json().catch(() => ({}));
-      if (!userPlActive || mySeq !== userPlSeq) return;
-      list = j.playlists || [];
-    } catch (e) {
-      if (!userPlActive || mySeq !== userPlSeq) return;
-      setBanner("Couldn't read your playlists.", true);
-      return;
-    }
-    if (!list.length) {
-      setBanner("No playlists yet — import one, or select tracks and use Add to playlist.", false);
-      return;
-    }
-    setBanner(null);
-    const frag = document.createDocumentFragment();
-    for (const p of list) {
-      const n = p.track_total;
-      frag.appendChild(buildAlbumTile({
-        title: p.name,
-        subtitle: `${n} track${n === 1 ? "" : "s"}`,
-        image_key: null,
-        // Stored tracks carry their album's art, so the mosaic costs nothing.
-        art_keys: p.art_keys || []
-      }, () => openUserPlaylist(p), { selectable: false }));
-    }
-    grid.appendChild(frag);
-  }
-  window.__showUserPlaylists = showUserPlaylists;
+  // ----- Playlists stored by this extension ---------------------------------
+  // These share the Playlists wall with Roon's own (see showPlaylists) — there
+  // is no separate screen, so there is no separate list renderer either.
 
   async function openUserPlaylist(p) {
     enterFullWall(p.name || "Playlist");
@@ -1442,8 +1475,8 @@
 
     const back = document.createElement("button");
     back.type = "button"; back.className = "action-btn playlist-back";
-    back.textContent = "← My playlists";
-    back.addEventListener("click", () => { userPlDetailActive = false; showUserPlaylists(); });
+    back.textContent = "← Playlists";
+    back.addEventListener("click", () => { userPlDetailActive = false; showPlaylists(); });
     wrap.appendChild(back);
 
     const head = document.createElement("div");
@@ -1487,7 +1520,7 @@
         if (!r.ok) { showToast("Couldn't delete that", "error"); return; }
         showToast("Playlist deleted");
         userPlDetailActive = false;
-        showUserPlaylists();
+        showPlaylists();
       } catch (e) { showToast("Couldn't reach the extension", "error"); }
     });
     wrap.appendChild(actions);
@@ -8737,13 +8770,18 @@ initServiceBrowser({
   const btn        = document.getElementById("play-unheard-topbar");
   const zoneSelect = document.getElementById("zone-select");
   if (!btn) return;
-  btn.addEventListener("click", async () => {
+
+  // `spinEl` is whichever control the user actually pressed — the top-bar
+  // compass or the Home tile. Forwarding a click from one to the other would
+  // have left the pressed control inert for the two seconds it takes.
+  async function playUnheard(spinEl) {
+    const el = spinEl || btn;
     const zone = zoneSelect && zoneSelect.value;
     if (!zone) { if (window.__showToast) window.__showToast("Select a zone first"); return; }
-    if (btn.classList.contains("spinning")) return;
+    if (el.classList.contains("spinning")) return;
 
     // Spin the compass for 2 seconds, then fetch
-    btn.classList.add("spinning");
+    el.classList.add("spinning");
     await new Promise(r => setTimeout(r, 2000));
 
     try {
@@ -8761,9 +8799,11 @@ initServiceBrowser({
     } catch (e) {
       if (window.__showToast) window.__showToast("Request failed", "error");
     } finally {
-      btn.classList.remove("spinning");
+      el.classList.remove("spinning");
     }
-  });
+  }
+  btn.addEventListener("click", () => playUnheard(btn));
+  window.__playUnheard = playUnheard;
 })();
 
 /* ------------------------------------------------------------------ */
@@ -9144,10 +9184,6 @@ initServiceBrowser({
       }
       if (action === "playlists") {
         if (window.__showPlaylists) window.__showPlaylists();
-        return;
-      }
-      if (action === "user-playlists") {
-        if (window.__showUserPlaylists) window.__showUserPlaylists();
         return;
       }
       if (action === "import-playlist") {
