@@ -5063,7 +5063,12 @@ function matchLibraryAlbum(album, artist) {
 // Express HTTP API
 // ---------------------------------------------------------------------------
 const app = express();
-app.use(express.json());
+// 1 MB, not express's 100 kb default: /api/play-multi now accepts up to 400
+// albums, each carrying {offset,title,subtitle}. A classical library with long
+// work titles and long performer credits runs ~250 bytes an item, which clears
+// 100 kb — and express answers that with an HTML 413 the client can only
+// render as a generic "Roon refused that".
+app.use(express.json({ limit: "1mb" }));
 // API request tracing (DEBUG): method, path, status, duration — one line per
 // user action. The steady pollers are excluded: they'd bury everything else
 // under a line every 1.5s (zone-state) and per art tile (image).
@@ -8448,6 +8453,13 @@ app.post("/api/play-track", async (req, res) => {
 
 // Play multiple albums: first uses `kind`, subsequent albums are always queued.
 // body { offsets: [N, ...], zone_or_output_id, kind }
+// One play-multi at a time per zone. A 400-album run takes minutes, and the
+// client's fetch has no way to cancel the server side of it — backgrounding
+// the PWA drops the fetch, the button re-enables, and a second tap starts a
+// run whose FIRST album is play_now, wiping the queue the first run is still
+// filling. The two then interleave and the queue order is garbage.
+const playMultiZones = new Set();
+
 app.post("/api/play-multi", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   const { offsets, items, zone_or_output_id, kind } = req.body || {};
@@ -8463,6 +8475,12 @@ app.post("/api/play-multi", async (req, res) => {
   if (!list.length)       return res.status(400).json({ error: "offsets required" });
   if (!zone_or_output_id) return res.status(400).json({ error: "zone_or_output_id required" });
   if (!kind)              return res.status(400).json({ error: "kind required" });
+  if (playMultiZones.has(zone_or_output_id)) {
+    return res.status(409).json({
+      error: "Still filling this zone's queue — let that finish before starting another"
+    });
+  }
+  playMultiZones.add(zone_or_output_id);
   try {
     // First album uses the requested kind (play_now / queue / next).
     // Remaining albums are always "queue", in batches of 4 — each open is
@@ -8488,16 +8506,26 @@ app.post("/api/play-multi", async (req, res) => {
         }
       }
     }
-    if (failed > 0) {
-      return res.status(500).json({
-        error: `Queued ${rest.length - failed} of ${rest.length} albums; ${failed} failed: ${firstError}`
-      });
-    }
-    res.json({ ok: true });
+    // A partial result is a SUCCESS, not a failure: the first album is already
+    // playing and every album that queued is in the queue. Answering 500 threw
+    // all of that away — the caller returned early on !ok and could no longer
+    // tell the user how much of the playlist made it, or that the request had
+    // been truncated at the album cap in the first place. Counts travel instead.
+    res.json({
+      ok: true,
+      queued: list.length - failed,
+      failed,
+      total: list.length,
+      first_error: firstError,
+    });
   } catch (e) {
     // stale = the FIRST album's offset drifted and couldn't be relocated —
     // same 409 contract as /api/album and /api/play.
     res.status(e.stale ? 409 : 500).json({ error: e.message });
+  } finally {
+    // Must release on every path, or one failed run locks the zone out of
+    // multi-album playback until the extension restarts.
+    playMultiZones.delete(zone_or_output_id);
   }
 });
 

@@ -2,6 +2,46 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.18] — 2026-08-03
+
+Review findings against v1.7.17. Raising the album cap to 400 made four latent problems
+reachable that the old 100/200 ceiling had kept out of range.
+
+### Fixed
+- **One failed album turned a 400-album queue fill into a total failure.** `/api/play-multi`
+  answered HTTP 500 whenever *any* album failed, and both callers return early on `!ok` — so a
+  run that queued 399 of 400 showed a red error, and the truncation the whole of v1.7.17 exists
+  to surface was never mentioned. A partial result is a success: the first album is already
+  playing and everything that queued is queued. The route now answers 200 with
+  `{queued, failed, total}` and the toast reports them: `Playing 397 of 1179 albums (Roon refused
+  3) — that's the limit per go`. With 4× the albums, the odds of hitting one stale offset are 4×.
+- **A dropped connection let a retry wipe the queue mid-fill.** A 400-album run takes minutes,
+  and nothing cancels the server side of it — backgrounding the PWA drops the fetch, the button
+  re-enables, and a second tap starts a run whose *first* album is `play_now`, destroying the
+  queue the first run is still building; the two then interleave into garbage order.
+  `/api/play-multi` now allows one run per zone and answers 409 to a second, and the client says
+  "Lost contact while filling the queue — check Roon before trying again" instead of inviting the
+  retry.
+- **A 400-album request could exceed express's body limit.** 400 × `{offset,title,subtitle}` runs
+  ~250 bytes an item on a classical library with long work titles and performer credits, past the
+  100 kb default — and express answers that with an HTML 413 the client can only render as a
+  generic "Roon refused that". Limit raised to 1 MB.
+- **Send to Roon asked for consent without disclosing the cap.** The confirm destroys the existing
+  queue; agreeing to send 1,179 albums is not agreeing to wipe the queue for 400 of them. It now
+  says "Only the first 400 of 1179 albums fit in one go" *before* the user commits.
+- **The report vanished before it could be read.** Toasts hide after 2.4s — the end of a
+  multi-minute operation is exactly when the user has looked away. Reports about a queue fill now
+  stay up for 9s.
+- **"Queued 1 albums."** The non-truncated Send to Roon branch never got the pluralisation its
+  sibling gained. All three callers now share one `multiOutcome()` so the wording cannot drift
+  again.
+
+### Class of error
+A limit raised without re-checking what the old limit had been protecting. Every one of these was
+present at 200 albums too; 400 just made them likely enough to hit. The lesson recorded for next
+time: when a ceiling moves, re-walk the whole path under the new number rather than only the code
+that changed.
+
 ## [1.7.17] — 2026-08-03
 
 ### Fixed

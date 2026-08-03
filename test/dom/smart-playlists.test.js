@@ -35,6 +35,9 @@ const SAVED = {
   id: "sp1", name: "Nineties, unheard", album_total: 3, art_keys: ["k1", "k2", "k3", "k4"],
   view: { sort: "year", dir: "desc", seed: 1, decade: [1990], source: [], played: "12" },
 };
+// The user's real case: a whole-library smart playlist, far past what one
+// Send to Roon can queue.
+const BIG = Object.assign({}, SAVED, { album_total: 1179 });
 
 // Two album-pages worth of tracks, so paging is exercised rather than assumed.
 const PAGE1 = {
@@ -93,7 +96,10 @@ window.__installFetch(function (url, opts) {
   }
   if (url.indexOf("/api/play-multi") > -1) {
     window.__posts.push({ url: "/api/play-multi", body: JSON.parse((opts && opts.body) || "{}") });
-    return window.__json({ ok: true });
+    // A partial result: 2 albums sent, 1 queued, 1 refused by Roon. This is a
+    // 200, not a 500 — the first album is already playing (v1.7.18).
+    return window.__json({ ok: true, queued: 1, failed: 1, total: 2,
+                           first_error: "Album not found" });
   }
   if (url.indexOf("/api/play-track") > -1) {
     window.__posts.push({ url: "/api/play-track", body: JSON.parse((opts && opts.body) || "{}") });
@@ -198,6 +204,21 @@ const DRIVER_MAIN = OPEN_WALL + `
   T("album_calls", window.__albumCalls.slice());
 `;
 
+// A playlist far bigger than one Send to Roon can take. Only the confirm text
+// matters here — it is the last point the user can decline before the queue
+// they already have is destroyed.
+const DRIVER_BIG = OPEN_WALL + `
+  document.querySelectorAll("#album-grid .album")[0].click();
+  await window.__sleep(800);
+  Array.prototype.filter.call(document.querySelectorAll(".playlist-actions button"),
+    function (b) { return b.textContent === "Send to Roon"; })[0].click();
+  await window.__sleep(300);
+  T("send_confirm_msg", (document.getElementById("confirm-msg") || {}).textContent || "");
+  document.getElementById("confirm-no").click();
+  await window.__sleep(200);
+  T("posts_after_decline", window.__posts.slice());
+`;
+
 const DRIVER_EDIT = OPEN_WALL + `
   document.querySelectorAll("#album-grid .album")[0].click();
   await window.__sleep(800);
@@ -264,6 +285,14 @@ test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concur
   });
   harness.assertNoPageError(assert, r);
 
+  // Rendered up here, not beside its assertions: `const` in a test body is a
+  // TDZ ReferenceError to any earlier subtest that reads it.
+  const big = harness.renderPage({
+    stub: stubFor([BIG]), driver: DRIVER_BIG,
+    name: "smart-big-send", windowSize: "390x844",
+  });
+  harness.assertNoPageError(assert, big);
+
   await t.test("the side menu shows a wall of tiles, not a sheet", () => {
     assert.equal(r.menu_entry_exists, true);
     assert.equal(r.no_lib_sheet, true, "the cramped sheet must be gone");
@@ -329,10 +358,35 @@ test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concur
       assert.match(u, /max=400/, "the client must ask for the full ceiling, not the default 100");
     }
     // The stub hands back 2 albums of a stated 3, so both toasts must own up.
-    assert.match(String(r.toast_after_play), /2 of 3 albums/,
+    // The count reported is what the SERVER queued (1), not what was asked for.
+    assert.match(String(r.toast_after_play), /1 of 3 albums/,
       "a truncated Play now must say how much of the playlist it started");
-    assert.match(String(r.toast_after_send), /2 of 3 albums/,
+    assert.match(String(r.toast_after_send), /1 of 3 albums/,
       "a truncated Send to Roon must say how much of the playlist reached the queue");
+  });
+
+  await t.test("albums Roon refused are reported, not swallowed (v1.7.18)", () => {
+    // /api/play-multi used to answer 500 whenever ANY album failed, and both
+    // callers return early on !ok — so a run that queued 399 of 400 read as a
+    // total failure and the truncation was never mentioned at all. It now
+    // answers 200 with counts, and the counts have to reach the user.
+    assert.match(String(r.toast_after_play), /Roon refused 1/,
+      "a partly-failed Play now must say how many albums didn't make it");
+    assert.match(String(r.toast_after_send), /Roon refused 1/,
+      "a partly-failed Send to Roon must say how many albums didn't make it");
+    // …and still say the Roon-side step, rather than being replaced by the
+    // failure note.
+    assert.match(String(r.toast_after_send), /save the queue as a playlist in Roon/i);
+  });
+
+  await t.test("Send to Roon discloses the cap BEFORE destroying the queue (v1.7.18)", () => {
+    // The confirm is the last point the user can back out, and agreeing to
+    // "send 1,179 albums" is not agreeing to "wipe the queue for 400 of them".
+    assert.match(String(big.send_confirm_msg), /Only the first 400 of 1179 albums/,
+      "the confirm must say the playlist won't fit before it wipes the queue");
+    // A playlist that fits must not be warned about.
+    assert.doesNotMatch(String(r.send_confirm_msg), /Only the first/,
+      "a playlist inside the cap must not claim it was truncated");
   });
 
   await t.test("Play now goes through play-multi; a track plays from its album", () => {
@@ -352,6 +406,11 @@ test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concur
     // ship green — the stub accepts any body, so only the real names bite.
     assert.equal(track.body.track, 1);
     assert.equal(track.body.title, "I Would Hurt a Fly");
+  });
+
+  await t.test("declining the Send to Roon confirm queues nothing", () => {
+    assert.deepEqual(big.posts_after_decline, [],
+      "backing out must not touch the queue");
   });
 
   const ed = harness.renderPage({

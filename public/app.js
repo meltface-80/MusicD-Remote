@@ -79,6 +79,16 @@
   let playlistsActive = false;      // viewing the Roon playlist list?
   let playlistDetailActive = false; // viewing one playlist's tracks?
   let playlistSeq = 0;              // orphans in-flight playlist fetches
+  // How long a report about a long-running queue fill stays up (vs showToast's
+  // 2.4s default). Declared here rather than beside showToast() for the same
+  // reason as the flags above — a `const` further down the file is a TDZ
+  // ReferenceError to anything that reads it first.
+  const TOAST_REPORT_MS = 9000;
+  // Most albums one Play now / Queue / Send to Roon can take. Matches the
+  // server's ceiling in /api/smart-playlist/albums — asked for explicitly so
+  // the server's 100 default can't silently apply, which is exactly what made
+  // a 1,179-album playlist queue 100 and report success (v1.7.17).
+  const SMART_SEND_MAX = 400;
   let albumSelectMode = false;
   let albumSelected = [];          // [{offset,title,subtitle}] albums chosen in select mode
   // The filter that the currently-open album modal belongs to. Usually the
@@ -1739,7 +1749,7 @@
     if (!zone) { showToast("Choose a zone first", "error"); return; }
     btn.disabled = true;
     try {
-      const r = await fetch(`/api/smart-playlist/albums?id=${encodeURIComponent(sp.id)}&max=400`,
+      const r = await fetch(`/api/smart-playlist/albums?id=${encodeURIComponent(sp.id)}&max=${SMART_SEND_MAX}`,
                             { cache: "no-store" });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { showToast(j.error || "Couldn't read this playlist", "error"); return; }
@@ -1757,12 +1767,14 @@
       if (!pr.ok) { showToast(pj.error || "Roon refused that", "error"); return; }
       // Say how many of how many. The cap used to be silent, so a 1,179-album
       // playlist queued 100 and looked like it had queued everything.
-      const verb = kind === "queue" ? "Queued" : "Playing";
-      showToast(albums.length < j.total
-        ? `${verb} ${albums.length} of ${j.total} albums — that's the limit per go`
-        : `${verb} ${albums.length} album${albums.length === 1 ? "" : "s"}`);
+      showToast(multiOutcome(kind === "queue" ? "Queued" : "Playing",
+                             pj, albums.length, j.total), null, TOAST_REPORT_MS);
     } catch (e) {
-      showToast("Couldn't reach the extension", "error");
+      // The fetch died, but the server keeps going — it has no way to hear
+      // that we left. Saying "couldn't reach" would invite a retry that
+      // restarts the queue from scratch on top of the run still in progress.
+      showToast("Lost contact while filling the queue — check Roon before trying again",
+                "error", TOAST_REPORT_MS);
     } finally {
       btn.disabled = false;
     }
@@ -1781,16 +1793,23 @@
     const zone = (zsel && zsel.value) || selectedZoneId;
     if (!zone) { showToast("Choose a zone first", "error"); return; }
 
+    // Disclose the cap BEFORE asking, not after: the confirm destroys the
+    // existing queue, and a user agreeing to "send 1,179 albums" would not
+    // necessarily agree to "destroy the queue to send 400 of them".
+    const capNote = (typeof sp.album_total === "number" && sp.album_total > SMART_SEND_MAX)
+      ? `\n\nOnly the first ${SMART_SEND_MAX} of ${sp.album_total} albums fit in one go.`
+      : "";
     const ok = await confirmDialog(
       `Queue "${sp.name}" to ${(zsel && zsel.selectedOptions[0] && zsel.selectedOptions[0].textContent) || "this zone"}?\n\n` +
       "Roon's API can't create playlists, so this fills the queue instead. " +
       "Then in Roon: open the queue, tap the 3 dots above it, and choose " +
-      "\"Add the queue to a Playlist\".\n\nThis replaces what's in the queue now.");
+      "\"Add the queue to a Playlist\".\n\nThis replaces what's in the queue now." +
+      capNote);
     if (!ok) return;
 
     btn.disabled = true;
     try {
-      const r = await fetch(`/api/smart-playlist/albums?id=${encodeURIComponent(sp.id)}&max=400`,
+      const r = await fetch(`/api/smart-playlist/albums?id=${encodeURIComponent(sp.id)}&max=${SMART_SEND_MAX}`,
                             { cache: "no-store" });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { showToast(j.error || "Couldn't read this playlist", "error"); return; }
@@ -1810,12 +1829,12 @@
       });
       const pj = await pr.json().catch(() => ({}));
       if (!pr.ok) { showToast(pj.error || "Roon refused that", "error"); return; }
-      showToast(albums.length < j.total
-        ? `Queued ${albums.length} of ${j.total} albums (the limit per go) — now save the ` +
-          "queue as a playlist in Roon"
-        : `Queued ${albums.length} albums — now save the queue as a playlist in Roon`);
+      showToast(multiOutcome("Queued", pj, albums.length, j.total) +
+                " — now save the queue as a playlist in Roon", null, TOAST_REPORT_MS);
     } catch (e) {
-      showToast("Couldn't reach the extension", "error");
+      // Same reasoning as playSmartPlaylist: the server run outlives our fetch.
+      showToast("Lost contact while filling the queue — check Roon before trying again",
+                "error", TOAST_REPORT_MS);
     } finally {
       btn.disabled = false;
     }
@@ -2415,7 +2434,10 @@
 
   // ----- Toast / banner -----
   let toastTimer = null;
-  function showToast(msg, kind) {
+  // `ms` overrides the 2.4s default. Anything that lands at the END of a
+  // multi-minute operation needs longer: the user has usually looked away, and
+  // 2.4s of "queued 400 of 1179" is the same as never having said it.
+  function showToast(msg, kind, ms) {
     toast.textContent = msg;
     toast.classList.remove("hidden", "error");
     if (kind === "error") toast.classList.add("error");
@@ -2424,7 +2446,23 @@
     toastTimer = setTimeout(() => {
       toast.classList.remove("show");
       setTimeout(() => toast.classList.add("hidden"), 250);
-    }, 2400);
+    }, ms || 2400);
+  }
+  // One sentence describing what actually reached the queue: how many albums,
+  // how many the cap left behind, and how many Roon refused. `pj` is
+  // /api/play-multi's body, `asked` the albums we sent, `total` the size of the
+  // whole playlist. Shared so Play now, Queue and Send to Roon cannot drift.
+  function multiOutcome(verb, pj, asked, total) {
+    const queued = Number.isFinite(pj.queued) ? pj.queued : asked;
+    const failed = Number.isFinite(pj.failed) ? pj.failed : 0;
+    const capped = Number.isFinite(total) && asked < total;
+    let msg = `${verb} ${queued}`;
+    if (capped) msg += ` of ${total}`;
+    // Pluralise off whichever number the noun follows.
+    msg += ` album${(capped ? total : queued) === 1 ? "" : "s"}`;
+    if (failed > 0) msg += ` (Roon refused ${failed})`;
+    if (capped) msg += " — that's the limit per go";
+    return msg;
   }
   function setBanner(msg, isError) {
     if (!msg) { banner.classList.add("hidden"); banner.textContent = ""; return; }
@@ -4586,9 +4624,12 @@
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
-      const n = albumSelected.length;
-      const verb = kind === "play_now" ? "Playing" : "Queued";
-      showToast(verb + " " + n + " album" + (n === 1 ? "" : "s") + " → " + zoneName(selectedZoneId));
+      // play-multi now answers 200 with counts when some albums failed, so the
+      // count reported has to come from the response, not from what was asked.
+      // `total` is omitted — a hand-picked selection is never capped.
+      showToast(multiOutcome(kind === "play_now" ? "Playing" : "Queued",
+                             j, albumSelected.length, null) +
+                " → " + zoneName(selectedZoneId));
       exitAlbumSelectMode();
     } catch (e) {
       showToast(e.message, "error");
