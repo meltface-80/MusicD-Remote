@@ -6,6 +6,7 @@
 
 const path = require("path");
 const fs   = require("fs");
+const zlib = require("zlib");
 const express = require("express");
 const compression = require("compression");
 
@@ -1107,6 +1108,19 @@ function isTrackItem(t, playMenu) {
 // Roon prefixes track titles with "N. "; the UI renders its own counter.
 function stripTrackNumber(title) {
   return (title || "").replace(/^\d+\.\s+/, "");
+}
+
+// The number stripTrackNumber throws away. Roon's browse API exposes no track
+// number field of its own — this prefix is the only place it exists, so it is
+// the one piece of hard identity a shared playlist can carry for free. Returns
+// null when there is no prefix, which is normal (playlists renumber nothing).
+function trackNumberOf(title) {
+  const m = /^(\d+)\.\s+/.exec(title || "");
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  // A "track 0" or an absurd number means we misread a title that merely
+  // begins with digits ("1999. The Party" would parse as track 1999).
+  return Number.isFinite(n) && n > 0 && n <= 999 ? n : null;
 }
 
 // ---- Stale-offset defense ---------------------------------------------------
@@ -6502,7 +6516,11 @@ app.get("/api/smart-playlist", async (req, res) => {
             image_key:    al.image_key || null,   // the album's art, for the row
             track_index:  i,
             title:        stripTrackNumber(t.title),
-            subtitle:     t.subtitle || al.subtitle || ""
+            subtitle:     t.subtitle || al.subtitle || "",
+            // Roon's own numbering, recovered from the "N. " title prefix. The
+            // row index above is a position within this page, not a track
+            // number — only this survives being shared.
+            track_no:     trackNumberOf(t.title)
           });
         });
       } catch (e) {
@@ -6551,6 +6569,189 @@ app.get("/api/smart-playlist/albums", async (req, res) => {
       total: view.length
     });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Playlist sharing — export
+//
+// A shared playlist is a DESCRIPTION, never audio: enough identity for the
+// other end to find the same music in their own library or on their own
+// streaming service. See docs/design/playlist-sharing.md for why.
+//
+// The format is JSPF — the JSON serialisation of XSPF, the only formally
+// specified open playlist interchange format — in the dialect ListenBrainz
+// uses, so the MusicBrainz extension namespaces give us real slots for
+// identifiers instead of a bespoke schema. M3U is deliberately not an option:
+// it has nowhere to put an identifier at all, which makes it useless to a
+// streaming-only library.
+//
+// Today we hold no exact identifiers (no MBID, ISRC, UPC or service id — see
+// the design doc's capture order), so the fields below are mostly text. The
+// slots exist anyway and are populated when present: a share file is forever,
+// and a reader written now must keep working when exports start carrying IDs.
+// ---------------------------------------------------------------------------
+// The share vocabulary is functions, not constants, so the tests read the
+// SHIPPING values instead of being handed copies. An injected limit shadows the
+// real one and asserts nothing — the hole that let the v1.6.59 year-source
+// ranking ship untested.
+function shareMagic()      { return "MDRP1"; }
+function shareTrackMax()   { return 2000; }
+function shareTextMax()    { return 500; }
+function shareNameMax()    { return 200; }
+function shareUriMax()     { return 4; }
+function shareNsTrack()    { return "https://musicbrainz.org/doc/jspf#track"; }
+function shareNsPlaylist() { return "https://musicbrainz.org/doc/jspf#playlist"; }
+
+// Every value below is built into a FRESH object literal from a known field
+// list, never passed through from the caller. Same pattern as sanitizeLibView
+// and smartPlaylistRecord, and for the same reason: this data crosses a trust
+// boundary in the import direction, so the encoder and the decoder must agree
+// on a shape neither of them can be talked out of.
+function shareText(v, max) {
+  if (typeof v !== "string") return "";
+  return v.replace(/\s+/g, " ").trim().slice(0, max || shareTextMax());
+}
+function shareInt(v, min, max) {
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) && n >= min && n <= max ? n : null;
+}
+// URIs are the one field a future exporter will fill with service links and
+// MBIDs, so they are validated by shape now rather than when they arrive.
+function shareUriList(v) {
+  if (!Array.isArray(v)) return [];
+  const out = [];
+  for (const item of v) {
+    if (typeof item !== "string") continue;
+    const s = item.trim();
+    // A scheme is what makes it a URI rather than free text that would be
+    // silently mistaken for one by a reader.
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(s)) continue;
+    if (s.length > shareTextMax()) continue;
+    if (!out.includes(s)) out.push(s);
+    if (out.length >= shareUriMax()) break;
+  }
+  return out;
+}
+// Drop keys with nothing in them. JSPF treats absent and empty differently:
+// an empty string is a claim that the value IS empty, which would make a
+// reader stop looking for it.
+function sharePrune(obj) {
+  const out = {};
+  for (const k of Object.keys(obj)) {
+    const v = obj[k];
+    if (v === null || v === undefined || v === "") continue;
+    if (Array.isArray(v) && !v.length) continue;
+    if (typeof v === "object" && !Array.isArray(v) && !Object.keys(v).length) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+// One JSPF track. Returns null for an entry with no title — a track we cannot
+// even name is not resolvable by anyone, and shipping it would inflate the
+// count the user is shown with entries that can never match.
+function shareTrackEntry(t) {
+  if (!t || typeof t !== "object") return null;
+  const title = shareText(t.title, shareTextMax());
+  if (!title) return null;
+
+  // Identifiers a future exporter fills in; harmless and absent until then.
+  const extra = sharePrune({
+    isrc:           shareText(t.isrc, 32),
+    upc:            shareText(t.upc, 32),
+    qobuz_album_id: shareText(t.qobuz_album_id, 64),
+    tidal_album_id: shareText(t.tidal_album_id, 64),
+    year:           shareInt(t.year, 1000, 2999),
+    disc:           shareInt(t.disc, 1, 99),
+  });
+
+  const ext = Object.keys(extra).length
+    ? { [shareNsTrack()]: { additional_metadata: extra } }
+    : null;
+
+  return sharePrune({
+    title,
+    creator:    shareText(t.artist, shareTextMax()),
+    album:      shareText(t.album, shareTextMax()),
+    trackNum:   shareInt(t.track_no, 1, 999),
+    // JSPF durations are milliseconds. We have none today — Roon's browse API
+    // exposes no track length — but the slot is what a duration-gated match
+    // will read, and that gate is the cheapest defence against resolving a
+    // live version in place of the studio take.
+    duration:   shareInt(t.duration_ms, 1, 24 * 60 * 60 * 1000),
+    identifier: shareUriList(t.identifier),
+    location:   shareUriList(t.location),
+    extension:  ext,
+  });
+}
+
+// The whole document. `truncated` is reported rather than silently applied —
+// v1.7.17's lesson was that a cap nobody is told about reads as success.
+function buildShareDoc(meta, entries) {
+  const list = Array.isArray(entries) ? entries : [];
+  const track = [];
+  let skipped = 0;
+  for (const e of list) {
+    if (track.length >= shareTrackMax()) break;
+    const one = shareTrackEntry(e);
+    if (one) track.push(one);
+    else skipped++;
+  }
+  const playlist = sharePrune({
+    title:      shareText(meta && meta.name, shareNameMax()) || "Shared playlist",
+    annotation: shareText(meta && meta.annotation, shareTextMax()),
+    creator:    shareText(meta && meta.creator, shareNameMax()),
+    date:       new Date().toISOString(),
+    track,
+    extension: {
+      [shareNsPlaylist()]: {
+        additional_metadata: {
+          generator: "MusicD Remote",
+          generator_version: pkg.version,
+        },
+      },
+    },
+  });
+  return {
+    doc: { playlist },
+    track_count: track.length,
+    skipped,
+    truncated: list.length > shareTrackMax(),
+  };
+}
+
+// "MDRP1:<base64url(gzip(json))>". The magic is a version stamp so a reader
+// can reject a blob it does not understand instead of guessing, and so the
+// schema can change without every old file becoming ambiguous.
+function encodeSharePayload(doc) {
+  const gz = zlib.gzipSync(Buffer.from(JSON.stringify(doc), "utf8"), { level: 9 });
+  return shareMagic() + ":" + gz.toString("base64url");
+}
+
+// Turn a playlist's tracks into a shareable blob.
+// body: { name, annotation?, tracks: [{title, artist, album, track_no, ...}] }
+app.post("/api/share/encode", (req, res) => {
+  const body = req.body || {};
+  if (!Array.isArray(body.tracks) || !body.tracks.length) {
+    return res.status(400).json({ error: "tracks required" });
+  }
+  try {
+    const built = buildShareDoc({ name: body.name, annotation: body.annotation }, body.tracks);
+    if (!built.track_count) {
+      return res.status(400).json({ error: "None of those tracks had a title to share" });
+    }
+    const blob = encodeSharePayload(built.doc);
+    res.json({
+      blob,
+      bytes: Buffer.byteLength(blob, "utf8"),
+      track_count: built.track_count,
+      skipped: built.skipped,
+      truncated: built.truncated,
+    });
+  } catch (e) {
+    console.warn("[share] encode failed:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
@@ -6729,7 +6930,10 @@ app.get("/api/playlist", async (req, res) => {
       index:    i,
       title:    stripTrackNumber(t.title),
       subtitle: t.subtitle || "",
-      image_key: t.image_key || null
+      image_key: t.image_key || null,
+      // Usually null here — a playlist is not an album, so Roon rarely numbers
+      // its rows. Carried anyway because export reads this shape.
+      track_no: trackNumberOf(t.title)
     }));
     res.json({
       title: item.title || "", subtitle: item.subtitle || "",

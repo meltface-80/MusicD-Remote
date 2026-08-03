@@ -89,6 +89,11 @@
   // the server's 100 default can't silently apply, which is exactly what made
   // a 1,179-album playlist queue 100 and report success (v1.7.17).
   const SMART_SEND_MAX = 400;
+  // Most albums a Share will expand before it stops. Each one costs ~5 Roon
+  // browse calls to read its tracks, so this is a time budget, not a taste
+  // judgement: 100 albums is roughly 500 calls. The sheet always reports what
+  // it left out (v1.7.17's lesson — a silent cap reads as success).
+  const SHARE_ALBUM_MAX = 100;
   let albumSelectMode = false;
   let albumSelected = [];          // [{offset,title,subtitle}] albums chosen in select mode
   // The filter that the currently-open album modal belongs to. Usually the
@@ -982,24 +987,39 @@
       }
     };
 
-    if (j.can_play) {
+    const tracks = (j && j.tracks) || [];
+
+    if (j.can_play || tracks.length) {
       const actions = document.createElement("div");
       actions.className = "playlist-actions";
-      for (const [label, kind, cls] of [
-        ["Play now", "play_now", "action-btn primary"],
-        ["Queue",    "queue",    "action-btn"],
-      ]) {
-        const b = document.createElement("button");
-        b.type = "button"; b.className = cls;
-        b.textContent = label;
-        b.addEventListener("click", () => act("/api/playlist/play",
-          { offset: p.offset, title: p.title || "", kind }, b));
-        actions.appendChild(b);
+      if (j.can_play) {
+        for (const [label, kind, cls] of [
+          ["Play now", "play_now", "action-btn primary"],
+          ["Queue",    "queue",    "action-btn"],
+        ]) {
+          const b = document.createElement("button");
+          b.type = "button"; b.className = cls;
+          b.textContent = label;
+          b.addEventListener("click", () => act("/api/playlist/play",
+            { offset: p.offset, title: p.title || "", kind }, b));
+          actions.appendChild(b);
+        }
+      }
+      if (tracks.length) {
+        const s = document.createElement("button");
+        s.type = "button"; s.className = "action-btn"; s.textContent = "Share";
+        s.addEventListener("click", () => shareTracks(p.title || "Playlist",
+          // A Roon playlist row carries the track and its artist, but no album
+          // — Roon does not put one on the row. The `album` slot is left empty
+          // rather than guessed at, so an importer knows it was never told.
+          tracks.map(t => ({
+            title: t.title, artist: t.subtitle, track_no: t.track_no
+          })), s));
+        actions.appendChild(s);
       }
       wrap.appendChild(actions);
     }
 
-    const tracks = (j && j.tracks) || [];
     if (!tracks.length) {
       const note = document.createElement("div");
       note.className = "playlist-empty";
@@ -1261,6 +1281,109 @@
     back.addEventListener("click", (e) => { if (e.target === back) close(); });
     back.appendChild(sheet);
     document.body.appendChild(back);
+  }
+
+  // ----- Sharing a playlist -------------------------------------------------
+  // What leaves the app is a DESCRIPTION of the music, never audio and never
+  // anything else: the entries below are built field-by-field from the rows on
+  // screen. Nothing is forwarded wholesale from a server response, so an export
+  // cannot pick up a field it was never meant to carry.
+  //
+  // See docs/design/playlist-sharing.md.
+
+  // Ask the server to turn entries into a share blob, then show it.
+  async function shareTracks(name, entries, btn) {
+    if (!entries.length) { showToast("Nothing to share yet", "error"); return; }
+    if (btn) btn.disabled = true;
+    try {
+      const r = await fetch("/api/share/encode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name, tracks: entries })
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { showToast(j.error || "Couldn't build the share file", "error"); return; }
+      openShareSheet(name, j);
+    } catch (e) {
+      showToast("Couldn't reach the extension", "error");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  // The blob, plus the two ways to get it off this device. Everything the user
+  // is told here is a fact from the response — how many tracks went in, and
+  // what was left out — because a share file that quietly dropped half a
+  // playlist is worse than one that refused to build.
+  function openShareSheet(name, j) {
+    openLibSheet("Share " + name, (body) => {
+      const sum = document.createElement("div");
+      sum.className = "share-sum";
+      const n = j.track_count || 0;
+      let text = `${n} track${n === 1 ? "" : "s"}`;
+      if (j.truncated)   text += " — stopped at the sharing limit";
+      if (j.skipped)     text += `; ${j.skipped} had no title and were left out`;
+      sum.textContent = text;
+      body.appendChild(sum);
+
+      const note = document.createElement("div");
+      note.className = "share-note";
+      note.textContent =
+        "This describes the music, not the music itself. Whoever imports it " +
+        "gets whatever their own library or streaming service can match.";
+      body.appendChild(note);
+
+      // readOnly rather than disabled: the text must stay selectable so a
+      // long-press copy works where the Clipboard API doesn't.
+      const ta = document.createElement("textarea");
+      ta.className = "share-blob";
+      ta.id = "share-blob";
+      ta.readOnly = true;
+      ta.rows = 4;
+      ta.value = j.blob || "";
+      body.appendChild(ta);
+    }, (foot, close) => {
+      const copy = document.createElement("button");
+      copy.type = "button"; copy.className = "action-btn primary";
+      copy.textContent = "Copy";
+      copy.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(j.blob || "");
+          showToast("Copied — paste it to whoever you're sharing with");
+        } catch (e) {
+          // Clipboard access is refused on non-secure origins and by some
+          // mobile browsers. Selecting the text is the fallback that always
+          // works, so say that rather than failing silently.
+          const ta = document.getElementById("share-blob");
+          if (ta) { ta.focus(); ta.select(); }
+          showToast("Couldn't copy — the text is selected, copy it by hand", "error");
+        }
+      });
+      foot.appendChild(copy);
+
+      const dl = document.createElement("button");
+      dl.type = "button"; dl.className = "action-btn";
+      dl.textContent = "Download";
+      dl.addEventListener("click", () => {
+        const safe = (name || "playlist").replace(/[^a-z0-9]+/gi, "_").slice(0, 60);
+        const blob = new Blob([j.blob || ""], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = safe + ".musicd";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        // Revoking immediately can race the download on some browsers.
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+      });
+      foot.appendChild(dl);
+
+      const done = document.createElement("button");
+      done.type = "button"; done.className = "action-btn";
+      done.textContent = "Done";
+      done.addEventListener("click", close);
+      foot.appendChild(done);
+    });
   }
 
   // Roon ARC's sort popover, in this app's bottom-sheet language: a plain list
@@ -1613,6 +1736,7 @@
     mkBtn("Play now", "action-btn primary", (b) => playSmartPlaylist(sp, "play_now", b));
     mkBtn("Queue",    "action-btn",         (b) => playSmartPlaylist(sp, "queue", b));
     mkBtn("Send to Roon", "action-btn",     (b) => sendSmartPlaylistToRoon(sp, b));
+    mkBtn("Share",    "action-btn",         (b) => shareThis(b));
     mkBtn("Edit",     "action-btn",         () => editSmartPlaylist(sp));
     mkBtn("Delete",   "action-btn",         () => deleteSmartPlaylist(sp));
     wrap.appendChild(actions);
@@ -1635,7 +1759,11 @@
     // Tracks are paged by ALBUM: each one has to be opened on the Core, so the
     // screen fills a batch at a time rather than stalling on a long playlist.
     let albumOffset = 0, loading = false, done = false, shown = 0;
-    const loadPage = async () => {
+    // The tracks as data, alongside the rows on screen. Share needs the values,
+    // not the rendered text, and re-reading them out of the DOM would mean
+    // parsing back a string this code already had.
+    const loaded = [];
+    const loadPageOnce = async () => {
       if (loading || done) return;
       loading = true;
       more.disabled = true;
@@ -1655,7 +1783,7 @@
           return;
         }
 
-        for (const t of (j.tracks || [])) ol.appendChild(smartTrackRow(t));
+        for (const t of (j.tracks || [])) { ol.appendChild(smartTrackRow(t)); loaded.push(t); }
         shown += (j.tracks || []).length;
         albumOffset += (j.albums_expanded || 0);
         done = !!j.done || !(j.albums_expanded > 0);
@@ -1673,6 +1801,45 @@
         more.disabled = false;
       }
     };
+
+    // Awaiting a load that is ALREADY running has to mean "wait for it", not
+    // "do nothing" — otherwise Share, tapped while the first page is still in
+    // flight, sees `loading`, returns instantly and finds an empty list.
+    let inflight = null;
+    const loadPage = () => {
+      if (loading) return inflight || Promise.resolve();
+      inflight = loadPageOnce();
+      return inflight;
+    };
+    // Share has to expand the albums it hasn't read yet — a smart playlist is a
+    // query, and until an album is opened on the Core we don't know its tracks.
+    // That is the same paging the "Load more" button drives, run to completion
+    // with the progress visible, because a share that silently covered the
+    // first 40 albums of 300 would be indistinguishable from a complete one.
+    async function shareThis(btn) {
+      btn.disabled = true;
+      try {
+        while (!done && albumOffset < SHARE_ALBUM_MAX) {
+          const before = albumOffset;
+          showToast(`Reading album ${albumOffset + 1}…`, null, TOAST_REPORT_MS);
+          await loadPage();
+          // Leaving the screen orphans the page; stop rather than keep hammering
+          // the Core for a view the user is no longer looking at.
+          if (!smartDetailActive || mySeq !== smartSeq) return;
+          // No forward progress means the page failed or the playlist ended
+          // without saying so. Either way, looping again would never terminate.
+          if (albumOffset === before) break;
+        }
+        if (!loaded.length) { showToast("Nothing in this playlist to share", "error"); return; }
+        await shareTracks(sp.name || "Smart playlist", loaded.map(t => ({
+          title: t.title, artist: t.subtitle,
+          album: t.album_title, track_no: t.track_no
+        })), null);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
     more.addEventListener("click", loadPage);
     loadPage();
   }

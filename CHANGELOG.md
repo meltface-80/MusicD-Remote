@@ -2,6 +2,43 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.19] — 2026-08-03
+
+First half of playlist sharing: **export**. A playlist leaves the app as a description of the
+music — never the audio — so that another MusicD Remote user can import it and have it resolved
+against their own library or streaming service. Import is the next phase; see
+`docs/design/playlist-sharing.md` for the whole design and the research behind it.
+
+### Added
+- **Share on a Roon playlist and on a smart playlist.** Produces a `MDRP1:` blob (gzipped,
+  base64url) that can be copied into a message or downloaded as a `.musicd` file.
+- **The format is JSPF**, the JSON serialisation of XSPF, in the dialect ListenBrainz uses — the
+  only formally specified open playlist interchange format, and its MusicBrainz extension
+  namespaces give real slots for identifiers instead of a bespoke schema. M3U was rejected on
+  capability, not taste: it has nowhere to put an identifier of any kind, which makes it useless
+  to a streaming-only library.
+- **Identifier slots are present from day one** — ISRC, UPC, service ids, MusicBrainz URIs,
+  duration — and populated whenever we have them. We have none yet. They exist anyway because a
+  share file is forever: a reader written against this format must keep working once exports
+  start carrying IDs, and that cannot be retrofitted to files already sent.
+- **Track numbers are now recovered** from the `"N. "` prefix Roon puts on track titles.
+  `stripTrackNumber()` was discarding it, and Roon's browse API exposes no track-number field of
+  its own — so this prefix was the only place it existed, and it is the one piece of hard identity
+  an export can carry today at no cost.
+
+### Notes
+- A smart playlist is a **query**, so its tracks do not exist until each album has been opened on
+  the Core. Share finishes the paging the "Load more" button drives, with progress shown, capped
+  at 100 albums — and reports what it left out rather than looking complete.
+- Share reports skipped and truncated counts in the sheet. An export that quietly dropped half a
+  playlist is worse than one that refused to build.
+- Fixed while building: tapping Share while the first page of a smart playlist was still loading
+  saw "already loading", returned instantly and shared nothing. Awaiting a load that is already
+  running now means waiting for it.
+- A Roon playlist row carries the track and its artist but **no album** — Roon does not put one on
+  the row. That slot is left absent rather than guessed, so an importer can tell it was never
+  told, instead of concluding the album is empty.
+
 ## [1.7.18] — 2026-08-03
 
 Review findings against v1.7.17. Raising the album cap to 400 made four latent problems

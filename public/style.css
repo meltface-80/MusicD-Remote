@@ -3410,6 +3410,20 @@ input.vol-range::-moz-range-thumb {
   flex: 0 0 auto;
 }
 .lib-sheet-foot .action-btn { flex: 1 1 0; }
+/* Share sheet — the blob is the payload, so it gets the room and the monospace
+   face; everything above it is the honest accounting of what went in. */
+.share-sum { font-weight: 600; margin: 4px 0 6px; }
+.share-note { color: var(--text-dim); font-size: 0.86rem; margin-bottom: 10px; }
+.share-blob {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem; line-height: 1.35;
+  padding: 8px; border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev); color: var(--text);
+  /* Long unbroken base64 must wrap, or the sheet scrolls sideways. */
+  word-break: break-all; white-space: pre-wrap;
+}
 /* Sort rows — ARC's layout: a fixed arrow column, then the label. The arrow
    is present only on the selected row, and tapping that row flips it. */
 .lib-sort-row {

@@ -329,7 +329,7 @@ test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concur
 
   await t.test("it offers the same actions an album does, plus edit and delete", () => {
     assert.deepEqual(r.action_buttons,
-      ["Play now", "Queue", "Send to Roon", "Edit", "Delete"]);
+      ["Play now", "Queue", "Send to Roon", "Share", "Edit", "Delete"]);
   });
 
   await t.test("Send to Roon queues the albums and says what to do next", () => {
