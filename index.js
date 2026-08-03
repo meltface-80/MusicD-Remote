@@ -6532,7 +6532,12 @@ app.get("/api/smart-playlist/albums", async (req, res) => {
     await ensureAlbumIndex();
     if (!isIndexBuilt()) return res.status(503).json({ error: "Library index is still building" });
     const view = libraryView(sp.view);
-    const max = Math.max(1, Math.min(200, parseInt(req.query.max, 10) || 100));
+    // Ceiling, not a suggestion: each album costs ~7 Roon browse calls inside
+    // /api/play-multi, and Roon's own queue gives out somewhere around 5,000
+    // tracks (community-reported). 400 albums is ~4,400 tracks and ~2,800 calls
+    // — past that the single HTTP request stops being reasonable. The response
+    // always reports `total`, so a caller can tell the user what it left out.
+    const max = Math.max(1, Math.min(400, parseInt(req.query.max, 10) || 100));
     res.json({
       id: sp.id, name: sp.name,
       albums: view.slice(0, max).map(a => ({

@@ -61,9 +61,12 @@ function stubFor(initial) {
 window.__smart = ${JSON.stringify(initial)};
 window.__posts = [];
 window.__pageCalls = [];
+window.__albumCalls = [];
 try { localStorage.setItem("rra-zone", "z1"); } catch (e) {}
 window.__installFetch(function (url, opts) {
   if (url.indexOf("/api/smart-playlist/albums") > -1) {
+    window.__albumCalls.push(url.replace(/^.*\\/api\\//, "/api/"));
+    // Two albums returned out of a stated total of 3 — the truncated case.
     return window.__json({ id: "sp1", name: "Nineties, unheard", total: 3, albums: [
       { offset: 10, title: "Perfect From Now On", subtitle: "Built to Spill", image_key: "art10" },
       { offset: 20, title: "Goo", subtitle: "Sonic Youth", image_key: null }
@@ -173,6 +176,7 @@ const DRIVER_MAIN = OPEN_WALL + `
   Array.prototype.filter.call(document.querySelectorAll(".playlist-actions button"),
     function (b) { return b.textContent === "Play now"; })[0].click();
   await window.__sleep(600);
+  T("toast_after_play", (document.querySelector(".toast") || {}).textContent || "");
 
   // Send to Roon: fills the queue so Roon's own "save queue as playlist" can
   // finish the job the API refuses to do.
@@ -191,6 +195,7 @@ const DRIVER_MAIN = OPEN_WALL + `
   document.querySelectorAll(".playlist-tracks .track-row")[1].click();
   await window.__sleep(500);
   T("posts", window.__posts);
+  T("album_calls", window.__albumCalls.slice());
 `;
 
 const DRIVER_EDIT = OPEN_WALL + `
@@ -312,6 +317,22 @@ test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concur
       "the queue must be built in the saved view's order");
     assert.match(String(r.toast_after_send), /save the queue as a playlist in Roon/i,
       "the user must be told the step only Roon can do");
+  });
+
+  await t.test("a capped Play/Queue says how many of how many (v1.7.17)", () => {
+    // The cap used to be silent AND low: the client asked for no `max`, the
+    // server defaulted to 100, and a 1,179-album playlist queued 100 while the
+    // toast said "Playing <name>". Both halves are asserted here — the ceiling
+    // that is actually requested, and the count that is actually reported.
+    assert.equal(r.album_calls.length, 2, "Play now and Send to Roon each resolve the albums");
+    for (const u of r.album_calls) {
+      assert.match(u, /max=400/, "the client must ask for the full ceiling, not the default 100");
+    }
+    // The stub hands back 2 albums of a stated 3, so both toasts must own up.
+    assert.match(String(r.toast_after_play), /2 of 3 albums/,
+      "a truncated Play now must say how much of the playlist it started");
+    assert.match(String(r.toast_after_send), /2 of 3 albums/,
+      "a truncated Send to Roon must say how much of the playlist reached the queue");
   });
 
   await t.test("Play now goes through play-multi; a track plays from its album", () => {

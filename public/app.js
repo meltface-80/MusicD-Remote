@@ -1739,7 +1739,7 @@
     if (!zone) { showToast("Choose a zone first", "error"); return; }
     btn.disabled = true;
     try {
-      const r = await fetch(`/api/smart-playlist/albums?id=${encodeURIComponent(sp.id)}`,
+      const r = await fetch(`/api/smart-playlist/albums?id=${encodeURIComponent(sp.id)}&max=400`,
                             { cache: "no-store" });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { showToast(j.error || "Couldn't read this playlist", "error"); return; }
@@ -1754,8 +1754,13 @@
         })
       });
       const pj = await pr.json().catch(() => ({}));
-      if (!pr.ok) showToast(pj.error || "Roon refused that", "error");
-      else showToast(kind === "queue" ? `Queued ${albums.length} albums` : `Playing ${sp.name}`);
+      if (!pr.ok) { showToast(pj.error || "Roon refused that", "error"); return; }
+      // Say how many of how many. The cap used to be silent, so a 1,179-album
+      // playlist queued 100 and looked like it had queued everything.
+      const verb = kind === "queue" ? "Queued" : "Playing";
+      showToast(albums.length < j.total
+        ? `${verb} ${albums.length} of ${j.total} albums — that's the limit per go`
+        : `${verb} ${albums.length} album${albums.length === 1 ? "" : "s"}`);
     } catch (e) {
       showToast("Couldn't reach the extension", "error");
     } finally {
@@ -1785,7 +1790,7 @@
 
     btn.disabled = true;
     try {
-      const r = await fetch(`/api/smart-playlist/albums?id=${encodeURIComponent(sp.id)}&max=200`,
+      const r = await fetch(`/api/smart-playlist/albums?id=${encodeURIComponent(sp.id)}&max=400`,
                             { cache: "no-store" });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { showToast(j.error || "Couldn't read this playlist", "error"); return; }
@@ -1805,7 +1810,10 @@
       });
       const pj = await pr.json().catch(() => ({}));
       if (!pr.ok) { showToast(pj.error || "Roon refused that", "error"); return; }
-      showToast(`Queued ${albums.length} albums — now save the queue as a playlist in Roon`);
+      showToast(albums.length < j.total
+        ? `Queued ${albums.length} of ${j.total} albums (the limit per go) — now save the ` +
+          "queue as a playlist in Roon"
+        : `Queued ${albums.length} albums — now save the queue as a playlist in Roon`);
     } catch (e) {
       showToast("Couldn't reach the extension", "error");
     } finally {

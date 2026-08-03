@@ -2,6 +2,29 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.17] — 2026-08-03
+
+### Fixed
+- **Playing a large smart playlist silently queued only 100 albums.** `/api/smart-playlist/albums`
+  defaulted to 100 albums and clamped at 200, and the Play now / Queue buttons asked for no limit
+  at all — so a 1,179-album playlist put 100 albums in the Roon queue while the toast said
+  "Playing <name>", exactly as if it had queued everything. Both halves are fixed: the client now
+  requests the full ceiling, and the ceiling is 400 albums (~4,400 tracks, near Roon's own queue
+  limit) instead of 200.
+- **The cap is no longer silent.** When a playlist is larger than one go can take, Play now, Queue
+  and Send to Roon now report `Playing 400 of 1179 albums — that's the limit per go` rather than a
+  bare success. Send to Roon says the same before repeating its "save the queue as a playlist in
+  Roon" instruction.
+- **`Play now` swallowed server errors.** A failed `/api/play-multi` showed the error toast and
+  then fell through to the success toast, so a refusal read as a success. It now returns on error,
+  matching every other caller.
+
+### Class of error
+A limit that is applied but never reported. The code was correct at every step — the server capped
+honestly, the client rendered what it got — but nothing in the chain told the user that what
+happened was smaller than what was asked for. The regression test now pins both the requested
+ceiling and the reported count, and both halves were mutation-checked.
+
 ## [1.7.16] — 2026-07-30
 
 Review findings against v1.7.6–v1.7.15. Five confirmed defects, all introduced by the playlist
