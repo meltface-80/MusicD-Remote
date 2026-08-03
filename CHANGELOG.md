@@ -2,6 +2,33 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.20] — 2026-08-03
+
+### Fixed
+- **Qobuz stayed in the side menu and the top bar after logging out.** The Qobuz controls were
+  gated on the connection in exactly one place — the Disconnect button inside Settings. The
+  top-bar Qobuz button and the side-menu entry were never touched, and `loadQobuzStatus()` was
+  never called at boot, so it only ran when Settings was opened. The result: after disconnecting
+  the account, the Qobuz browser was still one tap away, and every catalogue call behind it threw
+  "Qobuz not connected".
+- Both surfaces now start hidden and are toggled on the connection, and the status loads at boot
+  rather than waiting for someone to open Settings. Tidal already worked this way — it was built
+  second and got the wiring; Qobuz came first and never had it retrofitted.
+
+### Class of error
+A second implementation of the same idea, done properly, while the first was left behind. Nothing
+about the Qobuz code was wrong on its own terms — it did what it had always done. The bug was that
+"a disconnected service disappears" became the rule when Tidal shipped, and Qobuz was never held
+to it. The new test holds *both* services to the rule, in both directions, so a third service
+cannot be added with half the wiring either.
+
+### Not changed (checked, already correct)
+The badge and album paths were verified rather than assumed: disconnecting clears the cached
+Qobuz album keys and `refreshStreamAlbumKeys` skips Qobuz entirely without credentials, so source
+badges do go; every Qobuz catalogue call routes through `qobuzWithToken`, which refuses without a
+token; and the global search skips a service that returned nothing. Albums that came from Qobuz
+and remain in the Roon library are Roon's own state, not the extension's cache.
+
 ## [1.7.19] — 2026-08-03
 
 First half of playlist sharing: **export**. A playlist leaves the app as a description of the

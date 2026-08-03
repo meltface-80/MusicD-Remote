@@ -6381,7 +6381,14 @@
   const qobuzConnect    = document.getElementById("qobuz-connect");
   const qobuzDisconnect = document.getElementById("qobuz-disconnect");
   const qobuzStatus     = document.getElementById("qobuz-status");
+  const qobuzTopbarBtn  = document.getElementById("qobuz-toggle");
+  const qobuzMenuItem   = document.getElementById("menu-item-qobuz");
 
+  // Gates the Qobuz controls on the connection, exactly as loadTidalStatus
+  // does. This used to toggle the Disconnect button ALONE, so the top-bar
+  // button and the side-menu entry stayed visible after logging out — the
+  // Qobuz browser remained one tap away from an account that no longer
+  // existed, and every catalogue call behind it threw "not connected".
   async function loadQobuzStatus() {
     try {
       const r = await fetch("/api/settings/qobuz");
@@ -6390,6 +6397,12 @@
         ? ("Connected" + (j.displayName ? " as " + j.displayName : ""))
         : "Not connected";
       if (qobuzDisconnect) qobuzDisconnect.classList.toggle("hidden", !j.connected);
+      if (qobuzTopbarBtn) qobuzTopbarBtn.classList.toggle("hidden", !j.connected);
+      if (qobuzMenuItem)  qobuzMenuItem.classList.toggle("hidden", !j.connected);
+      // Deliberately NOT force-closing an open Qobuz browser: hideOverlay() is
+      // reachable only from the popstate handler so viewStack and the history
+      // stack cannot drift, and the overlay already renders its own
+      // not-connected state on the next request.
     } catch (_) { /* display-only status — stale on failure is fine */ }
   }
 
@@ -6599,8 +6612,10 @@
     });
   }
 
-  // Boot-time gate: the topbar Tidal button must appear (when connected)
-  // without the user ever opening Settings.
+  // Boot-time gate: the topbar Qobuz and Tidal buttons — and their side-menu
+  // entries — must reflect the connection without the user ever opening
+  // Settings. Qobuz was missing from this and so was never gated at all.
+  loadQobuzStatus();
   loadTidalStatus();
 
   // Settings is a two-level view: a category home list and one pane per

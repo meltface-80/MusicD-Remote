@@ -88,7 +88,7 @@
         <!-- Qobuz "Q" logomark (Arcticons, CC BY 4.0) — 48-unit viewBox, so the
              3.6 stroke renders at the same visual weight as the 1.8 strokes
              on the neighbouring 24-unit icons. -->
-        <button id="qobuz-toggle" class="icon-btn" aria-label="Qobuz" title="Qobuz">
+        <button id="qobuz-toggle" class="icon-btn hidden" aria-label="Qobuz" title="Qobuz">
           <svg width="20" height="20" viewBox="0 0 48 48" fill="none" stroke="currentColor"
                stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M39.203 39.203A21.43 21.43 0 0 0 45.5 24c0-11.874-9.626-21.5-21.5-21.5S2.5 12.126 2.5 24S12.126 45.5 24 45.5c4.89 0 9.4-1.633 13.012-4.383"/>
@@ -193,7 +193,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
           <span>Labels</span>
         </button>
-        <button class="menu-item" type="button" data-target="qobuz-toggle">
+        <button class="menu-item hidden" type="button" data-target="qobuz-toggle" id="menu-item-qobuz">
           <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M39.203 39.203A21.43 21.43 0 0 0 45.5 24c0-11.874-9.626-21.5-21.5-21.5S2.5 12.126 2.5 24S12.126 45.5 24 45.5c4.89 0 9.4-1.633 13.012-4.383"/><circle cx="24" cy="24" r="4.873"/><path d="M32.944 32.944L45.5 45.5"/></svg>
           <span>Qobuz</span>
         </button>
