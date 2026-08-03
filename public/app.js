@@ -2131,7 +2131,7 @@
   }
 
   // Returns null on failure, [] for a genuinely empty list. The caller must tell
-  // them apart: rendering "No smart playlists yet" after a network blip reads as
+  // them apart: rendering "No dynamic playlists yet" after a network blip reads as
   // "your saved playlists are gone".
   async function fetchSmartPlaylists() {
     try {
@@ -2147,8 +2147,8 @@
   function saveSmartPlaylistPrompt(existing) {
     // NOT describeLibView(): using the description as the default name printed
     // the same string as both the row's title and its subtitle.
-    const suggested = (existing && existing.name) || "My smart playlist";
-    const name = window.prompt("Name this smart playlist", suggested);
+    const suggested = (existing && existing.name) || "My dynamic playlist";
+    const name = window.prompt("Name this dynamic playlist", suggested);
     if (name === null) return;                 // cancelled
     const trimmed = String(name).trim();
     if (!trimmed) { showToast("Give it a name", "error"); return; }
@@ -2178,19 +2178,19 @@
   // open the library wall with the view applied, which was the query working
   // correctly but reading as "it just took me to the library".
   async function showSmartPlaylists() {
-    enterFullWall("Smart playlists");
+    enterFullWall("Dynamic playlists");
     smartWallActive = true;
     const mySeq = ++smartSeq;
     const list = await fetchSmartPlaylists();
     if (!smartWallActive || mySeq !== smartSeq) return;
     grid.innerHTML = "";
     if (list === null) {
-      setBanner("Couldn't read your smart playlists — the extension didn't answer. " +
+      setBanner("Couldn't read your dynamic playlists — the extension didn't answer. " +
                 "They're still saved; try again.", true);
       return;
     }
     if (!list.length) {
-      setBanner("No smart playlists yet — set a sort and focus on the Library screen, " +
+      setBanner("No dynamic playlists yet — set a sort and focus on the Library screen, " +
                 "then use Focus → Save as…", false);
       return;
     }
@@ -2216,7 +2216,7 @@
   window.__showSmartPlaylists = showSmartPlaylists;
 
   async function openSmartPlaylist(sp) {
-    enterFullWall(sp.name || "Smart playlist");
+    enterFullWall(sp.name || "Dynamic playlist");
     smartDetailActive = true;
     const mySeq = ++smartSeq;
 
@@ -2229,7 +2229,7 @@
 
     const back = document.createElement("button");
     back.type = "button"; back.className = "action-btn playlist-back";
-    back.textContent = "← Smart playlists";
+    back.textContent = "← Dynamic playlists";
     back.addEventListener("click", () => { smartDetailActive = false; showSmartPlaylists(); });
     wrap.appendChild(back);
 
@@ -2237,7 +2237,7 @@
     head.className = "playlist-head";
     const h = document.createElement("h2");
     h.className = "playlist-title";
-    h.textContent = sp.name || "Smart playlist";
+    h.textContent = sp.name || "Dynamic playlist";
     head.appendChild(h);
     const sub = document.createElement("div");
     sub.className = "playlist-sub";
@@ -2315,7 +2315,7 @@
         done = !!j.done || !(j.albums_expanded > 0);
         status.textContent = done
           ? (shown ? `${shown} track${shown === 1 ? "" : "s"} from ${j.album_total} album${j.album_total === 1 ? "" : "s"}`
-                   : "Nothing in your library matches this smart playlist right now.")
+                   : "Nothing in your library matches this dynamic playlist right now.")
           : `${shown} tracks so far — ${j.album_total - albumOffset} album(s) left`;
         more.classList.toggle("hidden", done);
       } catch (e) {
@@ -2366,7 +2366,7 @@
         // page 4 of 40 was indistinguishable from finishing: `done` went true
         // either way, the loop exited, and the sheet announced a complete
         // share of 10% of the playlist.
-        await shareTracks(sp.name || "Smart playlist", loaded.map(t => ({
+        await shareTracks(sp.name || "Dynamic playlist", loaded.map(t => ({
           title: t.title, artist: t.subtitle,
           album: t.album_title, track_no: t.track_no
         })), null, {
@@ -2459,7 +2459,7 @@
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { showToast(j.error || "Couldn't read this playlist", "error"); return; }
       const albums = (j.albums || []);
-      if (!albums.length) { showToast("Nothing matches this smart playlist", "error"); return; }
+      if (!albums.length) { showToast("Nothing matches this dynamic playlist", "error"); return; }
       const pr = await fetch("/api/play-multi", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2519,7 +2519,7 @@
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { showToast(j.error || "Couldn't read this playlist", "error"); return; }
       const albums = j.albums || [];
-      if (!albums.length) { showToast("Nothing matches this smart playlist", "error"); return; }
+      if (!albums.length) { showToast("Nothing matches this dynamic playlist", "error"); return; }
 
       const pr = await fetch("/api/play-multi", {
         method: "POST",
@@ -2568,7 +2568,7 @@
   }
 
   async function deleteSmartPlaylist(sp) {
-    const ok = await confirmDialog(`Delete the smart playlist "${sp.name}"?`);
+    const ok = await confirmDialog(`Delete the dynamic playlist "${sp.name}"?`);
     if (!ok) return;
     try {
       const r = await fetch("/api/smart-playlists/delete", {

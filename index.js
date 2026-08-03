@@ -6491,7 +6491,7 @@ app.get("/api/smart-playlist", async (req, res) => {
   const id = String(req.query.id || "").trim();
   if (!id) return res.status(400).json({ error: "id required" });
   const sp = loadSmartPlaylists().find(p => p.id === id);
-  if (!sp) return res.status(404).json({ error: "No such smart playlist" });
+  if (!sp) return res.status(404).json({ error: "No such dynamic playlist" });
 
   const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
   const count  = Math.max(1, Math.min(SMART_ALBUM_PAGE,
@@ -6557,7 +6557,7 @@ app.get("/api/smart-playlist/albums", async (req, res) => {
   const id = String(req.query.id || "").trim();
   if (!id) return res.status(400).json({ error: "id required" });
   const sp = loadSmartPlaylists().find(p => p.id === id);
-  if (!sp) return res.status(404).json({ error: "No such smart playlist" });
+  if (!sp) return res.status(404).json({ error: "No such dynamic playlist" });
   try {
     await ensureAlbumIndex();
     if (!isIndexBuilt()) return res.status(503).json({ error: "Library index is still building" });
@@ -7158,7 +7158,7 @@ app.post("/api/smart-playlists/delete", (req, res) => {
   if (!id) return res.status(400).json({ error: "id required" });
   const list = loadSmartPlaylists();
   const next = list.filter(p => p.id !== id);
-  if (next.length === list.length) return res.status(404).json({ error: "No such smart playlist" });
+  if (next.length === list.length) return res.status(404).json({ error: "No such dynamic playlist" });
   if (!saveSmartPlaylists(next)) return res.status(500).json({ error: "Couldn't save" });
   console.log(`[smart] deleted ${id}`);
   res.json({ ok: true, playlists: next });

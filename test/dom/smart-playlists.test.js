@@ -130,8 +130,10 @@ const OPEN_WALL = `
   await window.__sleep(200);
   var entry = document.querySelector('[data-action="smart-playlists"]');
   T("menu_entry_exists", !!entry);
+  T("menu_entry_label", entry ? (entry.querySelector("span") || {}).textContent || "" : "");
   entry.click();
   await window.__sleep(700);
+  T("wall_heading", (document.getElementById("album-count") || {}).textContent || "");
   function tiles() {
     return Array.prototype.map.call(document.querySelectorAll("#album-grid .album"), function (b) {
       var w = b.querySelector(".album-art-wrap");
@@ -149,6 +151,7 @@ const DRIVER_MAIN = OPEN_WALL + `
   document.querySelectorAll("#album-grid .album")[0].click();
   await window.__sleep(800);
   T("detail_open", !!document.querySelector(".playlist-detail"));
+  T("detail_back_label", (document.querySelector(".playlist-back") || {}).textContent || "");
   T("detail_title", (document.querySelector(".playlist-title") || {}).textContent || "");
   T("page_calls", window.__pageCalls.slice());
 
@@ -292,6 +295,17 @@ test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concur
     name: "smart-big-send", windowSize: "390x844",
   });
   harness.assertNoPageError(assert, big);
+
+  await t.test("they are called Dynamic playlists on screen (v1.7.24)", () => {
+    // The internal name stays `smart` — the persisted settings key, the routes
+    // and every identifier — so this is the only place the rename is visible,
+    // and the only place it can silently drift back.
+    assert.equal(r.menu_entry_label, "Dynamic playlists");
+    assert.match(String(r.wall_heading), /Dynamic playlists/);
+    assert.doesNotMatch(String(r.menu_entry_label), /smart/i);
+    assert.doesNotMatch(String(r.detail_back_label), /smart/i);
+    assert.match(String(r.detail_back_label), /Dynamic playlists/);
+  });
 
   await t.test("the side menu shows a wall of tiles, not a sheet", () => {
     assert.equal(r.menu_entry_exists, true);

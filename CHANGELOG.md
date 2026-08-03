@@ -2,6 +2,20 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.24] — 2026-08-03
+
+### Changed
+- **Smart playlists are now called Dynamic playlists** everywhere they appear: the side menu, the
+  wall heading, the Back button, the naming prompt, the empty state, every toast and confirm, and
+  the server's error text.
+
+### Not renamed, deliberately
+The internal name stays `smart` — the `smartPlaylists` key in settings.json, the
+`/api/smart-playlist*` routes, the `sp_` record ids and every identifier in the source. Renaming
+the persisted key would drop every existing dynamic playlist unless a migration shipped with it,
+and that is real risk for a cosmetic change. The rename is skin-deep on purpose, and a new test
+pins the visible name so it cannot silently drift back — the internals were already covered.
+
 ## [1.7.23] — 2026-08-03
 
 The other half of Share: import. Plus the playlist store both it and "Add to playlist" needed.
