@@ -3248,6 +3248,30 @@ input.vol-range::-moz-range-thumb {
 }
 [data-theme="light"] .track-list li.t-row:hover { background: rgba(26,39,64,.05); }
 [data-theme="light"] .track-list li.t-row.is-open { background: rgba(26,39,64,.06); }
+/* Track select target. Hidden until the list is armed, so entering select
+   mode doesn't reflow every row. align-self:center because .track-list li is
+   align-items:flex-start — a two-line row would otherwise top-align it. */
+.t-mark {
+  display: none;
+  flex: 0 0 auto; align-self: center;
+  width: 22px; height: 22px; padding: 0;
+  border: 2px solid var(--text-faint); border-radius: 50%;
+  background: transparent; cursor: pointer;
+  position: relative;
+}
+.track-list.is-selecting .t-mark { display: block; }
+.t-mark:hover { border-color: var(--text-dim); }
+/* The tick appears only once the circle has actually been tapped — a hollow
+   circle means "selectable", a tick means "selected". */
+.t-row.is-picked .t-mark { border-color: var(--accent); background: var(--accent); }
+.t-row.is-picked .t-mark::after {
+  content: ""; position: absolute;
+  left: 5px; top: 1px; width: 6px; height: 11px;
+  border: solid var(--on-accent); border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.t-row.is-picked { background: var(--accent-soft); border-radius: 8px; }
+
 .t-actions {
   flex-basis: 100%;
   display: flex; gap: 8px;
@@ -3410,6 +3434,41 @@ input.vol-range::-moz-range-thumb {
   flex: 0 0 auto;
 }
 .lib-sheet-foot .action-btn { flex: 1 1 0; }
+
+/* Multi-select actions menu. Anchored to its own button rather than to the
+   topbar so it tracks the button wherever the row's flex layout puts it.
+   z-index clears the mini-transport (70) and the album modal (50) — the menu
+   is reachable from the album view, which paints over the topbar entirely. */
+.sel-menu-wrap { position: relative; margin-left: auto; flex: 0 0 auto; }
+.sel-menu-wrap.hidden { display: none; }
+/* When both are present the shuffle button keeps its own right-edge anchor,
+   so the pair sits together instead of splitting across the bar. */
+.sel-menu-wrap:not(.hidden) ~ #topbar-refresh { margin-left: 8px; }
+#select-menu-btn { display: flex; align-items: center; gap: 4px; width: auto; padding: 0 8px; }
+.sel-count {
+  min-width: 20px; height: 20px; padding: 0 5px;
+  border-radius: 10px; background: var(--accent); color: var(--on-accent);
+  font-size: 12px; font-weight: 700; line-height: 20px; text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.sel-menu {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 90;
+  min-width: 200px; padding: 6px;
+  background: var(--bg-elev-2); border: 1px solid var(--border);
+  border-radius: 12px; box-shadow: var(--shadow-modal);
+}
+.sel-menu.hidden { display: none; }
+.sel-menu-title {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--text-faint); padding: 4px 8px 8px;
+}
+.sel-menu-item {
+  display: block; width: 100%; padding: 10px;
+  border: 0; border-radius: 8px; background: transparent;
+  color: var(--text); font-size: 15px; text-align: left; cursor: pointer;
+}
+.sel-menu-item:hover { background: var(--bg-elev); }
+.sel-menu-item[data-sel-act="clear"] { color: var(--text-dim); }
 /* Share sheet — the blob is the payload, so it gets the room and the monospace
    face; everything above it is the honest accounting of what went in. */
 .share-sum { font-weight: 600; margin: 4px 0 6px; }

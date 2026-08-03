@@ -1230,9 +1230,16 @@ async function drillActionMenu(hierarchy, sessionKey, itemKey) {
 // if the library changed since the modal opened, the track is re-matched by
 // title rather than firing whatever now sits at that index; if the title is
 // gone entirely the caller gets a stale error (route maps it to 409).
-async function invokeTrackAction(offset, trackIndex, trackTitle, zoneOrOutputId, kind, filter) {
+// `expect` is the ALBUM's identity ({title, subtitle}). It used to be omitted,
+// which meant albumIdentityMatches() short-circuited to true and the entire
+// stale-offset ladder below loadAlbumSession — relocate in-memory, then live
+// search — was unreachable for a per-track play. That was survivable while the
+// only caller was an album modal opened seconds earlier; it stops being
+// survivable the moment a track reference is stored and replayed later.
+async function invokeTrackAction(offset, trackIndex, trackTitle, zoneOrOutputId, kind, filter, expect) {
   return withBrowseSession(async (sessionKey) => {
-    const { hierarchy, items, playMenu } = await loadAlbumSession(sessionKey, offset, filter);
+    const { hierarchy, items, playMenu } =
+      await loadAlbumSession(sessionKey, offset, filter, expect, zoneOrOutputId);
     const trackItems = items.filter(t => isTrackItem(t, playMenu));
 
     const wanted = normalize(trackTitle || "");
@@ -8661,9 +8668,13 @@ app.post("/api/play", async (req, res) => {
 
 // Play or queue a single track of an album.
 // body { offset, track (index into /api/album's tracks), title, zone_or_output_id, kind }
+// album_title / album_subtitle are OPTIONAL and carry the album's own identity,
+// which lets a drifted offset be relocated instead of playing whatever record
+// now sits at that position. Callers that have it should send it.
 app.post("/api/play-track", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
-  const { offset, track, title, zone_or_output_id, kind } = req.body || {};
+  const { offset, track, title, zone_or_output_id, kind,
+          album_title, album_subtitle } = req.body || {};
   const filter = parseFilter(req.body || {});
   if (!Number.isFinite(offset)) return res.status(400).json({ error: "offset required" });
   if (!Number.isInteger(track) || track < 0) return res.status(400).json({ error: "track index required" });
@@ -8672,7 +8683,11 @@ app.post("/api/play-track", async (req, res) => {
     return res.status(400).json({ error: "kind must be play_now, queue or play_next" });
   }
   try {
-    const r = await invokeTrackAction(offset, track, title || "", zone_or_output_id, kind, filter);
+    const expect = album_title
+      ? { title: String(album_title), subtitle: String(album_subtitle || "") }
+      : null;
+    const r = await invokeTrackAction(offset, track, title || "", zone_or_output_id,
+                                      kind, filter, expect);
     res.json({ ok: true, action: r.invoked, track: r.track });
   } catch (e) {
     // stale = the modal's track list no longer matches the library

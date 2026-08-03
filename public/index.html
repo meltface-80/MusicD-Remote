@@ -144,6 +144,26 @@
           </svg>
         </button>
       </div>
+      <!-- Multi-select actions. Appears only once something is selected, so it
+           never competes for the right edge with the shuffle button in normal
+           use. `.sel-menu-wrap` is position:relative — the dropdown hangs off
+           it rather than off the topbar, so it stays pinned to the button. -->
+      <div id="select-menu-wrap" class="sel-menu-wrap hidden">
+        <button id="select-menu-btn" class="icon-btn" type="button"
+                aria-haspopup="true" aria-expanded="false" aria-label="Actions for selected items">
+          <span id="select-count" class="sel-count">0</span>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 9l6 6 6-6"/>
+          </svg>
+        </button>
+        <div id="select-menu" class="sel-menu hidden" role="menu">
+          <div class="sel-menu-title" id="select-menu-title"></div>
+          <button class="sel-menu-item" type="button" role="menuitem" data-sel-act="play_now">Play now</button>
+          <button class="sel-menu-item" type="button" role="menuitem" data-sel-act="queue">Add to queue</button>
+          <button class="sel-menu-item" type="button" role="menuitem" data-sel-act="clear">Clear selection</button>
+        </div>
+      </div>
       <!-- Reshuffle — shown on the random-album and genre grid screens. -->
       <button id="topbar-refresh" class="icon-btn hidden" aria-label="Shuffle new albums" title="Shuffle">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -363,8 +383,6 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
   <div id="album-action-bar" class="label-merge-bar hidden" role="toolbar" aria-label="Album actions">
     <span id="album-action-info" class="label-merge-info"></span>
     <div class="label-merge-actions">
-      <button id="album-play-now-btn" class="action-btn primary" type="button" disabled>Play Now</button>
-      <button id="album-queue-btn" class="action-btn" type="button" disabled>Queue</button>
       <button id="album-action-cancel-btn" class="icon-btn" type="button" aria-label="Cancel selection">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

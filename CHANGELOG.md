@@ -2,6 +2,50 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.22] — 2026-08-03
+
+Multi-select, part one: the selection mechanics. "Add to playlist" and "Recently added" follow
+in the next build — the first needs an extension-side playlist store, the second needs dates
+Roon does not give us.
+
+### Added
+- **Long-press to multi-select tracks in the album view.** The press *arms* the mode without
+  selecting the track under your finger. Each row then shows a hollow circle on the right; the
+  circle becomes a tick only once it is tapped. With the mode armed, tapping anywhere on a row
+  selects it — hunting for a small circle is the wrong ergonomics for a list you are working
+  through deliberately.
+- **An actions menu in the top bar**, appearing only once at least one thing is selected, with
+  the count on it: Play now, Add to queue, Clear selection. The same menu serves both selections;
+  they can never be live together, because opening an album ends a grid selection.
+- Selected tracks play in **album order, not tap order**, and only the first honours the requested
+  kind — sending `play_now` for each would leave the last track playing alone, having wiped the
+  ones before it.
+
+### Fixed
+- **Long-press on an album tile was broken and had been all along.** The callback fires at 500ms
+  while the finger is still down, so the browser went on to dispatch a click on release — which
+  selected the album a second time and toggled it straight back off. A long press opened select
+  mode with nothing in it. The right outcome was resting on a double-fire; it is now a suppression
+  flag consumed by the next click, in the capture phase.
+- **Multi-select was unavailable on seven of the eleven album-grid screens** — including the two
+  biggest walls (Library A–Z, "Not played in 6 months"), label albums and the Home carousels. Not
+  by design: `buildAlbumTile` inferred "selectable" from "was a custom opener passed", and those
+  screens pass one purely to force `filter: null`. Selectability is now stated outright, so it
+  works everywhere. Playlist and smart-playlist tiles state `false` — a playlist is not an album
+  and cannot be queued as one.
+- **`/api/play-track` never received the album's identity**, so `albumIdentityMatches` short-
+  circuited and the whole stale-offset ladder — relocate in memory, then live search — was
+  unreachable for a per-track play. Survivable while the only caller was a modal opened seconds
+  earlier; not survivable at all once a track reference outlives the session. `album_title` /
+  `album_subtitle` now travel with every per-track play.
+- Exiting select mode cleared the selection outline only inside `#album-grid`. Now that Home's
+  carousels are selectable, that left ticks behind on rows already scrolled past.
+
+### Changed
+- The bottom action bar no longer carries Play Now / Queue — those live in the top-bar menu now.
+  It survives as the "select mode is on, nothing chosen yet" hint, because without it a long
+  press produces no visible change until the first tap.
+
 ## [1.7.21] — 2026-08-03
 
 Review findings against v1.7.19's export. Six defects, all sitting in the test suite's blind

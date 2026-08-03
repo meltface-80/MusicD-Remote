@@ -41,10 +41,13 @@
   const modalActs   = document.getElementById("modal-actions");
   const modalTracks = document.getElementById("modal-tracks");
 
+  const selMenuWrap          = document.getElementById("select-menu-wrap");
+  const selMenuBtn           = document.getElementById("select-menu-btn");
+  const selMenu              = document.getElementById("select-menu");
+  const selMenuTitle         = document.getElementById("select-menu-title");
+  const selCount             = document.getElementById("select-count");
   const albumActionBar       = document.getElementById("album-action-bar");
   const albumActionInfo      = document.getElementById("album-action-info");
-  const albumPlayNowBtn      = document.getElementById("album-play-now-btn");
-  const albumQueueBtn        = document.getElementById("album-queue-btn");
   const albumActionCancelBtn = document.getElementById("album-action-cancel-btn");
 
   let currentAlbum = null;         // {offset,title,subtitle,image_key}
@@ -94,6 +97,15 @@
   // judgement: 100 albums is roughly 500 calls. The sheet always reports what
   // it left out (v1.7.17's lesson — a silent cap reads as success).
   const SHARE_ALBUM_MAX = 100;
+  // Set by addLongPress and consumed by the very next click, so a long press
+  // doesn't also fire the element's ordinary tap handler.
+  let longPressAte = false;
+  // Track multi-select inside the album view. Declared with the other view
+  // flags rather than beside the album-modal code: closeModal() reads them
+  // during boot-time teardown, and a `let` further down the file is a
+  // ReferenceError there, not a harmless undefined.
+  let trackSelectMode = false;
+  let trackSelected = [];          // [{index,title}] within the open album
   let albumSelectMode = false;
   let albumSelected = [];          // [{offset,title,subtitle}] albums chosen in select mode
   // The filter that the currently-open album modal belongs to. Usually the
@@ -839,7 +851,7 @@
       const frag = document.createDocumentFragment();
       const tiles = new Map();
       for (const p of list) {
-        const tile = buildAlbumTile(p, () => openPlaylist(p));
+        const tile = buildAlbumTile(p, () => openPlaylist(p), { selectable: false });
         tiles.set(p.title, tile);
         frag.appendChild(tile);
       }
@@ -1729,7 +1741,7 @@
         // few albums it resolves to, which the server reads straight out of the
         // snapshot at no cost.
         art_keys: p.art_keys || []
-      }, () => openSmartPlaylist(p));
+      }, () => openSmartPlaylist(p), { selectable: false });
       frag.appendChild(tile);
     }
     grid.appendChild(frag);
@@ -2728,10 +2740,26 @@
   }
 
   // ----- Long-press utility -----
+  //
+  // The callback fires at 500ms while the finger is STILL DOWN, so the browser
+  // goes on to dispatch a click on release. Without suppression that click ran
+  // the element's normal handler straight after the long-press handler — on an
+  // album tile it selected the album and then immediately deselected it, so a
+  // long press opened select mode with nothing in it. `longPressAte` is set by
+  // the callback and consumed by the very next click, in the capture phase so
+  // it lands before any listener the element itself carries.
   function addLongPress(el, callback) {
     let timer = null;
     let moved = false;
-    const onStart = () => { moved = false; timer = setTimeout(() => { if (!moved) { if (navigator.vibrate) navigator.vibrate(25); callback(); } }, 500); };
+    const onStart = () => {
+      moved = false;
+      timer = setTimeout(() => {
+        if (moved) return;
+        if (navigator.vibrate) navigator.vibrate(25);
+        longPressAte = true;
+        callback();
+      }, 500);
+    };
     const onMove  = () => { moved = true; clearTimeout(timer); timer = null; };
     const onEnd   = () => { clearTimeout(timer); timer = null; };
     el.addEventListener("touchstart",  onStart,  { passive: true });
@@ -2742,6 +2770,12 @@
     el.addEventListener("mousemove",   onMove);
     el.addEventListener("mouseup",     onEnd);
     el.addEventListener("contextmenu", e => e.preventDefault());
+    el.addEventListener("click", (e) => {
+      if (!longPressAte) return;
+      longPressAte = false;
+      e.stopPropagation();
+      e.preventDefault();
+    }, true);
   }
 
   // ----- Render -----
@@ -2768,7 +2802,7 @@
 
   // Build a single album tile. onClick defaults to opening the album modal,
   // but callers (e.g. the label browser) can override it to carry a filter.
-  function buildAlbumTile(a, onClick) {
+  function buildAlbumTile(a, onClick, opts) {
     const btn = document.createElement("button");
     btn.className = "album";
     btn.type = "button";
@@ -2819,37 +2853,91 @@
 
     btn.appendChild(artWrap);
     btn.appendChild(meta);
+
+    // Whether long-press can multi-select this tile. It used to be inferred
+    // from "was a custom opener passed", which quietly disabled selection on
+    // seven of the eleven tile screens — the Library A-Z wall, Not-played,
+    // label albums and the Home carousels all pass an opener for the sole
+    // purpose of forcing `filter: null`, and paid for it with no select mode.
+    // Stating it outright separates "how do I open" from "can I select".
+    // Playlist tiles pass false: a playlist is not an album and cannot be
+    // queued as one.
+    const selectable = opts && "selectable" in opts ? !!opts.selectable : true;
+    if (selectable) btn.dataset.offset = String(a.offset);
+
     btn.addEventListener("click", () => {
-      if (!onClick && albumSelectMode) { handleAlbumTileSelect(btn, a); return; }
+      if (selectable && albumSelectMode) { handleAlbumTileSelect(btn, a); return; }
       (onClick || (() => openAlbum(a)))();
     });
-    if (!onClick) {
+    if (selectable) {
+      // Long press ARMS selection without selecting the tile under the finger.
+      // Pressing something and having it become selected is how you end up
+      // with a selection you didn't ask for when you only wanted the mode.
       addLongPress(btn, () => {
         if (!albumSelectMode) enterAlbumSelectMode();
-        handleAlbumTileSelect(btn, a);
       });
     }
     return btn;
   }
 
+  // ----- The multi-select actions menu -------------------------------------
+  // One menu serves both selections: albums on a grid screen, and tracks inside
+  // the album view. They can never both be live — opening the album view exits
+  // album select mode — so `selMenuKind` says which one the menu is acting on
+  // rather than two menus racing for the same corner of the screen.
+  let selMenuKind = null;   // "albums" | "tracks" | null
+
+  function closeSelectMenu() {
+    if (!selMenu) return;
+    selMenu.classList.add("hidden");
+    if (selMenuBtn) selMenuBtn.setAttribute("aria-expanded", "false");
+  }
+
+  // Show/hide the whole control and keep its count honest. Called after every
+  // change to either selection.
+  function refreshSelectMenu(kind, n) {
+    selMenuKind = n > 0 ? kind : null;
+    if (!selMenuWrap) return;
+    selMenuWrap.classList.toggle("hidden", n === 0);
+    if (n === 0) { closeSelectMenu(); return; }
+    if (selCount) selCount.textContent = String(n);
+    const noun = kind === "tracks" ? "track" : "album";
+    if (selMenuTitle) selMenuTitle.textContent = `${n} ${noun}${n === 1 ? "" : "s"} selected`;
+    if (selMenuBtn) {
+      selMenuBtn.setAttribute("aria-label",
+        `Actions for ${n} selected ${noun}${n === 1 ? "" : "s"}`);
+    }
+  }
+
   function enterAlbumSelectMode() {
     albumSelectMode = true;
-    if (albumActionBar) { albumActionBar.classList.remove("hidden"); updateAlbumActionBar(); }
+    updateAlbumActionBar();
   }
 
   function exitAlbumSelectMode() {
     albumSelectMode = false;
     albumSelected = [];
     if (albumActionBar) albumActionBar.classList.add("hidden");
-    grid.querySelectorAll(".album.is-selected").forEach(b => b.classList.remove("is-selected"));
+    // Hides the whole control, not just the open dropdown — closeSelectMenu()
+    // alone left a "0" badge sitting in the top bar with nothing behind it.
+    refreshSelectMenu("albums", 0);
+    // Document-wide, not just #album-grid: Home's carousels live outside the
+    // grid and are selectable now, so a grid-scoped clear would leave ticks
+    // behind on rows the user had already scrolled past.
+    document.querySelectorAll(".album.is-selected")
+            .forEach(b => b.classList.remove("is-selected"));
   }
   window.__exitAlbumSelectMode = exitAlbumSelectMode;
 
+  // The bottom bar is kept as the "you are in select mode, nothing chosen yet"
+  // hint — without it, long-pressing produces no visible change at all until
+  // the first tap. Once something IS selected the top-bar menu carries the
+  // actions, so the bar's own buttons are gone.
   function updateAlbumActionBar() {
     const n = albumSelected.length;
-    if (albumActionInfo) albumActionInfo.textContent = n === 0 ? "Tap albums to select" : n + " album" + (n === 1 ? "" : "s") + " selected";
-    if (albumPlayNowBtn) albumPlayNowBtn.disabled = n === 0;
-    if (albumQueueBtn)   albumQueueBtn.disabled   = n === 0;
+    if (albumActionBar) albumActionBar.classList.toggle("hidden", !albumSelectMode || n > 0);
+    if (albumActionInfo) albumActionInfo.textContent = "Tap albums to select";
+    refreshSelectMenu("albums", n);
   }
 
   function handleAlbumTileSelect(btn, a) {
@@ -3231,6 +3319,12 @@
 
   function openAlbum(album, opts) {
     opts = opts || {};
+    // Album select mode and track select mode both drive the one top-bar menu,
+    // so they must never be live together. Opening an album ends the grid
+    // selection rather than leaving a count behind that the menu would then
+    // act on with the wrong list.
+    if (albumSelectMode) exitAlbumSelectMode();
+    exitTrackSelectMode();
     currentAlbum = album;
     window.__currentAlbum = album;
     currentSource = opts.source || "random";
@@ -3480,6 +3574,9 @@
   }
 
   function closeModal() {
+    // Track selection belongs to the album that is closing. Leaving it set
+    // would arm the next album's rows with someone else's picks.
+    exitTrackSelectMode();
     modal.classList.add("hidden");
     modal.classList.remove("np-mode", "tab-album", "tab-queue");
     document.body.style.overflow = "";
@@ -3594,13 +3691,139 @@
         su.textContent = t.subtitle || "";
         tx.appendChild(ti); tx.appendChild(su);
         li.appendChild(tx);
+
+        // The select target, on the right. Present from the start but hidden
+        // until select mode is armed, so arming it doesn't reflow every row.
+        // A real element rather than a ::after: .album-art-wrap's ♪ placeholder
+        // already taught us what happens when two states share one pseudo.
+        // It stays a sibling BEFORE .t-actions so is-open's flex-wrap still
+        // drops the action row onto its own full-width line beneath it.
+        const mark = document.createElement("button");
+        mark.type = "button";
+        mark.className = "t-mark";
+        mark.setAttribute("aria-label", "Select this track");
+        mark.setAttribute("aria-pressed", "false");
+        mark.addEventListener("click", (e) => {
+          // Selecting must never also expand or collapse the row's actions.
+          e.stopPropagation();
+          toggleTrackSelected(li, t, idx);
+        });
+        li.appendChild(mark);
+
         li.addEventListener("click", (e) => {
           if (e.target.closest(".t-actions")) return;   // taps on the buttons themselves
+          if (e.target.closest(".t-mark")) return;      // handled above
+          // Once the mode is armed the whole row selects. Making the user hunt
+          // for a small circle is the wrong ergonomics for a list you are
+          // deliberately working through.
+          if (trackSelectMode) { toggleTrackSelected(li, t, idx); return; }
           toggleTrackActions(li, t, idx);
         });
+
+        // Long press ARMS selection without selecting this track — same rule
+        // as the album grid.
+        addLongPress(li, () => { if (!trackSelectMode) enterTrackSelectMode(); });
         modalTracks.appendChild(li);
       });
     }
+  }
+
+  // ----- Track multi-select (album view) ------------------------------------
+  // Scoped to one album: every selected track shares `currentAlbum`, so the
+  // album identity travels once rather than per track.
+  function enterTrackSelectMode() {
+    trackSelectMode = true;
+    modalTracks.classList.add("is-selecting");
+    // An open action row and a selection are two different intents; leaving
+    // the row expanded under a set of circles reads as both at once.
+    modalTracks.querySelectorAll(".t-row.is-open").forEach(closeTrackRow);
+    updateTrackSelection();
+  }
+
+  function exitTrackSelectMode() {
+    trackSelectMode = false;
+    trackSelected = [];
+    if (modalTracks) {
+      modalTracks.classList.remove("is-selecting");
+      modalTracks.querySelectorAll(".t-row.is-picked").forEach(li => {
+        li.classList.remove("is-picked");
+        const m = li.querySelector(".t-mark");
+        if (m) m.setAttribute("aria-pressed", "false");
+      });
+    }
+    refreshSelectMenu("tracks", 0);
+  }
+
+  function toggleTrackSelected(li, track, index) {
+    const at = trackSelected.findIndex(x => x.index === index);
+    if (at === -1) trackSelected.push({ index, title: track.title || "" });
+    else           trackSelected.splice(at, 1);
+    const on = at === -1;
+    li.classList.toggle("is-picked", on);
+    const m = li.querySelector(".t-mark");
+    if (m) m.setAttribute("aria-pressed", String(on));
+    updateTrackSelection();
+  }
+
+  function updateTrackSelection() {
+    refreshSelectMenu("tracks", trackSelected.length);
+  }
+
+  // Play or queue the selected tracks, in the order they appear on the ALBUM —
+  // not the order they were tapped. Someone ticking four tracks expects the
+  // record's running order, not a record of their own clicking.
+  //
+  // These go one at a time on purpose: /api/play-track has no batch form, and
+  // firing them in parallel would interleave into an arbitrary queue order.
+  async function invokeTrackMulti(kind) {
+    const zone = selectedZoneId;
+    if (!zone) { showToast("Pick a zone first", "error"); return; }
+    if (!currentAlbum) { showToast("No album open", "error"); return; }
+    const picks = trackSelected.slice().sort((a, b) => a.index - b.index);
+    if (!picks.length) return;
+
+    let queued = 0, failed = 0, firstError = "";
+    for (let i = 0; i < picks.length; i++) {
+      const p = picks[i];
+      if (picks.length > 3) showToast(`Adding track ${i + 1} of ${picks.length}…`);
+      try {
+        const r = await fetch("/api/play-track", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            offset: currentAlbum.offset,
+            track: p.index,
+            title: p.title,
+            zone_or_output_id: zone,
+            // Only the FIRST track honours the requested kind; the rest queue
+            // behind it. Sending play_now for each would leave the last track
+            // playing alone, having wiped the ones before it.
+            kind: (i === 0 ? kind : "queue"),
+            album_title: currentAlbum.title || "",
+            album_subtitle: currentAlbum.subtitle || "",
+            filter_type:   currentDetailFilter ? currentDetailFilter.type   : "",
+            filter_value:  currentDetailFilter ? currentDetailFilter.value  : "",
+            filter_parent: currentDetailFilter && currentDetailFilter.parent ? currentDetailFilter.parent : ""
+          })
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { failed++; if (!firstError) firstError = j.error || `HTTP ${r.status}`; }
+        else queued++;
+      } catch (e) {
+        failed++;
+        if (!firstError) firstError = "Couldn't reach the extension";
+      }
+    }
+
+    if (!queued) {
+      showToast(firstError || "Roon refused those tracks", "error", TOAST_REPORT_MS);
+      return;
+    }
+    const verb = kind === "queue" ? "Queued" : "Playing";
+    let msg = `${verb} ${queued} track${queued === 1 ? "" : "s"}`;
+    if (failed) msg += ` (${failed} failed: ${firstError})`;
+    showToast(msg, failed ? "error" : null, TOAST_REPORT_MS);
+    exitTrackSelectMode();
   }
 
   // Expand/collapse the per-track action row. Only one row is open at a time.
@@ -3647,6 +3870,10 @@
           title:  track.title || "",
           zone_or_output_id: selectedZoneId,
           kind,
+          // The album's own identity, so a drifted offset is relocated rather
+          // than playing whatever record now sits at that position.
+          album_title:    currentAlbum.title || "",
+          album_subtitle: currentAlbum.subtitle || "",
           filter_type:   currentDetailFilter ? currentDetailFilter.type   : "",
           filter_value:  currentDetailFilter ? currentDetailFilter.value  : "",
           filter_parent: currentDetailFilter && currentDetailFilter.parent ? currentDetailFilter.parent : ""
@@ -4830,8 +5057,6 @@
   async function invokeAlbumMulti(kind) {
     if (!albumSelected.length) return;
     if (!selectedZoneId) { showToast("Pick a zone first", "error"); return; }
-    if (albumPlayNowBtn) albumPlayNowBtn.disabled = true;
-    if (albumQueueBtn)   albumQueueBtn.disabled   = true;
     try {
       const r = await fetch("/api/play-multi", {
         method: "POST",
@@ -4863,9 +5088,45 @@
     }
   }
 
-  if (albumPlayNowBtn)      albumPlayNowBtn.addEventListener("click",      () => invokeAlbumMulti("play_now"));
-  if (albumQueueBtn)        albumQueueBtn.addEventListener("click",        () => invokeAlbumMulti("queue"));
   if (albumActionCancelBtn) albumActionCancelBtn.addEventListener("click", exitAlbumSelectMode);
+
+  // ----- Select-menu wiring -------------------------------------------------
+  if (selMenuBtn) {
+    selMenuBtn.addEventListener("click", (e) => {
+      // The document-level dismisser below would otherwise see this very click
+      // and shut the menu in the same tick it opened.
+      e.stopPropagation();
+      const willShow = selMenu.classList.contains("hidden");
+      selMenu.classList.toggle("hidden", !willShow);
+      selMenuBtn.setAttribute("aria-expanded", String(willShow));
+    });
+  }
+  if (selMenu) {
+    selMenu.addEventListener("click", (e) => {
+      const item = e.target.closest("[data-sel-act]");
+      if (!item) return;
+      e.stopPropagation();
+      closeSelectMenu();
+      const act = item.dataset.selAct;
+      if (act === "clear") {
+        if (selMenuKind === "tracks") exitTrackSelectMode();
+        else exitAlbumSelectMode();
+        return;
+      }
+      if (selMenuKind === "tracks") invokeTrackMulti(act);
+      else invokeAlbumMulti(act);
+    });
+    // Contains-checks rather than a scoped closest(): there are already four
+    // document-level click listeners in this file and every popover trigger
+    // stops propagation on its own button, so a shared container selector
+    // would fight them.
+    document.addEventListener("click", (e) => {
+      if (selMenu.classList.contains("hidden")) return;
+      if (selMenu.contains(e.target)) return;
+      if (selMenuBtn && selMenuBtn.contains(e.target)) return;
+      closeSelectMenu();
+    });
+  }
 
   window.__openAlbum = openAlbum;
   window.__buildAlbumTile = (a) => buildAlbumTile(a);
