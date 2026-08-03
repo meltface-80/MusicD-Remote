@@ -3413,7 +3413,12 @@ input.vol-range::-moz-range-thumb {
 /* Share sheet — the blob is the payload, so it gets the room and the monospace
    face; everything above it is the honest accounting of what went in. */
 .share-sum { font-weight: 600; margin: 4px 0 6px; }
-.share-note { color: var(--text-dim); font-size: 0.86rem; margin-bottom: 10px; }
+/* Each reason the file is less than the whole playlist gets its own line —
+   run together in one sentence, the important half went unread. */
+.share-warn {
+  color: var(--danger); font-size: 0.86rem; line-height: 1.4; margin-bottom: 6px;
+}
+.share-note { color: var(--text-dim); font-size: 0.86rem; margin: 10px 0; }
 .share-blob {
   width: 100%; box-sizing: border-box; resize: vertical;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

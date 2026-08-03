@@ -2,6 +2,50 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.21] — 2026-08-03
+
+Review findings against v1.7.19's export. Six defects, all sitting in the test suite's blind
+spot, and four of them the same mistake: a limit applied without being reported — the exact
+failure v1.7.17 was written to fix and which v1.7.19's own comments claimed to have avoided.
+
+### Fixed
+- **Stopping at the 100-album cap was silent.** Share expands a smart playlist album by album and
+  stops at 100. The sheet reported truncation only from the *server's* flag, which describes the
+  list it was handed and knows nothing about what the client stopped collecting. A 900-album smart
+  playlist shared roughly a ninth of itself and said "1180 tracks" with no caveat.
+- **A failed page was indistinguishable from a finished one.** `done` is set both when the
+  playlist ends and when a page errors, and Share's only completion test was `!done`. A timeout on
+  album 4 of 40 exited the loop and opened the share sheet — over the error message still on
+  screen — announcing a complete export of 10% of the playlist. Failure is now recorded
+  separately, and the file is marked INCOMPLETE.
+- **A Roon playlist longer than 1,000 tracks** arrives already cut short from `/api/playlist`. The
+  screen said so; the share sheet claimed a clean "1000 tracks". It now carries the caveat.
+- **`truncated` could be true when nothing was truncated.** It was derived from the input length,
+  so 2,100 entries of which 300 were untitled encoded 1,800 tracks — nothing dropped for the cap —
+  and still claimed "stopped at the sharing limit". It is now set only when the cap actually
+  stopped the loop.
+- **The JSPF trackList vanished when empty.** Pruning drops empty arrays, so a document with no
+  shareable tracks omitted `track` entirely. An absent trackList means "malformed"; an empty one
+  means "a playlist with no tracks". Phase 2's importer has to tell those apart.
+- **`meta.creator` was unreachable** and has been removed; **`bytes` was computed and read by
+  nobody** and now drives a warning — above 40 KB a paste gets silently truncated by messaging
+  apps, which produces a blob that decodes to nothing on the far end.
+- Smaller: the progress toast used the 9-second duration meant for end-of-operation reports, so
+  "Reading album 1…" sat over the finished share sheet; clamped text could keep a trailing space,
+  which canonicalises differently on the far end in a file that is never re-issued; "1 entries had
+  no title and were left out"; and `/api/share/encode` now bounds how many entries it will walk,
+  not just how many it will encode.
+
+### Class of error
+Reporting that describes the wrong layer. Every one of these limits was correctly *applied*; each
+was reported by asking a component that could not know. The server's `truncated` answers "was the
+list you gave me too long", which is not the question the user has. **And the tests were green
+throughout**: the DOM stub hardcoded `truncated: true`, so the assertion named after v1.7.17's
+lesson passed for a reason unrelated to the caps it was testing — the same shape as v1.7.16, a
+test asserting the right sentence about the wrong mechanism. The stub now returns `false` and the
+client-side caps are asserted from client state, with fixtures for the album cap, a mid-crawl
+failure, and a mixed skip/over-cap input.
+
 ## [1.7.20] — 2026-08-03
 
 ### Fixed

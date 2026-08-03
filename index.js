@@ -6598,6 +6598,10 @@ app.get("/api/smart-playlist/albums", async (req, res) => {
 // ranking ship untested.
 function shareMagic()      { return "MDRP1"; }
 function shareTrackMax()   { return 2000; }
+// Entries the route will walk. Higher than the output cap so a caller whose
+// list contains untitled rows still gets everything it CAN share encoded,
+// rather than being refused for entries that were never going to count.
+function shareInputMax()   { return 5000; }
 function shareTextMax()    { return 500; }
 function shareNameMax()    { return 200; }
 function shareUriMax()     { return 4; }
@@ -6611,7 +6615,10 @@ function shareNsPlaylist() { return "https://musicbrainz.org/doc/jspf#playlist";
 // on a shape neither of them can be talked out of.
 function shareText(v, max) {
   if (typeof v !== "string") return "";
-  return v.replace(/\s+/g, " ").trim().slice(0, max || shareTextMax());
+  // Trimmed AFTER the clamp as well as before it: slicing mid-string can leave
+  // a trailing space, and in a file that is never re-issued that is a different
+  // canonical key from the same title without one.
+  return v.replace(/\s+/g, " ").trim().slice(0, max || shareTextMax()).trim();
 }
 function shareInt(v, min, max) {
   const n = parseInt(v, 10);
@@ -6693,8 +6700,14 @@ function buildShareDoc(meta, entries) {
   const list = Array.isArray(entries) ? entries : [];
   const track = [];
   let skipped = 0;
+  // Set only when the cap actually STOPPED us. Deriving it from the input
+  // length instead was wrong in both directions of honesty: 2,100 entries of
+  // which 300 were untitled encodes 1,800 tracks with nothing dropped for the
+  // cap, yet reported "stopped at the sharing limit" — a false claim of
+  // truncation in the one feature whose whole premise is honest accounting.
+  let truncated = false;
   for (const e of list) {
-    if (track.length >= shareTrackMax()) break;
+    if (track.length >= shareTrackMax()) { truncated = true; break; }
     const one = shareTrackEntry(e);
     if (one) track.push(one);
     else skipped++;
@@ -6702,9 +6715,7 @@ function buildShareDoc(meta, entries) {
   const playlist = sharePrune({
     title:      shareText(meta && meta.name, shareNameMax()) || "Shared playlist",
     annotation: shareText(meta && meta.annotation, shareTextMax()),
-    creator:    shareText(meta && meta.creator, shareNameMax()),
     date:       new Date().toISOString(),
-    track,
     extension: {
       [shareNsPlaylist()]: {
         additional_metadata: {
@@ -6714,11 +6725,16 @@ function buildShareDoc(meta, entries) {
       },
     },
   });
+  // Assigned AFTER pruning, because pruning drops empty arrays and JSPF's
+  // trackList is the one key that must always be present: an absent trackList
+  // means "malformed", an empty one means "a playlist with no tracks". Those
+  // are different facts and a reader has to be able to tell them apart.
+  playlist.track = track;
   return {
     doc: { playlist },
     track_count: track.length,
     skipped,
-    truncated: list.length > shareTrackMax(),
+    truncated,
   };
 }
 
@@ -6736,6 +6752,15 @@ app.post("/api/share/encode", (req, res) => {
   const body = req.body || {};
   if (!Array.isArray(body.tracks) || !body.tracks.length) {
     return res.status(400).json({ error: "tracks required" });
+  }
+  // The OUTPUT cap bounds what gets encoded; this bounds what gets WALKED.
+  // Without it a 1 MB body of untitled entries is ~65,000 iterations of
+  // synchronous work on an unauthenticated route — the design doc's S2, which
+  // says to clamp server-side rather than trust the client's own ceiling.
+  if (body.tracks.length > shareInputMax()) {
+    return res.status(400).json({
+      error: `Too many entries — ${shareInputMax()} at most`,
+    });
   }
   try {
     const built = buildShareDoc({ name: body.name, annotation: body.annotation }, body.tracks);

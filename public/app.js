@@ -1014,7 +1014,11 @@
           // rather than guessed at, so an importer knows it was never told.
           tracks.map(t => ({
             title: t.title, artist: t.subtitle, track_no: t.track_no
-          })), s));
+          })), s,
+          // /api/playlist reads at most PLAYLIST_ITEMS rows, so a longer
+          // playlist arrives already cut short. The screen says so; the share
+          // sheet has to as well, or the file claims to be the whole thing.
+          { sourceTruncated: !!j.truncated }));
         actions.appendChild(s);
       }
       wrap.appendChild(actions);
@@ -1292,7 +1296,14 @@
   // See docs/design/playlist-sharing.md.
 
   // Ask the server to turn entries into a share blob, then show it.
-  async function shareTracks(name, entries, btn) {
+  //
+  // `caveats` is what the CLIENT knows and the server cannot: that collection
+  // stopped at the album cap, that a page failed part-way, or that the source
+  // playlist was already truncated before we saw it. The server's own
+  // `truncated` only ever describes the list it was handed, so relying on it
+  // alone meant every client-side limit went unreported — the exact shape of
+  // the v1.7.17 bug this feature was written to avoid repeating.
+  async function shareTracks(name, entries, btn, caveats) {
     if (!entries.length) { showToast("Nothing to share yet", "error"); return; }
     if (btn) btn.disabled = true;
     try {
@@ -1303,7 +1314,7 @@
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { showToast(j.error || "Couldn't build the share file", "error"); return; }
-      openShareSheet(name, j);
+      openShareSheet(name, j, caveats || {});
     } catch (e) {
       showToast("Couldn't reach the extension", "error");
     } finally {
@@ -1315,16 +1326,47 @@
   // is told here is a fact from the response — how many tracks went in, and
   // what was left out — because a share file that quietly dropped half a
   // playlist is worse than one that refused to build.
-  function openShareSheet(name, j) {
+  function openShareSheet(name, j, caveats) {
+    const c = caveats || {};
     openLibSheet("Share " + name, (body) => {
+      const n = j.track_count || 0;
       const sum = document.createElement("div");
       sum.className = "share-sum";
-      const n = j.track_count || 0;
-      let text = `${n} track${n === 1 ? "" : "s"}`;
-      if (j.truncated)   text += " — stopped at the sharing limit";
-      if (j.skipped)     text += `; ${j.skipped} had no title and were left out`;
-      sum.textContent = text;
+      sum.textContent = `${n} track${n === 1 ? "" : "s"}`;
       body.appendChild(sum);
+
+      // Every reason this file might be less than the whole playlist, each on
+      // its own line. One run-on sentence buried the important half.
+      const warnings = [];
+      if (c.incomplete) {
+        warnings.push("Reading stopped early because Roon returned an error — " +
+                      "this file is INCOMPLETE. Try again before sharing it.");
+      }
+      if (c.albumsCapped) {
+        warnings.push(`Only the first ${SHARE_ALBUM_MAX} albums were read — ` +
+                      "that's the limit for one go.");
+      }
+      if (c.sourceTruncated) {
+        warnings.push("The playlist is longer than this app can read from Roon, " +
+                      "so the end of it isn't here.");
+      }
+      if (j.truncated) warnings.push("Stopped at the sharing limit of tracks.");
+      if (j.skipped) {
+        warnings.push(`${j.skipped} entr${j.skipped === 1 ? "y" : "ies"} had no title ` +
+                      `and ${j.skipped === 1 ? "was" : "were"} left out.`);
+      }
+      // Above 40 KB a paste starts getting silently truncated by messaging
+      // apps, which turns into a blob that decodes to nothing on the far end.
+      if (j.bytes > 40000) {
+        warnings.push(`This is ${Math.round(j.bytes / 1024)} KB — too big to paste ` +
+                      "reliably. Use Download and send the file.");
+      }
+      for (const w of warnings) {
+        const el = document.createElement("div");
+        el.className = "share-warn";
+        el.textContent = w;
+        body.appendChild(el);
+      }
 
       const note = document.createElement("div");
       note.className = "share-note";
@@ -1759,6 +1801,10 @@
     // Tracks are paged by ALBUM: each one has to be opened on the Core, so the
     // screen fills a batch at a time rather than stalling on a long playlist.
     let albumOffset = 0, loading = false, done = false, shown = 0;
+    // `done` means "stop paging" — it is set both when the playlist ENDS and
+    // when a page fails. Share has to tell those apart, so failure is recorded
+    // separately rather than inferred from a flag that means two things.
+    let failed = false;
     // The tracks as data, alongside the rows on screen. Share needs the values,
     // not the rendered text, and re-reading them out of the DOM would mean
     // parsing back a string this code already had.
@@ -1779,6 +1825,7 @@
         if (!r.ok) {
           status.textContent = j.error || "Couldn't read this playlist.";
           done = true;
+          failed = true;
           more.classList.add("hidden");   // it would no-op; don't offer it
           return;
         }
@@ -1796,6 +1843,7 @@
         if (!smartDetailActive || mySeq !== smartSeq) return;
         status.textContent = "Couldn't read this playlist.";
         done = true;
+        failed = true;
       } finally {
         loading = false;
         more.disabled = false;
@@ -1819,22 +1867,33 @@
     async function shareThis(btn) {
       btn.disabled = true;
       try {
+        let stalled = false;
         while (!done && albumOffset < SHARE_ALBUM_MAX) {
           const before = albumOffset;
-          showToast(`Reading album ${albumOffset + 1}…`, null, TOAST_REPORT_MS);
+          // A PROGRESS message, so it must not linger: TOAST_REPORT_MS exists
+          // for reports that land at the END of a long job, and using it here
+          // pinned "Reading album 1…" over the finished share sheet for 9s.
+          showToast(`Reading album ${albumOffset + 1}…`);
           await loadPage();
           // Leaving the screen orphans the page; stop rather than keep hammering
           // the Core for a view the user is no longer looking at.
           if (!smartDetailActive || mySeq !== smartSeq) return;
-          // No forward progress means the page failed or the playlist ended
-          // without saying so. Either way, looping again would never terminate.
-          if (albumOffset === before) break;
+          // No forward progress: looping again would never terminate. It also
+          // means we do NOT know we reached the end.
+          if (albumOffset === before) { stalled = true; break; }
         }
         if (!loaded.length) { showToast("Nothing in this playlist to share", "error"); return; }
+        // `failed` is set by loadPageOnce on an error. Without it a timeout on
+        // page 4 of 40 was indistinguishable from finishing: `done` went true
+        // either way, the loop exited, and the sheet announced a complete
+        // share of 10% of the playlist.
         await shareTracks(sp.name || "Smart playlist", loaded.map(t => ({
           title: t.title, artist: t.subtitle,
           album: t.album_title, track_no: t.track_no
-        })), null);
+        })), null, {
+          incomplete:   failed || stalled,
+          albumsCapped: !done && albumOffset >= SHARE_ALBUM_MAX,
+        });
       } finally {
         btn.disabled = false;
       }

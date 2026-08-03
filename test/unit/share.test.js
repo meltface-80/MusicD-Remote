@@ -63,6 +63,12 @@ test("shareText / shareInt / shareUriList coerce rather than trust", async (t) =
     assert.equal(shareText("  Teen   Age\n\tRiot  "), "Teen Age Riot");
     assert.equal(shareText("x".repeat(9000)).length, shareTextMax());
     assert.equal(shareText("abcdef", 3), "abc");
+    // Clamping can land mid-gap. A title ending in a space canonicalises
+    // differently on the far end, in a file that is never re-issued.
+    // slice(0,5) of "aaaa bbbb" lands exactly on the space.
+    assert.equal(shareText("aaaa bbbb", 5), "aaaa",
+      "a clamped value must not keep a trailing space");
+    assert.equal(shareText("aaaa bbbb", 6), "aaaa b", "an inner cut is left alone");
   });
 
   await t.test("shareInt refuses anything outside its range", () => {
@@ -187,6 +193,32 @@ test("buildShareDoc reports everything it left out", async (t) => {
   await t.test("a playlist exactly at the cap is not called truncated", () => {
     const exact = Array.from({ length: shareTrackMax() }, (_, i) => ({ title: "T" + i }));
     assert.equal(buildShareDoc(meta, exact).truncated, false);
+  });
+
+  await t.test("truncated means the cap STOPPED us, not that the input was long", () => {
+    // 2,100 entries of which 300 are untitled encodes 1,800 tracks — nothing
+    // was dropped for the cap. Deriving `truncated` from the input length
+    // claimed truncation that never happened, in the one feature whose entire
+    // premise is honest accounting.
+    const mixed = [];
+    for (let i = 0; i < 300; i++) mixed.push({});                     // untitled
+    for (let i = 0; i < 1800; i++) mixed.push({ title: "T" + i });     // real
+    assert.equal(mixed.length, shareTrackMax() + 100);
+    const built = buildShareDoc(meta, mixed);
+    assert.equal(built.track_count, 1800);
+    assert.equal(built.skipped, 300);
+    assert.equal(built.truncated, false,
+      "nothing was dropped for the cap, so nothing was truncated");
+  });
+
+  await t.test("the trackList key is always present, even with nothing in it", () => {
+    // JSPF's empty-vs-absent distinction, on the field that decides whether a
+    // reader says "a playlist with no tracks" or "this file is malformed".
+    const built = buildShareDoc(meta, [{}, { title: "" }]);
+    assert.equal(built.track_count, 0);
+    assert.ok(Array.isArray(built.doc.playlist.track),
+      "an absent trackList is a different document from an empty one");
+    assert.deepEqual(built.doc.playlist.track, []);
   });
 
   await t.test("a nameless playlist still produces a usable document", () => {
