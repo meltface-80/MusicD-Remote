@@ -12,7 +12,8 @@ const assert = require("node:assert/strict");
 const { loadIndexFunctions } = require("../lib/extract");
 
 const F = loadIndexFunctions(
-  ["normalize", "canonText", "canonArtist", "albumKey", "albumKeys", "addFavouriteKeys"],
+  ["normalize", "canonText", "canonArtist", "albumKey", "albumKeys", "albumTitleVariants",
+   "addFavouriteKeys"],
   {}
 );
 const { normalize, canonText, canonArtist, albumKey, albumKeys, addFavouriteKeys } = F;
@@ -236,5 +237,72 @@ test("a multi-artist tag and a single-artist credit must be able to meet", async
     const a = albumKeys("Raising Sand", fileTagCredit);
     const b = albumKeys("Led Zeppelin IV", "Led Zeppelin");
     assert.ok(!a.some(k => b.includes(k)));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.7.33: Roon replaces file tags with its own metadata for albums it
+// identifies, so the two sides of the local-album join routinely hold different
+// spellings of the same title. A rip tagged "Rumours" lives in a library where
+// Roon calls it "Rumours (Deluxe Edition)". With one title string on each side
+// those can never meet — and the only symptom is a source count several hundred
+// short, with nothing logged and nothing to look at.
+//
+// The streaming path has had edition tolerance since v1.6.55 (addFavouriteKeys
+// indexes both "Album" and "Album (Deluxe)"). This gives the local path the
+// same, symmetrically, by putting it in albumKeys where BOTH sides read it.
+// ---------------------------------------------------------------------------
+test("album identity tolerates edition markers", async (t) => {
+  const has = (title, artist, key) => albumKeys(title, artist).includes(key);
+  const plain = "rumours||fleetwood mac";
+
+  await t.test("a bracketed edition still matches the plain title", () => {
+    assert.ok(has("Rumours (Deluxe Edition)", "Fleetwood Mac", plain));
+    assert.ok(has("Rumours [2016 Remaster]", "Fleetwood Mac", plain));
+    assert.ok(has("Rumours", "Fleetwood Mac", plain), "…and the plain one still does");
+  });
+
+  await t.test("the full title is kept as well, not replaced", () => {
+    // Two albums that genuinely differ only by edition must still be able to
+    // match each other exactly.
+    assert.ok(has("Rumours (Deluxe Edition)", "Fleetwood Mac",
+                  "rumours deluxe edition||fleetwood mac"));
+  });
+
+  await t.test("a dash suffix is stripped only when it reads as an edition", () => {
+    assert.ok(has("Kid A - 2016 Remaster", "Radiohead", "kid a||radiohead"));
+    assert.ok(has("OK Computer - Deluxe Edition", "Radiohead", "ok computer||radiohead"));
+    // …but a dash that carries meaning is left alone. "Part Two" is a
+    // different record, and collapsing it would merge two real albums.
+    assert.deepEqual(albumKeys("Album - Part Two", "X"), ["album part two||x"]);
+    assert.deepEqual(albumKeys("Live - At The Apollo", "X"), ["live at the apollo||x"]);
+  });
+
+  await t.test("stripping never produces a uselessly short title", () => {
+    // "(Live)" alone would collapse to nothing and match everything.
+    for (const k of albumKeys("(Live)", "X")) {
+      assert.ok(k.split("||")[0].length >= 3, `too-short key: ${k}`);
+    }
+    assert.ok(albumKeys("OK (Deluxe)", "X").every(k => k.split("||")[0].length >= 3));
+  });
+
+  await t.test("it applies to every credited artist, not just the first", () => {
+    const keys = albumKeys("Raising Sand (Deluxe)", "Robert Plant & Alison Krauss");
+    assert.ok(keys.includes("raising sand||robert plant"));
+    assert.ok(keys.includes("raising sand||alison krauss"));
+  });
+
+  await t.test("a short title keeps its identity", () => {
+    // The stripping floor must apply to the STRIPPED form only. Applying it to
+    // the original left albums genuinely called "X" or "÷" with no keys at all
+    // — every identity gone, silently.
+    assert.deepEqual(albumKeys("X", "A Band"), ["x||a band"]);
+    assert.deepEqual(albumKeys("OK", "A Band"), ["ok||a band"]);
+  });
+
+  await t.test("unrelated albums are not merged", () => {
+    const a = albumKeys("Greatest Hits (Deluxe)", "Band One");
+    const b = albumKeys("Greatest Hits", "Band Two");
+    assert.ok(!a.some(k => b.includes(k)), "a shared title is not a shared album");
   });
 });

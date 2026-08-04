@@ -27,7 +27,7 @@ function fixture() {
   const tidalAlbumKeys = new Set();
   const ambiguousAlbumKeys = new Set();
   const F = loadIndexFunctions(
-    ["normalize", "canonText", "canonArtist", "albumKey", "albumKeys",
+    ["normalize", "canonText", "canonArtist", "albumKey", "albumKeys", "albumTitleVariants",
      "addFavouriteKeys", "withSource"],
     { localAlbumKeys, qobuzAlbumKeys, tidalAlbumKeys, ambiguousAlbumKeys }
   );

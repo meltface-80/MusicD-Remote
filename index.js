@@ -2529,13 +2529,54 @@ function albumKey(title, artist) {
 // every collaboration. Each individual artist is offered as an alternative.
 // The TITLE always has to match, so a wrong badge would need the same album
 // title AND a shared artist on genuinely different releases.
+// Every spelling of an album TITLE worth matching under. The plain title, plus
+// the same title with an edition marker removed.
+//
+// This exists because Roon replaces file tags with its own metadata for albums
+// it identifies. A rip tagged "Rumours" sits in a library where Roon calls it
+// "Rumours (Deluxe Edition)", and with one title string on each side those two
+// can never meet — silently, in a way that shows up only as a source count
+// that is hundreds short. The streaming path has had this since v1.6.55
+// (addFavouriteKeys indexes both "Album" and "Album (Deluxe)"); the local path
+// never got it.
+//
+// The stripped form is an EXTRA key, never a replacement: the full titles still
+// match each other, and two albums that collapse to the same stripped title
+// simply share an identity, which ambiguousAlbumKeys already suppresses for
+// badging.
+function albumTitleVariants(title) {
+  const raw = String(title || "").trim();
+  const out = [];
+  // The original title goes in whatever its length — albums really are called
+  // "X" and "÷", and rejecting those would strip them of every identity they
+  // have. The floor applies only to STRIPPED forms, where a short result means
+  // the marker was most of the title and what's left would match everything.
+  const first = canonText(raw);
+  if (first) out.push(first);
+  const add = (v) => {
+    const c = canonText(v);
+    if (c && c.length >= 3 && !out.includes(c)) out.push(c);
+  };
+  // A trailing bracketed chunk: "(Deluxe Edition)", "[2016 Remaster]".
+  add(raw.replace(/\s*[([][^()[\]]*[)\]]\s*$/, ""));
+  // A trailing dash suffix, but ONLY when it reads as an edition — "Album -
+  // Part Two" is a different record, "Album - Remastered" is not.
+  add(raw.replace(
+    /\s+-\s+[^-]*\b(remaster(ed)?|deluxe|edition|expanded|anniversary|bonus|reissue|mono|stereo|version|remix(ed)?)\b[^-]*$/i,
+    ""));
+  return out;
+}
+
 function albumKeys(title, subtitle) {
-  const t = canonText(title);
-  if (!t) return [];
+  const titles = albumTitleVariants(title);
+  if (!titles.length) return [];
   const out = [], seen = new Set();
   const push = (artist) => {
-    const k = t + "||" + canonArtist(artist);
-    if (!seen.has(k)) { seen.add(k); out.push(k); }
+    const a = canonArtist(artist);
+    for (const t of titles) {
+      const k = t + "||" + a;
+      if (!seen.has(k)) { seen.add(k); out.push(k); }
+    }
   };
   push(subtitle || "");
   // Same separators the artist links use, plus the unspaced slash.

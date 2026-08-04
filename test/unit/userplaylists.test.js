@@ -48,7 +48,7 @@ const {
    "shareTextMax", "shareNameMax", "shareTrackMax", "shareUriMax",
    "shareNsTrack", "shareNsPlaylist",
    "userPlNameMax", "userPlTracksMax", "userPlMax", "normalize", "canonText",
-   "canonArtist", "albumKeys", "creditHasArtist"],
+   "canonArtist", "albumKeys", "albumTitleVariants", "creditHasArtist"],
   {
     zlib,
     pkg: { version: "9.9.9" },

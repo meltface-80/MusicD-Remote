@@ -2,6 +2,41 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.33] — 2026-08-04
+
+### Fixed — the remaining local-album shortfall
+The `[local:walk]` line added in v1.7.30 settled it in one reading:
+
+    2831 dirs visited, 2383 with audio, 2383 tags read, 2383 albums keyed
+
+No skipped depths, no unreadable directories, no failed tag reads. The walk finds **more** album
+directories than Roon has albums, so the missing 403 were never a scanning problem — they fail the
+**tag↔Roon match**.
+
+The cause is that Roon replaces file tags with its own metadata for albums it identifies. A rip
+tagged *Rumours* sits in a library where Roon calls it *Rumours (Deluxe Edition)*, and with one
+title string on each side those can never meet. The streaming path has had edition tolerance since
+v1.6.55 — `addFavouriteKeys` indexes both `Album` and `Album (Deluxe)` — and the local path never
+got it.
+
+`albumKeys()` now generates an extra key with the edition marker removed, which means **both**
+sides inherit it, symmetrically:
+
+- a trailing bracketed chunk — `(Deluxe Edition)`, `[2016 Remaster]`
+- a trailing dash suffix, but **only** when it reads as an edition. *Album - Remastered* collapses;
+  *Album - Part Two* does not, because that is a different record and merging them would be worse
+  than missing one.
+
+The stripped form is always an **extra** key, never a replacement, so albums that differ only by
+edition can still match each other exactly. Two albums that collapse to the same stripped title
+simply share an identity, which `ambiguousAlbumKeys` already suppresses for badging.
+
+### Fixed — a regression caught by the existing suite
+The first version applied the ≥3-character floor to the **original** title as well as the stripped
+one, so an album genuinely called *X* or *÷* came back with **no keys at all** — every identity
+gone, silently. The floor belongs only on stripped forms, where a short result means the marker was
+most of the title and what remains would match everything.
+
 ## [1.7.32] — 2026-08-04
 
 ### Added

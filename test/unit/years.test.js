@@ -26,7 +26,8 @@ const { loadIndexFunctions } = require("../lib/extract");
 // The real key builders, so the join is tested against production key shapes
 // rather than a test-local imitation of them.
 const K = loadIndexFunctions(
-  ["albumKey", "albumKeys", "canonText", "canonArtist", "normalize", "splitCreditIntoArtists"],
+  ["albumKey", "albumKeys", "albumTitleVariants", "canonText", "canonArtist", "normalize",
+   "splitCreditIntoArtists"],
   { knownArtistSet: () => new Set() }
 );
 
