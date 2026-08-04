@@ -6944,15 +6944,44 @@ function userPlaylistSummary(p) {
 // The counterpart to encodeSharePayload. Deliberately strict: a blob we cannot
 // positively identify is refused rather than guessed at.
 function decodeSharePayload(blob) {
-  const s = String(blob || "").trim();
-  const sep = s.indexOf(":");
-  if (sep < 0 || s.slice(0, sep) !== shareMagic()) {
-    throw new Error("That doesn't look like a MusicD Remote playlist");
+  // Deliberately forgiving about everything EXCEPT the payload itself.
+  //
+  // A blob makes its way here through clipboards, chat apps, mail clients and
+  // hand-selection on a phone. All of those wrap lines, and mail in particular
+  // inserts newlines mid-string and quote markers at the start of each one. The
+  // first version demanded the magic at character zero of a trimmed string, so
+  // a paste carrying so much as a leading newline — or the words the sender
+  // typed around it — was rejected as "not a MusicD Remote playlist" while
+  // holding a perfectly good playlist.
+  //
+  // So: collapse ALL whitespace, find the magic wherever it sits, and keep only
+  // base64url characters after it. None of that can turn a bad blob into a
+  // good one — the gzip and JSON steps below are still the real check.
+  const compact = String(blob || "").replace(/\s+/g, "");
+  const at = compact.indexOf(shareMagic() + ":");
+  if (at < 0) {
+    throw new Error(
+      `That doesn't look like a MusicD Remote playlist — it should contain "${shareMagic()}:"`);
   }
-  let json;
-  try {
-    json = zlib.gunzipSync(Buffer.from(s.slice(sep + 1), "base64url")).toString("utf8");
-  } catch (e) {
+  const payload = compact.slice(at + shareMagic().length + 1).replace(/[^A-Za-z0-9_-]/g, "");
+  if (!payload) throw new Error("That playlist is empty — nothing followed the marker");
+
+  // Trailing prose cannot be separated by inspection: "Enjoy" is as valid a
+  // base64url string as the payload is, so stripping non-base64url characters
+  // leaves the sender's own words glued to the end. What CAN separate them is
+  // gzip's checksum — only the exact right byte sequence passes it. So on
+  // failure, shave characters off the end and retry, bounded. A wrong length
+  // fails the CRC rather than yielding plausible garbage, which is what makes
+  // this safe rather than a guess.
+  let json = null;
+  for (let cut = 0; cut <= 40 && cut < payload.length; cut++) {
+    try {
+      json = zlib.gunzipSync(Buffer.from(payload.slice(0, payload.length - cut), "base64url"))
+                 .toString("utf8");
+      break;
+    } catch (e) { /* not this length — try one shorter */ }
+  }
+  if (json === null) {
     throw new Error("That playlist is damaged — it may have been cut short in transit");
   }
   let doc;

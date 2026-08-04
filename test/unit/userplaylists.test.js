@@ -142,6 +142,42 @@ test("decodeSharePayload refuses what it cannot positively identify", async (t) 
     }
   });
 
+  // v1.7.29: a real paste is not a clean string.
+  await t.test("line wrapping does not break it", () => {
+    // Every clipboard, chat app and mail client wraps a 3 KB single-token
+    // string. The first version demanded the magic at character zero of a
+    // trimmed string, so a wrapped paste was rejected as "not a playlist"
+    // while holding a perfectly good one.
+    const wrapped = blob.replace(/(.{40})/g, "$1\n");
+    assert.equal(decodeSharePayload(wrapped).playlist.title, "Late Night");
+  });
+
+  await t.test("leading and trailing text around it does not break it", () => {
+    assert.equal(
+      decodeSharePayload("Here's that playlist:\n\n" + blob + "\n\nEnjoy!").playlist.title,
+      "Late Night");
+  });
+
+  await t.test("mail-style quote markers do not break it", () => {
+    const quoted = blob.replace(/(.{40})/g, "> $1\n");
+    assert.equal(decodeSharePayload(quoted).playlist.title, "Late Night");
+  });
+
+  await t.test("spaces inside the payload are ignored", () => {
+    assert.equal(decodeSharePayload(blob.replace(/(.{10})/g, "$1 ")).playlist.title,
+      "Late Night");
+  });
+
+  await t.test("the marker with nothing after it says so", () => {
+    assert.throws(() => decodeSharePayload("MDRP1:"), /empty/);
+  });
+
+  await t.test("tolerance cannot rescue a genuinely corrupt payload", () => {
+    // The point of stripping whitespace is to survive transport, never to make
+    // a bad blob look good — gzip and JSON are still the real check.
+    assert.throws(() => decodeSharePayload("MDRP1:bm90Z3ppcHBlZGF0YWF0YWxs"), /damaged/);
+  });
+
   await t.test("a truncated blob says it was cut short", () => {
     // The failure a copy-paste through a messaging app actually produces.
     assert.throws(() => decodeSharePayload(blob.slice(0, blob.length - 20)),

@@ -87,6 +87,9 @@ const OPEN = `
   entry.click();
   await window.__sleep(400);
   T("sheet_open", !!document.querySelector(".lib-sheet-backdrop"));
+  var fi = document.getElementById("import-file");
+  T("file_input", fi ? { type: fi.type, accept: fi.accept,
+                         labelled: !!fi.closest("label") } : null);
   document.getElementById("import-blob").value = "MDRP1:ZmFrZQ";
   Array.prototype.filter.call(document.querySelectorAll(".lib-sheet-foot button"),
     function (b) { return b.textContent === "Import"; })[0].click();
@@ -137,6 +140,18 @@ test("importing a shared playlist reports what it could and couldn't match (v1.7
     assert.equal(r.sheet_open, true);
     assert.equal(r.posted.length, 1);
     assert.equal(r.posted[0].blob, "MDRP1:ZmFrZQ");
+  });
+
+  await t.test("a file can be chosen as well as pasted (v1.7.29)", () => {
+    // The blob is long enough that a hand-selection on a phone comes back
+    // short, which looks like a corrupt playlist rather than a bad copy. The
+    // downloaded .musicd file is the reliable route and is the other half of
+    // Share's Download button.
+    assert.ok(r.file_input, "there must be a file picker");
+    assert.equal(r.file_input.type, "file");
+    assert.match(String(r.file_input.accept), /\.musicd/);
+    assert.equal(r.file_input.labelled, true,
+      "the input is hidden and driven by its label — unlabelled it is untappable");
   });
 
   await t.test("the report leads with how many of how many", () => {

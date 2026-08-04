@@ -2,6 +2,29 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.29] — 2026-08-04
+
+### Fixed
+- **Importing a playlist you had just shared failed with "That doesn't look like a MusicD Remote
+  playlist".** Two causes, and the first made the second inevitable:
+  - **Copy never worked on this app's own origin.** `navigator.clipboard` is a *secure-context*
+    API and the extension is served over plain http on the LAN, so on most devices it does not
+    exist at all — the button fell through to "the text is selected, copy it by hand" every time.
+    A hand-selected 3 KB blob on a phone comes back short or wrapped. `document.execCommand("copy")`
+    still works on http and is now tried **first**, with the async API as the fallback.
+  - **The decoder demanded the marker at character zero** of a trimmed string, so a paste carrying
+    a leading newline, soft-wrapped lines, or the words the sender typed around it was rejected
+    while holding a perfectly good playlist. It now finds the marker wherever it sits and ignores
+    whitespace and quote markers inside the payload.
+- Trailing prose ("…Enjoy!") cannot be separated by inspection — letters are valid base64url. But
+  gzip carries a checksum, so the decoder shaves characters off the end and retries, bounded at 40.
+  A wrong length fails the CRC rather than yielding plausible garbage, which is what makes that a
+  recovery rather than a guess. A genuinely truncated blob still reports itself as cut short.
+
+### Added
+- **Import from a file.** The import sheet takes a `.musicd` file as well as a pasted blob — the
+  other half of Share's Download button, and far more reliable on a phone than a clipboard.
+
 ## [1.7.28] — 2026-08-04
 
 ### Fixed

@@ -1672,6 +1672,38 @@
       ta.placeholder = "MDRP1:…";
       body.appendChild(ta);
 
+      // A downloaded .musicd file is the other half of Share's Download, and
+      // on a phone it is far more reliable than a clipboard: the blob is long
+      // enough that a hand-selection can silently come back short.
+      const pick = document.createElement("label");
+      pick.className = "action-btn import-file";
+      pick.textContent = "Choose a file…";
+      const file = document.createElement("input");
+      file.type = "file";
+      // .musicd is what Share writes; text/plain covers a file renamed or
+      // re-saved by a mail client, and iOS is inconsistent about extensions it
+      // does not recognise.
+      file.accept = ".musicd,text/plain";
+      file.className = "visually-hidden";
+      file.id = "import-file";
+      file.addEventListener("change", () => {
+        const f = file.files && file.files[0];
+        if (!f) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          ta.value = String(reader.result || "");
+          const out = document.getElementById("import-result");
+          if (out) out.textContent = `Loaded ${f.name} — press Import.`;
+        };
+        reader.onerror = () => {
+          const out = document.getElementById("import-result");
+          if (out) out.textContent = "Couldn't read that file.";
+        };
+        reader.readAsText(f);
+      });
+      pick.appendChild(file);
+      body.appendChild(pick);
+
       const out = document.createElement("div");
       out.className = "import-result";
       out.id = "import-result";
@@ -1935,16 +1967,32 @@
       copy.type = "button"; copy.className = "action-btn primary";
       copy.textContent = "Copy";
       copy.addEventListener("click", async () => {
+        // navigator.clipboard is a SECURE-CONTEXT api and this extension is
+        // served over plain http on the LAN, so on most devices it simply does
+        // not exist — the "modern" path was never once taken in practice, and
+        // every user was silently pushed to hand-selecting the blob. That is
+        // how a copy comes back short. execCommand still works on http, so it
+        // is tried FIRST and the async API is the fallback, not the other way
+        // round.
+        const ta = document.getElementById("share-blob");
+        if (ta) {
+          ta.focus();
+          ta.setSelectionRange(0, (j.blob || "").length);
+          try {
+            if (document.execCommand && document.execCommand("copy")) {
+              showToast("Copied — paste it to whoever you're sharing with");
+              return;
+            }
+          } catch (e) { /* falls through to the async API below */ }
+        }
         try {
           await navigator.clipboard.writeText(j.blob || "");
           showToast("Copied — paste it to whoever you're sharing with");
         } catch (e) {
-          // Clipboard access is refused on non-secure origins and by some
-          // mobile browsers. Selecting the text is the fallback that always
-          // works, so say that rather than failing silently.
-          const ta = document.getElementById("share-blob");
-          if (ta) { ta.focus(); ta.select(); }
-          showToast("Couldn't copy — the text is selected, copy it by hand", "error");
+          // Both refused. The text is selected, so a manual copy still works —
+          // say so rather than failing silently.
+          showToast("Couldn't copy automatically — the text is selected, copy it by hand",
+                    "error", TOAST_REPORT_MS);
         }
       });
       foot.appendChild(copy);

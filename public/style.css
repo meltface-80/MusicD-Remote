@@ -3481,6 +3481,14 @@ input.vol-range::-moz-range-thumb {
 .sel-menu-wrap.in-modal .sel-menu { right: 0; }
 
 /* Import report + the add-to-playlist picker rows. */
+/* A <label> wrapping a hidden <input type=file> — the only way to style a file
+   picker consistently, and it keeps the whole control tappable. */
+.import-file { display: block; width: 100%; margin-top: 10px; text-align: center; cursor: pointer; }
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  clip: rect(0 0 0 0); clip-path: inset(50%); overflow: hidden; white-space: nowrap;
+}
 .import-result { margin-top: 12px; }
 .import-missing {
   margin: 6px 0 12px; padding-left: 18px;
