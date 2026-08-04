@@ -443,6 +443,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
         <div class="modal-art">
           <img id="modal-img" alt="">
           <span id="modal-source" class="album-source local hidden" title="Local albums" aria-label="Local albums"></span>
+          <span id="modal-quality" class="album-quality hidden"></span>
         </div>
         <div class="modal-info">
           <h2 id="modal-title">—</h2>
@@ -1136,6 +1137,16 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
           <div class="theme-apply-row">
             <span id="theme-apply-hint" class="theme-apply-hint"></span>
             <button id="theme-apply" class="action-btn primary" type="button" disabled>Apply</button>
+          </div>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Show sample rate on artwork <button class="settings-info-btn" data-info="Puts the bit depth and sample rate on every album tile — 24/96, 16/44.1, or the file type for a lossy one. Read from your own files during the library scan, so albums streamed from Qobuz or TIDAL have none and simply show nothing. Hi-res albums are highlighted." aria-label="Info">ⓘ</button></span>
+            <label class="switch">
+              <input type="checkbox" id="quality-toggle" aria-label="Show sample rate on artwork">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
           </div>
         </div>
       </div>

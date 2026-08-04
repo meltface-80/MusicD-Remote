@@ -35,6 +35,19 @@
     const label = { local: "Local albums", qobuz: "Qobuz", tidal: "TIDAL" }[kind];
     modalSource.className = "album-source" + (label ? " " + kind : " hidden");
     if (label) { modalSource.title = label; modalSource.setAttribute("aria-label", label); }
+    // Same badge as the tiles, on the album's own artwork. Cleared on every
+    // open for the same reason: a previous album's rate lingering on a new
+    // cover would be a confident, wrong statement about the file.
+    const mq = document.getElementById("modal-quality");
+    if (!mq) return;
+    const q = album && album.quality;
+    mq.className = "album-quality" + (q ? (album.hires ? " is-hires" : "") : " hidden");
+    mq.textContent = q || "";
+    if (q) {
+      const words = /\//.test(q) ? q.split("/")[0] + "-bit, " + q.split("/")[1] + " kHz" : q;
+      mq.title = words;
+      mq.setAttribute("aria-label", words);
+    }
   }
   const modalTitle  = document.getElementById("modal-title");
   const modalSub    = document.getElementById("modal-subtitle");
@@ -2185,6 +2198,31 @@
   const SMART_LIMITS = [25, 50, 100, 200, 400];
   const SMART_LIMIT_DEFAULT = 100;   // matches smartLimitDefault() on the server
 
+  // What a new playlist is made OF, asked first because it changes what the
+  // playlist DOES rather than which albums it matches — and because it is the
+  // one choice that can't be inferred from the focus.
+  //
+  // Both modes run the same album query. "Albums" queues whole records in
+  // order; "Tracks" expands them and lists the tracks individually. The filter
+  // itself is always album-level: Roon's API publishes no track list without
+  // opening each album one at a time, so a genuinely track-level FILTER would
+  // mean indexing every track in the library — thousands of Roon calls, redone
+  // on every change — which is the traffic the snapshot exists to avoid. This
+  // is stated in the sheet rather than hidden, so the choice is understood.
+  const SMART_MODES = [
+    { id: "albums", label: "Albums",
+      note: "Queues whole albums, in their own running order." },
+    { id: "tracks", label: "Tracks",
+      note: "Lists the tracks from those albums, so you can play or queue them one at a time." }
+  ];
+  const SMART_MODE_DEFAULT = "albums";   // matches smartModeDefault() on the server
+  // What order it comes out in — a separate axis from what it is made of.
+  const SMART_ORDERS = [
+    { id: "album",  label: "Album order" },
+    { id: "random", label: "Random" }
+  ];
+  const SMART_ORDER_DEFAULT = "album";   // matches smartOrderDefault() on the server
+
   async function openLibFocusSheet(editTarget) {
     // Snapshot BEFORE the edited view is applied, so abandoning the sheet can
     // put the user's own Library view back exactly as it was.
@@ -2193,6 +2231,10 @@
     // which is also why the server applies it by slicing rather than inside
     // libraryView(), whose cache is keyed on the query alone.
     let editLimit = (editTarget && editTarget.limit) || 100;
+    // Same reasoning as the limit: two playlists can share a query and differ
+    // in what order it comes out in, so this lives beside the view rather than
+    // inside it.
+    let editOrder = (editTarget && editTarget.order) || SMART_ORDER_DEFAULT;
     if (editTarget) applyViewToLibView(editTarget.view);
     let committed = false;
     // Re-read every time the sheet opens. Caching these for the life of the
@@ -2354,8 +2396,24 @@
         }
 
         // Only when editing a saved playlist: on the Library screen there is
-        // nothing for a limit to apply to.
+        // nothing for an order or a limit to apply to.
         if (editTarget) {
+          const ord = section("order", "Order", 0);
+          if (ord) {
+            for (const o of SMART_ORDERS) {
+              chip(ord.chips, o.label, editOrder === o.id ? "on" : "off",
+                   () => { editOrder = o.id; });
+            }
+            note(ord.section,
+              (editTarget.mode === "tracks"
+                ? "Album order plays each record straight through, in the sort you " +
+                  "chose. Random shuffles the albums AND the tracks inside them."
+                : "Album order queues the albums in the sort you chose. Random " +
+                  "shuffles which albums, and what order they play in.") +
+              " The shuffle is fixed per playlist, so it stays put while you scroll " +
+              "rather than reshuffling under you.");
+          }
+
           const lim = section("limit", "Playlist size", 0);
           if (lim) {
             for (const n of SMART_LIMITS) {
@@ -2399,7 +2457,7 @@
         // being edited); Save-as from the Library bar has no editTarget and
         // takes the server default.
         saveSmartPlaylistPrompt(editTarget
-          ? Object.assign({}, editTarget, { limit: editLimit })
+          ? Object.assign({}, editTarget, { limit: editLimit, order: editOrder })
           : null);
       });
       const show = document.createElement("button");
@@ -2490,7 +2548,9 @@
                                  limit: existing && existing.limit,
                                  // Set by the create sheet before the focus
                                  // screen opens, and preserved through an edit.
-                                 mode:  existing && existing.mode })
+                                 mode:  existing && existing.mode,
+                                 // Set in the focus sheet's Order section.
+                                 order: existing && existing.order })
         });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) { showToast(j.error || "Couldn't save that", "error"); return; }
@@ -2548,24 +2608,6 @@
     return btn;
   }
 
-  // What a new playlist is made OF, asked first because it changes what the
-  // playlist DOES rather than which albums it matches — and because it is the
-  // one choice that can't be inferred from the focus.
-  //
-  // Both modes run the same album query. "Albums" queues whole records in
-  // order; "Tracks" expands them and lists the tracks individually. The filter
-  // itself is always album-level: Roon's API publishes no track list without
-  // opening each album one at a time, so a genuinely track-level FILTER would
-  // mean indexing every track in the library — thousands of Roon calls, redone
-  // on every change — which is the traffic the snapshot exists to avoid. This
-  // is stated in the sheet rather than hidden, so the choice is understood.
-  const SMART_MODES = [
-    { id: "albums", label: "Albums",
-      note: "Queues whole albums, in their own running order." },
-    { id: "tracks", label: "Tracks",
-      note: "Lists the tracks from those albums, so you can play or queue them one at a time." }
-  ];
-  const SMART_MODE_DEFAULT = "albums";   // matches smartModeDefault() on the server
 
   // Creating is editing a playlist that doesn't exist yet: same sheet, same
   // sections, same Playlist size control. Passing a target with no id is what
@@ -2601,7 +2643,8 @@
           // playlist. A target with no id makes the save create rather than
           // overwrite.
           openLibFocusSheet({ id: null, name: "", view: currentLibViewSnapshot(),
-                              limit: SMART_LIMIT_DEFAULT, mode: m.id });
+                              limit: SMART_LIMIT_DEFAULT, mode: m.id,
+                              order: SMART_ORDER_DEFAULT });
         });
         body.appendChild(row);
       }
@@ -2687,7 +2730,14 @@
     head.appendChild(h);
     const sub = document.createElement("div");
     sub.className = "playlist-sub";
-    sub.textContent = describeLibView(sp.view);
+    // What it is made of and what order it is in, alongside the query — both
+    // are properties of the playlist that the query description can't carry,
+    // and "why are these shuffled?" is otherwise only answerable from Edit.
+    sub.textContent = [
+      (sp.mode || SMART_MODE_DEFAULT) === "tracks" ? "Tracks" : "Albums",
+      (sp.order || SMART_ORDER_DEFAULT) === "random" ? "random" : "album order",
+      describeLibView(sp.view)
+    ].filter(Boolean).join(" · ");
     head.appendChild(sub);
     wrap.appendChild(head);
 
@@ -3763,6 +3813,48 @@
   // Source badge for an album payload: "local" | "qobuz" | "tidal", or null
   // when the server couldn't determine it. `a.local` is still honoured so a
   // tile built from an older cached payload keeps its badge.
+  // ----- Quality badge -----------------------------------------------------
+  //
+  // "24/96" on the artwork, off by default and switched on in Appearance. It is
+  // read from your own files, so a streamed album simply has none — the server
+  // sends the field only when it knows, and no badge is drawn otherwise. A
+  // question mark or a guess would be worse than silence.
+  //
+  // A device preference like the theme, so it lives in localStorage rather than
+  // settings.json: one person wanting rates on their phone shouldn't put them
+  // on the wall display too.
+  const QUALITY_KEY = "rra-show-quality";
+  let showQuality = false;
+  try { showQuality = localStorage.getItem(QUALITY_KEY) === "1"; }
+  catch (e) { /* private browsing — the default (off) stands */ }
+  function setShowQuality(on) {
+    showQuality = !!on;
+    try { localStorage.setItem(QUALITY_KEY, showQuality ? "1" : "0"); }
+    catch (e) { /* still applies for this session */ }
+    // Every tile already on screen, without a refetch: the payload always
+    // carries the value, so this is a class flip rather than a reload.
+    document.body.classList.toggle("show-quality", showQuality);
+  }
+  // Applied at boot, not only on change — the stored preference has to survive
+  // a reload, and the class is the only thing that makes the badges visible.
+  document.body.classList.toggle("show-quality", showQuality);
+  window.__showQuality    = () => showQuality;
+  window.__setShowQuality = setShowQuality;
+  function qualityBadge(a) {
+    if (!a.quality) return null;
+    const el = document.createElement("span");
+    el.className = "album-quality" + (a.hires ? " is-hires" : "");
+    el.textContent = a.quality;
+    // The badge is two characters of shorthand; the accessible name says what
+    // they mean, and the tooltip does the same for a mouse.
+    const words = /\//.test(a.quality)
+      ? a.quality.split("/")[0] + "-bit, " + a.quality.split("/")[1] + " kHz"
+      : a.quality;
+    el.title = words;
+    el.setAttribute("aria-label", words);
+    return el;
+  }
+
   const SOURCE_LABEL = { local: "Local albums", qobuz: "Qobuz", tidal: "TIDAL" };
   function sourceBadge(a) {
     const kind = a.source || (a.local ? "local" : null);
@@ -3791,6 +3883,12 @@
     // source couldn't be determined, not that it's missing.
     const srcBadge = sourceBadge(a);
     if (srcBadge) artWrap.appendChild(srcBadge);
+    // Always built, shown or hidden by one class on <body>. Rendering it
+    // conditionally would mean every tile already on screen kept its old state
+    // until something rebuilt it, so the toggle would look like it had done
+    // nothing until you navigated away and back.
+    const qBadge = qualityBadge(a);
+    if (qBadge) artWrap.appendChild(qBadge);
     // A playlist has no cover of its own, so it gets a mosaic of the artwork
     // from the first few tracks — the way Roon draws them. Two or more distinct
     // covers make a 2x2; a single one just fills the tile, because a lone
@@ -8048,6 +8146,17 @@
       pendingThemeId = null;
       renderThemeList();
       showToast("Theme applied");
+    });
+  }
+
+  // Sample rate on the artwork. No Apply button and no reload: the value is
+  // already on every tile, so the switch is a class on <body> and takes effect
+  // on the screen behind the settings sheet.
+  const qualityToggle = document.getElementById("quality-toggle");
+  if (qualityToggle) {
+    qualityToggle.checked = window.__showQuality ? window.__showQuality() : false;
+    qualityToggle.addEventListener("change", () => {
+      if (window.__setShowQuality) window.__setShowQuality(qualityToggle.checked);
     });
   }
 

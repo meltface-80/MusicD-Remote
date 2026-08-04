@@ -3151,6 +3151,30 @@ input.vol-range::-moz-range-thumb {
   -webkit-mask-size: 13px 13px;  mask-size: 13px 13px;
   -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
 }
+/* Sample rate / bit depth on the artwork — "24/96", "16/44.1", "MP3".
+   Bottom-left, so it never collides with the source badge top-right.
+   Hidden unless Appearance → Show sample rate is on: the value is always in
+   the payload, so the switch is this one class rather than a refetch. */
+.album-quality {
+  position: absolute; left: 6px; bottom: 6px; z-index: 2;
+  display: none;
+  padding: 2px 5px; border-radius: 5px;
+  background: rgba(10, 14, 20, .62);
+  backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+  box-shadow: 0 1px 4px rgba(0,0,0,.35);
+  color: rgba(255,255,255,.92);
+  font-size: 10px; font-weight: 700; line-height: 1.3;
+  letter-spacing: .02em; font-variant-numeric: tabular-nums;
+  white-space: nowrap; pointer-events: none;
+}
+body.show-quality .album-quality { display: block; }
+/* Better than CD. Roon marks hi-res; there is no room to say so in words, so
+   the badge takes the accent instead. */
+.album-quality.is-hires { color: var(--accent-text); }
+/* The album view's artwork is far bigger than a tile, so the badge scales with
+   it rather than sitting lost in a corner. */
+#modal-quality { left: 8px; bottom: 8px; padding: 3px 7px; font-size: 12px; border-radius: 6px; }
+
 /* Larger on the album detail artwork, which is far bigger than a tile. */
 #modal-source { width: 28px; height: 28px; top: 8px; right: 8px; border-radius: 8px; }
 #modal-source::before { -webkit-mask-size: 16px 16px; mask-size: 16px 16px; }

@@ -64,7 +64,9 @@ function build(opts) {
   return loadIndexFunctions(
     ["libraryView", "libFacetDefs", "facetMatch", "albumGenresOf", "albumFileFactsOf",
      "albumYearOf", "albumAddedOf", "seededRank", "rateLabel", "channelLabel",
-     "libAddedWindows", "countWithAny"],
+     "libAddedWindows", "countWithAny", "smartPlaylistAlbums", "smartOrderDefault",
+     "smartOrders", "albumFileFacts", "albumQualityLabel", "albumIsHiRes", "rateShort",
+     "albumKeys", "albumTitleVariants", "canonText", "canonArtist", "normalize", "albumKey"],
     {
       albumIndex, albumYearCache, albumGenreCache, albumFileCache,
       albumSeenCache: new Map(Object.entries(opts.seen || {})),
@@ -295,5 +297,138 @@ test("coverage is counted per album, not per value", async (t) => {
     assert.equal(bare.countWithAny(bare.libFacetDefs(), "genre"), 0);
     assert.equal(bare.libraryView({}).length, ALBUMS.length,
       "an empty facet must not empty the library");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.7.36: playlist order.
+//
+// The report: a Tracks playlist came out in album order, one record at a time.
+// Random has to shuffle, but it CANNOT use Math.random(): tracks are paged by
+// album, so a fresh shuffle per request would repeat some tracks and skip
+// others as the user scrolls. It is seeded, and that stability is the property
+// worth pinning — a shuffle that reshuffles under you is worse than no shuffle.
+// ---------------------------------------------------------------------------
+test("playlist order — random shuffles, and stays shuffled", async (t) => {
+  const F = build();
+  const sp = (order, extra) => Object.assign(
+    { id: "sp", name: "n", limit: 100, mode: "tracks", order, view: { sort: "album", dir: "asc", seed: 7 } },
+    extra || {});
+  const titlesOf = (list) => list.map(a => a.title);
+
+  await t.test("album order is the view's own sort", () => {
+    assert.deepEqual(titlesOf(F.smartPlaylistAlbums(sp("album"))),
+      titlesOf(F.libraryView({ sort: "album", dir: "asc" })));
+  });
+
+  await t.test("a playlist with no order at all behaves as album order", () => {
+    // Every record saved before v1.7.36 lacks the field.
+    const legacy = { id: "sp", name: "n", limit: 100, view: { sort: "album", dir: "asc", seed: 7 } };
+    assert.deepEqual(titlesOf(F.smartPlaylistAlbums(legacy)),
+      titlesOf(F.smartPlaylistAlbums(sp("album"))));
+  });
+
+  await t.test("random is a different order from the sort", () => {
+    const shuffled = titlesOf(F.smartPlaylistAlbums(sp("random")));
+    assert.notDeepEqual(shuffled, titlesOf(F.smartPlaylistAlbums(sp("album"))));
+    // …and it is a permutation, not a filter. A shuffle that drops albums
+    // would look like the query having changed.
+    assert.deepEqual(shuffled.slice().sort(),
+      titlesOf(F.smartPlaylistAlbums(sp("album"))).slice().sort());
+  });
+
+  await t.test("the same playlist shuffles the same way every time", () => {
+    // THE property. Page 2 is a separate request; if this were Math.random()
+    // the second page would re-roll and the user would see duplicates and gaps.
+    const a = titlesOf(F.smartPlaylistAlbums(sp("random")));
+    const b = titlesOf(F.smartPlaylistAlbums(sp("random")));
+    assert.deepEqual(a, b);
+  });
+
+  await t.test("a different seed gives a different shuffle", () => {
+    // Otherwise "random" would hand every playlist the identical order.
+    const orders = new Set();
+    for (const seed of [1, 2, 3, 7, 11, 19]) {
+      orders.add(titlesOf(F.smartPlaylistAlbums(
+        sp("random", { view: { sort: "album", dir: "asc", seed } }))).join("|"));
+    }
+    assert.ok(orders.size > 1,
+      "every seed produced the same order — the seed is not reaching the shuffle");
+  });
+
+  await t.test("the result is UNSLICED, so the caller can report what it left out", () => {
+    // Slicing inside would make "100 of 1,179" read "100 of 100".
+    assert.equal(F.smartPlaylistAlbums(sp("random", { limit: 2 })).length, ALBUMS.length);
+  });
+
+  await t.test("the focus still applies before the shuffle", () => {
+    const jazzOnly = sp("random", { view: { sort: "album", dir: "asc", seed: 7, genre: ["Jazz"] } });
+    assert.deepEqual(titlesOf(F.smartPlaylistAlbums(jazzOnly)), ["Kind of Blue"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.7.36: the quality badge.
+//
+// It is two characters of shorthand claiming a fact about a file, so the way it
+// goes wrong is by being CONFIDENTLY WRONG rather than absent — an MP3 badged
+// "16/44.1" reads as CD quality, and a streamed album given any badge at all is
+// a statement about a file that does not exist.
+// ---------------------------------------------------------------------------
+test("the quality badge says only what it knows", async (t) => {
+  const F = build();
+  const q = (f) => F.albumQualityLabel(f);
+
+  await t.test("lossless reads as bits over kHz", () => {
+    assert.equal(q({ container: "FLAC", bits: 24, rate: 96000, lossless: true }), "24/96");
+    assert.equal(q({ container: "FLAC", bits: 16, rate: 44100, lossless: true }), "16/44.1");
+    assert.equal(q({ container: "FLAC", bits: 24, rate: 192000, lossless: true }), "24/192");
+  });
+
+  await t.test("a lossy file shows its type, never a bit depth", () => {
+    // music-metadata reports a bitsPerSample for MP3 that describes the
+    // DECODER, not the recording. Printing "16/44.1" on an MP3 would claim CD
+    // quality for a 128kbps rip.
+    assert.equal(q({ container: "MP3", bits: 16, rate: 44100, lossless: false }), "MP3");
+    assert.equal(q({ container: "AAC", bits: 16, rate: 44100, lossless: false }), "AAC");
+  });
+
+  await t.test("no local file means no badge at all", () => {
+    // A streamed album has no file to read. Any badge here would be invented.
+    assert.equal(q(null), null);
+    assert.equal(q(undefined), null);
+  });
+
+  await t.test("partial information degrades instead of guessing", () => {
+    assert.equal(q({ container: "FLAC", bits: null, rate: 44100, lossless: true }), "44.1 kHz");
+    assert.equal(q({ container: "FLAC", bits: null, rate: null, lossless: true }), "FLAC");
+    assert.equal(q({ container: null, bits: null, rate: null, lossless: true }), null);
+  });
+
+  await t.test("hi-res is anything better than CD, on either axis", () => {
+    assert.equal(F.albumIsHiRes({ bits: 24, rate: 44100, lossless: true }), true, "24-bit");
+    assert.equal(F.albumIsHiRes({ bits: 16, rate: 96000, lossless: true }), true, "96 kHz");
+    assert.equal(F.albumIsHiRes({ bits: 16, rate: 48000, lossless: true }), false, "48k is not hi-res");
+    assert.equal(F.albumIsHiRes({ bits: 16, rate: 44100, lossless: true }), false, "CD");
+    // A lossy file is never hi-res whatever its header claims.
+    assert.equal(F.albumIsHiRes({ bits: 24, rate: 96000, lossless: false }), false);
+    assert.equal(F.albumIsHiRes(null), false);
+  });
+
+  await t.test("rates read the way people say them", () => {
+    assert.equal(F.rateShort(44100), "44.1");
+    assert.equal(F.rateShort(48000), "48");
+    assert.equal(F.rateShort(96000), "96");
+    assert.equal(F.rateShort(2822400), "2822.4");   // DSD64
+    assert.equal(F.rateShort(0), null);
+  });
+
+  await t.test("an album's facts are found through every identity it is keyed by", () => {
+    // Same join as the source badge: the file scan and Roon may know the album
+    // under different names, and the badge has to survive that.
+    const al = ALBUMS[0];
+    assert.equal(F.albumFileFacts(al.title, al.subtitle, al).container, "FLAC");
+    // …and with no record at all, from the title and credit alone.
+    assert.ok(F.albumFileFacts("Kind of Blue", "Miles Davis", null));
   });
 });

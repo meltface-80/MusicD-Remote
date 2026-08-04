@@ -29,8 +29,13 @@ function fixture() {
   const F = loadIndexFunctions(
     ["normalize", "canonText", "canonArtist", "albumKey", "albumKeys", "albumTitleVariants",
      "addFavouriteKeys", "withSource", "albumSource", "sourceBadgesDistinguish",
-     "claimingServices", "unclaimedIsLocal"],
+     "claimingServices", "unclaimedIsLocal",
+     // withSource now attaches the quality badge too, so its helpers come with
+     // it — extracted rather than stubbed, so a change to what a badge SAYS is
+     // visible to the tests that assert badges.
+     "albumFileFacts", "albumQualityLabel", "albumIsHiRes", "rateShort"],
     { localAlbumKeys, qobuzAlbumKeys, tidalAlbumKeys, ambiguousAlbumKeys,
+      albumFileCache: new Map(),
       // A CONNECTED Qobuz with at least one favourite. Every assertion in this
       // file is about identifying a source from POSITIVE evidence, and since
       // v1.7.34 that logic only runs while a service is connected — with none

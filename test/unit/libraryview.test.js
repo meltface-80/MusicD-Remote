@@ -61,7 +61,7 @@ function build(opts) {
     // shipping facet vocabulary, and a stub beside them would let a facet's
     // predicate change without a single test noticing.
     ["libraryView", "albumYearOf", "albumAddedOf", "seededRank",
-     "libFacetDefs", "facetMatch", "albumGenresOf", "albumFileFactsOf",
+     "libFacetDefs", "facetMatch", "albumGenresOf", "albumFileFactsOf", "albumFileFacts",
      "rateLabel", "channelLabel", "libAddedWindows"],
     {
       albumYearCache,

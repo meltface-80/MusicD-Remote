@@ -2,6 +2,51 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.36] — 2026-08-04
+
+### Added — Dynamic Playlists have an Order: Album order or Random
+A Tracks playlist came out in album order, marching through one record at a time. Order is now its
+own section in the Focus sheet, separate from what the playlist is made of:
+
+- **Album order** — the sort you chose, each album's tracks in disc order.
+- **Random** — shuffles the albums, *and* the tracks within each page, so a Tracks playlist
+  genuinely interleaves rather than reordering whole records.
+
+It applies to Albums playlists too, where it shuffles which albums and what order they play in.
+
+The shuffle is **seeded, not `Math.random()`** — deliberately. Tracks are paged by album, so a
+fresh shuffle per request would repeat some tracks and skip others as you scroll. It is a pure
+function of the playlist's seed, so page 2 continues page 1 instead of reshuffling underneath it.
+
+Random also shuffles **before** the playlist's size limit, not after: a random playlist of 100 is
+100 drawn from everything that matched, not the first 100 by title then jumbled.
+
+Listing and playing now read one function, so the wall of albums you are looking at and the queue
+the Play button builds cannot be in different orders. The detail screen also states the mode and
+order under the title — "Tracks · random · Electronic" — so "why are these shuffled?" is
+answerable without opening Edit.
+
+### Added — sample rate and bit depth on the artwork (off by default)
+**Appearance → Show sample rate on artwork.** Puts `24/96`, `16/44.1`, or the file type for a
+lossy one on every album tile, and on the album view's own cover. Hi-res — anything above 16-bit
+or 48 kHz — is tinted with the accent.
+
+It is read from your own files during the library scan, so it costs nothing extra: the scanner
+already parsed the format block and had simply never looked at it. A **streamed album has no file
+to read, so it gets no badge at all** rather than an empty box or a guess.
+
+A lossy file shows its container (`MP3`, `AAC`) and never a bit depth — music-metadata reports a
+`bitsPerSample` for MP3 that describes the decoder, not the recording, so "16/44.1" on a 128 kbps
+rip would be a confident lie about CD quality.
+
+The value rides on every album payload, so the switch is one class on `<body>`: it changes the
+wall already on screen rather than waiting for a navigation. Stored per device, like the theme.
+
+### Tests
+26 static / 381 unit / 242 dom. New: `test/dom/quality-badge.test.js` measures painted boxes
+rather than counting elements — `display:none` is how the badge hides, so an element count would
+pass with every badge on screen. All new assertions mutation-checked.
+
 ## [1.7.35] — 2026-08-04
 
 ### Changed — the Library control row now matches Roon

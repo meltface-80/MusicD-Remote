@@ -30,8 +30,10 @@ function build(opts) {
   return loadIndexFunctions(
     ["withSource", "albumSource", "sourceBadgesDistinguish",
      "claimingServices", "unclaimedIsLocal", "albumKeys",
-     "albumTitleVariants", "canonText", "canonArtist", "normalize"],
+     "albumTitleVariants", "canonText", "canonArtist", "normalize",
+     "albumFileFacts", "albumQualityLabel", "albumIsHiRes", "rateShort"],
     {
+      albumFileCache:  new Map(opts.files || []),
       localAlbumKeys:  new Set(opts.local || []),
       qobuzAlbumKeys:  new Set(opts.qobuz || []),
       tidalAlbumKeys:  new Set(opts.tidal || []),

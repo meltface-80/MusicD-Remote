@@ -19,13 +19,15 @@ const assert = require("node:assert/strict");
 const { loadIndexFunctions } = require("../lib/extract");
 
 const { sanitizeLibView, smartPlaylistRecord, smartLimitDefault, smartLimitMax,
-        libPlayedIds, libFacetDefs, libFacetChipMax, smartModes, smartModeDefault } =
+        libPlayedIds, libFacetDefs, libFacetChipMax, smartModes, smartModeDefault,
+        smartOrders, smartOrderDefault } =
   loadIndexFunctions(
   // libSortIds/libPlayedIds/smartNameMax are extracted too, not injected — the
   // whole point is that the test reads the SHIPPING vocabulary.
   ["sanitizeLibView", "smartPlaylistRecord", "libSortIds", "libPlayedIds", "smartNameMax",
    "smartLimitDefault", "smartLimitMax", "smartLimitOptions",
-   "smartModes", "smartModeDefault", "libFacetDefs", "libFacetChipMax"]);
+   "smartModes", "smartModeDefault", "smartOrders", "smartOrderDefault",
+   "libFacetDefs", "libFacetChipMax"]);
 
 // Built FROM the shipping facet table, so a facet added to libFacetDefs() has
 // to appear in every saved view — which is what stops a new facet from working
@@ -195,5 +197,43 @@ test("smartPlaylistRecord drops what it cannot salvage", async (t) => {
       assert.equal(smartPlaylistRecord({ id: "sp1", name: "X", limit: bad }).limit,
                    smartLimitDefault(), `limit ${JSON.stringify(bad)} should have defaulted`);
     }
+  });
+});
+
+// v1.7.36. The user built a Tracks playlist and got its tracks in album order,
+// one record at a time. Both axes are now explicit and both are stored, because
+// a playlist that forgets its order re-reads as the default the next time it is
+// opened — which is exactly the complaint.
+test("mode and order are stored, defaulted and validated", async (t) => {
+  await t.test("a record saved before either existed takes the defaults", () => {
+    const r = smartPlaylistRecord({ id: "sp1", name: "Old one" });
+    assert.equal(r.mode, smartModeDefault());
+    assert.equal(r.order, smartOrderDefault());
+  });
+
+  await t.test("every real mode and order survives", () => {
+    for (const m of smartModes()) {
+      assert.equal(smartPlaylistRecord({ id: "s", name: "n", mode: m }).mode, m);
+    }
+    for (const o of smartOrders()) {
+      assert.equal(smartPlaylistRecord({ id: "s", name: "n", order: o }).order, o);
+    }
+  });
+
+  await t.test("nonsense falls back rather than reaching the endpoints", () => {
+    // The endpoints branch on these strings. An unrecognised value passed
+    // through would take whichever branch its !== comparison happened to miss.
+    for (const bad of ["", "Tracks", "shuffle", null, 7, {}]) {
+      assert.equal(smartPlaylistRecord({ id: "s", name: "n", mode: bad }).mode, smartModeDefault());
+      assert.equal(smartPlaylistRecord({ id: "s", name: "n", order: bad }).order, smartOrderDefault());
+    }
+  });
+
+  await t.test("they are separate axes", () => {
+    // Random applies to an Albums playlist too — it shuffles which albums and
+    // what order they play in.
+    const r = smartPlaylistRecord({ id: "s", name: "n", mode: "albums", order: "random" });
+    assert.equal(r.mode, "albums");
+    assert.equal(r.order, "random");
   });
 });

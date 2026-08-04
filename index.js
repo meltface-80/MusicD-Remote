@@ -2866,11 +2866,52 @@ function albumSource(title, subtitle, rec) {
 // and "Local albums (2,234)" answers a question the user actually asked.
 function sourceBadgesDistinguish() { return !unclaimedIsLocal(); }
 
-// Attach the source flag to an album payload. One helper so every endpoint
-// that returns albums reports it identically — and so the badge is omitted in
-// one place rather than suppressed on each of the screens that draw one.
+// A sample rate as people say it: 44.1, 48, 96, 192. Trailing ".0" is noise on
+// a badge two characters wide.
+function rateShort(hz) {
+  if (!hz) return null;
+  const k = hz / 1000;
+  return String(Number.isInteger(k) ? k : Math.round(k * 10) / 10);
+}
+
+// What an album IS, in Roon's own shorthand: "24/96", "16/44.1", or just the
+// container for a lossy file where bit depth means nothing.
+//
+// Returns null when there is no local file to inspect — a streamed album has
+// no format this extension can read, and inventing one would be worse than an
+// empty badge.
+function albumQualityLabel(f) {
+  if (!f) return null;
+  // Lossy first: MP3 and AAC report a bitsPerSample that describes the decoder,
+  // not the recording, so "16/44.1" on an MP3 would claim CD quality.
+  if (!f.lossless) return f.container || null;
+  if (f.bits && f.rate) return f.bits + "/" + rateShort(f.rate);
+  if (f.rate) return rateShort(f.rate) + " kHz";
+  return f.container || null;
+}
+// Better than CD. Roon calls this hi-res and marks it; the badge tints rather
+// than saying so in words, which would not fit.
+function albumIsHiRes(f) {
+  return !!(f && f.lossless && ((f.bits && f.bits > 16) || (f.rate && f.rate > 48000)));
+}
+
+// Attach the derived per-album fields to a payload. One helper so every
+// endpoint that returns albums reports them identically — and so a badge is
+// omitted in one place rather than suppressed on each screen that draws one.
 function withSource(a, rec) {
   a.source = sourceBadgesDistinguish() ? albumSource(a.title, a.subtitle, rec) : null;
+  // Sample rate / bit depth, for the optional quality badge. Always sent: it is
+  // a dozen bytes, it comes from a Map already in memory, and sending it
+  // unconditionally means the Appearance toggle takes effect immediately
+  // instead of after a reload. Absent when there is no local file.
+  //
+  // Keys resolved the same way albumSource does, because several callers
+  // (the single-album lookup, the label browser, the Home rows) have only a
+  // payload and no index record — and a badge that appears on the Library wall
+  // but not on Home reads as a bug in the data, not in the plumbing.
+  const f = albumFileFacts(a.title, a.subtitle, rec);
+  const q = albumQualityLabel(f);
+  if (q) { a.quality = q; if (albumIsHiRes(f)) a.hires = true; }
   return a;
 }
 
@@ -5816,13 +5857,18 @@ function albumGenresOf(al) {
   return albumGenreCache.get(al.nTitle + "||" + al.nArtist) || [];
 }
 // Album → what its local file is, or null when there is no local file.
-function albumFileFactsOf(al) {
-  for (const key of (al.srcKeys || [])) {
+//
+// Same shape as albumSource: a snapshot record carries its identity keys
+// precomputed, and anything else has them worked out from its title and credit.
+function albumFileFacts(title, subtitle, rec) {
+  const keys = (rec && rec.srcKeys) ? rec.srcKeys : albumKeys(title, subtitle);
+  for (const key of keys) {
     const f = albumFileCache.get(key);
     if (f) return f;
   }
   return null;
 }
+function albumFileFactsOf(al) { return albumFileFacts(al.title, al.subtitle, al); }
 // Sample rates land on the tidy audio values; anything else is reported as it
 // is rather than forced into a bucket that would misdescribe it.
 function rateLabel(hz) {
@@ -6003,6 +6049,38 @@ function smartLimitOptions() { return [25, 50, 100, 200, 400]; }
 function smartModes()       { return ["albums", "tracks"]; }
 function smartModeDefault() { return "albums"; }
 
+// What order the playlist comes out in.
+//
+//   "album"  — the view's own sort, and each album's tracks in disc order. A
+//              record played the way it was sequenced.
+//   "random" — albums shuffled, and the tracks within each expanded page
+//              shuffled too, so a Tracks playlist doesn't march through one
+//              album at a time.
+//
+// The shuffle is SEEDED, not Math.random(): tracks are paged by album, so a
+// fresh shuffle per request would repeat some tracks and skip others as the
+// user scrolls. It is a pure function of (playlist seed, album, track), which
+// means page 2 continues page 1 instead of reshuffling underneath it.
+function smartOrders()       { return ["album", "random"]; }
+function smartOrderDefault() { return "album"; }
+
+// Every album a saved playlist matches, in the order it asks for. One function
+// so the screen that LISTS a playlist and the button that PLAYS it can never
+// disagree about what order it is in.
+//
+// UNSLICED on purpose. The caller applies the playlist's limit, because the
+// count of what matched is what makes "100 of 1,179" honest — slicing here
+// would make those two numbers the same and the message meaningless. Shuffling
+// before the slice is also the right way round: a random playlist of 100 should
+// be 100 drawn from the whole match, not the first 100 by title then jumbled.
+function smartPlaylistAlbums(sp) {
+  const view = libraryView(sp.view);
+  if ((sp.order || smartOrderDefault()) !== "random") return view;
+  const seed = (sp.view && sp.view.seed) || 1;
+  return view.slice().sort((a, b) =>
+    seededRank(a.nTitle + a.nArtist, seed) - seededRank(b.nTitle + b.nArtist, seed));
+}
+
 function smartPlaylistRecord(p) {
   if (!p || typeof p !== "object") return null;
   const name = String(p.name || "").trim().slice(0, smartNameMax());
@@ -6014,8 +6092,9 @@ function smartPlaylistRecord(p) {
   const limit = Number.isFinite(lim) && lim > 0
     ? Math.min(lim, smartLimitMax())
     : smartLimitDefault();
-  const mode = smartModes().includes(String(p.mode)) ? String(p.mode) : smartModeDefault();
-  return { id, name, view: sanitizeLibView(p.view), limit, mode };
+  const mode  = smartModes().includes(String(p.mode))   ? String(p.mode)  : smartModeDefault();
+  const order = smartOrders().includes(String(p.order)) ? String(p.order) : smartOrderDefault();
+  return { id, name, view: sanitizeLibView(p.view), limit, mode, order };
 }
 
 function loadSmartPlaylists() {
@@ -7248,8 +7327,10 @@ app.get("/api/smart-playlist", async (req, res) => {
     // count. Applied here and not inside libraryView(), whose cache signature
     // has no limit in it — two playlists sharing a query would otherwise share
     // one cache entry and one limit.
-    const view = libraryView(sp.view).slice(0, sp.limit);
+    const view = smartPlaylistAlbums(sp).slice(0, sp.limit);
     const slice = view.slice(offset, offset + count);
+    const shuffling = (sp.order || smartOrderDefault()) === "random";
+    const seed = (sp.view && sp.view.seed) || 1;
 
     const tracks = [];
     for (const al of slice) {
@@ -7282,6 +7363,20 @@ app.get("/api/smart-playlist", async (req, res) => {
       }
     }
 
+    // Interleave this page's tracks. The album ORDER is already shuffled above;
+    // without this, a random Tracks playlist still marches through one album at
+    // a time, just in a different album order — which is what the user sees and
+    // what they reported.
+    //
+    // Keyed on the track's own identity, so the same page always comes back in
+    // the same order: paging by album means page 2 is a separate request, and a
+    // per-request shuffle would repeat some tracks and drop others.
+    if (shuffling) {
+      tracks.sort((a, b) =>
+        seededRank(a.album_title + "|" + a.title + "|" + a.track_index, seed) -
+        seededRank(b.album_title + "|" + b.title + "|" + b.track_index, seed));
+    }
+
     res.json({
       id: sp.id, name: sp.name, view: sp.view,
       tracks,
@@ -7306,7 +7401,9 @@ app.get("/api/smart-playlist/albums", async (req, res) => {
   try {
     await ensureAlbumIndex();
     if (!isIndexBuilt()) return res.status(503).json({ error: "Library index is still building" });
-    const view = libraryView(sp.view);
+    // The SAME ordering the detail screen lists. Playing a random playlist in
+    // album order would contradict the screen the user is looking at.
+    const view = smartPlaylistAlbums(sp);
     // Ceiling, not a suggestion: each album costs ~7 Roon browse calls inside
     // /api/play-multi, and Roon's own queue gives out somewhere around 5,000
     // tracks (community-reported). 400 albums is ~4,400 tracks and ~2,800 calls
@@ -8007,7 +8104,7 @@ app.post("/api/smart-playlists", (req, res) => {
   // how the two drift.
   const record = smartPlaylistRecord({
     id: id || ("sp_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)),
-    name, view: body.view, limit: body.limit, mode: body.mode,
+    name, view: body.view, limit: body.limit, mode: body.mode, order: body.order,
   });
   if (!record) return res.status(400).json({ error: "name required" });
 
