@@ -2,6 +2,19 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.32] — 2026-08-04
+
+### Added
+- **Create a dynamic playlist from the Dynamic playlists screen.** A "New dynamic playlist" tile
+  leads the wall and opens **the same editor Edit opens** — every focus section plus the Playlist
+  size control, which exists nowhere else and so could not be set at all during creation before.
+
+  Creating is editing a playlist that doesn't exist yet: the same sheet is passed a target with no
+  id, and the absent id is what makes the save create rather than overwrite. One editor rather
+  than two that have to be kept in step.
+- The empty-state message now points at New instead of sending the user to the Library screen to
+  discover Focus → Save as… on their own.
+
 ## [1.7.31] — 2026-08-04
 
 ### Fixed

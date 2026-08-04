@@ -2126,6 +2126,7 @@
   // Album counts a dynamic playlist can be limited to. The ceiling is the
   // play-time one: 400 albums is ~3,200 Roon calls and minutes of queueing.
   const SMART_LIMITS = [25, 50, 100, 200, 400];
+  const SMART_LIMIT_DEFAULT = 100;   // matches smartLimitDefault() on the server
 
   async function openLibFocusSheet(editTarget) {
     // Snapshot BEFORE the edited view is applied, so abandoning the sheet can
@@ -2349,6 +2350,49 @@
   // detail screen listing TRACKS with each track's album artwork. They used to
   // open the library wall with the view applied, which was the query working
   // correctly but reading as "it just took me to the library".
+  // "New dynamic playlist", as the first tile of the wall. Built on .album so it
+  // sizes with the grid at every width — the same approach as Home's unheard
+  // tile, and for the same reason: no breakpoints of its own to get wrong.
+  function buildNewSmartTile() {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "album home-unheard-tile";
+    btn.id = "new-smart-tile";
+    btn.setAttribute("aria-label", "Create a dynamic playlist");
+
+    const art = document.createElement("div");
+    art.className = "album-art-wrap unheard-art";
+    const glyph = document.createElement("span");
+    glyph.className = "unheard-glyph";
+    glyph.setAttribute("aria-hidden", "true");
+    glyph.textContent = "＋";
+    art.appendChild(glyph);
+    btn.appendChild(art);
+
+    const meta = document.createElement("div");
+    meta.className = "album-meta";
+    const t = document.createElement("div");
+    t.className = "album-title";
+    t.textContent = "New dynamic playlist";
+    const sub = document.createElement("div");
+    sub.className = "album-artist";
+    sub.textContent = "Pick a sort and a focus";
+    meta.appendChild(t); meta.appendChild(sub);
+    btn.appendChild(meta);
+
+    btn.addEventListener("click", createSmartPlaylist);
+    return btn;
+  }
+
+  // Creating is editing a playlist that doesn't exist yet: same sheet, same
+  // sections, same Playlist size control. Passing a target with no id is what
+  // makes the save create rather than overwrite, so there is one editor rather
+  // than two that have to be kept in step.
+  function createSmartPlaylist() {
+    openLibFocusSheet({ id: null, name: "", view: currentLibViewSnapshot(),
+                        limit: SMART_LIMIT_DEFAULT });
+  }
+
   async function showSmartPlaylists() {
     enterFullWall("Dynamic playlists");
     smartWallActive = true;
@@ -2361,13 +2405,14 @@
                 "They're still saved; try again.", true);
       return;
     }
-    if (!list.length) {
-      setBanner("No dynamic playlists yet — set a sort and focus on the Library screen, " +
-                "then use Focus → Save as…", false);
-      return;
-    }
-    setBanner(null);
+    setBanner(list.length ? null
+      : "No dynamic playlists yet — start one with New, or set a sort and focus on the " +
+        "Library screen and use Focus → Save as…", false);
     const frag = document.createDocumentFragment();
+    // Leads the wall so an empty one still has something to do. Creating opens
+    // the SAME editor Edit does, rather than sending the user off to the
+    // Library screen to discover Focus → Save as… for themselves.
+    frag.appendChild(buildNewSmartTile());
     for (const p of list) {
       const n = p.album_total;
       const matched = p.album_matched;

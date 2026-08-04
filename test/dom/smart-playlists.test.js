@@ -135,7 +135,9 @@ const OPEN_WALL = `
   await window.__sleep(700);
   T("wall_heading", (document.getElementById("album-count") || {}).textContent || "");
   function tiles() {
-    return Array.prototype.map.call(document.querySelectorAll("#album-grid .album"), function (b) {
+    // Excludes the create tile — this asserts the PLAYLISTS on the wall.
+    return Array.prototype.map.call(
+      document.querySelectorAll("#album-grid .album:not(#new-smart-tile)"), function (b) {
       var w = b.querySelector(".album-art-wrap");
       return { title: (b.querySelector(".album-title") || {}).textContent || "",
                sub:   (b.querySelector(".album-artist") || {}).textContent || "",
@@ -148,7 +150,7 @@ const DRIVER_MAIN = OPEN_WALL + `
   T("tiles", tiles());
   T("no_lib_sheet", !document.querySelector(".lib-sheet-backdrop"));
 
-  document.querySelectorAll("#album-grid .album")[0].click();
+  document.querySelector("#album-grid .album:not(#new-smart-tile)").click();
   await window.__sleep(800);
   T("detail_open", !!document.querySelector(".playlist-detail"));
   T("detail_back_label", (document.querySelector(".playlist-back") || {}).textContent || "");
@@ -211,7 +213,7 @@ const DRIVER_MAIN = OPEN_WALL + `
 // matters here — it is the last point the user can decline before the queue
 // they already have is destroyed.
 const DRIVER_BIG = OPEN_WALL + `
-  document.querySelectorAll("#album-grid .album")[0].click();
+  document.querySelector("#album-grid .album:not(#new-smart-tile)").click();
   await window.__sleep(800);
   Array.prototype.filter.call(document.querySelectorAll(".playlist-actions button"),
     function (b) { return b.textContent === "Send to Roon"; })[0].click();
@@ -222,8 +224,36 @@ const DRIVER_BIG = OPEN_WALL + `
   T("posts_after_decline", window.__posts.slice());
 `;
 
+// Creating must offer exactly what editing offers — including the size
+// control, which is the only place it can be set.
+const DRIVER_NEW = OPEN_WALL + `
+  var tile = document.getElementById("new-smart-tile");
+  T("new_tile_exists", !!tile);
+  T("new_tile_first", document.querySelector("#album-grid .album") === tile);
+  T("new_tile_label", tile ? (tile.querySelector(".album-title") || {}).textContent : "");
+  tile.click();
+  await window.__sleep(600);
+  var sheet = document.querySelector(".lib-sheet-backdrop");
+  T("sheet_open", !!sheet);
+  T("sections", Array.prototype.map.call(
+      sheet.querySelectorAll(".lib-sheet-section-label"),
+      function (e) { return e.textContent; }));
+  // Choose a size other than the default, so the save has to carry it.
+  var sizeChips = Array.prototype.filter.call(sheet.querySelectorAll(".lib-chip"),
+    function (c) { return c.textContent === "25"; });
+  T("size_chip_found", sizeChips.length === 1);
+  sizeChips[0].click();
+  await window.__sleep(150);
+  window.prompt = function (msg, suggested) { T("prompt_default", suggested); return "Brand new"; };
+  Array.prototype.filter.call(
+    document.querySelectorAll(".lib-sheet-backdrop .lib-sheet-foot button"),
+    function (b) { return b.textContent === "Save as…"; })[0].click();
+  await window.__sleep(700);
+  T("posts", window.__posts.slice());
+`;
+
 const DRIVER_EDIT = OPEN_WALL + `
-  document.querySelectorAll("#album-grid .album")[0].click();
+  document.querySelector("#album-grid .album:not(#new-smart-tile)").click();
   await window.__sleep(800);
   Array.prototype.filter.call(document.querySelectorAll(".playlist-actions button"),
     function (b) { return b.textContent === "Edit"; })[0].click();
@@ -242,7 +272,7 @@ const DRIVER_EDIT = OPEN_WALL + `
 
 // Abandoning an edit must not leave the next save pointed at that playlist.
 const DRIVER_ABANDON = OPEN_WALL + `
-  document.querySelectorAll("#album-grid .album")[0].click();
+  document.querySelector("#album-grid .album:not(#new-smart-tile)").click();
   await window.__sleep(800);
   Array.prototype.filter.call(document.querySelectorAll(".playlist-actions button"),
     function (b) { return b.textContent === "Edit"; })[0].click();
@@ -425,6 +455,35 @@ test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concur
   await t.test("declining the Send to Roon confirm queues nothing", () => {
     assert.deepEqual(big.posts_after_decline, [],
       "backing out must not touch the queue");
+  });
+
+  const nw = harness.renderPage({
+    stub: stubFor([SAVED]), driver: DRIVER_NEW,
+    name: "smart-new", windowSize: "390x844",
+  });
+  harness.assertNoPageError(assert, nw);
+
+  await t.test("the wall offers New, and it opens the SAME editor as Edit (v1.7.32)", () => {
+    assert.equal(nw.new_tile_exists, true,
+      "an empty wall with no way to create one is a dead end");
+    assert.equal(nw.new_tile_first, true, "New leads the wall");
+    assert.equal(nw.new_tile_label, "New dynamic playlist");
+    assert.equal(nw.sheet_open, true);
+    // The size control is the point of "the same menu options": it exists ONLY
+    // in this sheet, so a create flow without it can never set a size.
+    assert.ok(nw.sections.includes("Playlist size"),
+      `expected a Playlist size section, got ${JSON.stringify(nw.sections)}`);
+    assert.ok(nw.sections.includes("Listening"), "and the ordinary focus sections too");
+  });
+
+  await t.test("creating posts a NEW playlist carrying the chosen size", () => {
+    assert.equal(nw.size_chip_found, true);
+    const post = nw.posts[nw.posts.length - 1];
+    assert.equal(post.name, "Brand new");
+    assert.equal(post.limit, 25, "the size chosen in the sheet must reach the save");
+    // No id is what makes the server create rather than overwrite. An id here
+    // would silently replace whichever playlist it belonged to.
+    assert.ok(!post.id, "a create must not carry an id");
   });
 
   const ed = harness.renderPage({

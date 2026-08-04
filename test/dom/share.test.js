@@ -177,7 +177,8 @@ const DRIVER_BIG = `
   await window.__sleep(200);
   document.querySelector('[data-action="smart-playlists"]').click();
   await window.__sleep(700);
-  document.querySelectorAll("#album-grid .album")[0].click();
+  // Skips the create tile, which leads the wall since v1.7.32.
+  document.querySelector("#album-grid .album:not(#new-smart-tile)").click();
   await window.__sleep(700);
   Array.prototype.filter.call(document.querySelectorAll(".playlist-actions button"),
     function (b) { return b.textContent === "Share"; })[0].click();
@@ -233,7 +234,8 @@ const DRIVER_PLAYLIST = OPEN_MENU + `
 const DRIVER_SMART = OPEN_MENU + `
   document.querySelector('[data-action="smart-playlists"]').click();
   await window.__sleep(700);
-  document.querySelectorAll("#album-grid .album")[0].click();
+  // Skips the create tile, which leads the wall since v1.7.32.
+  document.querySelector("#album-grid .album:not(#new-smart-tile)").click();
   // Deliberately NOT waiting for the first page — Share is tapped while it is
   // still in flight, which is the race that used to yield an empty share.
   await window.__sleep(60);
