@@ -285,6 +285,20 @@ const DRIVER_NEW = OPEN_WALL + `
   T("sections", Array.prototype.map.call(
       sheet.querySelectorAll(".lib-sheet-section-label"),
       function (e) { return e.textContent; }));
+  // v1.7.37: the playlist's own properties lead. They are decisions about the
+  // PLAYLIST, not about which albums match, and they were previously below ten
+  // collapsed facets — a full scroll away from the two controls this screen
+  // exists to set.
+  T("open_sections", Array.prototype.filter.call(
+      sheet.querySelectorAll(".lib-sheet-section-head"),
+      function (h) { return h.getAttribute("aria-expanded") === "true"; })
+    .map(function (h) { return h.querySelector(".lib-sheet-section-label").textContent; }));
+  T("order_chips", Array.prototype.map.call(
+      sheet.querySelectorAll(".lib-sheet-section-head"), function (h) { return h; })
+    .filter(function (h) { return /^Order$/.test(h.querySelector(".lib-sheet-section-label").textContent); })
+    .map(function (h) { return Array.prototype.map.call(
+        h.parentElement.querySelectorAll(".lib-chip"),
+        function (c) { return c.textContent + "|" + c.className; }); })[0]);
   // Playlist size is collapsed by default like every other category — open it
   // before looking for its chips.
   Array.prototype.filter.call(sheet.querySelectorAll(".lib-sheet-section-head"),
@@ -536,6 +550,18 @@ test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concur
     // No id is what makes the server create rather than overwrite. An id here
     // would silently replace whichever playlist it belonged to.
     assert.ok(!post.id, "a create must not carry an id");
+  });
+
+  await t.test("the playlist's own settings lead the sheet, already open", () => {
+    // Order first, then size, then the filters.
+    assert.deepEqual(nw.sections.slice(0, 2), ["Order", "Playlist size"],
+      `Order and Playlist size must lead, got ${JSON.stringify(nw.sections)}`);
+    assert.deepEqual(nw.open_sections, ["Order", "Playlist size"],
+      "they have no active count to open them, so they must open by default — " +
+      "and nothing else should");
+    assert.deepEqual(nw.order_chips,
+      ["Album order|lib-chip is-on", "Random|lib-chip"],
+      "Album order is the default and must show as selected");
   });
 
   await t.test("creating asks albums-or-tracks first, then opens the focus screen", () => {

@@ -66,9 +66,15 @@ function build(opts) {
      "albumYearOf", "albumAddedOf", "seededRank", "rateLabel", "channelLabel",
      "libAddedWindows", "countWithAny", "smartPlaylistAlbums", "smartOrderDefault",
      "smartOrders", "albumFileFacts", "albumQualityLabel", "albumIsHiRes", "rateShort",
-     "albumKeys", "albumTitleVariants", "canonText", "canonArtist", "normalize", "albumKey"],
+     "albumKeys", "albumTitleVariants", "canonText", "canonArtist", "normalize", "albumKey",
+     "setAlbumFileFacts", "formatSourceRank", "qobuzQualityOf", "tidalQualityOf",
+     "addHarvestedQuality"],
     {
       albumIndex, albumYearCache, albumGenreCache, albumFileCache,
+      // No SQLite in the unit suite: the writes are a side effect, and what
+      // these tests are about is which value WINS in memory.
+      stmtInsertFileFacts: null,
+      DEBUG: false,
       albumSeenCache: new Map(Object.entries(opts.seen || {})),
       libraryMetaVersion: 0,
       libraryViewCache: new Map(),
@@ -430,5 +436,121 @@ test("the quality badge says only what it knows", async (t) => {
     assert.equal(F.albumFileFacts(al.title, al.subtitle, al).container, "FLAC");
     // …and with no record at all, from the title and credit alone.
     assert.ok(F.albumFileFacts("Kind of Blue", "Miles Davis", null));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.7.37: formats for albums with no local file.
+//
+// Roon's library is local files plus streaming albums you added, and adding one
+// favourites it in the service — so the favourites pages already being fetched
+// for the source badges also state what the service will stream. Reading one
+// more field off a response we already have is the whole mechanism.
+//
+// The hazard is PRECEDENCE. A service describes the album it would send you;
+// the file on disk is what actually plays. If a rip of the CD sits alongside a
+// hi-res favourite, the badge must say 16/44.1 — claiming 24/96 for audio the
+// user will never hear is exactly the confident lie this badge must not tell.
+// ---------------------------------------------------------------------------
+test("streaming formats fill the gap, and never outrank a local file", async (t) => {
+  const F = build();
+  const FILE   = { container: "FLAC", bits: 16, rate: 44100, chan: 2, lossless: true };
+  const QOBUZ  = { container: null,   bits: 24, rate: 96000, chan: null, lossless: true };
+
+  await t.test("a local file beats a streaming claim, whichever lands first", () => {
+    // Both orders, because the scan and the favourites refresh race: the file
+    // walk is slow and the favourites fetch is one HTTP call.
+    const a = build();
+    a.setAlbumFileFacts("k", QOBUZ, "qobuz");
+    a.setAlbumFileFacts("k", FILE,  "file");
+    assert.equal(a.albumQualityLabel(a.albumFileFacts(null, null, { srcKeys: ["k"] })), "16/44.1");
+
+    const b = build();
+    b.setAlbumFileFacts("k", FILE,  "file");
+    b.setAlbumFileFacts("k", QOBUZ, "qobuz");
+    assert.equal(b.albumQualityLabel(b.albumFileFacts(null, null, { srcKeys: ["k"] })), "16/44.1",
+      "the service overwrote the file — the badge would claim audio that never plays");
+  });
+
+  await t.test("Qobuz outranks TIDAL, because it states numbers rather than a tier", () => {
+    assert.ok(F.formatSourceRank("file")  > F.formatSourceRank("qobuz"));
+    assert.ok(F.formatSourceRank("qobuz") > F.formatSourceRank("tidal"));
+    assert.ok(F.formatSourceRank("tidal") > F.formatSourceRank(""));
+    assert.equal(F.formatSourceRank("nonsense"), 0, "an unknown source loses to everything");
+  });
+
+  await t.test("a row written before the column existed is corrected", () => {
+    // v1.7.35-36 wrote no src at all, so those rows read back as rank 0 and
+    // must yield to the first identified source rather than being permanent.
+    const a = build();
+    a.setAlbumFileFacts("k", QOBUZ, undefined);
+    assert.equal(a.setAlbumFileFacts("k", FILE, "file"), true);
+  });
+
+  await t.test("the same source twice keeps the first write", () => {
+    // The file walk recurses into disc subdirectories, so a 2-disc album is
+    // parsed twice under one key.
+    const a = build();
+    a.setAlbumFileFacts("k", FILE, "file");
+    assert.equal(a.setAlbumFileFacts("k", QOBUZ, "file"), false);
+  });
+});
+
+test("reading a service's own words for the format", async (t) => {
+  const F = build();
+
+  await t.test("Qobuz gives exact numbers, converted from kHz to Hz", () => {
+    const q = F.qobuzQualityOf({ maximum_bit_depth: 24, maximum_sampling_rate: 96 });
+    assert.deepEqual(q, { container: null, bits: 24, rate: 96000, chan: null, lossless: true });
+    assert.equal(F.albumQualityLabel(q), "24/96");
+    // 44.1 kHz is the one that rounds badly if it is treated as an integer.
+    assert.equal(F.albumQualityLabel(
+      F.qobuzQualityOf({ maximum_bit_depth: 16, maximum_sampling_rate: 44.1 })), "16/44.1");
+  });
+
+  await t.test("Qobuz with nothing to say produces nothing", () => {
+    // A guessed rate is worse than a bare tile.
+    assert.equal(F.qobuzQualityOf({}), null);
+    assert.equal(F.qobuzQualityOf({ maximum_bit_depth: 24 }), null);
+    assert.equal(F.qobuzQualityOf({ maximum_bit_depth: 0, maximum_sampling_rate: 0 }), null);
+    assert.equal(F.qobuzQualityOf({ maximum_bit_depth: "x", maximum_sampling_rate: "y" }), null);
+  });
+
+  await t.test("TIDAL states a tier, and the badge says the tier", () => {
+    // TIDAL hi-res spans 24/44.1 to 24/192. Turning the tier into "24/96"
+    // would be inventing both numbers.
+    const hires = F.tidalQualityOf({ audioQuality: "HI_RES_LOSSLESS" });
+    assert.equal(F.albumQualityLabel(hires), "Hi-Res");
+    assert.equal(F.albumIsHiRes(hires), true, "a tier hi-res must still be marked hi-res");
+    assert.equal(F.albumQualityLabel(F.tidalQualityOf({ audioQuality: "LOSSLESS" })), "Lossless");
+    assert.equal(F.albumQualityLabel(F.tidalQualityOf({ audioQuality: "HIGH" })), "AAC");
+    assert.equal(F.tidalQualityOf({ audioQuality: "SOMETHING_NEW" }), null);
+    assert.equal(F.tidalQualityOf({}), null);
+  });
+
+  await t.test("TIDAL's newer tag list is read too", () => {
+    const q = F.tidalQualityOf({ mediaMetadata: { tags: ["HIRES_LOSSLESS"] } });
+    assert.equal(F.albumQualityLabel(q), "Hi-Res");
+  });
+
+  await t.test("a lossy tier is never hi-res, whatever else it says", () => {
+    assert.equal(F.albumIsHiRes(F.tidalQualityOf({ audioQuality: "HIGH" })), false);
+  });
+
+  await t.test("the harvest keys on every identity, including the version", () => {
+    const a = build();
+    // Roon bakes the edition into the title; the service keeps it in `version`.
+    const n = a.addHarvestedQuality("Rumours", "Deluxe Edition", ["Fleetwood Mac"],
+                                    { bits: 24, rate: 96000, lossless: true }, "qobuz");
+    assert.ok(n >= 2, "both the plain and the versioned title should be keyed");
+    assert.ok(a.albumFileFacts("Rumours", "Fleetwood Mac", null));
+    assert.ok(a.albumFileFacts("Rumours Deluxe Edition", "Fleetwood Mac", null));
+  });
+
+  await t.test("nothing is written without a title or facts", () => {
+    const a = build();
+    assert.equal(a.addHarvestedQuality("", null, ["X"], { bits: 24, rate: 96000 }, "qobuz"), 0);
+    assert.equal(a.addHarvestedQuality("T", null, ["X"], null, "qobuz"), 0);
+    assert.equal(a.addHarvestedQuality("T", null, [null, undefined], { bits: 24, rate: 96000 }, "qobuz"), 0);
   });
 });

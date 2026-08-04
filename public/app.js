@@ -2256,14 +2256,20 @@
       // categories — some of them hundreds of labels long — every one expanded
       // is a sheet nobody can find the bottom of. Collapsed by default unless
       // something in it is selected, so what's ON is always visible.
-      const section = (id, label, activeCount) => {
+      // `openByDefault` is for sections that aren't filters at all — the
+      // playlist's own Order and size. They have no "active count" to open
+      // them, and collapsing the two controls this screen exists to set would
+      // hide them behind a tap for no gain.
+      const section = (id, label, activeCount, openByDefault) => {
         // Default open when something in here is ON, and REMEMBER that, because
         // a chip tap repaints the whole body: clearing the last filter in a
         // category would otherwise drop its active count to zero and collapse
         // the section under the user's finger, taking the other chips with it.
         // Once open, a section stays open until the header is tapped or the
         // sheet is closed.
-        if (openSections[id] === undefined && activeCount > 0) openSections[id] = true;
+        if (openSections[id] === undefined && (activeCount > 0 || openByDefault)) {
+          openSections[id] = true;
+        }
         const expanded = openSections[id] === undefined ? false : openSections[id];
         const s = document.createElement("div");
         s.className = "lib-sheet-section" + (expanded ? " is-open" : "");
@@ -2325,8 +2331,8 @@
                 "Anything Roon files under no genre won't appear here.",
         label:  "Labels are collected during the label scan, which runs in the background " +
                 "and fills in over time.",
-        format: "Format is read from your own files, so albums streamed from Qobuz or " +
-                "TIDAL have none.",
+        format: "Read from your own files, and — for albums you have no file for — from " +
+                "the Qobuz or TIDAL account you've connected. Anything from neither has none.",
         added:  "Roon publishes no date-added, so this is what MusicD Remote could work " +
                 "out for itself — file timestamps, and albums appearing between scans."
       };
@@ -2336,6 +2342,40 @@
 
       const renderFocusBody = () => {
         body.innerHTML = "";
+
+        // The playlist's OWN properties lead, ahead of every filter. Order and
+        // size are decisions about the playlist rather than about which albums
+        // match, and burying them under ten collapsed facets meant scrolling
+        // past the whole sheet to reach the two controls this screen exists to
+        // set. Open by default for the same reason.
+        if (editTarget) {
+          const ord = section("order", "Order", 0, true);
+          if (ord) {
+            for (const o of SMART_ORDERS) {
+              chip(ord.chips, o.label, editOrder === o.id ? "on" : "off",
+                   () => { editOrder = o.id; });
+            }
+            note(ord.section,
+              (editTarget.mode === "tracks"
+                ? "Album order plays each record straight through, in the sort you " +
+                  "chose. Random shuffles the albums AND the tracks inside them."
+                : "Album order queues the albums in the sort you chose. Random " +
+                  "shuffles which albums, and what order they play in.") +
+              " The shuffle is fixed per playlist, so it stays put while you scroll " +
+              "rather than reshuffling under you.");
+          }
+
+          const lim = section("limit", "Playlist size", 0, true);
+          if (lim) {
+            for (const n of SMART_LIMITS) {
+              chip(lim.chips, String(n), editLimit === n ? "on" : "off", () => { editLimit = n; });
+            }
+            note(lim.section,
+              "How many albums this playlist actually plays. A query can match your " +
+              "whole library, but every album costs Roon work to queue — 400 albums " +
+              "is thousands of tracks and takes minutes.");
+          }
+        }
 
         // Listening first — it is the one facet that is always available,
         // because it runs on this extension's own play history rather than on
@@ -2392,37 +2432,6 @@
             // that's the reasoning rather than assume every file was matched.
             note(s.section, "No streaming service is connected, so every album in your " +
                             "Roon library came from your own files.");
-          }
-        }
-
-        // Only when editing a saved playlist: on the Library screen there is
-        // nothing for an order or a limit to apply to.
-        if (editTarget) {
-          const ord = section("order", "Order", 0);
-          if (ord) {
-            for (const o of SMART_ORDERS) {
-              chip(ord.chips, o.label, editOrder === o.id ? "on" : "off",
-                   () => { editOrder = o.id; });
-            }
-            note(ord.section,
-              (editTarget.mode === "tracks"
-                ? "Album order plays each record straight through, in the sort you " +
-                  "chose. Random shuffles the albums AND the tracks inside them."
-                : "Album order queues the albums in the sort you chose. Random " +
-                  "shuffles which albums, and what order they play in.") +
-              " The shuffle is fixed per playlist, so it stays put while you scroll " +
-              "rather than reshuffling under you.");
-          }
-
-          const lim = section("limit", "Playlist size", 0);
-          if (lim) {
-            for (const n of SMART_LIMITS) {
-              chip(lim.chips, String(n), editLimit === n ? "on" : "off", () => { editLimit = n; });
-            }
-            note(lim.section,
-              "How many albums this playlist actually plays. A query can match your " +
-              "whole library, but every album costs Roon work to queue — 400 albums " +
-              "is thousands of tracks and takes minutes.");
           }
         }
 

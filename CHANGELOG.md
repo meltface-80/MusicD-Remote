@@ -2,6 +2,44 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.37] — 2026-08-04
+
+### Changed — Order and Playlist size now lead the Dynamic Playlist sheet
+They are decisions about the *playlist*, not about which albums match, and they were sitting below
+ten collapsed facets — a full scroll away from the two controls that screen exists to set. Both now
+come first and open by default; the filters follow, still collapsed.
+
+### Added — formats for albums you have no file for, cross-referenced from Qobuz and TIDAL
+The quality badge only knew about local files, so a Roon library with streamed albums in it showed
+badges on some tiles and nothing on the rest. Those albums are in your library because you *added*
+them, which favourites them in the service — and the favourites pages are already being fetched for
+the source badges. So this reads one more field off a response already in hand: **no extra request,
+no new API, no extra scan.**
+
+- **Qobuz** states an exact bit depth and sample rate, so those albums badge `24/96`, `16/44.1` and
+  so on, exactly like local files.
+- **TIDAL** states a *tier* rather than numbers, and its hi-res spans 24/44.1 to 24/192. Turning a
+  tier into "24/96" would be inventing both numbers, so those badge **Hi-Res**, **Lossless** or
+  **AAC** — what TIDAL itself says. Hi-Res is still highlighted.
+
+**A local file always wins.** Sources are ranked (file → Qobuz → TIDAL), so if you own a CD rip of
+an album you have also favourited in hi-res, the badge says `16/44.1` — what will actually play.
+Claiming `24/96` for audio you will never hear is precisely the confident lie this badge must not
+tell. The ranking survives the race between the file walk and the favourites refresh in either
+order, and rows written by v1.7.35–36 carry no source, so the first identified one corrects them.
+
+Disconnecting a service takes its formats with it, the way it already takes its badges — otherwise
+a bit depth sourced from a removed account would persist on the data volume and come back on the
+next restart.
+
+The Focus sheet's Format coverage note and the Appearance toggle's help text both say where the
+numbers came from, including that Qobuz gives numbers and TIDAL gives a tier.
+
+### Tests
+26 static / 394 unit / 243 dom. The precedence rules are driven in both write orders, because which
+of the file scan and the favourites refresh finishes first is a race. All new assertions
+mutation-checked.
+
 ## [1.7.36] — 2026-08-04
 
 ### Added — Dynamic Playlists have an Order: Album order or Random

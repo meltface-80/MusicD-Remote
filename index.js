@@ -1713,17 +1713,33 @@ function setAlbumGenres(key, genres) {
 // for anything per-track like rating or BPM.
 const albumFileCache = new Map();
 let stmtInsertFileFacts = null;
-function setAlbumFileFacts(key, f) {
+// Where a format came from, ranked. A local file is the thing that actually
+// plays, so it outranks a streaming service's description of the same album —
+// which may be the hi-res master when what is on disk is the CD rip.
+//
+// Same shape as seenSourceRank and yearSourceRank; a row written before this
+// column existed reads back as 0 and any identified source beats it.
+function formatSourceRank(src) {
+  if (src === "file")  return 3;   // measured from the file we would actually play
+  if (src === "qobuz") return 2;   // the service states an exact bit depth and rate
+  if (src === "tidal") return 1;   // a quality TIER, not an exact rate
+  return 0;
+}
+function setAlbumFileFacts(key, f, src) {
   if (!key || !f) return false;
-  // First writer wins, matching the label map: the walk recurses into disc
-  // subdirectories (MAX_DEPTH exists for exactly that), so a 2-disc album is
-  // parsed twice under one key and the second pass must not overwrite the first.
-  if (albumFileCache.has(key)) return false;
-  albumFileCache.set(key, f);
+  const prev = albumFileCache.get(key);
+  // Better evidence replaces worse. A tie keeps the first writer, which matters
+  // for the file walk: it recurses into disc subdirectories (MAX_DEPTH exists
+  // for exactly that), so a 2-disc album is parsed twice under one key and the
+  // second pass must not overwrite the first.
+  if (prev && formatSourceRank(src) <= formatSourceRank(prev.src)) return false;
+  const rec = Object.assign({}, f, { src: src || "" });
+  albumFileCache.set(key, rec);
   if (stmtInsertFileFacts) {
     try {
-      stmtInsertFileFacts.run(key, f.container || null, f.bits || null,
-                              f.rate || null, f.chan || null, f.lossless ? 1 : 0);
+      stmtInsertFileFacts.run(key, rec.container || null, rec.bits || null,
+                              rec.rate || null, rec.chan || null,
+                              rec.lossless ? 1 : 0, rec.src);
     } catch (e) { if (DEBUG) console.error("[format] write failed:", e.message); }
   }
   return true;
@@ -1860,6 +1876,11 @@ function openLabelsDb() {
     // any identified source outranks them.
     try { labelsDb.exec("ALTER TABLE album_years ADD COLUMN src TEXT"); }
     catch (e) { /* already present — SQLite has no ADD COLUMN IF NOT EXISTS */ }
+    // v1.7.37: formats can now come from a streaming service as well as from a
+    // local file, and a local file must win. Rows written by v1.7.35-36 have no
+    // src and read back as rank 0, so the first identified source corrects them.
+    try { labelsDb.exec("ALTER TABLE album_files ADD COLUMN src TEXT"); }
+    catch (e) { /* already present — SQLite has no ADD COLUMN IF NOT EXISTS */ }
     stmtInsertName  = labelsDb.prepare("INSERT OR REPLACE INTO label_names (key, label) VALUES (?, ?)");
     stmtInsertMbid  = labelsDb.prepare("INSERT OR REPLACE INTO label_mbids (group_key, mbid) VALUES (?, ?)");
     stmtInsertLogo  = labelsDb.prepare("INSERT OR REPLACE INTO label_logos (group_key, logo_url) VALUES (?, ?)");
@@ -1871,7 +1892,7 @@ function openLabelsDb() {
     stmtInsertSeen  = labelsDb.prepare("INSERT OR REPLACE INTO album_seen (key, ts, src) VALUES (?, ?, ?)");
     stmtInsertGenres = labelsDb.prepare("INSERT OR REPLACE INTO album_genres (key, genres) VALUES (?, ?)");
     stmtInsertFileFacts = labelsDb.prepare(
-      "INSERT OR REPLACE INTO album_files (key, container, bits, rate, chan, lossless) VALUES (?,?,?,?,?,?)");
+      "INSERT OR REPLACE INTO album_files (key, container, bits, rate, chan, lossless, src) VALUES (?,?,?,?,?,?,?)");
     const stmtDeleteName = labelsDb.prepare("DELETE FROM label_names WHERE key = ?");
     for (const r of labelsDb.prepare("SELECT key, label FROM label_names").all()) {
       if (!r.label) continue;
@@ -1905,10 +1926,11 @@ function openLabelsDb() {
       if (list.length) albumGenreCache.set(r.key, list);
     }
     for (const r of labelsDb.prepare(
-        "SELECT key, container, bits, rate, chan, lossless FROM album_files").all()) {
+        "SELECT key, container, bits, rate, chan, lossless, src FROM album_files").all()) {
       albumFileCache.set(r.key, {
         container: r.container || null, bits: r.bits || null,
-        rate: r.rate || null, chan: r.chan || null, lossless: !!r.lossless
+        rate: r.rate || null, chan: r.chan || null, lossless: !!r.lossless,
+        src: r.src || ""
       });
     }
     migrateOldJsonCaches();
@@ -2715,7 +2737,7 @@ async function refreshStreamAlbumKeys(reason) {
         // objects carry their release date, so the Decade filter gets it for
         // free rather than needing a lookup pass of its own.
         const years = new Map();
-        let fetched = 0, skipped = 0;
+        let fetched = 0, skipped = 0, qualities = 0;
         for (let page = 0; page < MAX_PAGES; page++) {
           const items = await qobuzWithToken((t) => qobuz.getFavoriteAlbums(t, PAGE, page * PAGE));
           if (!items.length) break;
@@ -2726,9 +2748,20 @@ async function refreshStreamAlbumKeys(reason) {
             addFavouriteKeys(keys, a.title, a.version, artists);
             addHarvestedYear(years, a.title, a.version, artists,
               a.release_date_original || a.release_date_stream || a.release_date_download);
+            // ...and the bit depth and sample rate, from the same object. An
+            // album in the Roon library with no local file is one of these, so
+            // this is what gives it a quality badge at all.
+            const q = qobuzQualityOf(a);
+            if (q) qualities += addHarvestedQuality(a.title, a.version, artists, q, "qobuz");
             if (keys.size === before) skipped++;
           }
           if (items.length < PAGE) break;
+        }
+        if (qualities) {
+          // The Format/Sample rate/Bit depth facets just gained values, and the
+          // memoised orderings were built without them.
+          bumpLibraryMeta();
+          console.log("[format] " + qualities + " album identities given a format by Qobuz");
         }
         // Assigned even when EMPTY — the user may have un-favourited everything,
         // and keeping the old set would badge albums that are no longer theirs.
@@ -2750,7 +2783,7 @@ async function refreshStreamAlbumKeys(reason) {
           tidal.getFavoriteAlbums(token, cc, tidalUserId));
         const keys = new Set();
         const years = new Map();   // free release dates — see the Qobuz note above
-        let skipped = 0;
+        let skipped = 0, qualities = 0;
         for (const row of rows) {
           const a = (row && row.item) ? row.item : row;
           if (!a || !a.title) continue;
@@ -2759,7 +2792,13 @@ async function refreshStreamAlbumKeys(reason) {
             .concat((a.artists || []).map(x => x && x.name));
           addFavouriteKeys(keys, a.title, a.version, artists);
           addHarvestedYear(years, a.title, a.version, artists, a.releaseDate);
+          const q = tidalQualityOf(a);
+          if (q) qualities += addHarvestedQuality(a.title, a.version, artists, q, "tidal");
           if (keys.size === before) skipped++;
+        }
+        if (qualities) {
+          bumpLibraryMeta();
+          console.log("[format] " + qualities + " album identities given a format by TIDAL");
         }
         tidalAlbumKeys = keys;   // empty is a valid answer — see the Qobuz note
         tidalAlbumYears = years;
@@ -2793,7 +2832,20 @@ function clearStreamAlbumKeys(which) {
   if (which === "qobuz") qobuzAlbumKeys = new Set();
   if (which === "tidal") tidalAlbumKeys = new Set();
   saveStreamAlbumKeys();
-  console.log("[stream] cleared " + which + " album keys (disconnected)");
+  // The formats that service told us go with it. Leaving them behind would show
+  // a bit depth sourced from an account the user has removed — and, because the
+  // rows are on the data volume, reinstate it on the next restart.
+  let dropped = 0;
+  for (const [key, f] of albumFileCache) {
+    if (f && f.src === which) { albumFileCache.delete(key); dropped++; }
+  }
+  if (dropped && labelsDb) {
+    try { labelsDb.prepare("DELETE FROM album_files WHERE src = ?").run(which); }
+    catch (e) { if (DEBUG) console.error("[format] clear failed:", e.message); }
+  }
+  if (dropped) bumpLibraryMeta();
+  console.log("[stream] cleared " + which + " album keys (disconnected)" +
+              (dropped ? ", " + dropped + " formats" : ""));
 }
 
 // Which streaming services could be claiming albums in this library right now.
@@ -2891,8 +2943,13 @@ function albumQualityLabel(f) {
 }
 // Better than CD. Roon calls this hi-res and marks it; the badge tints rather
 // than saying so in words, which would not fit.
+//
+// TIDAL states a TIER rather than numbers, so its hi-res albums arrive with no
+// bit depth to compare — the tier's own label is the evidence.
 function albumIsHiRes(f) {
-  return !!(f && f.lossless && ((f.bits && f.bits > 16) || (f.rate && f.rate > 48000)));
+  if (!f || !f.lossless) return false;
+  if (f.container === "Hi-Res") return true;
+  return !!((f.bits && f.bits > 16) || (f.rate && f.rate > 48000));
 }
 
 // Attach the derived per-album fields to a payload. One helper so every
@@ -2959,6 +3016,71 @@ function fileTagYear(common) {
 }
 // Record a harvested year under every identity the source can offer, mirroring
 // addFavouriteKeys so the join keys line up with the badge keys exactly.
+// The same join, for the format of an album this extension has no file for.
+//
+// Roon's library is local files plus streaming albums you added, and adding one
+// favourites it in the service — which is why the favourites pages are already
+// being fetched for the source badges. Those album objects state the bit depth
+// and sample rate the service will stream, so cross-referencing them costs no
+// extra request at all: it is the same response, read for one more field.
+//
+// Written straight through to the ranked store, so a local file still wins if
+// the album turns out to exist on disk too.
+function addHarvestedQuality(title, version, artists, facts, src) {
+  if (!title || !facts) return 0;
+  const titles = version ? [title, title + " " + version] : [title];
+  let n = 0;
+  for (const t of titles) {
+    for (const artist of artists) {
+      if (!artist) continue;
+      const key = albumKey(t, artist);
+      if (key && setAlbumFileFacts(key, facts, src)) n++;
+    }
+  }
+  return n;
+}
+
+// What Qobuz says it will stream for this album. Exact numbers, not a tier —
+// which is why Qobuz outranks TIDAL in formatSourceRank.
+//
+// No container: Qobuz serves FLAC for lossless and MP3 for its lowest tier, and
+// the favourites payload doesn't say which you'd get. bits+rate is what the
+// badge shows anyway, and claiming a container we weren't told would be a
+// guess dressed as a fact.
+function qobuzQualityOf(a) {
+  const bits = parseInt(a.maximum_bit_depth, 10);
+  // Qobuz reports kHz as a number (44.1, 96, 192); everything downstream works
+  // in Hz.
+  const khz  = parseFloat(a.maximum_sampling_rate);
+  if (!Number.isFinite(bits) || !Number.isFinite(khz) || bits <= 0 || khz <= 0) return null;
+  return { container: null, bits, rate: Math.round(khz * 1000), chan: null, lossless: true };
+}
+
+// What TIDAL says about an album — a quality TIER, not a rate.
+//
+// TIDAL publishes "LOSSLESS" / "HI_RES_LOSSLESS" / "HIGH" / "LOW" rather than a
+// bit depth and sample rate, and its hi-res spans 24/44.1 to 24/192. Turning a
+// tier into "24/96" would be inventing two numbers, so the badge carries the
+// tier's own name instead. That is why formatSourceRank puts TIDAL below Qobuz:
+// if both know an album, the one with real numbers wins.
+function tidalQualityOf(a) {
+  const tags = (a.mediaMetadata && Array.isArray(a.mediaMetadata.tags))
+    ? a.mediaMetadata.tags.map(String) : [];
+  const tier = String(a.audioQuality || "").toUpperCase();
+  const hi = tier === "HI_RES_LOSSLESS" || tier === "HI_RES" ||
+             tags.includes("HIRES_LOSSLESS");
+  if (hi) return { container: "Hi-Res", bits: null, rate: null, chan: null, lossless: true };
+  if (tier === "LOSSLESS" || tags.includes("LOSSLESS")) {
+    return { container: "Lossless", bits: null, rate: null, chan: null, lossless: true };
+  }
+  // HIGH and LOW are TIDAL's lossy tiers. Reported as AAC, which is what they
+  // are, rather than as a bit depth the format does not have.
+  if (tier === "HIGH" || tier === "LOW") {
+    return { container: "AAC", bits: null, rate: null, chan: null, lossless: false };
+  }
+  return null;
+}
+
 function addHarvestedYear(map, title, version, artists, year) {
   const y = yearOfDate(year);
   if (!y || !title) return;
@@ -3223,7 +3345,7 @@ async function buildFileLabelMap(onProgress) {
             // facet reaches the album through its srcKeys even when Roon's
             // title and the file's tags disagree about the album's name.
             for (const k of albumKeys(album, albumartist || "")) {
-              if (setAlbumFileFacts(k, facts)) formatWrites++;
+              if (setAlbumFileFacts(k, facts, "file")) formatWrites++;
             }
           }
         }
