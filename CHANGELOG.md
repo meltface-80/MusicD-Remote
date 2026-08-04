@@ -2,6 +2,38 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.31] — 2026-08-04
+
+### Fixed
+- **Pasting a shared playlist failed because iOS lowercased the marker.** Autocorrect treats
+  `MDRP1` as a word it doesn't know and rewrites it on paste, leaving the payload untouched but
+  the marker unrecognisable. Two changes: the import box now sets `autocapitalize`, `autocorrect`
+  and `spellcheck` off so it stops happening, and the decoder matches the marker
+  case-insensitively so a blob that was already mangled still works.
+- The payload's own case is **never** normalised — base64url is case-sensitive, so "helpfully"
+  lowercasing it would decode to different bytes. A blob whose payload has been case-folded fails
+  the checksum, which is the correct outcome, and there is a test that says so.
+
+### Added — Recently added
+A new Library sort, built from the only evidence available: Roon's extension API publishes **no
+import date of any kind**, so nothing here comes from Roon.
+
+- **Local files** are dated by the timestamp of the file the scanner already reads — a real date,
+  and the strongest evidence available.
+- **Anything else** is dated when it first appears in a library rebuild.
+- Where those disagree, the file wins; within one source, the earliest date wins, because "first
+  seen" means the earliest evidence rather than the most recent scan to notice.
+
+**What it gets wrong, stated plainly:** an existing library has no history to recover. The first
+run therefore records **nothing at all** and leaves those albums undated — stamping them with the
+moment the feature was installed would be a timestamp that is technically a date and factually a
+lie, producing a list that sorts perfectly and means nothing. Accuracy accrues going forward:
+albums added after this ships get real dates within 12 hours.
+
+Undated albums are **held out of the ordering and appended**, in both directions, exactly as the
+Release year sort already does — so reversing to newest-first can't float them to the top. The
+Focus sheet reports the coverage number the same way it does for release years.
+
 ## [1.7.30] — 2026-08-04
 
 ### Added

@@ -168,6 +168,23 @@ test("decodeSharePayload refuses what it cannot positively identify", async (t) 
       "Late Night");
   });
 
+  await t.test("a lowercased marker still works — iOS autocorrect does this", () => {
+    // Autocorrect treats MDRP1 as an unknown word and lowercases it on paste.
+    // The payload is untouched, so the playlist is perfectly good.
+    const mangled = blob.replace(/^MDRP1:/, "mdrp1:");
+    assert.notEqual(mangled, blob, "control: the fixture must actually differ");
+    assert.equal(decodeSharePayload(mangled).playlist.title, "Late Night");
+  });
+
+  await t.test("but the PAYLOAD's case is never normalised", () => {
+    // base64url is case-sensitive: "A" and "a" are different bytes. Lowercasing
+    // the payload to be helpful would silently decode to something else, or —
+    // as here — fail the gzip checksum. Failing is correct.
+    const payload = blob.slice("MDRP1:".length);
+    assert.throws(() => decodeSharePayload("MDRP1:" + payload.toLowerCase()),
+      /damaged|cut short/);
+  });
+
   await t.test("the marker with nothing after it says so", () => {
     assert.throws(() => decodeSharePayload("MDRP1:"), /empty/);
   });

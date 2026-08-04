@@ -243,7 +243,10 @@ test("Library sort: one arrow drives all four orderings (v1.6.58)",
     });
 
     await t.test("only the selected row carries an arrow", () => {
-      assert.equal(r.sheet_row_count, 6);
+      // 7 since v1.7.31 added "Recently added". Asserted as a count rather
+      // than a list because this test is about the ARROW, not the vocabulary —
+      // libSortIds() is what pins the ids, in the unit suite.
+      assert.equal(r.sheet_row_count, 7);
       const filled = r.sheet_arrows.filter(Boolean);
       assert.equal(filled.length, 1,
         `expected exactly one arrow in the sheet, got ${JSON.stringify(r.sheet_arrows)}`);

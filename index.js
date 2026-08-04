@@ -1666,6 +1666,36 @@ const labelMbidCache = new Map();  // group key → MusicBrainz MBID
 const labelLogoCache = new Map();  // group key → logo URL | null (null = tried, not found)
 const labelMerges    = new Map();  // source groupKey → { targetKey, targetDisplay, sourceDisplay }
 const albumYearCache = new Map();  // album key → release year (4-digit string) — powers the Decade filter
+// album key → { ts, src } — powers the "Recently added" sort. Roon's extension
+// API exposes no date-added of any kind, so every value here is this
+// extension's own evidence, ranked: a local file's mtime is a real date; an
+// album simply appearing in a rebuild is weaker but still true.
+const albumSeenCache = new Map();
+let stmtInsertSeen = null;
+function seenSourceRank(src) {
+  if (src === "file")       return 2;   // the file landed on disk on this date
+  if (src === "first-seen") return 1;   // it appeared between two rebuilds
+  return 0;
+}
+// Records when an album was first seen, keeping the best-ranked evidence.
+// Returns true when something changed, so callers can bump the view cache.
+function setAlbumSeen(key, ts, src) {
+  if (!key || !Number.isFinite(ts) || ts <= 0) return false;
+  const prev = albumSeenCache.get(key);
+  if (prev) {
+    const better = seenSourceRank(src) > seenSourceRank(prev.src);
+    // Same source, earlier date wins: "first seen" means the earliest evidence,
+    // not the most recent scan that happened to notice it again.
+    const earlier = seenSourceRank(src) === seenSourceRank(prev.src) && ts < prev.ts;
+    if (!better && !earlier) return false;
+  }
+  albumSeenCache.set(key, { ts, src: src || "" });
+  if (stmtInsertSeen) {
+    try { stmtInsertSeen.run(key, Math.round(ts), src || ""); }
+    catch (e) { if (DEBUG) console.error("[seen] write failed:", e.message); }
+  }
+  return true;
+}
 // Ordered/filtered library views are memoised (see libraryView). Declared here,
 // ABOVE setAlbumYear, because that function invalidates the cache and would hit
 // the temporal dead zone if these lived with the rest of the view code.
@@ -1741,6 +1771,14 @@ function openLabelsDb() {
         key  TEXT PRIMARY KEY,
         year TEXT NOT NULL
       );
+      -- When this extension first became aware of an album. NOT Roon's import
+      -- date: Roon publishes none, so there is nothing to read. The src column
+      -- ranks the evidence: a file mtime beats "it appeared in a rebuild".
+      CREATE TABLE IF NOT EXISTS album_seen (
+        key TEXT PRIMARY KEY,
+        ts  INTEGER NOT NULL,
+        src TEXT
+      );
     `);
     // `src` records WHERE a year came from, so a better source can correct a
     // worse one (see yearSourceRank). Added after the table shipped without
@@ -1756,6 +1794,7 @@ function openLabelsDb() {
     stmtInsertPlay  = labelsDb.prepare("INSERT INTO plays (ts, zone, track, artist, album, image_key, duration) VALUES (?,?,?,?,?,?,?)");
     stmtCompletePlay = labelsDb.prepare("UPDATE plays SET completed=1 WHERE id=?");
     stmtInsertYear  = labelsDb.prepare("INSERT OR REPLACE INTO album_years (key, year, src) VALUES (?, ?, ?)");
+    stmtInsertSeen  = labelsDb.prepare("INSERT OR REPLACE INTO album_seen (key, ts, src) VALUES (?, ?, ?)");
     const stmtDeleteName = labelsDb.prepare("DELETE FROM label_names WHERE key = ?");
     for (const r of labelsDb.prepare("SELECT key, label FROM label_names").all()) {
       if (!r.label) continue;
@@ -1780,6 +1819,9 @@ function openLabelsDb() {
         albumYearCache.set(r.key, r.year);
         if (r.src) albumYearSource.set(r.key, r.src);
       }
+    }
+    for (const r of labelsDb.prepare("SELECT key, ts, src FROM album_seen").all()) {
+      if (r.ts) albumSeenCache.set(r.key, { ts: r.ts, src: r.src || "" });
     }
     migrateOldJsonCaches();
     if (DEBUG) console.log(
@@ -2778,6 +2820,34 @@ function harvestAlbumYears(reason) {
 // alongside a streaming copy Roon didn't group). Any badge on those would be a
 // coin flip, so they're suppressed. Rebuilt with the snapshot.
 let ambiguousAlbumKeys = new Set();
+// "First seen" dates for albums that appeared between two rebuilds.
+//
+// The hard part is the FIRST run: an established library would otherwise be
+// stamped with one identical timestamp for every album, which is not a date —
+// it is the moment this feature was installed, wearing a date's clothes. So the
+// first run records nothing at all and leaves those albums undated, and only
+// albums that turn up in a LATER rebuild get a real first-seen. Accuracy
+// accrues going forward; it cannot be back-filled, and pretending otherwise
+// would make the sort confidently wrong rather than honestly incomplete.
+function recordFirstSeenAlbums() {
+  const baseline = albumSeenCache.size === 0;
+  let n = 0;
+  for (const al of albumIndex.albums) {
+    const keys = al.srcKeys || [];
+    if (!keys.length) continue;
+    if (keys.some(k => albumSeenCache.has(k))) continue;
+    if (baseline) continue;   // nothing to compare against — see above
+    if (setAlbumSeen(keys[0], Date.now(), "first-seen")) n++;
+  }
+  if (n) {
+    bumpLibraryMeta();
+    console.log("[seen] " + n + " albums newly seen in this rebuild");
+  } else if (baseline) {
+    console.log("[seen] first run — existing albums left undated, " +
+                "new ones will be dated from here");
+  }
+}
+
 function rebuildAmbiguousAlbumKeys() {
   const seen = new Map();
   const dupes = new Set();
@@ -2841,6 +2911,9 @@ async function buildFileLabelMap(onProgress) {
   // difference decides which half of the code to look at.
   const walk = { dirs: 0, tooDeep: 0, unreadable: 0, withAudio: 0, parsed: 0,
                  parseFailed: 0, keyed: 0, noAlbumTag: 0 };
+  // album key → earliest file mtime seen for it. Published after the walk, the
+  // same way the label and year maps are, so a partial walk never lands.
+  const fileSeen = new Map();
   async function scanDir(dirPath, depth) {
     if (depth > MAX_DEPTH) { walk.tooDeep++; return; }
     walk.dirs++;
@@ -2866,6 +2939,13 @@ async function buildFileLabelMap(onProgress) {
           if (folderLabel) label = folderLabel;
         }
         walk.parsed++;
+        // The file's own timestamp — the closest thing to "when did this album
+        // arrive" that exists anywhere. It is when the FILE landed on this
+        // disk, not when Roon imported it, which is why it is ranked evidence
+        // rather than treated as fact.
+        let fileMtime = 0;
+        try { fileMtime = fs.statSync(path.join(dirPath, audioFile.name)).mtimeMs || 0; }
+        catch (e) { /* stat can fail where the read succeeded; simply no date */ }
         const album = meta.common.album;
         if (!album) walk.noAlbumTag++;
         const albumartist = meta.common.albumartist
@@ -2901,6 +2981,11 @@ async function buildFileLabelMap(onProgress) {
             if (kv) localKeys.add(kv);
           }
           walk.keyed++;
+          if (fileMtime > 0) {
+            for (const k of albumKeys(album, albumartist || "")) {
+              fileSeen.set(k, Math.min(fileSeen.get(k) || Infinity, fileMtime));
+            }
+          }
         }
         if (label && !isLikelyNotALabel(label) && album) {
           const key = normalize(album) + "||" + normalize(albumartist || "");
@@ -2974,6 +3059,12 @@ async function buildFileLabelMap(onProgress) {
               (walk.noAlbumTag  ? ", " + walk.noAlbumTag + " had no album tag" : ""));
   // Publish in one assignment, so the join never sees a partial walk.
   fileAlbumYears = fileYears;
+  let seenWrites = 0;
+  for (const [k, ts] of fileSeen) if (setAlbumSeen(k, ts, "file")) seenWrites++;
+  if (seenWrites) {
+    bumpLibraryMeta();   // the Recently added ordering just changed
+    console.log("[seen] " + seenWrites + " albums dated from file timestamps");
+  }
   // The direct tag-key writes above all deferred their bump, and the only other
   // flush is harvestAlbumYears' `if (added)` — which counts ONLY the albums the
   // srcKeys join filled. A well-tagged library whose tags agree with Roon lands
@@ -4548,6 +4639,7 @@ async function buildAlbumIndex() {
     albumIndex.albums   = albums.filter(Boolean);  // drop any holes
     albumIndex.count    = albumIndex.albums.length;
     rebuildAmbiguousAlbumKeys();   // identities shared by >1 album get no badge
+    recordFirstSeenAlbums();       // anything new since the last rebuild
     albumIndex.builtAt  = Date.now();
     rebuildCreditIdentities();     // AFTER builtAt — see the function's comment
     albumIndex.progress = 1;
@@ -5390,7 +5482,7 @@ app.get("/api/random-albums", async (req, res) => {
 // tested against the shipping list instead of a copy injected beside it. A
 // duplicated vocabulary is how a mutation adding a bogus sort would slip past
 // the suite (the v1.6.59 year-source-ranking hole, in a new place).
-function libSortIds()   { return ["album", "artist", "year", "plays", "lastplayed", "random"]; }
+function libSortIds()   { return ["album", "artist", "year", "added", "plays", "lastplayed", "random"]; }
 function libPlayedIds() { return ["any", "never", "6", "12"]; }
 function smartNameMax() { return 60; }
 const LIB_SORTS = new Set(libSortIds());
@@ -5472,6 +5564,24 @@ function albumYearOf(al) {
   const y = parseInt(albumYearCache.get(al.nTitle + "||" + al.nArtist) || "", 10);
   return Number.isFinite(y) ? y : null;
 }
+// When this extension first became aware of the album, or null. Checked across
+// every identity the album is keyed under, because the file scan and the index
+// may have recorded it under different ones.
+function albumAddedOf(al) {
+  let best = null;
+  for (const k of (al.srcKeys || [])) {
+    const hit = albumSeenCache.get(k);
+    if (hit && hit.ts > 0 && (best === null || hit.ts < best)) best = hit.ts;
+  }
+  return best;
+}
+// How many albums we can actually date. Reported to the user rather than left
+// to be inferred from a list that looks half-sorted.
+function albumsWithAddedDate() {
+  let n = 0;
+  for (const al of albumIndex.albums) if (albumAddedOf(al) !== null) n++;
+  return n;
+}
 // Deterministic shuffle: paging must not reshuffle between requests, so the
 // order is a pure function of (album, seed) rather than Math.random().
 function seededRank(str, seed) {
@@ -5552,16 +5662,21 @@ function libraryView(q) {
                       a.sortTitle.localeCompare(b.sortTitle),
     lastplayed: (a, b) => (stats.last.get(playKey(a)) || 0) - (stats.last.get(playKey(b)) || 0) ||
                       a.sortTitle.localeCompare(b.sortTitle),
+    added: (a, b) => (albumAddedOf(a) || 0) - (albumAddedOf(b) || 0) ||
+                      a.sortTitle.localeCompare(b.sortTitle),
     random: (a, b) => seededRank(a.nTitle + a.nArtist, seed) - seededRank(b.nTitle + b.nArtist, seed)
   }[sort];
 
   let out;
-  if (sort === "year") {
-    // Albums whose year hasn't been discovered yet are UNKNOWN, not year zero:
-    // they're held out of the ordering entirely and appended, so reversing to
-    // newest-first can't float them to the top.
+  if (sort === "year" || sort === "added") {
+    // Albums we have no date for are UNKNOWN, not date zero: they're held out
+    // of the ordering entirely and appended, so reversing to newest-first can't
+    // float them to the top. "Recently added" needs this even more than "year"
+    // does — Roon publishes no import date at all, so on an established library
+    // the undated set starts out large and only shrinks going forward.
+    const dateOf = sort === "year" ? albumYearOf : albumAddedOf;
     const known = [], unknown = [];
-    for (const al of list) (albumYearOf(al) === null ? unknown : known).push(al);
+    for (const al of list) (dateOf(al) === null ? unknown : known).push(al);
     known.sort(cmp);
     if (desc) known.reverse();
     unknown.sort((a, b) => a.sortTitle.localeCompare(b.sortTitle));
@@ -5615,6 +5730,10 @@ app.get("/api/library/facets", async (req, res) => {
       // says so rather than quietly showing a decade list that doesn't add up
       // to the library.
       dated,
+      // Same honesty for "Recently added": Roon publishes no import date, so
+      // this is what the extension could work out for itself and the number is
+      // shown rather than left to be guessed from a half-sorted list.
+      dated_added: albumsWithAddedDate(),
       decades: [...decades.entries()].sort((a, b) => b[0] - a[0]).map(([d, n]) => ({ value: d, label: d + "s", count: n })),
       sources: ["local", "qobuz", "tidal"].filter(s => sources.get(s))
                  .map(s => ({ value: s, label: { local: "Local albums", qobuz: "Qobuz", tidal: "TIDAL" }[s], count: sources.get(s) })),
@@ -6984,7 +7103,11 @@ function decodeSharePayload(blob) {
   // base64url characters after it. None of that can turn a bad blob into a
   // good one — the gzip and JSON steps below are still the real check.
   const compact = String(blob || "").replace(/\s+/g, "");
-  const at = compact.indexOf(shareMagic() + ":");
+  // The marker is matched case-INSENSITIVELY because iOS autocorrect lowercases
+  // it on paste, and a blob that arrives as "mdrp1:…" is otherwise perfectly
+  // good. The payload's own case is left untouched — it is base64url, where
+  // case carries meaning, so nothing after the marker may be normalised.
+  const at = compact.toUpperCase().indexOf(shareMagic().toUpperCase() + ":");
   if (at < 0) {
     throw new Error(
       `That doesn't look like a MusicD Remote playlist — it should contain "${shareMagic()}:"`);

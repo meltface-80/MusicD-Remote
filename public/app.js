@@ -770,6 +770,12 @@
     { id: "year",       label: "Release year", dir: "desc",
       asc: "Oldest first", desc: "Newest first",
       note: "from years collected during scanning" },
+    { id: "added",      label: "Recently added", dir: "desc",
+      asc: "Oldest first", desc: "Newest first",
+      // Deliberately not "when you added it": Roon publishes no import date,
+      // so this is the extension's own evidence — file timestamps, and albums
+      // turning up between library scans.
+      note: "from dates MusicD Remote could work out" },
     { id: "plays",      label: "Most played",  dir: "desc",
       asc: "Least played first", desc: "Most played first",
       note: "from plays MusicD Remote has seen" },
@@ -1670,6 +1676,14 @@
       ta.id = "import-blob";
       ta.rows = 4;
       ta.placeholder = "MDRP1:…";
+      // iOS autocorrect treats MDRP1 as a word it doesn't know and lowercases
+      // it on paste, which broke the marker while leaving the payload intact.
+      // The payload itself is base64url and case-SENSITIVE, so this must be
+      // off — a "correction" anywhere in it would be unrecoverable.
+      ta.setAttribute("autocapitalize", "none");
+      ta.setAttribute("autocorrect", "off");
+      ta.setAttribute("autocomplete", "off");
+      ta.spellcheck = false;
       body.appendChild(ta);
 
       // A downloaded .musicd file is the other half of Share's Download, and
@@ -1959,6 +1973,9 @@
       ta.className = "share-blob";
       ta.id = "share-blob";
       ta.readOnly = true;
+      ta.setAttribute("autocapitalize", "none");
+      ta.setAttribute("autocorrect", "off");
+      ta.spellcheck = false;
       ta.rows = 4;
       ta.value = j.blob || "";
       body.appendChild(ta);
