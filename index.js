@@ -1683,10 +1683,53 @@ let stmtInsertSeen = null;
 // are stuck at partial coverage — this lands on essentially every album.
 const albumGenreCache = new Map();
 let stmtInsertGenres = null;
+// genre name → { subtitle, image_key, total, ts } as of its last successful
+// walk. Bumping GENRE_FP_VERSION makes every stored row incomparable, which
+// forces one full walk and is how a change to what a fingerprint MEANS heals
+// itself instead of silently comparing two different things.
+const genreScanCache = new Map();
+let stmtInsertGenreScan = null;
+function genreFpVersion() { return 1; }
+// How long a genre may go unwalked. No free fingerprint can see an equal-count
+// membership swap, or an album Roon re-identified (which changes the key
+// without moving any genre's count) — so the skip is bounded by time rather
+// than trusted indefinitely.
+function genreSweepMs() { return 7 * 24 * 60 * 60 * 1000; }
 // Genre names contain commas ("Rap, Hip-Hop" is one Roon genre) and slashes
 // ("Pop/Rock"), but never a newline — so that is the one separator that can
 // round-trip the list without an escaping scheme.
 const GENRE_SEP = String.fromCharCode(10);
+// Remember what a genre looked like when we last walked it. Written per genre
+// rather than in one batch at the end: the walk is wrapped in a single catch,
+// so a run that dies partway must still leave the genres it finished
+// fingerprinted instead of starting from nothing next time.
+function setGenreScan(name, subtitle, imageKey, total) {
+  if (!name) return;
+  const rec = { subtitle: subtitle || "", image_key: imageKey || "",
+                total: Number.isFinite(total) ? total : null, ts: Date.now() };
+  genreScanCache.set(name, rec);
+  if (stmtInsertGenreScan) {
+    try { stmtInsertGenreScan.run(name, rec.subtitle, rec.image_key, rec.total,
+                                  rec.ts, genreFpVersion()); }
+    catch (e) { if (DEBUG) console.error("[genres] fingerprint write failed:", e.message); }
+  }
+}
+
+// An album that is in no genre at all has no row, rather than an empty one.
+// setAlbumGenres refuses an empty list (a genre-less album is the normal state
+// for most of a library and storing millions of empty rows would be silly), so
+// removal needs its own path — without it, an album that left its ONLY genre
+// would keep that genre forever.
+function deleteAlbumGenres(key) {
+  if (!albumGenreCache.has(key)) return false;
+  albumGenreCache.delete(key);
+  if (labelsDb) {
+    try { labelsDb.prepare("DELETE FROM album_genres WHERE key = ?").run(key); }
+    catch (e) { if (DEBUG) console.error("[genres] delete failed:", e.message); }
+  }
+  return true;
+}
+
 function setAlbumGenres(key, genres) {
   if (!key || !Array.isArray(genres) || !genres.length) return false;
   const list = [...new Set(genres.filter(Boolean))].sort();
@@ -1869,6 +1912,20 @@ function openLabelsDb() {
         chan      INTEGER,
         lossless  INTEGER
       );
+      -- What each genre looked like the last time it was walked, so an
+      -- unchanged one can be skipped. The subtitle is stored RAW ("204 Albums")
+      -- rather than as a parsed integer: strictly more information for the same
+      -- zero cost, and it cannot collapse two different states into null.
+      -- The total column is the album count the walk itself observed, which is
+      -- what catches a subtitle that does not describe the set we harvest.
+      CREATE TABLE IF NOT EXISTS genre_scan (
+        name      TEXT PRIMARY KEY,
+        subtitle  TEXT,
+        image_key TEXT,
+        total     INTEGER,
+        ts        INTEGER NOT NULL,
+        v         INTEGER NOT NULL
+      );
     `);
     // `src` records WHERE a year came from, so a better source can correct a
     // worse one (see yearSourceRank). Added after the table shipped without
@@ -1891,6 +1948,8 @@ function openLabelsDb() {
     stmtInsertYear  = labelsDb.prepare("INSERT OR REPLACE INTO album_years (key, year, src) VALUES (?, ?, ?)");
     stmtInsertSeen  = labelsDb.prepare("INSERT OR REPLACE INTO album_seen (key, ts, src) VALUES (?, ?, ?)");
     stmtInsertGenres = labelsDb.prepare("INSERT OR REPLACE INTO album_genres (key, genres) VALUES (?, ?)");
+    stmtInsertGenreScan = labelsDb.prepare(
+      "INSERT OR REPLACE INTO genre_scan (name, subtitle, image_key, total, ts, v) VALUES (?,?,?,?,?,?)");
     stmtInsertFileFacts = labelsDb.prepare(
       "INSERT OR REPLACE INTO album_files (key, container, bits, rate, chan, lossless, src) VALUES (?,?,?,?,?,?,?)");
     const stmtDeleteName = labelsDb.prepare("DELETE FROM label_names WHERE key = ?");
@@ -1920,6 +1979,16 @@ function openLabelsDb() {
     }
     for (const r of labelsDb.prepare("SELECT key, ts, src FROM album_seen").all()) {
       if (r.ts) albumSeenCache.set(r.key, { ts: r.ts, src: r.src || "" });
+    }
+    for (const r of labelsDb.prepare(
+        "SELECT name, subtitle, image_key, total, ts, v FROM genre_scan").all()) {
+      // A row at another fingerprint version is not comparable — drop it and
+      // the genre gets a full walk.
+      if (r.v !== genreFpVersion()) continue;
+      genreScanCache.set(r.name, {
+        subtitle: r.subtitle || "", image_key: r.image_key || "",
+        total: r.total, ts: r.ts
+      });
     }
     for (const r of labelsDb.prepare("SELECT key, genres FROM album_genres").all()) {
       const list = String(r.genres || "").split(GENRE_SEP).filter(Boolean);
@@ -5015,30 +5084,65 @@ async function buildAlbumIndex() {
 
   try {
     const idx = await albumIndex.building;
-    // Thumbnails ride along with every sync: warm the disk store as soon as the
-    // snapshot lands (fire-and-forget; it self-aborts if a newer build starts).
-    prewarmAlbumArt().catch(e => { if (DEBUG) console.error("[art] prewarm:", e.message); });
     // Join whatever release years are already in hand onto the new snapshot,
-    // BEFORE the favourites refresh below — the file-tag years from the last
-    // scan survive a rebuild and should apply immediately, without waiting on
-    // a network round trip that may never come back.
+    // BEFORE anything that goes to the network — the file-tag years from the
+    // last scan survive a rebuild and should apply immediately, without waiting
+    // on a round trip that may never come back. Synchronous, no I/O.
     harvestAlbumYears("library sync");
-    // So do the streaming favourites that decide the Qobuz/Tidal badges — the
-    // library just changed, so which albums came from where may have too. That
-    // call harvests its own years and re-runs the join when it lands.
-    refreshStreamAlbumKeys("library sync").catch(e => {
-      if (DEBUG) console.error("[stream] refresh:", e.message);
-    });
-    // Genres for the Focus sheet. Fire-and-forget on the SYNC, never on a user
-    // action: this is the one facet that costs Roon calls, and it belongs with
-    // the twelve-hourly work rather than in front of somebody opening a sheet.
-    harvestAlbumGenres("library sync").catch(e => {
-      if (DEBUG) console.error("[genres] harvest:", e.message);
-    });
+    // The rest is background work, and it runs ONE AT A TIME rather than as
+    // three simultaneous kicks. The art prewarm and the genre walk both go over
+    // the single multiplexed Core websocket that browse and transport share, so
+    // issuing them together is a burst the Core feels even though the total
+    // number of calls is unchanged. Nothing here is awaited by the caller.
+    syncChain().catch(e => { if (DEBUG) console.error("[sync] chain:", e.message); });
     return idx;
   } finally {
     albumIndex.building = null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// ONE background queue for every heavy job.
+//
+// Serialising each chain internally is not enough, and the first attempt at
+// this got it wrong: a manual Rescan starts its own chain AND triggers a
+// rebuild whose chain starts too, so the two ran side by side — putting the
+// genre walk and the art prewarm, the two most expensive things here, on the
+// Core simultaneously. Exactly the burst the serialising was meant to remove.
+//
+// Everything now goes through one promise tail, so at most one job is talking
+// to the Core at a time no matter how many chains are in flight. The total
+// number of calls is unchanged; what changes is that they arrive in a queue
+// rather than a spike, which is the part the Core actually feels while somebody
+// is trying to listen to something.
+//
+// Each job is caught individually — one failing must never cancel the queue —
+// and the tail is reset to a resolved promise on failure so a rejection can
+// never poison every job behind it.
+let _bgTail = Promise.resolve();
+function bgRun(what, fn) {
+  // .catch BEFORE .then, not a rejection handler alongside it. A two-argument
+  // .then would treat a rejected tail as "handled" and skip THIS job's callback
+  // entirely — so the first job queued after any rejection would be silently
+  // dropped while everything after it ran normally. Neutralise first, then run.
+  _bgTail = _bgTail.catch(() => {}).then(async () => {
+    try { await fn(); }
+    catch (e) { console.error("[bg] " + what + " failed: " + e.message); }
+  });
+  return _bgTail;
+}
+
+// Post-rebuild background work. Order is deliberate: the streaming favourites
+// cost the Core nothing (they are Qobuz/TIDAL HTTP) and decide the source
+// badges, so they go first and finish fast; then genres; then the art prewarm,
+// which is the longest-running and the most patient — nothing is waiting on it,
+// the store serves from disk the moment each file lands, and an album with no
+// thumbnail yet simply falls back to the Core path it used before the store
+// existed.
+async function syncChain() {
+  await bgRun("stream favourites", () => refreshStreamAlbumKeys("library sync"));
+  await bgRun("genres",            () => harvestAlbumGenres("library sync"));
+  await bgRun("art prewarm",       () => prewarmAlbumArt());
 }
 
 // ---------------------------------------------------------------------------
@@ -5065,36 +5169,98 @@ async function buildAlbumIndex() {
 // ---------------------------------------------------------------------------
 let genreHarvestRunning = false;
 
-async function harvestAlbumGenres(reason) {
+async function harvestAlbumGenres(reason, force) {
   if (genreHarvestRunning) return;
   if (!core || !isIndexBuilt()) return;
+  // Never walk while Roon is importing. Every other heavy path consults this —
+  // the label scan and the snapshot rebuild both do — and this one only got it
+  // transitively, via the rebuild that happened to call it. The manual Rescan
+  // path called it directly and bypassed the check entirely, which is exactly
+  // when a user is most likely to press it: right after adding albums.
+  //
+  // `force` is for the explicit Rescan button, matching runLabelsIndexScan's
+  // contract, so a user who insists can still make it run.
+  if (!force && await libraryIsImporting()) {
+    console.log("[genres] " + reason + ": deferred — Roon is importing");
+    return;
+  }
   genreHarvestRunning = true;
   const started = Date.now();
-  let genresSeen = 0, pairs = 0, written = 0, unmatched = 0;
+  let walked = 0, skipped = 0, unreachable = 0, pairs = 0, written = 0, unmatched = 0;
+  // A full sweep ignores fingerprints. Bounded by time because no free
+  // fingerprint can see a same-count membership swap, or an album Roon
+  // re-identified — that changes the mapping's key without moving any genre's
+  // album count, so a subtitle-based skip would never re-walk it.
+  const oldest = genreScanCache.size
+    ? Math.min(...[...genreScanCache.values()].map(v => v.ts || 0)) : 0;
+  const sweeping = force || !genreScanCache.size || !albumGenreCache.size ||
+                   (Date.now() - oldest) > genreSweepMs();
   try {
     await withBrowseSession(async (sessionKey) => {
       await browse({ hierarchy: "genres", pop_all: true, multi_session_key: sessionKey });
       const root = await loadLevel(sessionKey, "genres", 1000);
-      const names = root.items
+      // Keep the SUBTITLE and IMAGE KEY, not just the title. Roon states each
+      // genre's album count in the subtitle of this very response, so the
+      // fingerprint that decides whether a genre needs walking is already in
+      // hand — it used to be thrown away one line later.
+      const genres = root.items
         .filter(i => i.hint !== "header" && i.title)
-        .map(i => String(i.title).trim())
-        .filter(Boolean);
+        .map(i => ({
+          name: String(i.title).trim(),
+          subtitle: String(i.subtitle || ""),
+          image_key: String(i.image_key || "")
+        }))
+        .filter(g => g.name);
 
-      for (const name of names) {
+      // Genres this run actually walked, mapped fresh. NOT merged into the old
+      // value: the previous code did `(prev || []).concat(name)`, which made
+      // the mapping a monotonic union — a genre could only ever be ADDED to an
+      // album, never removed, so an album leaving a genre kept it forever and
+      // no full walk could correct it. Rebuilding a walked genre's membership
+      // from scratch is also what gives a SKIP a precise meaning: "keep the
+      // previous answer for this genre" rather than "add to an answer that only
+      // grows".
+      const fresh = new Map();   // album key → Set(genre name)
+      const addFresh = (key, name) => {
+        let set = fresh.get(key);
+        if (!set) { set = new Set(); fresh.set(key, set); }
+        set.add(name);
+      };
+      const walkedNames = new Set();
+
+      for (const g of genres) {
+        // Skip only when every signal says nothing moved. A missing parse is
+        // NOT a match: a genre with no subtitle, or a Roon format change, would
+        // otherwise compare null to null and skip forever with no data at all.
+        const seen = genreScanCache.get(g.name);
+        const count = parseAlbumCount(g.subtitle);
+        if (!sweeping && seen && count !== null &&
+            seen.subtitle === g.subtitle && seen.image_key === g.image_key &&
+            // Self-calibration: if this genre's stated count and the count its
+            // album list actually reported ever disagreed, the subtitle is not
+            // describing the set we harvest — never trust it for this genre.
+            seen.total === count) {
+          skipped++;
+          continue;   // NOT in walkedNames — its stored mapping stays authoritative
+        }
+
         // Re-resolve from the top every time. item_key values are scoped to the
         // session AND to the level the session is currently on, so the keys
         // captured in the loadLevel above are stale the moment we drill into
         // the first genre.
         await browse({ hierarchy: "genres", pop_all: true, multi_session_key: sessionKey });
-        const g = await findItemByTitle(sessionKey, "genres", name, 3000, "genres:root");
-        if (!g) continue;
-        await browse({ hierarchy: "genres", item_key: g.item_key, multi_session_key: sessionKey });
+        const found = await findItemByTitle(sessionKey, "genres", g.name, 3000, "genres:root");
+        // Counted, not silent. Once skipping is normal, "didn't walk it" and
+        // "Roon wouldn't expand it" look identical from the outside, and a user
+        // staring at a low coverage number needs to be able to tell them apart.
+        if (!found) { unreachable++; continue; }
+        await browse({ hierarchy: "genres", item_key: found.item_key, multi_session_key: sessionKey });
         const lvl = await loadLevel(sessionKey, "genres", 300);
         const albumsChild = lvl.items.find(i => /^albums$/i.test((i.title || "").trim()));
-        if (!albumsChild) continue;   // a genre with no album list — nothing to harvest
+        if (!albumsChild) { unreachable++; continue; }
         await browse({ hierarchy: "genres", item_key: albumsChild.item_key, multi_session_key: sessionKey });
-        genresSeen++;
 
+        let observed = 0;
         for (let off = 0; ; off += SEARCH_PAGE) {
           const page = await load({
             hierarchy: "genres", offset: off, count: SEARCH_PAGE, multi_session_key: sessionKey
@@ -5106,14 +5272,43 @@ async function harvestAlbumGenres(reason) {
             // Roon-to-Roon join: both sides are Roon's own strings, so this is
             // exact rather than the lossy cross-source matching the year and
             // local-file joins have to do.
-            const key = normalize(it.title) + "||" + normalize(it.subtitle || "");
+            addFresh(normalize(it.title) + "||" + normalize(it.subtitle || ""), g.name);
             pairs++;
-            const prev = albumGenreCache.get(key);
-            if (setAlbumGenres(key, (prev || []).concat(name))) written++;
           }
-          const total = page.list && page.list.count ? page.list.count : 0;
-          if (off + SEARCH_PAGE >= total) break;
+          observed = page.list && page.list.count ? page.list.count : observed;
+          if (off + SEARCH_PAGE >= observed) break;
         }
+
+        walked++;
+        walkedNames.add(g.name);
+        // Written per genre, immediately, INSIDE the session: the whole walk is
+        // wrapped in one catch, so a run that dies at genre 12 must still leave
+        // the first eleven fingerprinted rather than starting over next time.
+        setGenreScan(g.name, g.subtitle, g.image_key,
+                     count !== null ? count : observed);
+      }
+
+      // Carry forward every genre this run did NOT walk — the skipped ones and
+      // any Roon wouldn't expand. A walked genre is deliberately not carried
+      // forward: `fresh` is its complete, current membership, so an album that
+      // is absent from it has genuinely left that genre and must lose it. That
+      // is the removal the old union could never express.
+      for (const [key, list] of albumGenreCache) {
+        for (const name of list) {
+          if (walkedNames.has(name)) continue;
+          addFresh(key, name);
+        }
+      }
+      // An album absent from `fresh` entirely had every one of its genres
+      // walked and appeared in none of them — it has left them all. Collected
+      // first, because deleting while iterating the map being read is how a
+      // cleanup quietly drops half of what it meant to.
+      const gone = [];
+      for (const key of albumGenreCache.keys()) if (!fresh.has(key)) gone.push(key);
+      for (const key of gone) if (deleteAlbumGenres(key)) written++;
+
+      for (const [key, set] of fresh) {
+        if (setAlbumGenres(key, [...set])) written++;
       }
     });
 
@@ -5121,8 +5316,12 @@ async function harvestAlbumGenres(reason) {
     // assumed: a genre list Roon declines to expand is invisible otherwise.
     for (const al of albumIndex.albums) if (!albumGenresOf(al).length) unmatched++;
     if (written) bumpLibraryMeta();
-    console.log("[genres] " + reason + ": " + genresSeen + " genres, " + pairs +
-                " album-genre pairs, " + albumGenreCache.size + " albums genred" +
+    console.log("[genres] " + reason + ": " + (walked + skipped + unreachable) +
+                " genres — " + walked + " walked, " + skipped + " unchanged" +
+                (unreachable ? ", " + unreachable + " unreachable" : "") +
+                (sweeping ? " (full sweep)" : "") +
+                "; " + pairs + " pairs, " + written + " written, " +
+                albumGenreCache.size + " albums genred" +
                 (unmatched ? ", " + unmatched + " with no genre" : "") +
                 " in " + Math.round((Date.now() - started) / 1000) + "s");
   } catch (e) {
@@ -6813,30 +7012,55 @@ app.post("/api/library/rescan", async (req, res) => {
     // Always re-read the streaming favourites on an explicit Rescan, even when
     // the snapshot itself turns out to be unchanged — this is the user's way to
     // refresh the Qobuz/Tidal badges after adding albums in those services.
-    refreshStreamAlbumKeys("manual rescan").catch(e => {
-      if (DEBUG) console.error("[stream] refresh:", e.message);
-    });
-    // …and the LOCAL badges, which this button did not touch. It refreshed
-    // Qobuz/TIDAL and left the /music set alone, so the one button a user
-    // presses when the local count looks wrong was the one that couldn't fix
-    // it. Fire-and-forget, like the labels rescan: the file walk is far slower
-    // than the snapshot check and must not hold the response.
-    runLabelsIndexScan(true).catch(e => {
-      if (DEBUG) console.error("[labels] rescan from library rescan:", e.message);
-    });
-    // …and the genres, for the same reason. checkAndMaybeRebuild below only
-    // harvests when the snapshot actually CHANGED, so on an unchanged library
-    // this button would otherwise be the one thing a user presses when the
-    // Genre facet looks empty and the one thing that couldn't fill it.
-    harvestAlbumGenres("manual rescan").catch(e => {
-      if (DEBUG) console.error("[genres] rescan:", e.message);
-    });
+    // The snapshot check runs FIRST and is awaited, because it is the only part
+    // the user is waiting on — the response tells them whether the library
+    // changed. Everything else is background work kicked afterwards.
     const r = await checkAndMaybeRebuild("manual", true);
+
+    // ...and the background jobs run ONE AT A TIME.
+    //
+    // They used to be three fire-and-forget kicks issued together, so a Rescan
+    // put the art prewarm, the genre walk and the label scan's import probe on
+    // the Core simultaneously — all sharing the single multiplexed websocket
+    // that browse and transport also use. The total number of calls was never
+    // the problem; the burst was. Chaining them costs the user nothing (the
+    // response has already gone) and turns a spike into a queue.
+    //
+    // Deliberately after checkAndMaybeRebuild: if it rebuilt, it has already
+    // kicked its own prewarm and genre harvest, and the guards inside those
+    // make the calls below no-ops rather than a second pass.
+    rescanChain(r).catch(e => {
+      if (DEBUG) console.error("[rescan] background chain:", e.message);
+    });
     res.json(r);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
+
+// The Rescan button's background work, in order, one at a time.
+//
+// Order is by cost to the Core, cheapest first, so the things that can finish
+// quickly do:
+//   1. streaming favourites — no Roon calls at all (Qobuz/TIDAL HTTP), and it
+//      is what refreshes the source badges the user probably pressed this for;
+//   2. genres — a few hundred browse calls;
+//   3. the label scan — a slow file walk plus external lookups, no Roon calls
+//      beyond its own import probe, so it goes last where it can take its time.
+//
+// Each step is caught individually: one failing must not cancel the rest, and
+// a Rescan that silently did two of its three jobs is worse than one that says
+// which part failed.
+async function rescanChain(rebuildResult) {
+  await bgRun("stream favourites", () => refreshStreamAlbumKeys("manual rescan"));
+  // `force` — this is an explicit user action, and it is the button somebody
+  // presses precisely when the Genre facet looks wrong. Deferring it to a
+  // background timer, or letting a fingerprint skip it, would make the button
+  // appear to do nothing at exactly the moment it is needed.
+  await bgRun("genres", () => harvestAlbumGenres("manual rescan", true));
+  await bgRun("labels", () => runLabelsIndexScan(true));
+  if (DEBUG) console.log("[rescan] background chain done (" + (rebuildResult && rebuildResult.status) + ")");
+}
 
 app.post("/api/labels/rescan", (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });

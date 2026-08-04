@@ -2,6 +2,78 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.38] — 2026-08-04
+
+Performance pass on the Roon Core. The extension is welcome to spend its own CPU and RAM; the
+Core is not. Two agents audited the real call counts before anything was changed, and one of them
+corrected a wrong assumption of mine before it became code.
+
+### Changed — the genre harvest now skips genres that haven't changed
+It cost ~6 Roon calls per genre, ~180 per sync, and ran in full whenever the library changed at
+all — even when the change had nothing to do with genres. Roon states each genre's album count in
+the subtitle of the root listing the harvest **already fetches**, so the fingerprint that decides
+whether a genre needs walking was free and was being discarded one line later.
+
+A genre is skipped only when its raw subtitle *and* its image key are unchanged, its count parses,
+and the count it last stated matches the count its album list actually reported. Any doubt walks.
+
+- **Steady state with nothing changed: 2 calls instead of ~180.**
+- A sync that touched three genres: ~20.
+- **A full sweep runs weekly regardless.** No free fingerprint can see a same-count membership
+  swap, or an album Roon re-identified — that changes the mapping's key without moving any genre's
+  count. So the skip is bounded by time rather than trusted indefinitely.
+- The Rescan button always forces a full walk. It is what you press when the Genre facet looks
+  wrong, and a recourse that can be skipped is not a recourse.
+
+### Fixed — an album could gain a genre but never lose one
+The harvest merged into the previous value (`(prev || []).concat(name)`), which made album→genres a
+monotonic union: **no full walk could ever correct a removal**, and an album that left a genre kept
+it forever. A walked genre's membership is now rebuilt from scratch, and an album that has left
+every genre has its row deleted rather than kept empty. This was a real bug shipped in v1.7.35 —
+the skip would have been built on top of it.
+
+### Changed — all heavy background work goes through one queue
+The art prewarm, the genre walk and the streaming refresh were three fire-and-forget kicks issued
+together. The number of calls was never the problem; the **burst** was — it all shares one
+multiplexed Core websocket with browse and transport.
+
+The first attempt at this serialised each chain internally and was still wrong: a manual Rescan
+starts its own chain *and* triggers a rebuild whose chain starts too, so the two ran side by side
+and the two most expensive jobs still overlapped. There is now a single global queue, so at most
+one job talks to the Core at a time however many chains are in flight. Order within a sync is
+cheapest-first: streaming favourites (no Roon calls at all) → genres → art prewarm last, because
+nothing waits on it.
+
+### Fixed — the genre harvest ran during a Roon import
+Every other heavy path consults `libraryIsImporting()`; this one only got it transitively, and the
+Rescan button called it directly and bypassed the check entirely — at exactly the moment a user is
+most likely to press it, right after adding albums.
+
+### Fixed — a failed background job could silently kill every job behind it
+The queue used a two-argument `.then`, which treats a rejected tail as handled and **skips the next
+job's callback**. One failure would drop the job after it while everything later ran normally.
+
+### Corrected — a claim I made about the art prewarm was wrong
+I said it re-fetched every thumbnail on each rebuild. It does not: it has always built its work
+list by skipping keys already on disk, so on an unchanged library it makes **zero** image requests —
+and on that path it is never even called. The audit also found it is the *only* place that can
+answer whether Roon's image keys churn: its own `pruned N stale` log line. Worth watching after a
+rebuild.
+
+### Where the load actually is, measured
+Idle and paired, with the library unchanged: **14 Roon calls per day**, all of it the two 12-hourly
+freshness probes. Everything else is snapshot reads. The genre harvest was the only thing in a
+rebuild cycle worth attacking, which is why it is the one thing attacked.
+
+### Changed — the test extractor understands `async function`
+Every async top-level function in `index.js` was previously untestable, which had been quietly
+steering tests toward the synchronous half of the file. The scan pipeline is entirely async.
+
+### Tests
+26 static / 424 unit / 243 dom. New: `syncchain.test.js` drives the real queue (never a stub —
+"serialised" is exactly what it provides) including two chains racing, and `genreskip.test.js`
+covers the fingerprint's refusal to skip on ambiguous evidence. All new assertions mutation-checked.
+
 ## [1.7.37] — 2026-08-04
 
 ### Changed — Order and Playlist size now lead the Dynamic Playlist sheet
