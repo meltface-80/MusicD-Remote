@@ -58,6 +58,13 @@ window.__installFetch(function (url, opts) {
     window.__posts.push(JSON.parse((opts && opts.body) || "{}"));
     return window.__json({ ok: true, action: "Queue", track: "x" });
   }
+  if (url.indexOf("/api/user-playlists/add-albums") > -1) {
+    window.__posts.push({ url: "/api/user-playlists/add-albums",
+                          body: JSON.parse((opts && opts.body) || "{}") });
+    return window.__json({ ok: true, id: "up_1", name: "Mix", added: 24, skipped: 0,
+                           full: false, albums_read: 2, albums_failed: [], track_total: 24 });
+  }
+  if (url.indexOf("/api/user-playlists") > -1) return window.__json({ playlists: [] });
   if (url.indexOf("/api/play-multi") > -1) {
     window.__posts.push(JSON.parse((opts && opts.body) || "{}"));
     return window.__json({ ok: true, queued: 2, failed: 0, total: 2 });
@@ -125,10 +132,32 @@ const DRIVER_GRID = `
   document.getElementById("select-menu-btn").click();
   await window.__sleep(120);
   T("menu_open", !document.getElementById("select-menu").classList.contains("hidden"));
+  T("add_item_shown", !document.querySelector('[data-sel-act="add"]').classList.contains("hidden"));
   document.querySelector('[data-sel-act="queue"]').click();
   await window.__sleep(400);
   T("posts", window.__posts.slice());
   T("menu_after_action", menuShown());
+
+  // Albums must be addable to a playlist too — they were refused with a toast.
+  // The queue action above cleared the selection, so re-arm before selecting.
+  await window.__longPress(tiles()[1]);
+  tiles()[1].click();
+  await window.__sleep(60);
+  tiles()[0].click();
+  await window.__sleep(60);
+  window.prompt = function () { return "Mix"; };
+  document.getElementById("select-menu-btn").click();
+  await window.__sleep(120);
+  document.querySelector('[data-sel-act="add"]').click();
+  await window.__sleep(400);
+  T("sheet_title", (document.querySelector(".lib-sheet-head h3") || {}).textContent || "");
+  var rows = document.querySelectorAll(".lib-sheet-body .sheet-row");
+  T("sheet_rows", Array.prototype.map.call(rows, function (b) { return b.textContent; }));
+  rows[0].click();
+  await window.__sleep(500);
+  T("album_posts", window.__posts.filter(function (p) {
+      return p.url === "/api/user-playlists/add-albums"; }));
+  T("menu_after_add", menuShown());
 `;
 
 const DRIVER_TRACKS = `
@@ -187,6 +216,29 @@ test("long-press multi-select on album grids (v1.7.22)", { concurrency: 1 }, asy
     assert.equal(r.count_after_select, "2");
     assert.equal(r.selected_count, 2);
     assert.match(String(r.menu_title), /2 albums selected/);
+  });
+
+  await t.test("albums can be added to a playlist (v1.7.28)", () => {
+    // Previously refused outright with "Playlists hold tracks". A stored entry
+    // does name a track — so the server reads each album's tracklist off the
+    // Core — but that is our problem to solve, not the user's to work around.
+    assert.equal(r.add_item_shown, true,
+      "the option must be offered for an album selection");
+    assert.match(String(r.sheet_title), /Add 2 albums to…/);
+    assert.deepEqual(r.sheet_rows, ["＋ New playlist…"],
+      "with no playlists yet, creating one is the only route");
+    assert.equal(r.album_posts.length, 1);
+    const body = r.album_posts[0].body;
+    assert.equal(body.name, "Mix");
+    assert.equal(body.albums.length, 2);
+    // Identity travels so the server can relocate a drifted offset rather than
+    // storing whatever record now sits there.
+    for (const a of body.albums) {
+      assert.ok(Number.isFinite(a.offset));
+      assert.ok(a.title, "each album must carry its title");
+    }
+    assert.ok(!("tracks" in body), "albums go to the album route, not the track route");
+    assert.equal(r.menu_after_add, false, "a completed add clears the selection");
   });
 
   await t.test("queueing sends every selected album with its identity", () => {

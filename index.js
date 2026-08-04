@@ -6848,6 +6848,9 @@ function userPlVersion()   { return 1; }
 function userPlMax()       { return 50; }    // same ceiling as smart playlists
 function userPlTracksMax() { return 500; }
 function userPlAddMax()    { return 200; }
+// Albums per add. Each costs ~5 Roon browse calls to read its tracklist, so
+// this is a time budget: 30 albums is ~150 calls, a few seconds.
+function userPlAlbumAddMax() { return 30; }
 function userPlNameMax()   { return 60; }
 
 // A stored track. Offsets are HINTS; the titles are the CHECK — the identity
@@ -7089,28 +7092,30 @@ app.post("/api/user-playlists/delete", (req, res) => {
   res.json({ ok: true, playlists: userPlaylists.map(userPlaylistSummary) });
 });
 
-// Append tracks. body: { id? | name?, tracks: [...] }
-app.post("/api/user-playlists/add", (req, res) => {
-  const body = req.body || {};
-  const incoming = Array.isArray(body.tracks) ? body.tracks : [];
-  if (!incoming.length) return res.status(400).json({ error: "tracks required" });
-  if (incoming.length > userPlAddMax()) {
-    return res.status(400).json({ error: `Too many at once — ${userPlAddMax()} maximum` });
-  }
-  let p = null;
+// Find or create the playlist an add is aimed at. Shared so the track route and
+// the album route cannot disagree about what "a name with no id" means.
+function resolveUserPlaylistTarget(body) {
   const id = shareText(body.id, 64);
   if (id) {
-    p = userPlaylists.find(x => x.id === id);
-    if (!p) return res.status(404).json({ error: "No such playlist" });
-  } else {
-    const name = shareText(body.name, userPlNameMax());
-    if (!name) return res.status(400).json({ error: "id or name required" });
-    if (userPlaylists.length >= userPlMax()) {
-      return res.status(400).json({ error: `That's ${userPlMax()} playlists — delete one first` });
-    }
-    p = { id: newUserPlaylistId(), name, tracks: [], created_at: Date.now(), updated_at: Date.now() };
-    userPlaylists.push(p);
+    const p = userPlaylists.find(x => x.id === id);
+    if (!p) return { error: "No such playlist", status: 404 };
+    return { playlist: p };
   }
+  const name = shareText(body.name, userPlNameMax());
+  if (!name) return { error: "id or name required", status: 400 };
+  if (userPlaylists.length >= userPlMax()) {
+    return { error: `That's ${userPlMax()} playlists — delete one first`, status: 400 };
+  }
+  const p = { id: newUserPlaylistId(), name, tracks: [],
+              created_at: Date.now(), updated_at: Date.now() };
+  userPlaylists.push(p);
+  return { playlist: p };
+}
+
+// Append, clamped, and say what didn't fit. `full` travels so a caller can
+// report a playlist that filled up rather than a clean success for a partial
+// add — v1.7.17's lesson, applied to storage instead of to the queue.
+function appendUserTracks(p, incoming) {
   let added = 0, skipped = 0, full = false;
   for (const t of incoming) {
     if (p.tracks.length >= userPlTracksMax()) { full = true; break; }
@@ -7120,10 +7125,85 @@ app.post("/api/user-playlists/add", (req, res) => {
   }
   p.updated_at = Date.now();
   saveUserPlaylists();
-  // `full` travels so the caller can say the playlist filled up rather than
-  // reporting a clean success for a partial add.
-  res.json({ ok: true, id: p.id, name: p.name, added, skipped, full,
-             track_total: p.tracks.length });
+  return { added, skipped, full };
+}
+
+// Append tracks. body: { id? | name?, tracks: [...] }
+app.post("/api/user-playlists/add", (req, res) => {
+  const body = req.body || {};
+  const incoming = Array.isArray(body.tracks) ? body.tracks : [];
+  if (!incoming.length) return res.status(400).json({ error: "tracks required" });
+  if (incoming.length > userPlAddMax()) {
+    return res.status(400).json({ error: `Too many at once — ${userPlAddMax()} maximum` });
+  }
+  // Same resolver as the album route — two copies of this logic is how the two
+  // routes end up disagreeing about what a name with no id should do.
+  const target = resolveUserPlaylistTarget(body);
+  if (target.error) return res.status(target.status).json({ error: target.error });
+  const p = target.playlist;
+  const r = appendUserTracks(p, incoming);
+  res.json(Object.assign({ ok: true, id: p.id, name: p.name,
+                           track_total: p.tracks.length }, r));
+});
+
+// Add whole ALBUMS. Unlike the track route this costs Roon calls — a stored
+// entry names specific tracks, and an album's tracklist only exists on the
+// Core, so each album has to be opened to find out what is on it (~5 browse
+// calls each). Bounded accordingly, and reported per album.
+// body: { id? | name?, albums: [{offset, title, subtitle, image_key}] }
+app.post("/api/user-playlists/add-albums", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  const body = req.body || {};
+  const albums = Array.isArray(body.albums) ? body.albums : [];
+  if (!albums.length) return res.status(400).json({ error: "albums required" });
+  if (albums.length > userPlAlbumAddMax()) {
+    return res.status(400).json({
+      error: `Too many albums at once — ${userPlAlbumAddMax()} maximum`,
+    });
+  }
+  const target = resolveUserPlaylistTarget(body);
+  if (target.error) return res.status(target.status).json({ error: target.error });
+  const p = target.playlist;
+
+  const tracks = [];
+  const failed = [];
+  for (const al of albums) {
+    const offset = shareInt(al && al.offset, 0, 5000000);
+    const title = shareText(al && al.title, shareTextMax());
+    if (offset === null || !title) { failed.push(String((al && al.title) || "?")); continue; }
+    const subtitle = shareText(al && al.subtitle, shareTextMax());
+    try {
+      // One album at a time, deliberately — the same reasoning as
+      // /api/smart-playlist: a Promise.all here would open a browse session per
+      // album against the Core simultaneously.
+      const got = await withBrowseSession(sk => loadAlbumSession(
+        sk, offset, null, { title, subtitle }, null));
+      const items = (got.items || []).filter(t => isTrackItem(t, got.playMenu));
+      items.forEach((t, i) => {
+        tracks.push({
+          album_offset: got.offset,
+          album_title: title,
+          album_subtitle: subtitle,
+          track_index: i,
+          title: stripTrackNumber(t.title),
+          subtitle: t.subtitle || subtitle,
+          image_key: shareText(al.image_key, 200) || null,
+          track_no: trackNumberOf(t.title),
+        });
+      });
+    } catch (e) {
+      // One unreadable album must not lose the rest of the selection. Named in
+      // the response so the user knows which one didn't make it.
+      console.warn(`[uplaylist] couldn't read album "${title}" — ${e.message}`);
+      failed.push(title);
+    }
+  }
+
+  const r = appendUserTracks(p, tracks);
+  res.json(Object.assign({ ok: true, id: p.id, name: p.name,
+                           albums_read: albums.length - failed.length,
+                           albums_failed: failed,
+                           track_total: p.tracks.length }, r));
 });
 
 // Import a shared blob. Resolution is entirely in memory — no Roon calls — so

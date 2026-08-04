@@ -2,6 +2,24 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.28] — 2026-08-04
+
+### Fixed
+- **Albums can be added to a playlist.** Selecting albums and choosing *Add to playlist* refused
+  with "Playlists hold tracks — open an album and pick the ones you want". That was a design
+  decision made in v1.7.23 and it was the wrong one: a stored entry does name a specific track,
+  but resolving albums into tracks is this app's job, not something to hand back to the user.
+
+  The new `/api/user-playlists/add-albums` reads each selected album's tracklist off the Core —
+  ~5 browse calls each, one album at a time, capped at 30 per add — and stores every track. The
+  result is reported per album: *Added 137 tracks from 12 albums to "Mix"*. An album Roon won't
+  open is **named** rather than counted, because knowing which one is the only way to act on it.
+
+### Changed
+- Both add routes now share one target resolver and one append helper. They had separate copies
+  of "find the playlist or create it", which is how two routes end up disagreeing about what a
+  name with no id means.
+
 ## [1.7.27] — 2026-08-04
 
 ### Fixed — the local album count was too low

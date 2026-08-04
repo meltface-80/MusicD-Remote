@@ -1382,9 +1382,15 @@
   // opening every selected album — seconds of Roon calls behind a menu tap —
   // this says so plainly and leaves the album selection intact.
   async function addSelectionToPlaylist() {
-    if (selMenuKind !== "tracks") {
-      showToast("Playlists hold tracks — open an album and pick the ones you want", "error",
-                TOAST_REPORT_MS);
+    if (selMenuKind === "albums") {
+      if (!albumSelected.length) return;
+      // Every track of every selected album. The album's tracklist only exists
+      // on the Core, so this is the one add that costs Roon calls — bounded
+      // server-side and reported per album.
+      openAddToPlaylistSheet(null, albumSelected.map(a => ({
+        offset: a.offset, title: a.title || "", subtitle: a.subtitle || "",
+        image_key: a.image_key || null,
+      })));
       return;
     }
     if (!currentAlbum) { showToast("No album open", "error"); return; }
@@ -1399,11 +1405,14 @@
       subtitle:       currentAlbum.subtitle || "",
       image_key:      currentAlbum.image_key || null,
     }));
-    openAddToPlaylistSheet(entries);
+    openAddToPlaylistSheet(entries, null);
   }
 
-  async function openAddToPlaylistSheet(entries) {
-    if (!entries.length) { showToast("Nothing to add", "error"); return; }
+  // Exactly one of `entries` (tracks) and `albums` is supplied. They land on
+  // different routes because only the album one has to talk to Roon.
+  async function openAddToPlaylistSheet(entries, albums) {
+    const n = entries ? entries.length : (albums || []).length;
+    if (!n) { showToast("Nothing to add", "error"); return; }
     let list = [];
     try {
       const r = await fetch("/api/user-playlists", { cache: "no-store" });
@@ -1415,7 +1424,10 @@
       return;
     }
 
-    openLibSheet(`Add ${entries.length} track${entries.length === 1 ? "" : "s"} to…`,
+    const what = entries
+      ? `${n} track${n === 1 ? "" : "s"}`
+      : `${n} album${n === 1 ? "" : "s"}`;
+    openLibSheet(`Add ${what} to…`,
       (body, close) => {
         const row = (label, fn) => {
           const b = document.createElement("button");
@@ -1432,14 +1444,14 @@
           if (name === null) return;
           const trimmed = String(name).trim();
           if (!trimmed) { showToast("Give it a name", "error"); return; }
-          addToUserPlaylist({ name: trimmed }, entries).then(ok => {
-            if (ok) exitTrackSelectMode();
+          addToUserPlaylist({ name: trimmed }, entries, albums).then(ok => {
+            if (ok) clearAfterAdd();
           });
         });
         for (const p of list) {
           row(`${p.name} · ${p.track_total} track${p.track_total === 1 ? "" : "s"}`, () => {
-            addToUserPlaylist({ id: p.id }, entries).then(ok => {
-              if (ok) exitTrackSelectMode();
+            addToUserPlaylist({ id: p.id }, entries, albums).then(ok => {
+              if (ok) clearAfterAdd();
             });
           });
         }
@@ -1775,21 +1787,43 @@
     out.appendChild(save);
   }
 
+  // Whichever selection is live, cleared once it has been filed somewhere.
+  function clearAfterAdd() {
+    if (trackSelectMode) exitTrackSelectMode();
+    if (albumSelectMode) exitAlbumSelectMode();
+  }
+
   // Shared by import and by "Add to playlist". `target` is {id} for an existing
-  // playlist or {name} to create one.
-  async function addToUserPlaylist(target, tracks) {
+  // playlist or {name} to create one. Exactly one of `tracks`/`albums` is set —
+  // albums go to the route that reads their tracklists off the Core.
+  async function addToUserPlaylist(target, tracks, albums) {
+    const url = albums ? "/api/user-playlists/add-albums" : "/api/user-playlists/add";
+    const payload = albums
+      ? { id: target.id, name: target.name, albums }
+      : { id: target.id, name: target.name, tracks };
+    if (albums) showToast(`Reading ${albums.length} album${albums.length === 1 ? "" : "s"}…`);
     try {
-      const r = await fetch("/api/user-playlists/add", {
+      const r = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: target.id, name: target.name, tracks })
+        body: JSON.stringify(payload)
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { showToast(j.error || "Couldn't save that", "error"); return false; }
-      let msg = `Added ${j.added} track${j.added === 1 ? "" : "s"} to "${j.name}"`;
+      let msg = `Added ${j.added} track${j.added === 1 ? "" : "s"}`;
+      if (Number.isFinite(j.albums_read)) {
+        msg += ` from ${j.albums_read} album${j.albums_read === 1 ? "" : "s"}`;
+      }
+      msg += ` to "${j.name}"`;
       if (j.full)    msg += " — the playlist is now full";
       if (j.skipped) msg += `; ${j.skipped} couldn't be stored`;
-      showToast(msg, null, TOAST_REPORT_MS);
+      // Named, not counted: knowing WHICH album Roon wouldn't open is the only
+      // way to do anything about it.
+      if (j.albums_failed && j.albums_failed.length) {
+        msg += `; couldn't read ${j.albums_failed.join(", ")}`;
+      }
+      showToast(msg, (j.albums_failed && j.albums_failed.length) ? "error" : null,
+                TOAST_REPORT_MS);
       return true;
     } catch (e) {
       showToast("Couldn't reach the extension", "error");
@@ -3475,7 +3509,9 @@
     const noun = kind === "tracks" ? "track" : "album";
     if (selMenuTitle) selMenuTitle.textContent = `${n} ${noun}${n === 1 ? "" : "s"} selected`;
     const addItem = selMenu && selMenu.querySelector('[data-sel-act="add"]');
-    if (addItem) addItem.classList.toggle("hidden", kind !== "tracks");
+    // Albums are allowed. Adding one stores its tracks, which means reading the
+    // album on the Core first — see /api/user-playlists/add-albums.
+    if (addItem) addItem.classList.remove("hidden");
     if (selMenuBtn) {
       selMenuBtn.setAttribute("aria-label",
         `Actions for ${n} selected ${noun}${n === 1 ? "" : "s"}`);
