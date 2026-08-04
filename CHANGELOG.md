@@ -2,6 +2,41 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.34] — 2026-08-04
+
+### Changed — the Source facet is now derived, not proved
+Every version from v1.7.27 to v1.7.33 attacked the local-album count the same way: prove each
+album is local by matching a file tag against Roon's album title. Each fix moved the number
+(1601 → 1648 → 1831 → 1953) and none of them could ever finish, because **Roon replaces file tags
+with its own metadata for albums it identifies** — so the two sides legitimately disagree about
+the album's name and no amount of matching closes the gap.
+
+The question was the wrong one. Roon's library is local files plus streaming albums you have
+added, and adding a streaming album favourites it in the service — which is what makes the
+Qobuz/TIDAL key sets meaningful in the first place. So **with no streaming service connected,
+there is nothing else an album can be**, and locality does not need proving album-by-album at all.
+
+An album no connected service claims is now counted as local. On an all-local library that is
+exactly the library size, always, with no join to leak through.
+
+The guard rails matter as much as the rule:
+
+- **With a service connected, elimination is switched off.** An unclaimed album could be local, or
+  from a service that isn't connected here — guessing would badge someone's TIDAL album as a local
+  file. Positive evidence is all we have there, and the old behaviour stands.
+- **A connected service whose favourites failed to load claims nothing, and that is silence, not
+  an answer.** Treating it as "claims nothing" would call every one of its albums local,
+  confidently and wrongly. A service counts only when it is connected *and* its key set loaded.
+- The facet and the filter now go through **one** function. A facet that counts one way while the
+  filter selects another is worse than either being wrong on its own: the number promises
+  something the list then fails to deliver.
+
+The Focus sheet says which reasoning produced the number, because "we matched your files" and
+"nothing else could have put these here" mean different things and only one of them is exact.
+
+The file scan is unchanged and still earns its keep — it supplies release years, labels, and the
+positive evidence used whenever a service *is* connected.
+
 ## [1.7.33] — 2026-08-04
 
 ### Fixed — the remaining local-album shortfall

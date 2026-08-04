@@ -28,9 +28,17 @@ function fixture() {
   const ambiguousAlbumKeys = new Set();
   const F = loadIndexFunctions(
     ["normalize", "canonText", "canonArtist", "albumKey", "albumKeys", "albumTitleVariants",
-     "addFavouriteKeys", "withSource"],
-    { localAlbumKeys, qobuzAlbumKeys, tidalAlbumKeys, ambiguousAlbumKeys }
+     "addFavouriteKeys", "withSource", "claimingServices", "unclaimedIsLocal"],
+    { localAlbumKeys, qobuzAlbumKeys, tidalAlbumKeys, ambiguousAlbumKeys,
+      // A CONNECTED Qobuz with at least one favourite. Every assertion in this
+      // file is about identifying a source from POSITIVE evidence, and since
+      // v1.7.34 that logic only runs while a service is connected — with none
+      // connected, an unclaimed album is local by elimination and there is
+      // nothing left to get wrong. sourcederive.test.js covers that half.
+      qobuzToken: "connected", qobuzUsername: "", qobuzPasswordMd5: "",
+      tidalRefreshToken: "" }
   );
+  qobuzAlbumKeys.add("__a_connected_service_has_at_least_one_favourite__");
   return {
     ...F,
     localAlbumKeys, qobuzAlbumKeys, tidalAlbumKeys, ambiguousAlbumKeys,

@@ -2719,6 +2719,38 @@ function clearStreamAlbumKeys(which) {
 // an album favourited in BOTH services is genuinely ambiguous: Roon pulled it
 // from one of them and we can't tell which, so it gets no badge rather than a
 // coin-flip logo.
+// Which streaming services could be claiming albums in this library right now.
+// A service counts only when it is connected AND its favourites actually
+// loaded — a connected account whose fetch failed knows nothing, and treating
+// its silence as "claims nothing" would call its albums local.
+function claimingServices() {
+  const out = [];
+  if ((qobuzToken || (qobuzUsername && qobuzPasswordMd5)) && qobuzAlbumKeys.size) out.push("qobuz");
+  if (tidalRefreshToken && tidalAlbumKeys.size) out.push("tidal");
+  return out;
+}
+
+// True when an album no service claims must be local.
+//
+// Roon's library is local files plus streaming albums you have added, and
+// adding a streaming album favourites it in the service (that is what makes the
+// qobuz/tidal key sets meaningful in the first place). So with NO service
+// connected there is nothing else an album can be, and locality does not have
+// to be proved album-by-album at all.
+//
+// That matters because proving it is a lossy join: file tags versus Roon's own
+// metadata, which Roon rewrites for every album it identifies. That join left
+// 281 of 2,234 albums uncounted on a library that was entirely local, and no
+// amount of matching work closes a gap whose cause is that the two sides
+// legitimately disagree about the album's name.
+//
+// With a service connected the elimination does not hold — an unclaimed album
+// could be local, or from a service that is NOT connected here — so positive
+// evidence is all we have and the old behaviour stands.
+function unclaimedIsLocal() {
+  return claimingServices().length === 0;
+}
+
 function withSource(a, rec) {
   const keys = (rec && rec.srcKeys) ? rec.srcKeys : albumKeys(a.title, a.subtitle);
   let source = null;
@@ -2733,6 +2765,7 @@ function withSource(a, rec) {
     if (inQobuz) { source = "qobuz"; break; }
     if (inTidal) { source = "tidal"; break; }
   }
+  if (source === null && unclaimedIsLocal()) source = "local";
   a.source = source;
   return a;
 }
@@ -5751,17 +5784,14 @@ app.get("/api/library/facets", async (req, res) => {
     for (const al of albumIndex.albums) {
       const y = albumYearOf(al);
       if (y !== null) { dated++; const d = Math.floor(y / 10) * 10; decades.set(d, (decades.get(d) || 0) + 1); }
-      // withSource() skips identities held by more than one album, because a
-      // BADGE on those would be a coin flip. For a COUNT that is simply wrong:
-      // two copies of the same album are both local. Counting through the
-      // suppression made the total quietly lower than the truth.
-      const keys = al.srcKeys || albumKeys(al.title, al.subtitle);
-      let s = "none";
-      for (const key of keys) {
-        if (localAlbumKeys.has(key)) { s = "local"; break; }
-        if (qobuzAlbumKeys.has(key)) { s = "qobuz"; break; }
-        if (tidalAlbumKeys.has(key)) { s = "tidal"; break; }
-      }
+      // Deliberately the SAME function the filter uses. A facet that counts one
+      // way and a filter that selects another is worse than either being wrong:
+      // the number promises something the list then fails to deliver.
+      //
+      // The ambiguity suppression inside withSource stays. It exists because a
+      // badge on an identity two albums share would be a coin flip — but when
+      // nothing else can claim them, elimination now catches those anyway.
+      const s = withSource({ title: al.title, subtitle: al.subtitle }, al).source || "none";
       sources.set(s, (sources.get(s) || 0) + 1);
     }
     res.json({
@@ -5775,6 +5805,11 @@ app.get("/api/library/facets", async (req, res) => {
       // this is what the extension could work out for itself and the number is
       // shown rather than left to be guessed from a half-sorted list.
       dated_added: albumsWithAddedDate(),
+      // Whether the Local count was PROVED album-by-album from file tags, or
+      // DERIVED from "no streaming service is connected, so there is nothing
+      // else it could be". The sheet says which, because they mean different
+      // things and one of them is exact.
+      sources_derived: unclaimedIsLocal(),
       decades: [...decades.entries()].sort((a, b) => b[0] - a[0]).map(([d, n]) => ({ value: d, label: d + "s", count: n })),
       sources: ["local", "qobuz", "tidal"].filter(s => sources.get(s))
                  .map(s => ({ value: s, label: { local: "Local albums", qobuz: "Qobuz", tidal: "TIDAL" }[s], count: sources.get(s) })),

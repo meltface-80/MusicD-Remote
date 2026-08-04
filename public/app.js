@@ -2177,6 +2177,19 @@
               if (i === -1) libView.source.push(src.value); else libView.source.splice(i, 1);
             });
           }
+          // Say WHERE the number came from. Matching file tags against Roon's
+          // own metadata is lossy — Roon rewrites titles for albums it
+          // identifies — so when nothing else can claim an album, counting by
+          // elimination is both exact and honest, and the user should know
+          // that's the reasoning rather than assume every file was matched.
+          if (f.sources_derived) {
+            const note = document.createElement("div");
+            note.className = "lib-facet-note";
+            note.textContent =
+              "No streaming service is connected, so every album in your Roon " +
+              "library came from your own files.";
+            s.appendChild(note);
+          }
         }
         if (f.decades && f.decades.length) {
           const s = section("Decade");
