@@ -32,7 +32,7 @@
   function setModalSource(album) {
     if (!modalSource) return;
     const kind = album && (album.source || (album.local ? "local" : null));
-    const label = { local: "Local files", qobuz: "Qobuz", tidal: "TIDAL" }[kind];
+    const label = { local: "Local albums", qobuz: "Qobuz", tidal: "TIDAL" }[kind];
     modalSource.className = "album-source" + (label ? " " + kind : " hidden");
     if (label) { modalSource.title = label; modalSource.setAttribute("aria-label", label); }
   }
@@ -3289,7 +3289,7 @@
   // Source badge for an album payload: "local" | "qobuz" | "tidal", or null
   // when the server couldn't determine it. `a.local` is still honoured so a
   // tile built from an older cached payload keeps its badge.
-  const SOURCE_LABEL = { local: "Local files", qobuz: "Qobuz", tidal: "TIDAL" };
+  const SOURCE_LABEL = { local: "Local albums", qobuz: "Qobuz", tidal: "TIDAL" };
   function sourceBadge(a) {
     const kind = a.source || (a.local ? "local" : null);
     if (!kind || !SOURCE_LABEL[kind]) return null;
@@ -3393,6 +3393,31 @@
     if (selMenuBtn) selMenuBtn.setAttribute("aria-expanded", "false");
   }
 
+  // The album view is a full-viewport modal painted OVER the top bar, so a menu
+  // that lives in the top bar is invisible and untappable while an album is
+  // open — selecting tracks produced ticks and no way to act on them.
+  //
+  // The live node is MOVED rather than duplicated. A second copy in the modal
+  // would need its own listeners and its own count, and the two would drift.
+  let selMenuHome = null;
+  function parkSelectMenu(intoModal) {
+    if (!selMenuWrap) return;
+    if (intoModal) {
+      const panel = modal && modal.querySelector(".modal-panel");
+      if (!panel || selMenuWrap.parentNode === panel) return;
+      // Remember exactly where it came from, so it goes back to the same slot
+      // rather than to the end of the row.
+      selMenuHome = { parent: selMenuWrap.parentNode, next: selMenuWrap.nextSibling };
+      selMenuWrap.classList.add("in-modal");
+      panel.appendChild(selMenuWrap);
+    } else {
+      if (!selMenuHome) return;
+      selMenuWrap.classList.remove("in-modal");
+      selMenuHome.parent.insertBefore(selMenuWrap, selMenuHome.next);
+      selMenuHome = null;
+    }
+  }
+
   // Show/hide the whole control and keep its count honest. Called after every
   // change to either selection.
   function refreshSelectMenu(kind, n) {
@@ -3403,6 +3428,8 @@
     if (selCount) selCount.textContent = String(n);
     const noun = kind === "tracks" ? "track" : "album";
     if (selMenuTitle) selMenuTitle.textContent = `${n} ${noun}${n === 1 ? "" : "s"} selected`;
+    const addItem = selMenu && selMenu.querySelector('[data-sel-act="add"]');
+    if (addItem) addItem.classList.toggle("hidden", kind !== "tracks");
     if (selMenuBtn) {
       selMenuBtn.setAttribute("aria-label",
         `Actions for ${n} selected ${noun}${n === 1 ? "" : "s"}`);
@@ -4233,6 +4260,7 @@
   // album identity travels once rather than per track.
   function enterTrackSelectMode() {
     trackSelectMode = true;
+    parkSelectMenu(true);
     modalTracks.classList.add("is-selecting");
     // An open action row and a selection are two different intents; leaving
     // the row expanded under a set of circles reads as both at once.
@@ -4243,6 +4271,7 @@
   function exitTrackSelectMode() {
     trackSelectMode = false;
     trackSelected = [];
+    parkSelectMenu(false);
     if (modalTracks) {
       modalTracks.classList.remove("is-selecting");
       modalTracks.querySelectorAll(".t-row.is-picked").forEach(li => {

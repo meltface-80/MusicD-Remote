@@ -3469,6 +3469,16 @@ input.vol-range::-moz-range-thumb {
 }
 .sel-menu-item:hover { background: var(--bg-elev); }
 .sel-menu-item[data-sel-act="clear"] { color: var(--text-dim); }
+.sel-menu-item.hidden { display: none; }
+
+/* Parked inside the album view. The modal paints over the top bar, so the menu
+   moves into the modal's own header band — to the LEFT of Share and ×, which
+   sit at right:12px and right:60px. z-index clears those (2). */
+.sel-menu-wrap.in-modal {
+  position: absolute; top: 12px; right: 108px; z-index: 3;
+  margin-left: 0;
+}
+.sel-menu-wrap.in-modal .sel-menu { right: 0; }
 
 /* Import report + the add-to-playlist picker rows. */
 .import-result { margin-top: 12px; }

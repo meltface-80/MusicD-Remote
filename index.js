@@ -5535,7 +5535,7 @@ app.get("/api/library/facets", async (req, res) => {
       dated,
       decades: [...decades.entries()].sort((a, b) => b[0] - a[0]).map(([d, n]) => ({ value: d, label: d + "s", count: n })),
       sources: ["local", "qobuz", "tidal"].filter(s => sources.get(s))
-                 .map(s => ({ value: s, label: { local: "Local files", qobuz: "Qobuz", tidal: "TIDAL" }[s], count: sources.get(s) })),
+                 .map(s => ({ value: s, label: { local: "Local albums", qobuz: "Qobuz", tidal: "TIDAL" }[s], count: sources.get(s) })),
       hasPlays: !!(labelsDb && getPlayedTitlesSince(0).size)
     });
   } catch (e) {

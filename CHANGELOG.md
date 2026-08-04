@@ -2,6 +2,30 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.26] — 2026-08-04
+
+### Fixed
+- **Selecting a track in the album view gave you ticks and no way to act on them.** The
+  multi-select menu lives in the top bar, and the album view is a full-viewport modal painted over
+  the entire app shell — so while an album was open the menu was both invisible and untappable.
+  The live menu node now moves into the album view's own header band, left of Share and ×, and
+  moves back when the album closes.
+
+### Changed
+- The menu in the album view reads **Play now / Add to end of queue / Add to playlist… / Clear
+  selection**. "Add to playlist" is hidden for ALBUM selections — a stored playlist entry names a
+  specific track, so offering it there would only explain itself after being tapped.
+- "Add to queue" is now **"Add to end of queue"**, which is what it does.
+- The source facet and badge now say **"Local albums"** rather than "Local files".
+
+### Class of error
+A stacking failure that every logic assertion passes. The count was right, the handlers were
+bound, the element was in the DOM with the correct text — and the feature was unusable. The DOM
+test written for it in v1.7.22 asserted all of that and never asked whether the button could be
+touched. The new test is a hit test — `elementFromPoint` at the button's centre must land on the
+button — with a control assertion proving the probe is capable of failing, following the
+precedent set for the v1.6.58 sort-sheet regression.
+
 ## [1.7.25] — 2026-08-03
 
 ### Changed
