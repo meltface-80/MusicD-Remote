@@ -815,8 +815,22 @@
   const LIB_VIEW_VERSION = 2;
   const LIB_V1_INVERTED_SORTS = ["plays", "lastplayed"];
   const libWall = { offset: 0, loading: false, done: false, seq: 0, total: 0 };
-  let libView = { v: LIB_VIEW_VERSION, sort: "album", dir: "asc", seed: 1,
-                  decade: [], source: [], played: "any" };
+  // Every multi-select Focus facet, in the order the sheet lays them out. This
+  // list is the client's half of libFacetDefs() on the server; the SERVER is
+  // what decides which of them actually have values, and the sheet renders
+  // whatever /api/library/facets returns rather than assuming. Keeping the ids
+  // in one array is what stops the query builder, the saved-view snapshot, the
+  // reset and the active-count from drifting apart as facets are added.
+  const LIB_FACET_IDS = ["genre", "source", "decade", "label", "format",
+                         "rate", "bits", "chan", "letter", "added"];
+  const libEmptyFacets = () => {
+    const o = {};
+    for (const id of LIB_FACET_IDS) o[id] = [];
+    return o;
+  };
+  let libView = Object.assign(
+    { v: LIB_VIEW_VERSION, sort: "album", dir: "asc", seed: 1, played: "any" },
+    libEmptyFacets());
   try {
     const saved = JSON.parse(localStorage.getItem(LIB_VIEW_KEY) || "null");
     if (saved && typeof saved === "object") {
@@ -831,10 +845,9 @@
       // unvalidated `decade: null` throws later, at render time, inside an
       // un-awaited async handler: the wall opens empty with no error and no way
       // out of it short of clearing site data. Coerce instead.
-      if (!Array.isArray(libView.decade)) libView.decade = [];
-      if (!Array.isArray(libView.source)) libView.source = [];
-      libView.decade = libView.decade.map(String);
-      libView.source = libView.source.map(String);
+      for (const id of LIB_FACET_IDS) {
+        libView[id] = Array.isArray(libView[id]) ? libView[id].map(String) : [];
+      }
       if (!LIB_PLAYED_OPTIONS.some(p => p.id === libView.played)) libView.played = "any";
       if (libView.dir !== "asc" && libView.dir !== "desc") libView.dir = libSortDefaultDir(libView.sort);
       if (!Number.isFinite(libView.seed)) libView.seed = 1;
@@ -856,13 +869,30 @@
     p.set("sort", libView.sort);
     p.set("dir", libView.dir);
     if (libView.sort === "random") p.set("seed", String(libView.seed));
-    for (const d of libView.decade) p.append("decade", d);
-    for (const s of libView.source) p.append("source", s);
+    for (const id of LIB_FACET_IDS) {
+      for (const v of (libView[id] || [])) p.append(id, v);
+    }
     if (libView.played !== "any") p.set("played", libView.played);
     return p.toString();
   }
+  // How many filters are ON. Every selected chip counts — including the
+  // excluded ones, which are as much a filter as the included ones.
   const libFocusCount = () =>
-    libView.decade.length + libView.source.length + (libView.played !== "any" ? 1 : 0);
+    LIB_FACET_IDS.reduce((n, id) => n + (libView[id] || []).length, 0) +
+    (libView.played !== "any" ? 1 : 0);
+  // Chip state, encoding Roon's tap-again-to-invert: a value prefixed with "!"
+  // is EXCLUDED. Kept inside the value so the whole selection stays a plain
+  // string array that saved playlists and the query string round-trip unchanged.
+  const facetState = (sel, value) =>
+    sel.indexOf(value) > -1 ? "on" : (sel.indexOf("!" + value) > -1 ? "not" : "off");
+  // off → on → not → off, which is Roon's cycle (green, then red, then clear).
+  function facetCycle(sel, value) {
+    const i = sel.indexOf(value), j = sel.indexOf("!" + value);
+    if (i > -1)      { sel.splice(i, 1, "!" + value); }
+    else if (j > -1) { sel.splice(j, 1); }
+    else             { sel.push(value); }
+    return sel;
+  }
   // Any view that takes over the shared grid without going through showHome/
   // showWall (labels browser, label deep-link, artist view) must call this so
   // the wall's infinite scroll can't append library tiles into that view.
@@ -1268,6 +1298,15 @@
     fetchLibraryPage(mySeq, true);
   }
 
+  // Roon's own phone layout for this row: Focus on the left behind a chevron,
+  // the current Sort on the right behind a caret, and NOTHING between them.
+  //
+  // The separate direction arrow is gone. It was a third boxed control sitting
+  // between two others, and Roon has no equivalent — direction is a property of
+  // the sort, so it belongs in the sort menu, which has flipped it on a re-tap
+  // since v1.6.59. The row still SHOWS the direction (and the reshuffle glyph
+  // for Random) as part of the sort's own label, so nothing is hidden; it just
+  // isn't its own button any more.
   function renderLibraryControls() {
     let bar = document.getElementById("library-controls");
     if (!bar) {
@@ -1276,76 +1315,94 @@
       bar.className = "library-controls";
       grid.parentNode.insertBefore(bar, grid);
     }
-    // The arrow is a REPEAT-tap control, and this rebuild replaces the very
-    // button that was just pressed. Without restoring focus, one Enter on the
-    // arrow reverses the order and then drops focus to <body> — a second Enter
-    // does nothing and the user has to tab back through the row to find it.
+    // Both controls open a sheet rather than mutating the view in place, so a
+    // rebuild can no longer land under the user's finger mid-interaction — but
+    // applyLibView() still rebuilds this row while the sort sheet is open and
+    // focus is inside it, and dropping focus to <body> then would strand a
+    // keyboard user. Restoring by class is enough: there are two controls and
+    // they are rebuilt in a fixed order.
     const refocus = document.activeElement &&
                     bar.contains(document.activeElement) &&
                     document.activeElement.className;
     bar.innerHTML = "";
-    const mk = (text, sub, onClick, active) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = "lib-pill" + (active ? " is-active" : "");
-      b.innerHTML = `<span class="lib-pill-label"></span><span class="lib-pill-value"></span>`;
-      b.querySelector(".lib-pill-label").textContent = text;
-      b.querySelector(".lib-pill-value").textContent = sub;
-      b.addEventListener("click", onClick);
-      return b;
-    };
-    bar.appendChild(mk("Sort", libSortLabel(), openLibSortSheet, false));
-    bar.appendChild(buildLibDirButton());
-    const n = libFocusCount();
-    // Wrapped, not passed by reference: mk() hands its callback an event, which
-    // would arrive as editTarget and be treated as a playlist to save over.
-    bar.appendChild(mk("Focus", n ? n + " active" : "None", () => openLibFocusSheet(null), n > 0));
+    bar.appendChild(buildLibFocusButton());
+    bar.appendChild(buildLibSortButton());
     bar.classList.toggle("hidden", !libraryWallActive);
-    // Put focus back on the replacement of whatever was focused. The new
-    // button's aria-label already states the new direction, so focusing it is
-    // also what announces the change.
     if (refocus) {
       const again = bar.querySelector("." + String(refocus).split(" ")[0]);
       if (again) again.focus();
     }
   }
 
-  // The direction control: one arrow, always visible beside the Sort pill.
-  // Tap it and the order reverses; tap again and it goes back. That is the
-  // whole interaction — no wording to read, matching Roon ARC.
-  //
-  // Random has no direction, so the slot becomes a reshuffle instead of an
-  // arrow that would do nothing.
-  function buildLibDirButton() {
+  // `› Focus`, with the number of active facets when there are any. The count
+  // is the only state this control carries — what those facets ARE is the
+  // sheet's job, and spelling them out here would wrap onto three lines on a
+  // phone the moment more than one is on.
+  function buildLibFocusButton() {
+    const n = libFocusCount();
     const b = document.createElement("button");
     b.type = "button";
-    b.className = "lib-dir-btn";
-    if (!libSortHasDir(libView.sort)) {
-      b.classList.add("is-shuffle");
-      b.textContent = "⟳";
-      b.title = "Shuffle again";
-      b.setAttribute("aria-label", "Shuffle again");
-      b.addEventListener("click", () => {
-        libView.seed = libNextSeed(libView.seed);
-        applyLibView();
-      });
-      return b;
+    b.className = "lib-ctl lib-ctl-focus" + (n ? " is-active" : "");
+
+    const chev = document.createElement("span");
+    chev.className = "lib-ctl-chevron";
+    chev.setAttribute("aria-hidden", "true");
+    chev.textContent = "›";
+    b.appendChild(chev);
+
+    const text = document.createElement("span");
+    text.className = "lib-ctl-text";
+    text.textContent = "Focus";
+    b.appendChild(text);
+
+    if (n) {
+      const badge = document.createElement("span");
+      badge.className = "lib-ctl-badge";
+      badge.textContent = String(n);
+      b.appendChild(badge);
     }
-    // `desc` is captured at BUILD time and used by the handler below. That is
-    // only safe because every mutation of libView.sort/dir goes through
-    // applyLibView() → renderLibraryControls(), which rebuilds this button. Any
-    // future path that changes them without rebuilding leaves a handler that
-    // flips to the wrong value.
-    const desc = libView.dir === "desc";
-    b.textContent = desc ? "↓" : "↑";
-    // The words live here, not on screen: the tooltip and the accessible name
-    // still say what the arrow means for the current sort.
-    b.title = libDirLabel();
-    b.setAttribute("aria-label", "Reverse order — currently " + libDirLabel());
-    b.addEventListener("click", () => {
-      libView.dir = desc ? "asc" : "desc";
-      applyLibView();
-    });
+    b.setAttribute("aria-label", n
+      ? "Focus — " + n + (n === 1 ? " filter active" : " filters active")
+      : "Focus");
+    // Wrapped, not passed by reference: the listener hands its callback an
+    // event, which would arrive as editTarget and be treated as a playlist to
+    // save over.
+    b.addEventListener("click", () => openLibFocusSheet(null));
+    return b;
+  }
+
+  // `Album name ↑ ⌄`. The arrow is a LABEL here, not a control — it says which
+  // way the current sort runs, and tapping anywhere on the button opens the
+  // sheet where it can be changed.
+  function buildLibSortButton() {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "lib-ctl lib-ctl-sort";
+
+    const text = document.createElement("span");
+    text.className = "lib-ctl-text";
+    text.textContent = libSortLabel();
+    b.appendChild(text);
+
+    const arrow = document.createElement("span");
+    arrow.className = "lib-ctl-arrow";
+    arrow.setAttribute("aria-hidden", "true");
+    // Random has no direction to show, so the slot carries the reshuffle glyph
+    // instead — the same symbol the sort sheet's Random row re-taps to.
+    arrow.textContent = libSortHasDir(libView.sort)
+      ? (libView.dir === "desc" ? "↓" : "↑") : "⟳";
+    b.appendChild(arrow);
+
+    const caret = document.createElement("span");
+    caret.className = "lib-ctl-caret";
+    caret.setAttribute("aria-hidden", "true");
+    caret.textContent = "⌄";
+    b.appendChild(caret);
+
+    b.setAttribute("aria-label", libSortHasDir(libView.sort)
+      ? "Sort — " + libSortLabel() + ", " + libDirLabel()
+      : "Sort — " + libSortLabel());
+    b.addEventListener("click", openLibSortSheet);
     return b;
   }
 
@@ -2146,101 +2203,178 @@
       const r = await fetch("/api/library/facets", { cache: "no-store" });
       if (r.ok) libFacets = await r.json();
     } catch (e) { /* offline — keep whatever we last had rather than blanking */ }
-    const f = libFacets || { decades: [], sources: [] };
+    const f = libFacets || { facets: [], coverage: {} };
+    // Which sections are expanded. Held across repaints (a chip tap rebuilds
+    // the body) but NOT across openings: a sheet that reopens half-collapsed
+    // hides filters that are still on.
+    const openSections = {};
     openLibSheet("Focus", (body) => {
-      const section = (label) => {
+      // One collapsible category. Roon's own Focus is a row of scrolling
+      // columns; on a phone that becomes a vertical stack, and with ten
+      // categories — some of them hundreds of labels long — every one expanded
+      // is a sheet nobody can find the bottom of. Collapsed by default unless
+      // something in it is selected, so what's ON is always visible.
+      const section = (id, label, activeCount) => {
+        // Default open when something in here is ON, and REMEMBER that, because
+        // a chip tap repaints the whole body: clearing the last filter in a
+        // category would otherwise drop its active count to zero and collapse
+        // the section under the user's finger, taking the other chips with it.
+        // Once open, a section stays open until the header is tapped or the
+        // sheet is closed.
+        if (openSections[id] === undefined && activeCount > 0) openSections[id] = true;
+        const expanded = openSections[id] === undefined ? false : openSections[id];
         const s = document.createElement("div");
-        s.className = "lib-sheet-section";
-        const t = document.createElement("div");
+        s.className = "lib-sheet-section" + (expanded ? " is-open" : "");
+
+        const head = document.createElement("button");
+        head.type = "button";
+        head.className = "lib-sheet-section-head";
+        head.setAttribute("aria-expanded", expanded ? "true" : "false");
+        const t = document.createElement("span");
         t.className = "lib-sheet-section-label";
         t.textContent = label;
-        s.appendChild(t);
+        head.appendChild(t);
+        if (activeCount) {
+          const n = document.createElement("span");
+          n.className = "lib-sheet-section-count";
+          n.textContent = String(activeCount);
+          head.appendChild(n);
+        }
+        const car = document.createElement("span");
+        car.className = "lib-sheet-section-caret";
+        car.setAttribute("aria-hidden", "true");
+        car.textContent = expanded ? "⌃" : "⌄";
+        head.appendChild(car);
+        head.addEventListener("click", () => {
+          openSections[id] = !expanded;
+          renderFocusBody();
+        });
+        s.appendChild(head);
         body.appendChild(s);
-        return s;
+        if (!expanded) return null;   // collapsed: no body to fill
+        const wrap = document.createElement("div");
+        wrap.className = "lib-chips";
+        s.appendChild(wrap);
+        return { section: s, chips: wrap };
       };
-      const chip = (host, label, on, onToggle) => {
+      // state: "on" (included) | "not" (excluded) | "off".
+      const chip = (host, label, state, onTap) => {
         const c = document.createElement("button");
         c.type = "button";
-        c.className = "lib-chip" + (on ? " is-on" : "");
+        c.className = "lib-chip" + (state === "on" ? " is-on" : state === "not" ? " is-not" : "");
         c.textContent = label;
-        c.addEventListener("click", () => { onToggle(); renderFocusBody(); });
+        if (state === "not") c.setAttribute("aria-label", "Excluding " + label);
+        c.addEventListener("click", () => { onTap(); renderFocusBody(); });
         host.appendChild(c);
       };
+      const note = (host, text) => {
+        const n = document.createElement("div");
+        n.className = "lib-facet-note";
+        n.textContent = text;
+        host.appendChild(n);
+      };
+      // Why a facet's chips don't add up to the library. Every one of these
+      // comes from somewhere other than Roon — the browse API publishes none of
+      // it — so the number is stated rather than left to be noticed.
+      const COVERAGE_NOTE = {
+        decade: "Roon doesn't publish release years, so these come from your file tags " +
+                "and from Qobuz/TIDAL. Undated albums aren't in any decade.",
+        genre:  "Genres are read from Roon's own genre lists during a library sync. " +
+                "Anything Roon files under no genre won't appear here.",
+        label:  "Labels are collected during the label scan, which runs in the background " +
+                "and fills in over time.",
+        format: "Format is read from your own files, so albums streamed from Qobuz or " +
+                "TIDAL have none.",
+        added:  "Roon publishes no date-added, so this is what MusicD Remote could work " +
+                "out for itself — file timestamps, and albums appearing between scans."
+      };
+      // Format, Sample rate, Bit depth and Channels all come from the same file
+      // scan and all carry the same caveat; saying it four times is noise.
+      const COVERAGE_OF = { rate: "format", bits: "format", chan: "format" };
+
       const renderFocusBody = () => {
         body.innerHTML = "";
-        if (f.sources && f.sources.length) {
-          const s = section("Source");
-          const wrap = document.createElement("div"); wrap.className = "lib-chips"; s.appendChild(wrap);
-          for (const src of f.sources) {
-            chip(wrap, src.label + " (" + src.count + ")", libView.source.includes(src.value), () => {
-              const i = libView.source.indexOf(src.value);
-              if (i === -1) libView.source.push(src.value); else libView.source.splice(i, 1);
-            });
+
+        // Listening first — it is the one facet that is always available,
+        // because it runs on this extension's own play history rather than on
+        // anything harvested.
+        const played = libView.played !== "any" ? 1 : 0;
+        const ls = section("played", "Listening", played);
+        if (ls) {
+          for (const p of LIB_PLAYED_OPTIONS) {
+            chip(ls.chips, p.label, libView.played === p.id ? "on" : "off",
+                 () => { libView.played = p.id; });
           }
-          // Say WHERE the number came from. Matching file tags against Roon's
-          // own metadata is lossy — Roon rewrites titles for albums it
-          // identifies — so when nothing else can claim an album, counting by
-          // elimination is both exact and honest, and the user should know
-          // that's the reasoning rather than assume every file was matched.
-          if (f.sources_derived) {
-            const note = document.createElement("div");
-            note.className = "lib-facet-note";
-            note.textContent =
-              "No streaming service is connected, so every album in your Roon " +
-              "library came from your own files.";
-            s.appendChild(note);
+          if (!f.hasPlays) {
+            note(ls.section, "MusicD Remote hasn't seen anything play yet, so these use an " +
+                             "empty history — everything counts as never played.");
           }
         }
-        if (f.decades && f.decades.length) {
-          const s = section("Decade");
-          const wrap = document.createElement("div"); wrap.className = "lib-chips"; s.appendChild(wrap);
-          for (const d of f.decades) {
-            chip(wrap, d.label + " (" + d.count + ")", libView.decade.includes(String(d.value)), () => {
-              const v = String(d.value);
-              const i = libView.decade.indexOf(v);
-              if (i === -1) libView.decade.push(v); else libView.decade.splice(i, 1);
-            });
+
+        for (const facet of (f.facets || [])) {
+          const sel = libView[facet.id];
+          if (!Array.isArray(sel)) continue;   // a facet this client doesn't know
+          const s = section(facet.id, facet.label, sel.length);
+          if (!s) continue;
+          for (const v of facet.values) {
+            chip(s.chips, v.label + " (" + v.count + ")",
+                 facetState(sel, v.value), () => facetCycle(sel, v.value));
           }
-          // Roon's API publishes no release year, so every one of these was
-          // found elsewhere and the coverage is never guaranteed to be the
-          // whole library. Say so with the real numbers instead of leaving the
-          // user to notice that the chips don't add up.
-          if (f.dated != null && f.total && f.dated < f.total) {
-            const cov = document.createElement("div");
-            cov.className = "lib-facet-note";
-            cov.textContent = f.dated.toLocaleString() + " of " + f.total.toLocaleString() +
-              " albums have a release year so far — Roon doesn't publish them, so they're " +
-              "collected from your file tags and from Qobuz/TIDAL. Undated albums aren't " +
-              "in any decade.";
-            s.appendChild(cov);
+          // Anything SELECTED that the server didn't send back gets a chip of
+          // its own. Genre and Label are truncated to the commonest values, so a
+          // saved playlist — or a filter set before the library changed — can
+          // easily name one that isn't in the list. Without this the filter is
+          // active, invisible, and clearable only by Clear all, which would
+          // take every other filter with it.
+          const listed = facet.values.map(v => v.value);
+          for (const raw of sel) {
+            const value = raw.charAt(0) === "!" ? raw.slice(1) : raw;
+            if (listed.includes(value)) continue;
+            chip(s.chips, value, facetState(sel, value), () => facetCycle(sel, value));
+          }
+          if (facet.total_values > facet.values.length) {
+            note(s.section, "Showing the " + facet.values.length + " most common of " +
+                            facet.total_values.toLocaleString() + ".");
+          }
+          const covId = COVERAGE_OF[facet.id] || facet.id;
+          const have = f.coverage && f.coverage[covId];
+          if (COVERAGE_NOTE[covId] && Number.isFinite(have) && f.total && have < f.total) {
+            note(s.section, have.toLocaleString() + " of " + f.total.toLocaleString() +
+                            " albums. " + COVERAGE_NOTE[covId]);
+          }
+          if (facet.id === "source" && f.sources_derived) {
+            // Say WHERE the number came from. Matching file tags against Roon's
+            // own metadata is lossy — Roon rewrites titles for albums it
+            // identifies — so when nothing else can claim an album, counting by
+            // elimination is both exact and honest, and the user should know
+            // that's the reasoning rather than assume every file was matched.
+            note(s.section, "No streaming service is connected, so every album in your " +
+                            "Roon library came from your own files.");
           }
         }
-        const ps = section("Listening");
-        const pw = document.createElement("div"); pw.className = "lib-chips"; ps.appendChild(pw);
-        for (const p of LIB_PLAYED_OPTIONS) {
-          chip(pw, p.label, libView.played === p.id, () => { libView.played = p.id; });
-        }
+
         // Only when editing a saved playlist: on the Library screen there is
         // nothing for a limit to apply to.
         if (editTarget) {
-          const ls = section("Playlist size");
-          const lw = document.createElement("div"); lw.className = "lib-chips"; ls.appendChild(lw);
-          for (const n of SMART_LIMITS) {
-            chip(lw, String(n), editLimit === n, () => { editLimit = n; });
+          const lim = section("limit", "Playlist size", 0);
+          if (lim) {
+            for (const n of SMART_LIMITS) {
+              chip(lim.chips, String(n), editLimit === n ? "on" : "off", () => { editLimit = n; });
+            }
+            note(lim.section,
+              "How many albums this playlist actually plays. A query can match your " +
+              "whole library, but every album costs Roon work to queue — 400 albums " +
+              "is thousands of tracks and takes minutes.");
           }
-          const ln = document.createElement("div");
-          ln.className = "lib-facet-note";
-          ln.textContent =
-            "How many albums this playlist actually plays. A query can match your " +
-            "whole library, but every album costs Roon work to queue — 400 albums " +
-            "is thousands of tracks and takes minutes.";
-          ls.appendChild(ln);
         }
 
-        const note = document.createElement("div");
-        note.className = "lib-sheet-note";
-        note.textContent = "Genre and Tag stay in the main filter — Roon keeps those in separate lists, so they can't be combined with these.";
-        body.appendChild(note);
+        const foot = document.createElement("div");
+        foot.className = "lib-sheet-note";
+        foot.textContent =
+          "Tap a filter once to include it, again to exclude it, once more to clear it. " +
+          "Roon can also focus on star ratings, its own favourites and album types — " +
+          "those aren't in the API extensions can read.";
+        body.appendChild(foot);
       };
       renderFocusBody();
     }, (foot, close) => {
@@ -2249,7 +2383,8 @@
       clear.textContent = "Clear all";
       clear.addEventListener("click", () => {
         committed = true;
-        libView.decade = []; libView.source = []; libView.played = "any";
+        Object.assign(libView, libEmptyFacets());
+        libView.played = "any";
         close(); applyLibView();
       });
       const save = document.createElement("button");
@@ -2259,7 +2394,10 @@
         committed = true;
         close();
         // Carry the chosen size into the save — the sheet is the only place it
-        // can be set, so it has to travel with the thing being saved.
+        // can be set, so it has to travel with the thing being saved. `mode`
+        // rides along on editTarget from the create sheet (or from the record
+        // being edited); Save-as from the Library bar has no editTarget and
+        // takes the server default.
         saveSmartPlaylistPrompt(editTarget
           ? Object.assign({}, editTarget, { limit: editLimit })
           : null);
@@ -2284,7 +2422,10 @@
   // snapshot — the same engine as the Library screen — so it makes NO Roon calls
   // and adds nothing to the Core's memory. Opening one applies its view and
   // shows the library wall; there is no separate screen to maintain.
-  const SMART_VIEW_KEYS = ["sort", "dir", "seed", "decade", "source", "played"];
+  // Derived from LIB_FACET_IDS rather than listed again: a facet added to that
+  // array is savable immediately, instead of working on the Library screen and
+  // silently vanishing the moment somebody saves the view as a playlist.
+  const SMART_VIEW_KEYS = ["sort", "dir", "seed", "played"].concat(LIB_FACET_IDS);
 
   function currentLibViewSnapshot() {
     const out = {};
@@ -2300,16 +2441,23 @@
     const bits = [];
     const sortOpt = LIB_SORT_OPTIONS.find(o => o.id === v.sort);
     if (sortOpt) bits.push(sortOpt.label + (v.dir === "desc" ? " ↓" : " ↑"));
-    if (v.decade && v.decade.length) bits.push(v.decade.map(d => d + "s").join(", "));
-    if (v.source && v.source.length) bits.push(v.source.join(", "));
+    // Decades read as "1980s"; everything else is already a display name, and
+    // an excluded value says so rather than reading as if it were included.
+    const shown = (id, val) => (val.charAt(0) === "!" ? "not " : "") +
+      (id === "decade" ? val.replace("!", "") + "s" : val.replace(/^!/, ""));
+    for (const id of LIB_FACET_IDS) {
+      const sel = v[id];
+      if (Array.isArray(sel) && sel.length) bits.push(sel.map(x => shown(id, x)).join(", "));
+    }
     if (v.played && v.played !== "any") {
-      bits.push(v.played === "never" ? "never played" : "not played in " + v.played + " months");
+      const opt = LIB_PLAYED_OPTIONS.find(p => p.id === v.played);
+      bits.push(opt ? opt.label.toLowerCase() : "not played in " + v.played + " months");
     }
     return bits.join(" · ");
   }
 
   // Returns null on failure, [] for a genuinely empty list. The caller must tell
-  // them apart: rendering "No dynamic playlists yet" after a network blip reads as
+  // them apart: rendering "No Dynamic Playlists yet" after a network blip reads as
   // "your saved playlists are gone".
   async function fetchSmartPlaylists() {
     try {
@@ -2325,8 +2473,8 @@
   function saveSmartPlaylistPrompt(existing) {
     // NOT describeLibView(): using the description as the default name printed
     // the same string as both the row's title and its subtitle.
-    const suggested = (existing && existing.name) || "My dynamic playlist";
-    const name = window.prompt("Name this dynamic playlist", suggested);
+    const suggested = (existing && existing.name) || "My Dynamic Playlist";
+    const name = window.prompt("Name this Dynamic Playlist", suggested);
     if (name === null) return;                 // cancelled
     const trimmed = String(name).trim();
     if (!trimmed) { showToast("Give it a name", "error"); return; }
@@ -2339,7 +2487,10 @@
                                  view: currentLibViewSnapshot(),
                                  // Editing keeps whatever the playlist already
                                  // had; a new one takes the server's default.
-                                 limit: existing && existing.limit })
+                                 limit: existing && existing.limit,
+                                 // Set by the create sheet before the focus
+                                 // screen opens, and preserved through an edit.
+                                 mode:  existing && existing.mode })
         });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) { showToast(j.error || "Couldn't save that", "error"); return; }
@@ -2363,7 +2514,7 @@
   // detail screen listing TRACKS with each track's album artwork. They used to
   // open the library wall with the view applied, which was the query working
   // correctly but reading as "it just took me to the library".
-  // "New dynamic playlist", as the first tile of the wall. Built on .album so it
+  // "New Dynamic Playlist", as the first tile of the wall. Built on .album so it
   // sizes with the grid at every width — the same approach as Home's unheard
   // tile, and for the same reason: no breakpoints of its own to get wrong.
   function buildNewSmartTile() {
@@ -2371,7 +2522,7 @@
     btn.type = "button";
     btn.className = "album home-unheard-tile";
     btn.id = "new-smart-tile";
-    btn.setAttribute("aria-label", "Create a dynamic playlist");
+    btn.setAttribute("aria-label", "Create a Dynamic Playlist");
 
     const art = document.createElement("div");
     art.className = "album-art-wrap unheard-art";
@@ -2386,10 +2537,10 @@
     meta.className = "album-meta";
     const t = document.createElement("div");
     t.className = "album-title";
-    t.textContent = "New dynamic playlist";
+    t.textContent = "New Dynamic Playlist";
     const sub = document.createElement("div");
     sub.className = "album-artist";
-    sub.textContent = "Pick a sort and a focus";
+    sub.textContent = "Albums or tracks, then a focus";
     meta.appendChild(t); meta.appendChild(sub);
     btn.appendChild(meta);
 
@@ -2397,29 +2548,88 @@
     return btn;
   }
 
+  // What a new playlist is made OF, asked first because it changes what the
+  // playlist DOES rather than which albums it matches — and because it is the
+  // one choice that can't be inferred from the focus.
+  //
+  // Both modes run the same album query. "Albums" queues whole records in
+  // order; "Tracks" expands them and lists the tracks individually. The filter
+  // itself is always album-level: Roon's API publishes no track list without
+  // opening each album one at a time, so a genuinely track-level FILTER would
+  // mean indexing every track in the library — thousands of Roon calls, redone
+  // on every change — which is the traffic the snapshot exists to avoid. This
+  // is stated in the sheet rather than hidden, so the choice is understood.
+  const SMART_MODES = [
+    { id: "albums", label: "Albums",
+      note: "Queues whole albums, in their own running order." },
+    { id: "tracks", label: "Tracks",
+      note: "Lists the tracks from those albums, so you can play or queue them one at a time." }
+  ];
+  const SMART_MODE_DEFAULT = "albums";   // matches smartModeDefault() on the server
+
   // Creating is editing a playlist that doesn't exist yet: same sheet, same
   // sections, same Playlist size control. Passing a target with no id is what
   // makes the save create rather than overwrite, so there is one editor rather
   // than two that have to be kept in step.
   function createSmartPlaylist() {
-    openLibFocusSheet({ id: null, name: "", view: currentLibViewSnapshot(),
-                        limit: SMART_LIMIT_DEFAULT });
+    openLibSheet("New Dynamic Playlist", (body, close) => {
+      const intro = document.createElement("div");
+      intro.className = "lib-facet-note";
+      intro.textContent = "What should this playlist be made of?";
+      body.appendChild(intro);
+
+      for (const m of SMART_MODES) {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "lib-sort-row";
+        row.dataset.mode = m.id;
+
+        const text = document.createElement("span");
+        text.className = "lib-sort-text";
+        const main = document.createElement("span");
+        main.className = "lib-sort-label";
+        main.textContent = m.label;
+        const sub = document.createElement("span");
+        sub.className = "lib-sort-note";
+        sub.textContent = m.note;
+        text.appendChild(main); text.appendChild(sub);
+        row.appendChild(text);
+
+        row.addEventListener("click", () => {
+          close();
+          // Straight into the focus screen, whose options are what fuel the
+          // playlist. A target with no id makes the save create rather than
+          // overwrite.
+          openLibFocusSheet({ id: null, name: "", view: currentLibViewSnapshot(),
+                              limit: SMART_LIMIT_DEFAULT, mode: m.id });
+        });
+        body.appendChild(row);
+      }
+
+      const note = document.createElement("div");
+      note.className = "lib-sheet-note";
+      note.textContent =
+        "Either way the playlist follows the same focus, and re-runs it every time " +
+        "you open it — it isn't a fixed list. Roon's API only lets an extension " +
+        "filter at album level, so Tracks means the tracks OF the albums that match.";
+      body.appendChild(note);
+    });
   }
 
   async function showSmartPlaylists() {
-    enterFullWall("Dynamic playlists");
+    enterFullWall("Dynamic Playlists");
     smartWallActive = true;
     const mySeq = ++smartSeq;
     const list = await fetchSmartPlaylists();
     if (!smartWallActive || mySeq !== smartSeq) return;
     grid.innerHTML = "";
     if (list === null) {
-      setBanner("Couldn't read your dynamic playlists — the extension didn't answer. " +
+      setBanner("Couldn't read your Dynamic Playlists — the extension didn't answer. " +
                 "They're still saved; try again.", true);
       return;
     }
     setBanner(list.length ? null
-      : "No dynamic playlists yet — start one with New, or set a sort and focus on the " +
+      : "No Dynamic Playlists yet — start one with New, or set a sort and focus on the " +
         "Library screen and use Focus → Save as…", false);
     const frag = document.createDocumentFragment();
     // Leads the wall so an empty one still has something to do. Creating opens
@@ -2452,7 +2662,7 @@
   window.__showSmartPlaylists = showSmartPlaylists;
 
   async function openSmartPlaylist(sp) {
-    enterFullWall(sp.name || "Dynamic playlist");
+    enterFullWall(sp.name || "Dynamic Playlist");
     smartDetailActive = true;
     const mySeq = ++smartSeq;
 
@@ -2465,7 +2675,7 @@
 
     const back = document.createElement("button");
     back.type = "button"; back.className = "action-btn playlist-back";
-    back.textContent = "← Dynamic playlists";
+    back.textContent = "← Dynamic Playlists";
     back.addEventListener("click", () => { smartDetailActive = false; showSmartPlaylists(); });
     wrap.appendChild(back);
 
@@ -2473,7 +2683,7 @@
     head.className = "playlist-head";
     const h = document.createElement("h2");
     h.className = "playlist-title";
-    h.textContent = sp.name || "Dynamic playlist";
+    h.textContent = sp.name || "Dynamic Playlist";
     head.appendChild(h);
     const sub = document.createElement("div");
     sub.className = "playlist-sub";
@@ -2513,6 +2723,14 @@
     wrap.appendChild(more);
     grid.appendChild(wrap);
 
+    // Does the track list own this screen? In "tracks" mode it IS the screen and
+    // reports its own progress. In "albums" mode the screen shows albums, and
+    // the track paging still exists — Share has to expand albums into tracks
+    // whichever mode we are in — but it must not narrate over the album count
+    // that is already there.
+    const trackMode = (sp.mode || SMART_MODE_DEFAULT) === "tracks";
+    if (!trackMode) { ol.remove(); more.remove(); status.textContent = "Reading albums…"; }
+
     // Tracks are paged by ALBUM: each one has to be opened on the Core, so the
     // screen fills a batch at a time rather than stalling on a long playlist.
     let albumOffset = 0, loading = false, done = false, shown = 0;
@@ -2545,15 +2763,17 @@
           return;
         }
 
-        for (const t of (j.tracks || [])) { ol.appendChild(smartTrackRow(t)); loaded.push(t); }
+        for (const t of (j.tracks || [])) { if (trackMode) ol.appendChild(smartTrackRow(t)); loaded.push(t); }
         shown += (j.tracks || []).length;
         albumOffset += (j.albums_expanded || 0);
         done = !!j.done || !(j.albums_expanded > 0);
-        status.textContent = done
-          ? (shown ? `${shown} track${shown === 1 ? "" : "s"} from ${j.album_total} album${j.album_total === 1 ? "" : "s"}`
-                   : "Nothing in your library matches this dynamic playlist right now.")
-          : `${shown} tracks so far — ${j.album_total - albumOffset} album(s) left`;
-        more.classList.toggle("hidden", done);
+        if (trackMode) {
+          status.textContent = done
+            ? (shown ? `${shown} track${shown === 1 ? "" : "s"} from ${j.album_total} album${j.album_total === 1 ? "" : "s"}`
+                     : "Nothing in your library matches this Dynamic Playlist right now.")
+            : `${shown} tracks so far — ${j.album_total - albumOffset} album(s) left`;
+          more.classList.toggle("hidden", done);
+        }
       } catch (e) {
         if (!smartDetailActive || mySeq !== smartSeq) return;
         status.textContent = "Couldn't read this playlist.";
@@ -2602,7 +2822,7 @@
         // page 4 of 40 was indistinguishable from finishing: `done` went true
         // either way, the loop exited, and the sheet announced a complete
         // share of 10% of the playlist.
-        await shareTracks(sp.name || "Dynamic playlist", loaded.map(t => ({
+        await shareTracks(sp.name || "Dynamic Playlist", loaded.map(t => ({
           title: t.title, artist: t.subtitle,
           album: t.album_title, track_no: t.track_no
         })), null, {
@@ -2614,8 +2834,43 @@
       }
     }
 
-    more.addEventListener("click", loadPage);
-    loadPage();
+    if (trackMode) {
+      more.addEventListener("click", loadPage);
+      loadPage();
+      return;
+    }
+
+    // Albums mode: one request, straight out of the snapshot. No Roon calls at
+    // all to LOOK at the playlist — expanding tracks is what costs, and that
+    // only happens now if the user shares it.
+    const albumGrid = document.createElement("div");
+    // album-grid, not "grid": that is the class that actually carries the
+    // responsive column layout, and it is the same one the Library wall uses,
+    // so a playlist's albums size exactly like every other wall of tiles.
+    albumGrid.className = "album-grid playlist-albums";
+    wrap.insertBefore(albumGrid, status);
+    try {
+      const r = await fetch("/api/smart-playlist/albums?id=" + encodeURIComponent(sp.id),
+                            { cache: "no-store" });
+      if (!smartDetailActive || mySeq !== smartSeq) return;
+      const j = await r.json().catch(() => ({}));
+      if (!smartDetailActive || mySeq !== smartSeq) return;
+      if (!r.ok) { status.textContent = j.error || "Couldn't read this playlist."; return; }
+      const albums = j.albums || [];
+      const frag = document.createDocumentFragment();
+      for (const a of albums) frag.appendChild(buildAlbumTile(a));
+      albumGrid.appendChild(frag);
+      // Says what it PLAYS and, when the query matched more, what it left out —
+      // the same honesty the tile subtitle carries.
+      status.textContent = albums.length
+        ? (Number.isFinite(j.matched) && j.matched > albums.length
+            ? `${albums.length} of ${j.matched} albums that match`
+            : `${albums.length} album${albums.length === 1 ? "" : "s"}`)
+        : "Nothing in your library matches this Dynamic Playlist right now.";
+    } catch (e) {
+      if (!smartDetailActive || mySeq !== smartSeq) return;
+      status.textContent = "Couldn't read this playlist.";
+    }
   }
   window.__openSmartPlaylist = openSmartPlaylist;
 
@@ -2695,7 +2950,7 @@
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { showToast(j.error || "Couldn't read this playlist", "error"); return; }
       const albums = (j.albums || []);
-      if (!albums.length) { showToast("Nothing matches this dynamic playlist", "error"); return; }
+      if (!albums.length) { showToast("Nothing matches this Dynamic Playlist", "error"); return; }
       const pr = await fetch("/api/play-multi", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2708,8 +2963,13 @@
       if (!pr.ok) { showToast(pj.error || "Roon refused that", "error"); return; }
       // Say how many of how many. The cap used to be silent, so a 1,179-album
       // playlist queued 100 and looked like it had queued everything.
+      //
+      // MATCHED, not total: the endpoint returns exactly `total` albums, so
+      // comparing against it makes "capped" permanently false and this whole
+      // message dead code. `matched` is what the query found, which is the
+      // number the playlist was capped AGAINST.
       showToast(multiOutcome(kind === "queue" ? "Queued" : "Playing",
-                             pj, albums.length, j.total), null, TOAST_REPORT_MS);
+                             pj, albums.length, smartMatched(j)), null, TOAST_REPORT_MS);
     } catch (e) {
       // The fetch died, but the server keeps going — it has no way to hear
       // that we left. Saying "couldn't reach" would invite a retry that
@@ -2755,7 +3015,7 @@
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { showToast(j.error || "Couldn't read this playlist", "error"); return; }
       const albums = j.albums || [];
-      if (!albums.length) { showToast("Nothing matches this dynamic playlist", "error"); return; }
+      if (!albums.length) { showToast("Nothing matches this Dynamic Playlist", "error"); return; }
 
       const pr = await fetch("/api/play-multi", {
         method: "POST",
@@ -2770,7 +3030,7 @@
       });
       const pj = await pr.json().catch(() => ({}));
       if (!pr.ok) { showToast(pj.error || "Roon refused that", "error"); return; }
-      showToast(multiOutcome("Queued", pj, albums.length, j.total) +
+      showToast(multiOutcome("Queued", pj, albums.length, smartMatched(j)) +
                 " — now save the queue as a playlist in Roon", null, TOAST_REPORT_MS);
     } catch (e) {
       // Same reasoning as playSmartPlaylist: the server run outlives our fetch.
@@ -2789,6 +3049,11 @@
   // String(decade) — the Focus chips would render off for a decade that IS
   // active, and tapping one would push a duplicate rather than toggle it.
   function applyViewToLibView(view) {
+    // A facet the saved view doesn't mention is OFF, not "leave whatever the
+    // Library screen happens to have". Skipping it would let a playlist saved
+    // before a facet existed quietly inherit the user's current filters and
+    // then show a different set of albums than the one that was saved.
+    Object.assign(libView, libEmptyFacets());
     for (const k of SMART_VIEW_KEYS) {
       if (view[k] === undefined) continue;
       libView[k] = Array.isArray(view[k]) ? view[k].map(String) : view[k];
@@ -2804,7 +3069,7 @@
   }
 
   async function deleteSmartPlaylist(sp) {
-    const ok = await confirmDialog(`Delete the dynamic playlist "${sp.name}"?`);
+    const ok = await confirmDialog(`Delete the Dynamic Playlist "${sp.name}"?`);
     if (!ok) return;
     try {
       const r = await fetch("/api/smart-playlists/delete", {
@@ -3393,6 +3658,12 @@
   // how many the cap left behind, and how many Roon refused. `pj` is
   // /api/play-multi's body, `asked` the albums we sent, `total` the size of the
   // whole playlist. Shared so Play now, Queue and Send to Roon cannot drift.
+  // How many albums the playlist's query MATCHED, as opposed to how many it
+  // delivers. Older responses carried only the delivered count; falling back to
+  // it makes the comparison a no-op rather than a wrong number.
+  function smartMatched(j) {
+    return Number.isFinite(j.matched) ? j.matched : j.total;
+  }
   function multiOutcome(verb, pj, asked, total) {
     const queued = Number.isFinite(pj.queued) ? pj.queued : asked;
     const failed = Number.isFinite(pj.failed) ? pj.failed : 0;

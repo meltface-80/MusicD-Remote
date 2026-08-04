@@ -2,6 +2,96 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.35] — 2026-08-04
+
+### Changed — the Library control row now matches Roon
+The row read as three heavy boxed pills — SORT | ↑ | FOCUS — where Roon's own phone header is
+`› Focus` on the left and the current sort on the right, as plain text over a hairline. That is
+what it is now.
+
+**The separate direction arrow is gone.** Roon has no such button: direction is a property of the
+sort and lives inside the sort menu, which has flipped it on a re-tap since v1.6.59. The row still
+*shows* the direction (and the ⟳ glyph for Random) as part of the sort's own label, so nothing is
+hidden — it just isn't its own control any more.
+
+### Added — Focus grew from three categories to ten
+Roon's Focus offers genre, format, sample rate, label and more. Ours offered Source, Decade and
+Listening. Now:
+
+| Category | Where it comes from |
+|---|---|
+| **Genre** | Roon's own genres hierarchy, walked once per library sync |
+| **Record label** | the label scan that already runs |
+| **Format / Sample rate / Bit depth / Channels** | your file tags — free, the scan already parsed them |
+| **Starts with** (A–Z) | the snapshot's sort titles |
+| **Added in the last** (7 days → a year) | the dates v1.7.31 taught it to work out |
+| Source, Decade, Listening | as before, with **Played** added beside Never played |
+
+**Genre is the significant one.** It used to live in the old "main filter", which navigated Roon
+into a genre's own list and therefore could not be combined with anything — that list has its own
+offset space, unrelated to the full-library offsets every other facet returns. Genres are now
+harvested into the snapshot the way release years were in v1.6.59, so Genre is an ordinary chip
+that combines with the rest. The join is Roon-to-Roon (both sides are Roon's own title strings),
+so unlike years it lands on essentially every album.
+
+### Added — tap a filter again to exclude it
+Roon's signature Focus interaction. First tap includes, second excludes (red, struck through),
+third clears. Encoded in the value itself, so saved playlists and shared links carry it unchanged.
+
+### Changed — Focus categories collapse
+Ten categories, some hundreds of labels long, do not fit on a phone. Each is now a header that
+opens, and a category holding an active filter opens by itself — a filter you cannot see is a
+filter you cannot clear. Each says how many albums it actually covers, because none of this comes
+from Roon and the chips will not add up to the library.
+
+### Added — a new Dynamic Playlist asks Albums or Tracks first
+Then it opens the Focus screen, whose options fuel the playlist. **Albums** queues whole records
+and its detail screen now shows a wall of albums — read straight from the snapshot, zero Roon
+calls, where listing tracks costs ~5 calls per album just to look. **Tracks** behaves as before.
+
+The filter is always album-level, and the sheet says so: Roon publishes no track list without
+opening each album, so a genuinely track-level *filter* would mean indexing every track in the
+library — ~10,000 Roon calls, redone on every change. That is the traffic the snapshot model
+exists to avoid.
+
+### Fixed — the source badge appeared on every single album
+v1.7.34 made the Local count right by elimination, and in doing so put a "Local albums" badge on
+all 2,234 tiles. A badge that is on everything is not a fact about an album. The count and the
+badge are now separate: Focus still says 2,234, and no tile carries a badge unless more than one
+source is actually in play.
+
+### Fixed — a capped playlist under-reported what it left out
+The "N of M albums" message compared the queued count against the number of albums the endpoint
+returned — which is always the same number, so the message was dead code. It now compares against
+how many the query *matched*, which is what the playlist was capped against.
+
+### Fixed — clearing the last filter in a category collapsed it
+The section's active count dropped to zero mid-repaint and it shut under your finger, taking its
+other chips with it.
+
+### Fixed — a filter the server didn't list could not be cleared
+Genre and Label are truncated to the commonest 40 values. A saved playlist naming one outside that
+list left an active filter with no chip — invisible, and clearable only by wiping every other
+filter with it.
+
+### Fixed — `sanitizeLibView` stored `null` as the text "null"
+A JSON round-trip of a sparse array produced a valid-looking filter value that matched nothing.
+
+### Changed — "Dynamic Playlists" is capitalised as a feature name
+
+### Not possible, and why
+Roon's Focus also offers star ratings, its own favourites, album types (Main/EP/Single) and the
+Inspector states. The extension browse API returns `title`, `subtitle`, `image_key`, `item_key`
+and `hint` per item — nothing else — and the request side has no sort, filter or focus parameter
+at all. The sort/filter feature request has been open on RoonLabs/node-roon-api since 2020. The
+Focus sheet says this rather than leaving the gap unexplained.
+
+### Tests
+26 static / 360 unit / 233 dom. New: `test/unit/facets.test.js` drives the shipping facet table so
+counting and filtering cannot disagree, and `test/dom/focus-sheet.test.js` proves an excluded chip
+reaches the server as an exclusion — the chip turning red proves only that the chip turned red.
+Every new assertion was mutation-checked.
+
 ## [1.7.34] — 2026-08-04
 
 ### Changed — the Source facet is now derived, not proved

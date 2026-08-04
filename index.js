@@ -1672,6 +1672,62 @@ const albumYearCache = new Map();  // album key → release year (4-digit string
 // album simply appearing in a rebuild is weaker but still true.
 const albumSeenCache = new Map();
 let stmtInsertSeen = null;
+
+// album key → [genre, ...] — powers the Genre focus facet.
+//
+// Roon's browse response carries no genre, so these are harvested by walking
+// the `genres` hierarchy once per library sync (see harvestAlbumGenres). That
+// walk is the one place in this file where a facet costs Roon calls, and it is
+// worth it because the join back is Roon-to-Roon: both sides are Roon's OWN
+// title/subtitle strings, so unlike years — which come from foreign sources and
+// are stuck at partial coverage — this lands on essentially every album.
+const albumGenreCache = new Map();
+let stmtInsertGenres = null;
+// Genre names contain commas ("Rap, Hip-Hop" is one Roon genre) and slashes
+// ("Pop/Rock"), but never a newline — so that is the one separator that can
+// round-trip the list without an escaping scheme.
+const GENRE_SEP = String.fromCharCode(10);
+function setAlbumGenres(key, genres) {
+  if (!key || !Array.isArray(genres) || !genres.length) return false;
+  const list = [...new Set(genres.filter(Boolean))].sort();
+  const prev = albumGenreCache.get(key);
+  if (prev && prev.length === list.length && prev.every((g, i) => g === list[i])) return false;
+  albumGenreCache.set(key, list);
+  if (stmtInsertGenres) {
+    try { stmtInsertGenres.run(key, list.join(GENRE_SEP)); }
+    catch (e) { if (DEBUG) console.error("[genres] write failed:", e.message); }
+  }
+  return true;
+}
+
+// album key → { container, bits, rate, chan, lossless } — powers the Format,
+// Sample rate, Bit depth and Channels focus facets, and comes free: the local
+// scan ALREADY calls music-metadata's parseFile for labels and years, and every
+// one of these fields is on the `format` block of the object it hands back.
+// Nothing extra is read from disk.
+//
+// Local files only, by definition — a streamed album has no file to inspect —
+// which is why the sheet prints the coverage rather than implying the whole
+// library was measured. It is also one SAMPLED track per directory, which is
+// safe for these four (albums are ripped uniformly) in a way it would not be
+// for anything per-track like rating or BPM.
+const albumFileCache = new Map();
+let stmtInsertFileFacts = null;
+function setAlbumFileFacts(key, f) {
+  if (!key || !f) return false;
+  // First writer wins, matching the label map: the walk recurses into disc
+  // subdirectories (MAX_DEPTH exists for exactly that), so a 2-disc album is
+  // parsed twice under one key and the second pass must not overwrite the first.
+  if (albumFileCache.has(key)) return false;
+  albumFileCache.set(key, f);
+  if (stmtInsertFileFacts) {
+    try {
+      stmtInsertFileFacts.run(key, f.container || null, f.bits || null,
+                              f.rate || null, f.chan || null, f.lossless ? 1 : 0);
+    } catch (e) { if (DEBUG) console.error("[format] write failed:", e.message); }
+  }
+  return true;
+}
 function seenSourceRank(src) {
   if (src === "file")       return 2;   // the file landed on disk on this date
   if (src === "first-seen") return 1;   // it appeared between two rebuilds
@@ -1779,6 +1835,24 @@ function openLabelsDb() {
         ts  INTEGER NOT NULL,
         src TEXT
       );
+      -- Genres per album, harvested from Roon's own genres hierarchy because
+      -- the browse response for an album carries none. Stored newline-joined:
+      -- genre names contain commas ("Rap, Hip-Hop") but never newlines.
+      CREATE TABLE IF NOT EXISTS album_genres (
+        key    TEXT PRIMARY KEY,
+        genres TEXT NOT NULL
+      );
+      -- What the local file for an album actually is. Read from tags the label
+      -- scan already parses, so it costs no extra disk work; absent for every
+      -- album that has no local file.
+      CREATE TABLE IF NOT EXISTS album_files (
+        key       TEXT PRIMARY KEY,
+        container TEXT,
+        bits      INTEGER,
+        rate      INTEGER,
+        chan      INTEGER,
+        lossless  INTEGER
+      );
     `);
     // `src` records WHERE a year came from, so a better source can correct a
     // worse one (see yearSourceRank). Added after the table shipped without
@@ -1795,6 +1869,9 @@ function openLabelsDb() {
     stmtCompletePlay = labelsDb.prepare("UPDATE plays SET completed=1 WHERE id=?");
     stmtInsertYear  = labelsDb.prepare("INSERT OR REPLACE INTO album_years (key, year, src) VALUES (?, ?, ?)");
     stmtInsertSeen  = labelsDb.prepare("INSERT OR REPLACE INTO album_seen (key, ts, src) VALUES (?, ?, ?)");
+    stmtInsertGenres = labelsDb.prepare("INSERT OR REPLACE INTO album_genres (key, genres) VALUES (?, ?)");
+    stmtInsertFileFacts = labelsDb.prepare(
+      "INSERT OR REPLACE INTO album_files (key, container, bits, rate, chan, lossless) VALUES (?,?,?,?,?,?)");
     const stmtDeleteName = labelsDb.prepare("DELETE FROM label_names WHERE key = ?");
     for (const r of labelsDb.prepare("SELECT key, label FROM label_names").all()) {
       if (!r.label) continue;
@@ -1822,6 +1899,17 @@ function openLabelsDb() {
     }
     for (const r of labelsDb.prepare("SELECT key, ts, src FROM album_seen").all()) {
       if (r.ts) albumSeenCache.set(r.key, { ts: r.ts, src: r.src || "" });
+    }
+    for (const r of labelsDb.prepare("SELECT key, genres FROM album_genres").all()) {
+      const list = String(r.genres || "").split(GENRE_SEP).filter(Boolean);
+      if (list.length) albumGenreCache.set(r.key, list);
+    }
+    for (const r of labelsDb.prepare(
+        "SELECT key, container, bits, rate, chan, lossless FROM album_files").all()) {
+      albumFileCache.set(r.key, {
+        container: r.container || null, bits: r.bits || null,
+        rate: r.rate || null, chan: r.chan || null, lossless: !!r.lossless
+      });
     }
     migrateOldJsonCaches();
     if (DEBUG) console.log(
@@ -2708,17 +2796,6 @@ function clearStreamAlbumKeys(which) {
   console.log("[stream] cleared " + which + " album keys (disconnected)");
 }
 
-// Attach the source flag to an album payload. One helper so every endpoint
-// that returns albums reports it identically.
-//
-// `rec` is the albumIndex record the payload came from, when there is one: it
-// already carries the normalized title/artist, so the hot list paths (walls,
-// Library paging, artist screens) do no string work at all here.
-//
-// Local wins over a streaming match — the files are what actually plays. But
-// an album favourited in BOTH services is genuinely ambiguous: Roon pulled it
-// from one of them and we can't tell which, so it gets no badge rather than a
-// coin-flip logo.
 // Which streaming services could be claiming albums in this library right now.
 // A service counts only when it is connected AND its favourites actually
 // loaded — a connected account whose fetch failed knows nothing, and treating
@@ -2751,22 +2828,49 @@ function unclaimedIsLocal() {
   return claimingServices().length === 0;
 }
 
-function withSource(a, rec) {
-  const keys = (rec && rec.srcKeys) ? rec.srcKeys : albumKeys(a.title, a.subtitle);
-  let source = null;
+// Where an album came from, as far as the evidence goes: "local" | "qobuz" |
+// "tidal" | null. This is the TRUTH function — Focus counting and Focus
+// filtering both call it, and they must agree exactly.
+//
+// `rec` is the albumIndex record the payload came from, when there is one: it
+// already carries the precomputed identity keys, so the hot list paths (walls,
+// Library paging, artist screens) do no string work at all here.
+//
+// Local wins over a streaming match — the files are what actually plays. But
+// an album favourited in BOTH services is genuinely ambiguous: Roon pulled it
+// from one of them and we can't tell which, so it gets nothing rather than a
+// coin-flip answer.
+function albumSource(title, subtitle, rec) {
+  const keys = (rec && rec.srcKeys) ? rec.srcKeys : albumKeys(title, subtitle);
   for (const key of keys) {
     // Two library albums share this identity — we can't tell which is which,
     // so neither gets a badge.
     if (ambiguousAlbumKeys.has(key)) continue;
-    if (localAlbumKeys.has(key)) { source = "local"; break; }
+    if (localAlbumKeys.has(key)) return "local";
     const inQobuz = qobuzAlbumKeys.has(key);
     const inTidal = tidalAlbumKeys.has(key);
     if (inQobuz && inTidal) break;              // favourited in both — unknowable
-    if (inQobuz) { source = "qobuz"; break; }
-    if (inTidal) { source = "tidal"; break; }
+    if (inQobuz) return "qobuz";
+    if (inTidal) return "tidal";
   }
-  if (source === null && unclaimedIsLocal()) source = "local";
-  a.source = source;
+  return unclaimedIsLocal() ? "local" : null;
+}
+
+// Does a source badge tell the user anything? Only when the library could hold
+// more than one source. With no streaming service connected, elimination makes
+// EVERY album local (see unclaimedIsLocal), so the badge stops being a fact
+// about an album and becomes decoration on every tile in the library — which is
+// exactly what shipping v1.7.34 did.
+//
+// The Focus sheet is unaffected on purpose: there the count is the whole point,
+// and "Local albums (2,234)" answers a question the user actually asked.
+function sourceBadgesDistinguish() { return !unclaimedIsLocal(); }
+
+// Attach the source flag to an album payload. One helper so every endpoint
+// that returns albums reports it identically — and so the badge is omitted in
+// one place rather than suppressed on each of the screens that draw one.
+function withSource(a, rec) {
+  a.source = sourceBadgesDistinguish() ? albumSource(a.title, a.subtitle, rec) : null;
   return a;
 }
 
@@ -2956,6 +3060,7 @@ async function buildFileLabelMap(onProgress) {
   // guard; this keeps the map itself from ever being observed half-built.)
   const fileYears = new Map();
   let yearsWritten = 0;
+  let formatWrites = 0;
   if (!musicDirMounted()) return { labelMap: map, bandcampMap, localKeys };
   let mm;
   try { mm = await import("music-metadata"); } catch (e) {
@@ -3060,6 +3165,26 @@ async function buildFileLabelMap(onProgress) {
               fileSeen.set(k, Math.min(fileSeen.get(k) || Infinity, fileMtime));
             }
           }
+          // What this album actually IS on disk. music-metadata has already
+          // parsed all of it as part of the read above, so these four facets
+          // cost nothing beyond the assignment — the `format` block was simply
+          // never looked at before.
+          const fmt = meta.format || {};
+          if (fmt.container || fmt.sampleRate) {
+            const facts = {
+              container: fmt.container ? String(fmt.container).toUpperCase() : null,
+              bits: Number.isFinite(fmt.bitsPerSample) ? fmt.bitsPerSample : null,
+              rate: Number.isFinite(fmt.sampleRate) ? fmt.sampleRate : null,
+              chan: Number.isFinite(fmt.numberOfChannels) ? fmt.numberOfChannels : null,
+              lossless: !!fmt.lossless
+            };
+            // Written under the same key space the badges match on, so the
+            // facet reaches the album through its srcKeys even when Roon's
+            // title and the file's tags disagree about the album's name.
+            for (const k of albumKeys(album, albumartist || "")) {
+              if (setAlbumFileFacts(k, facts)) formatWrites++;
+            }
+          }
         }
         if (label && !isLikelyNotALabel(label) && album) {
           const key = normalize(album) + "||" + normalize(albumartist || "");
@@ -3138,6 +3263,10 @@ async function buildFileLabelMap(onProgress) {
   if (seenWrites) {
     bumpLibraryMeta();   // the Recently added ordering just changed
     console.log("[seen] " + seenWrites + " albums dated from file timestamps");
+  }
+  if (formatWrites) {
+    bumpLibraryMeta();   // the Format/Sample rate/Bit depth facets just gained values
+    console.log("[format] " + albumFileCache.size + " album identities carry file format");
   }
   // The direct tag-key writes above all deferred their bump, and the only other
   // flush is harvestAlbumYears' `if (added)` — which counts ONLY the albums the
@@ -4737,9 +4866,109 @@ async function buildAlbumIndex() {
     refreshStreamAlbumKeys("library sync").catch(e => {
       if (DEBUG) console.error("[stream] refresh:", e.message);
     });
+    // Genres for the Focus sheet. Fire-and-forget on the SYNC, never on a user
+    // action: this is the one facet that costs Roon calls, and it belongs with
+    // the twelve-hourly work rather than in front of somebody opening a sheet.
+    harvestAlbumGenres("library sync").catch(e => {
+      if (DEBUG) console.error("[genres] harvest:", e.message);
+    });
     return idx;
   } finally {
     albumIndex.building = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Genre harvest.
+//
+// Roon's album browse response carries no genre, which is why Genre lived in
+// the old "main filter" — a mode that navigated Roon into a genre's own list
+// and therefore could not be combined with anything else, because that list has
+// its own offset space with no relation to the full-library offsets every other
+// facet returns.
+//
+// Decade had exactly this shape until its years entered the snapshot, at which
+// point it became an ordinary combinable chip. This does the same for genre:
+// walk the genres hierarchy ONCE per library sync and write album → genres into
+// a side table, after which the filter is a Set lookup on data already in
+// memory and composes with Source, Decade, Label and the rest.
+//
+// Cost: about six browse calls per top-level genre — resolve it by title (item
+// keys are session-scoped, so this cannot be cached), drill in, find its
+// "Albums" child, drill in again, then page the titles. For a typical 25-40
+// genre library that is a few hundred calls every twelve hours, against a sync
+// that already fetches one cover per album. It is deliberately NOT on any user
+// action.
+// ---------------------------------------------------------------------------
+let genreHarvestRunning = false;
+
+async function harvestAlbumGenres(reason) {
+  if (genreHarvestRunning) return;
+  if (!core || !isIndexBuilt()) return;
+  genreHarvestRunning = true;
+  const started = Date.now();
+  let genresSeen = 0, pairs = 0, written = 0, unmatched = 0;
+  try {
+    await withBrowseSession(async (sessionKey) => {
+      await browse({ hierarchy: "genres", pop_all: true, multi_session_key: sessionKey });
+      const root = await loadLevel(sessionKey, "genres", 1000);
+      const names = root.items
+        .filter(i => i.hint !== "header" && i.title)
+        .map(i => String(i.title).trim())
+        .filter(Boolean);
+
+      for (const name of names) {
+        // Re-resolve from the top every time. item_key values are scoped to the
+        // session AND to the level the session is currently on, so the keys
+        // captured in the loadLevel above are stale the moment we drill into
+        // the first genre.
+        await browse({ hierarchy: "genres", pop_all: true, multi_session_key: sessionKey });
+        const g = await findItemByTitle(sessionKey, "genres", name, 3000, "genres:root");
+        if (!g) continue;
+        await browse({ hierarchy: "genres", item_key: g.item_key, multi_session_key: sessionKey });
+        const lvl = await loadLevel(sessionKey, "genres", 300);
+        const albumsChild = lvl.items.find(i => /^albums$/i.test((i.title || "").trim()));
+        if (!albumsChild) continue;   // a genre with no album list — nothing to harvest
+        await browse({ hierarchy: "genres", item_key: albumsChild.item_key, multi_session_key: sessionKey });
+        genresSeen++;
+
+        for (let off = 0; ; off += SEARCH_PAGE) {
+          const page = await load({
+            hierarchy: "genres", offset: off, count: SEARCH_PAGE, multi_session_key: sessionKey
+          });
+          const items = page.items || [];
+          if (!items.length) break;
+          for (const it of items) {
+            if (!it.title) continue;
+            // Roon-to-Roon join: both sides are Roon's own strings, so this is
+            // exact rather than the lossy cross-source matching the year and
+            // local-file joins have to do.
+            const key = normalize(it.title) + "||" + normalize(it.subtitle || "");
+            pairs++;
+            const prev = albumGenreCache.get(key);
+            if (setAlbumGenres(key, (prev || []).concat(name))) written++;
+          }
+          const total = page.list && page.list.count ? page.list.count : 0;
+          if (off + SEARCH_PAGE >= total) break;
+        }
+      }
+    });
+
+    // How many albums the harvest actually reached. Reported rather than
+    // assumed: a genre list Roon declines to expand is invisible otherwise.
+    for (const al of albumIndex.albums) if (!albumGenresOf(al).length) unmatched++;
+    if (written) bumpLibraryMeta();
+    console.log("[genres] " + reason + ": " + genresSeen + " genres, " + pairs +
+                " album-genre pairs, " + albumGenreCache.size + " albums genred" +
+                (unmatched ? ", " + unmatched + " with no genre" : "") +
+                " in " + Math.round((Date.now() - started) / 1000) + "s");
+  } catch (e) {
+    // Non-fatal by design: the Genre facet simply offers nothing this cycle.
+    // Everything else in the Focus sheet is unaffected, so failing loudly here
+    // would take down a working screen over an optional column.
+    console.error("[genres] harvest failed:", e.message);
+  } finally {
+    genreHarvestRunning = false;
   }
 }
 
@@ -5557,9 +5786,144 @@ app.get("/api/random-albums", async (req, res) => {
 // duplicated vocabulary is how a mutation adding a bogus sort would slip past
 // the suite (the v1.6.59 year-source-ranking hole, in a new place).
 function libSortIds()   { return ["album", "artist", "year", "added", "plays", "lastplayed", "random"]; }
-function libPlayedIds() { return ["any", "never", "6", "12"]; }
+function libPlayedIds() { return ["any", "never", "played", "6", "12"]; }
 function smartNameMax() { return 60; }
 const LIB_SORTS = new Set(libSortIds());
+
+// ---------------------------------------------------------------------------
+// Focus facets.
+//
+// ONE table, read by both the filter (libraryView) and the counter
+// (/api/library/facets). They used to be two hand-written loops that happened
+// to agree; a facet that counts one way and selects another is worse than
+// either being wrong on its own, because the number promises something the
+// list then fails to deliver.
+//
+// Each entry answers one question — "which values does this album have?" —
+// returning an array. An empty array means the album has no value for this
+// facet, and such an album matches only when the facet is unselected.
+//
+// What is NOT here, because Roon's extension API does not publish it (browse
+// returns title, subtitle, image_key, item_key, hint and nothing else): star
+// ratings, Roon favourites, Roon's own play counts, Roon's date-added, album
+// type (Main/EP/Single), and the Inspector states. Those need private API
+// access Roon has never shipped. Everything below is either navigated out of
+// the browse tree or worked out by this extension from its own evidence.
+// ---------------------------------------------------------------------------
+
+// Album → its genre names, from the harvested side table.
+function albumGenresOf(al) {
+  return albumGenreCache.get(al.nTitle + "||" + al.nArtist) || [];
+}
+// Album → what its local file is, or null when there is no local file.
+function albumFileFactsOf(al) {
+  for (const key of (al.srcKeys || [])) {
+    const f = albumFileCache.get(key);
+    if (f) return f;
+  }
+  return null;
+}
+// Sample rates land on the tidy audio values; anything else is reported as it
+// is rather than forced into a bucket that would misdescribe it.
+function rateLabel(hz) {
+  if (!hz) return null;
+  const k = hz / 1000;
+  return (Number.isInteger(k) ? k : k.toFixed(1)) + " kHz";
+}
+function channelLabel(n) {
+  if (!n) return null;
+  if (n === 1) return "Mono";
+  if (n === 2) return "Stereo";
+  return n + " channels";
+}
+// "Added in the last" windows, in days. Roon has this bucket too; its values
+// come from Roon's own import date, and ours from the dates this extension
+// could work out, so the numbers will not agree — which is why the sheet says
+// where they came from.
+function libAddedWindows() {
+  return [
+    { value: "7",   label: "7 days",   days: 7 },
+    { value: "30",  label: "30 days",  days: 30 },
+    { value: "90",  label: "3 months", days: 90 },
+    { value: "365", label: "A year",   days: 365 }
+  ];
+}
+
+function libFacetDefs() {
+  return [
+    { id: "genre",  label: "Genre",
+      values: (al) => albumGenresOf(al) },
+    { id: "source", label: "Source",
+      // Fixed order and friendly names; the chip list is built from whichever
+      // of these actually occur.
+      order: ["local", "qobuz", "tidal"],
+      labels: { local: "Local albums", qobuz: "Qobuz", tidal: "TIDAL" },
+      values: (al) => { const s = albumSource(al.title, al.subtitle, al); return s ? [s] : []; } },
+    { id: "decade", label: "Decade",
+      sort: "numeric-desc",
+      labels: (v) => v + "s",
+      values: (al) => { const y = albumYearOf(al); return y === null ? [] : [String(Math.floor(y / 10) * 10)]; } },
+    { id: "label",  label: "Record label",
+      values: (al) => { const n = resolveAlbumLabelName(al); return n ? [n] : []; } },
+    { id: "format", label: "Format",
+      values: (al) => { const f = albumFileFactsOf(al); return f && f.container ? [f.container] : []; } },
+    { id: "rate",   label: "Sample rate",
+      sort: "numeric-asc",
+      labels: (v) => rateLabel(parseInt(v, 10)) || v,
+      values: (al) => { const f = albumFileFactsOf(al); return f && f.rate ? [String(f.rate)] : []; } },
+    { id: "bits",   label: "Bit depth",
+      sort: "numeric-asc",
+      labels: (v) => v + "-bit",
+      values: (al) => { const f = albumFileFactsOf(al); return f && f.bits ? [String(f.bits)] : []; } },
+    { id: "chan",   label: "Channels",
+      sort: "numeric-asc",
+      labels: (v) => channelLabel(parseInt(v, 10)) || v,
+      values: (al) => { const f = albumFileFactsOf(al); return f && f.chan ? [String(f.chan)] : []; } },
+    { id: "letter", label: "Starts with",
+      // Sorted-title first character, so "The Wall" files under W exactly as it
+      // does in the A-Z wall. Everything non-alphabetic shares one bucket.
+      values: (al) => {
+        const c = (al.sortTitle || "").charAt(0).toUpperCase();
+        return c ? [/[A-Z]/.test(c) ? c : "#"] : [];
+      } },
+    { id: "added",  label: "Added in the last",
+      // Windows nest, so an album added yesterday appears under every window
+      // that contains it — picking "3 months" must not exclude this week's.
+      sort: "none",
+      labels: (v) => (libAddedWindows().find(w => w.value === v) || { label: v }).label,
+      values: (al) => {
+        const ts = albumAddedOf(al);
+        if (ts === null) return [];
+        const age = Date.now() - ts;
+        return libAddedWindows().filter(w => age <= w.days * 86400000).map(w => w.value);
+      } }
+  ];
+}
+
+// Does an album pass one facet's selection?
+//
+// A value prefixed with "!" is EXCLUDED rather than included — Roon's
+// tap-again-to-invert, which is the signature Focus interaction. Encoding it in
+// the value keeps every selection a plain string array, so saved dynamic
+// playlists, the URL query and the share format all round-trip it with no
+// schema change.
+//
+// Excludes always win: asking for FLAC but not 24-bit means both must hold.
+function facetMatch(selected, values) {
+  if (!selected || !selected.length) return true;
+  const has = (v) => values.includes(v);
+  let wanted = false, sawInclude = false;
+  for (const sel of selected) {
+    if (sel.charAt(0) === "!") {
+      if (has(sel.slice(1))) return false;
+    } else {
+      sawInclude = true;
+      if (has(sel)) wanted = true;
+    }
+  }
+  // Excludes alone ("everything except Pop") must not require an include too.
+  return sawInclude ? wanted : true;
+}
 
 // ---------------------------------------------------------------------------
 // Smart playlists — named, saved library views.
@@ -5578,19 +5942,30 @@ const LIB_SORTS = new Set(libSortIds());
 function sanitizeLibView(v) {
   v = (v && typeof v === "object") ? v : {};
   const asList = (x) => (x === undefined || x === null ? [] : (Array.isArray(x) ? x : [x]));
-  const decade = asList(v.decade)
-    .map(d => parseInt(d, 10))
-    .filter(d => Number.isFinite(d) && d >= 1000 && d <= 3000 && d % 10 === 0);
-  const source = asList(v.source).map(String).filter(Boolean).slice(0, 12);
   const seed = parseInt(v.seed, 10);
-  return {
+  const out = {
     sort:   libSortIds().includes(String(v.sort)) ? String(v.sort) : "album",
     dir:    String(v.dir) === "desc" ? "desc" : "asc",
     seed:   Number.isFinite(seed) && seed > 0 ? seed : 1,
-    decade: [...new Set(decade)],
-    source: [...new Set(source)],
     played: libPlayedIds().includes(String(v.played)) ? String(v.played) : "any",
   };
+  // Facet selections are free text — they are genre and label NAMES, which no
+  // fixed vocabulary can enumerate — so they are bounded and de-duplicated
+  // rather than checked against a list. A value that matches nothing yields an
+  // empty view, which is honest; the danger being guarded against is an
+  // unbounded array from a hand-edited settings.json, not a wrong name.
+  for (const def of libFacetDefs()) {
+    out[def.id] = [...new Set(
+      asList(v[def.id])
+        // null and undefined are dropped BEFORE stringifying. String(null) is
+        // "null" — a perfectly valid-looking genre name that matches nothing,
+        // and a JSON round-trip of a sparse array produces them for free.
+        .filter(x => x !== null && x !== undefined && typeof x !== "object")
+        .map(String).map(s => s.trim()).filter(Boolean)
+        .map(s => s.slice(0, 120))
+    )].slice(0, libFacetChipMax());
+  }
+  return out;
 }
 
 const SMART_NAME_MAX = smartNameMax();
@@ -5610,6 +5985,24 @@ function smartLimitDefault() { return 100; }
 function smartLimitMax()     { return 400; }   // the play-time ceiling; see /api/play-multi
 function smartLimitOptions() { return [25, 50, 100, 200, 400]; }
 
+// What a dynamic playlist is made OF.
+//
+// This is a presentation mode, not a second kind of query, and the distinction
+// is worth being precise about because it is the honest limit of what an
+// extension can do. The snapshot indexes ALBUMS — Roon's browse API publishes
+// no track list without opening each album, at roughly five calls a time — so a
+// playlist whose FILTER ran on track attributes would mean indexing every track
+// in the library: ~10,000 Roon calls for a 2,000-album library, rebuilt on every
+// change. That is exactly the traffic the snapshot model exists to avoid.
+//
+// So the query always selects albums, and the mode decides what comes out:
+//   "albums" — queue whole albums, in order, the way the record was made.
+//   "tracks" — expand those albums and present their tracks individually.
+// Both already existed as separate endpoints; naming the choice is what lets a
+// playlist remember which one it is.
+function smartModes()       { return ["albums", "tracks"]; }
+function smartModeDefault() { return "albums"; }
+
 function smartPlaylistRecord(p) {
   if (!p || typeof p !== "object") return null;
   const name = String(p.name || "").trim().slice(0, smartNameMax());
@@ -5621,7 +6014,8 @@ function smartPlaylistRecord(p) {
   const limit = Number.isFinite(lim) && lim > 0
     ? Math.min(lim, smartLimitMax())
     : smartLimitDefault();
-  return { id, name, view: sanitizeLibView(p.view), limit };
+  const mode = smartModes().includes(String(p.mode)) ? String(p.mode) : smartModeDefault();
+  return { id, name, view: sanitizeLibView(p.view), limit, mode };
 }
 
 function loadSmartPlaylists() {
@@ -5686,35 +6080,31 @@ function libraryView(q) {
   const desc   = String(q.dir || "asc") === "desc";
   const seed   = parseInt(q.seed, 10) || 1;
   const asList = (v) => (v === undefined ? [] : (Array.isArray(v) ? v : [v])).map(String).filter(Boolean);
-  const decades = asList(q.decade).map(d => parseInt(d, 10)).filter(Number.isFinite);
-  const sources = asList(q.source);
   const played  = String(q.played || "any");
-  const sig = [albumIndex.builtAt, libraryMetaVersion, sort, desc, seed,
-               decades.join(","), sources.join(","), played].join("|");
+  // Every facet in the one table, so adding a facet to libFacetDefs() makes it
+  // filterable AND countable without touching this function again.
+  const defs = libFacetDefs();
+  const picked = defs.map(d => ({ def: d, sel: asList(q[d.id]) }))
+                     .filter(x => x.sel.length);
+  const sig = [albumIndex.builtAt, libraryMetaVersion, sort, desc, seed, played]
+    .concat(picked.map(x => x.def.id + "=" + x.sel.slice().sort().join(","))).join("|");
   const hit = libraryViewCache.get(sig);
   if (hit) return hit;
 
   let list = albumIndex.albums;
 
-  if (decades.length) {
-    list = list.filter(al => {
-      const y = albumYearOf(al);
-      return y !== null && decades.some(d => y >= d && y < d + 10);
-    });
-  }
-  if (sources.length) {
-    list = list.filter(al => {
-      const s = withSource({ title: al.title, subtitle: al.subtitle }, al).source;
-      return sources.includes(s || "none");
-    });
+  for (const { def, sel } of picked) {
+    list = list.filter(al => facetMatch(sel, def.values(al)));
   }
   if (played !== "any") {
-    const months = played === "never" ? 0 : parseInt(played, 10);
-    // "never" uses the whole history; "6"/"12" mean "not in the last N months".
-    const seen = played === "never"
+    // "never" uses the whole history; "played" is its complement; "6"/"12"
+    // mean "not in the last N months".
+    const months = parseInt(played, 10);
+    const seen = (played === "never" || played === "played")
       ? getPlayedTitlesSince(0)
       : playedTitleSet(Number.isFinite(months) && months > 0 ? months : 6);
-    list = list.filter(al => !seen.has(String(al.title || "").toLowerCase().trim()));
+    const want = played === "played";
+    list = list.filter(al => seen.has(String(al.title || "").toLowerCase().trim()) === want);
   }
 
   const stats = (sort === "plays" || sort === "lastplayed") ? playStats() : null;
@@ -5773,52 +6163,110 @@ function libraryView(q) {
   return out;
 }
 
+// How many chips one facet may offer. Genre and Label are open-ended — a big
+// library has hundreds of labels — and a sheet that lists all of them is a
+// scroll with no end. The commonest are the useful ones, and the count beside
+// each says what is being left out.
+function libFacetChipMax() { return 40; }
+
 // Which focus values actually exist, with counts — so the sheet never offers a
 // facet that would return nothing.
+//
+// Counted through libFacetDefs(), the SAME table the filter selects through. A
+// facet that counts one way and selects another is worse than either being
+// wrong on its own: the number promises something the list then fails to
+// deliver, and the user has no way to tell which half lied.
 app.get("/api/library/facets", async (req, res) => {
   if (!core && !isIndexBuilt()) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   try {
     await ensureAlbumIndex();
-    const decades = new Map(), sources = new Map();
-    let dated = 0;
+    const defs = libFacetDefs();
+    const counts = defs.map(() => new Map());
     for (const al of albumIndex.albums) {
-      const y = albumYearOf(al);
-      if (y !== null) { dated++; const d = Math.floor(y / 10) * 10; decades.set(d, (decades.get(d) || 0) + 1); }
-      // Deliberately the SAME function the filter uses. A facet that counts one
-      // way and a filter that selects another is worse than either being wrong:
-      // the number promises something the list then fails to deliver.
-      //
-      // The ambiguity suppression inside withSource stays. It exists because a
-      // badge on an identity two albums share would be a coin flip — but when
-      // nothing else can claim them, elimination now catches those anyway.
-      const s = withSource({ title: al.title, subtitle: al.subtitle }, al).source || "none";
-      sources.set(s, (sources.get(s) || 0) + 1);
+      for (let i = 0; i < defs.length; i++) {
+        for (const v of defs[i].values(al)) counts[i].set(v, (counts[i].get(v) || 0) + 1);
+      }
     }
+
+    const facets = defs.map((def, i) => {
+      const m = counts[i];
+      let values = [...m.keys()];
+      if (def.order) {
+        values = def.order.filter(v => m.has(v));
+      } else if (def.sort === "numeric-desc") {
+        values.sort((a, b) => parseFloat(b) - parseFloat(a));
+      } else if (def.sort === "numeric-asc") {
+        values.sort((a, b) => parseFloat(a) - parseFloat(b));
+      } else if (def.sort === "none") {
+        // Author-defined order — the "Added in the last" windows must read
+        // shortest-first, which neither alphabetical nor by-count gives.
+        values = (def.id === "added" ? libAddedWindows().map(w => w.value) : values)
+                   .filter(v => m.has(v));
+      } else {
+        // Commonest first, then alphabetically — a 300-label list is only
+        // usable if the labels you actually own are at the top.
+        values.sort((a, b) => (m.get(b) - m.get(a)) || a.localeCompare(b));
+      }
+      const shown = values.slice(0, libFacetChipMax());
+      const labelOf = (v) => {
+        if (typeof def.labels === "function") return def.labels(v);
+        if (def.labels && def.labels[v]) return def.labels[v];
+        return v;
+      };
+      return {
+        id: def.id,
+        label: def.label,
+        // How many values exist versus how many are offered, so a truncated
+        // list says it is truncated instead of looking complete.
+        total_values: values.length,
+        values: shown.map(v => ({ value: v, label: labelOf(v), count: m.get(v) }))
+      };
+    }).filter(f => f.values.length);
+
     res.json({
       total: albumIndex.albums.length,
-      // Roon publishes no release year, so every one of these had to be found
-      // elsewhere and coverage is never guaranteed to be complete. The sheet
-      // says so rather than quietly showing a decade list that doesn't add up
-      // to the library.
-      dated,
-      // Same honesty for "Recently added": Roon publishes no import date, so
-      // this is what the extension could work out for itself and the number is
-      // shown rather than left to be guessed from a half-sorted list.
-      dated_added: albumsWithAddedDate(),
+      facets,
+      // Per-facet coverage. Every one of these comes from somewhere other than
+      // Roon — the browse API publishes none of it — so the sheet prints the
+      // ratio rather than showing chips that quietly don't add up to the
+      // library and leaving the user to work out why.
+      coverage: {
+        // Release years: file tags and Qobuz/TIDAL, never Roon.
+        decade: countWithAny(defs, "decade"),
+        // Genres: harvested from Roon's own genres hierarchy, so this one
+        // SHOULD approach the whole library; a low number means the harvest
+        // hasn't run yet or a genre list wouldn't expand.
+        genre:  countWithAny(defs, "genre"),
+        label:  countWithAny(defs, "label"),
+        // Format and friends exist only for albums with a local file.
+        format: countWithAny(defs, "format"),
+        // Roon publishes no import date at all, so this is what the extension
+        // could work out for itself.
+        added:  albumsWithAddedDate()
+      },
       // Whether the Local count was PROVED album-by-album from file tags, or
       // DERIVED from "no streaming service is connected, so there is nothing
       // else it could be". The sheet says which, because they mean different
       // things and one of them is exact.
       sources_derived: unclaimedIsLocal(),
-      decades: [...decades.entries()].sort((a, b) => b[0] - a[0]).map(([d, n]) => ({ value: d, label: d + "s", count: n })),
-      sources: ["local", "qobuz", "tidal"].filter(s => sources.get(s))
-                 .map(s => ({ value: s, label: { local: "Local albums", qobuz: "Qobuz", tidal: "TIDAL" }[s], count: sources.get(s) })),
+      played: libPlayedIds(),
       hasPlays: !!(labelsDb && getPlayedTitlesSince(0).size)
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
+
+// How many albums have at least one value for a facet. Recomputed from the
+// per-value counts would be wrong — an album with two genres is counted twice
+// there — so this re-walks the index for the facets whose coverage is quoted.
+function countWithAny(defs, id) {
+  const def = defs.find(d => d.id === id);
+  if (!def) return 0;
+  let n = 0;
+  for (const al of albumIndex.albums) if (def.values(al).length) n++;
+  return n;
+}
 
 app.get("/api/library/albums", async (req, res) => {
   if (!core && !isIndexBuilt()) return res.status(503).json({ error: "Not paired with Roon Core yet" });
@@ -6174,6 +6622,13 @@ app.post("/api/library/rescan", async (req, res) => {
     // than the snapshot check and must not hold the response.
     runLabelsIndexScan(true).catch(e => {
       if (DEBUG) console.error("[labels] rescan from library rescan:", e.message);
+    });
+    // …and the genres, for the same reason. checkAndMaybeRebuild below only
+    // harvests when the snapshot actually CHANGED, so on an unchanged library
+    // this button would otherwise be the one thing a user presses when the
+    // Genre facet looks empty and the one thing that couldn't fill it.
+    harvestAlbumGenres("manual rescan").catch(e => {
+      if (DEBUG) console.error("[genres] rescan:", e.message);
     });
     const r = await checkAndMaybeRebuild("manual", true);
     res.json(r);
@@ -7552,7 +8007,7 @@ app.post("/api/smart-playlists", (req, res) => {
   // how the two drift.
   const record = smartPlaylistRecord({
     id: id || ("sp_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)),
-    name, view: body.view, limit: body.limit,
+    name, view: body.view, limit: body.limit, mode: body.mode,
   });
   if (!record) return res.status(400).json({ error: "name required" });
 

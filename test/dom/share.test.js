@@ -31,7 +31,11 @@ const ZONE = {
 
 const SAVED = {
   id: "sp1", name: "Nineties, unheard", album_total: 3, art_keys: ["k1"],
-  view: { sort: "year", dir: "desc", seed: 1, decade: [1990], source: [], played: "12" },
+  // Sharing expands albums into tracks either way, but this file drives the
+  // TRACKS detail screen, so it asks for one explicitly rather than relying on
+  // a default that changed in v1.7.35.
+  mode: "tracks",
+  view: { sort: "year", dir: "desc", seed: 1, decade: ["1990"], source: [], played: "12" },
 };
 
 // Two album pages, so Share has to keep going after the first.

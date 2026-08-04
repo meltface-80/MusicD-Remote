@@ -28,7 +28,8 @@ function fixture() {
   const ambiguousAlbumKeys = new Set();
   const F = loadIndexFunctions(
     ["normalize", "canonText", "canonArtist", "albumKey", "albumKeys", "albumTitleVariants",
-     "addFavouriteKeys", "withSource", "claimingServices", "unclaimedIsLocal"],
+     "addFavouriteKeys", "withSource", "albumSource", "sourceBadgesDistinguish",
+     "claimingServices", "unclaimedIsLocal"],
     { localAlbumKeys, qobuzAlbumKeys, tidalAlbumKeys, ambiguousAlbumKeys,
       // A CONNECTED Qobuz with at least one favourite. Every assertion in this
       // file is about identifying a source from POSITIVE evidence, and since

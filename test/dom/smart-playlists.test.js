@@ -33,8 +33,16 @@ const ZONE = {
 
 const SAVED = {
   id: "sp1", name: "Nineties, unheard", album_total: 3, art_keys: ["k1", "k2", "k3", "k4"],
-  view: { sort: "year", dir: "desc", seed: 1, decade: [1990], source: [], played: "12" },
+  // v1.7.35 made the mode explicit. This fixture is the TRACKS screen — the one
+  // this file was written for — so it says so rather than relying on a default
+  // that has since changed to "albums".
+  mode: "tracks",
+  view: { sort: "year", dir: "desc", seed: 1, decade: ["1990"], source: [], played: "12" },
 };
+// The same playlist as an ALBUMS playlist. Its detail screen shows albums and
+// makes NO Roon calls at all — where the tracks screen opens every album on the
+// Core just to list what is in it.
+const SAVED_ALBUMS = Object.assign({}, SAVED, { id: "sp1", mode: "albums" });
 // The user's real case: a whole-library smart playlist, far past what one
 // Send to Roon can queue.
 const BIG = Object.assign({}, SAVED, { album_total: 1179 });
@@ -69,8 +77,10 @@ try { localStorage.setItem("rra-zone", "z1"); } catch (e) {}
 window.__installFetch(function (url, opts) {
   if (url.indexOf("/api/smart-playlist/albums") > -1) {
     window.__albumCalls.push(url.replace(/^.*\\/api\\//, "/api/"));
-    // Two albums returned out of a stated total of 3 — the truncated case.
-    return window.__json({ id: "sp1", name: "Nineties, unheard", total: 3, albums: [
+    // Two albums delivered out of 3 that matched — the truncated case. Both
+    // numbers are what the real endpoint sends; the delivered count alone would
+    // let the screen claim a complete playlist while showing a capped one.
+    return window.__json({ id: "sp1", name: "Nineties, unheard", total: 2, matched: 3, albums: [
       { offset: 10, title: "Perfect From Now On", subtitle: "Built to Spill", image_key: "art10" },
       { offset: 20, title: "Goo", subtitle: "Sonic Youth", image_key: null }
     ] });
@@ -224,6 +234,32 @@ const DRIVER_BIG = OPEN_WALL + `
   T("posts_after_decline", window.__posts.slice());
 `;
 
+// v1.7.35: an ALBUMS playlist shows albums, and does it without opening a
+// single album on the Core. The tracks screen costs ~5 Roon calls per album
+// just to LIST what is in the playlist, which is a lot to spend on looking.
+const DRIVER_ALBUMS_MODE = OPEN_WALL + `
+  document.querySelector("#album-grid .album:not(#new-smart-tile)").click();
+  await window.__sleep(800);
+  T("album_tiles", document.querySelectorAll(".playlist-albums .album").length);
+  // The tiles must be LAID OUT, not stacked in document flow: a wrong grid
+  // class renders two full-width rows that still count as two tiles. Two tiles
+  // side by side is the shape of a working wall.
+  (function () {
+    var t = document.querySelectorAll(".playlist-albums .album");
+    if (t.length < 2) { T("tiles_side_by_side", null); return; }
+    var a = t[0].getBoundingClientRect(), b = t[1].getBoundingClientRect();
+    T("tiles_side_by_side", Math.abs(a.top - b.top) < 4 && b.left > a.left);
+    T("tile_width_fraction", Math.round((a.width / window.innerWidth) * 100));
+  })();
+  T("track_rows", document.querySelectorAll(".playlist-tracks .track-row").length);
+  T("track_list_absent", !document.querySelector(".playlist-tracks"));
+  T("status", (document.querySelector(".playlist-empty") || {}).textContent || "");
+  T("more_btn_absent", !document.querySelector(".playlist-more"));
+  // The point: no per-album expansion happened at all.
+  T("page_calls", window.__pageCalls.slice());
+  T("album_calls", window.__albumCalls.slice());
+`;
+
 // Creating must offer exactly what editing offers — including the size
 // control, which is the only place it can be set.
 const DRIVER_NEW = OPEN_WALL + `
@@ -232,12 +268,30 @@ const DRIVER_NEW = OPEN_WALL + `
   T("new_tile_first", document.querySelector("#album-grid .album") === tile);
   T("new_tile_label", tile ? (tile.querySelector(".album-title") || {}).textContent : "");
   tile.click();
-  await window.__sleep(600);
+  await window.__sleep(400);
+  // v1.7.35: creating asks what the playlist is made OF before anything else.
+  var modeSheet = document.querySelector(".lib-sheet-backdrop");
+  T("mode_sheet_open", !!modeSheet);
+  T("mode_sheet_title", (modeSheet.querySelector(".lib-sheet-head h3") || {}).textContent);
+  T("mode_options", Array.prototype.map.call(
+      modeSheet.querySelectorAll(".lib-sort-row .lib-sort-label"),
+      function (e) { return e.textContent; }));
+  Array.prototype.filter.call(modeSheet.querySelectorAll(".lib-sort-row"),
+    function (r) { return r.dataset.mode === "tracks"; })[0].click();
+  await window.__sleep(700);
   var sheet = document.querySelector(".lib-sheet-backdrop");
   T("sheet_open", !!sheet);
+  T("sheet_title", (sheet.querySelector(".lib-sheet-head h3") || {}).textContent);
   T("sections", Array.prototype.map.call(
       sheet.querySelectorAll(".lib-sheet-section-label"),
       function (e) { return e.textContent; }));
+  // Playlist size is collapsed by default like every other category — open it
+  // before looking for its chips.
+  Array.prototype.filter.call(sheet.querySelectorAll(".lib-sheet-section-head"),
+    function (h) { return /Playlist size/i.test(h.textContent); })
+    .forEach(function (h) { if (h.getAttribute("aria-expanded") === "false") h.click(); });
+  await window.__sleep(150);
+  sheet = document.querySelector(".lib-sheet-backdrop");
   // Choose a size other than the default, so the save has to carry it.
   var sizeChips = Array.prototype.filter.call(sheet.querySelectorAll(".lib-chip"),
     function (c) { return c.textContent === "25"; });
@@ -291,9 +345,7 @@ const DRIVER_ABANDON = OPEN_WALL + `
   await window.__sleep(500);
   document.getElementById("home-library-title").click();
   await window.__sleep(700);
-  var focusBtn = Array.prototype.filter.call(
-    document.querySelectorAll(".library-controls .lib-pill"),
-    function (b) { return /Focus/.test(b.textContent); })[0];
+  var focusBtn = document.querySelector(".library-controls .lib-ctl-focus");
   T("focus_btn_found", !!focusBtn);
   focusBtn.click();
   await window.__sleep(600);
@@ -326,15 +378,15 @@ test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concur
   });
   harness.assertNoPageError(assert, big);
 
-  await t.test("they are called Dynamic playlists on screen (v1.7.24)", () => {
+  await t.test("they are called Dynamic Playlists on screen (v1.7.24)", () => {
     // The internal name stays `smart` — the persisted settings key, the routes
     // and every identifier — so this is the only place the rename is visible,
     // and the only place it can silently drift back.
-    assert.equal(r.menu_entry_label, "Dynamic playlists");
-    assert.match(String(r.wall_heading), /Dynamic playlists/);
+    assert.equal(r.menu_entry_label, "Dynamic Playlists");
+    assert.match(String(r.wall_heading), /Dynamic Playlists/);
     assert.doesNotMatch(String(r.menu_entry_label), /smart/i);
     assert.doesNotMatch(String(r.detail_back_label), /smart/i);
-    assert.match(String(r.detail_back_label), /Dynamic playlists/);
+    assert.match(String(r.detail_back_label), /Dynamic Playlists/);
   });
 
   await t.test("the side menu shows a wall of tiles, not a sheet", () => {
@@ -467,7 +519,7 @@ test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concur
     assert.equal(nw.new_tile_exists, true,
       "an empty wall with no way to create one is a dead end");
     assert.equal(nw.new_tile_first, true, "New leads the wall");
-    assert.equal(nw.new_tile_label, "New dynamic playlist");
+    assert.equal(nw.new_tile_label, "New Dynamic Playlist");
     assert.equal(nw.sheet_open, true);
     // The size control is the point of "the same menu options": it exists ONLY
     // in this sheet, so a create flow without it can never set a size.
@@ -484,6 +536,51 @@ test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concur
     // No id is what makes the server create rather than overwrite. An id here
     // would silently replace whichever playlist it belonged to.
     assert.ok(!post.id, "a create must not carry an id");
+  });
+
+  await t.test("creating asks albums-or-tracks first, then opens the focus screen", () => {
+    // The user's ask: "when tapping new dynamic playlist it should ask for
+    // tracks or albums. Once a selection is made it opens the focus screen and
+    // its options fuel the dynamic playlists."
+    assert.equal(nw.mode_sheet_open, true);
+    assert.equal(nw.mode_sheet_title, "New Dynamic Playlist");
+    assert.deepEqual(nw.mode_options, ["Albums", "Tracks"]);
+    // …and only THEN the focus screen.
+    assert.equal(nw.sheet_title, "Focus");
+  });
+
+  await t.test("the chosen mode travels with the saved playlist", () => {
+    const post = nw.posts[nw.posts.length - 1];
+    assert.equal(post.mode, "tracks",
+      "the mode picked before the focus screen must reach the save — without " +
+      "it every playlist comes back as the default and the question was for " +
+      "nothing");
+  });
+
+  const am = harness.renderPage({
+    stub: stubFor([SAVED_ALBUMS]), driver: DRIVER_ALBUMS_MODE,
+    name: "smart-albums-mode", windowSize: "390x844",
+  });
+  harness.assertNoPageError(assert, am);
+
+  await t.test("an albums playlist shows albums, and costs no Roon calls to open", () => {
+    assert.equal(am.album_tiles, 2, "the detail screen should be a wall of albums");
+    assert.equal(am.tiles_side_by_side, true,
+      "the tiles stacked instead of gridding — the wall is using a class that " +
+      "carries no column layout");
+    assert.ok(am.tile_width_fraction < 60,
+      `each tile took ${am.tile_width_fraction}% of the width — that is one ` +
+      "album per row, not a wall");
+    assert.equal(am.track_list_absent, true,
+      "the track list is still in the DOM — an albums playlist has no use for it");
+    assert.equal(am.more_btn_absent, true);
+    assert.deepEqual(am.page_calls, [],
+      "/api/smart-playlist expands every album on the Core; an albums playlist " +
+      "must never touch it just to be looked at");
+    assert.equal(am.album_calls.length, 1, "one snapshot read is all it should take");
+    assert.match(String(am.status), /2 of 3 albums that match/,
+      "it says what it plays AND what the query left out — showing only one of " +
+      "those numbers is what made the count misleading in v1.7.17");
   });
 
   const ed = harness.renderPage({

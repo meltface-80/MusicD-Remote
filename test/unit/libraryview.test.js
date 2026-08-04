@@ -57,10 +57,17 @@ function build(opts) {
     ["delta||alpha",   { ts: 3000, src: "first-seen" }],
   ]);
   const F = loadIndexFunctions(
-    ["libraryView", "albumYearOf", "albumAddedOf", "seededRank"],
+    // libFacetDefs and facetMatch are EXTRACTED, not stubbed: they are the
+    // shipping facet vocabulary, and a stub beside them would let a facet's
+    // predicate change without a single test noticing.
+    ["libraryView", "albumYearOf", "albumAddedOf", "seededRank",
+     "libFacetDefs", "facetMatch", "albumGenresOf", "albumFileFactsOf",
+     "rateLabel", "channelLabel", "libAddedWindows"],
     {
       albumYearCache,
       albumSeenCache,
+      albumGenreCache: opts.genres || new Map(),
+      albumFileCache:  opts.files  || new Map(),
       albumIndex,
       libraryMetaVersion: 0,
       // A fresh cache per build, so memoisation can never leak an ordering
@@ -68,9 +75,10 @@ function build(opts) {
       libraryViewCache: new Map(),
       LIBRARY_VIEW_CACHE_MAX: 8,
       LIB_SORTS: new Set(["album", "artist", "year", "added", "plays", "lastplayed", "random"]),
-      withSource: (a) => { a.source = null; return a; },
-      getPlayedTitlesSince: () => new Set(),
-      playedTitleSet: () => new Set(),
+      albumSource: (t, s, rec) => (opts.sources && opts.sources[rec.nTitle]) || null,
+      resolveAlbumLabelName: (al) => (opts.labels && opts.labels[al.nTitle]) || null,
+      getPlayedTitlesSince: () => opts.played || new Set(),
+      playedTitleSet: () => opts.played || new Set(),
       playStats: () => opts.stats || { count: new Map(), last: new Map() },
     }
   );

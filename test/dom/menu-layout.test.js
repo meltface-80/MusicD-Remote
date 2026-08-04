@@ -140,7 +140,7 @@ test("one playlist screen, a shorter menu, unheard on Home (v1.7.25)",
 
   await t.test("the playlist entries are in the order asked for", () => {
     const pl = r.menu_labels.filter(l => /playlist/i.test(l));
-    assert.deepEqual(pl, ["Dynamic playlists", "Playlists", "Import a playlist"]);
+    assert.deepEqual(pl, ["Dynamic Playlists", "Playlists", "Import a playlist"]);
   });
 
   await t.test("Playlists shows stored and Roon playlists together, stored first", () => {

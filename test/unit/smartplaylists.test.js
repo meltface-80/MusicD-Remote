@@ -18,14 +18,22 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { loadIndexFunctions } = require("../lib/extract");
 
-const { sanitizeLibView, smartPlaylistRecord, smartLimitDefault, smartLimitMax } =
+const { sanitizeLibView, smartPlaylistRecord, smartLimitDefault, smartLimitMax,
+        libPlayedIds, libFacetDefs, libFacetChipMax, smartModes, smartModeDefault } =
   loadIndexFunctions(
   // libSortIds/libPlayedIds/smartNameMax are extracted too, not injected — the
   // whole point is that the test reads the SHIPPING vocabulary.
   ["sanitizeLibView", "smartPlaylistRecord", "libSortIds", "libPlayedIds", "smartNameMax",
-   "smartLimitDefault", "smartLimitMax", "smartLimitOptions"]);
+   "smartLimitDefault", "smartLimitMax", "smartLimitOptions",
+   "smartModes", "smartModeDefault", "libFacetDefs", "libFacetChipMax"]);
 
-const DEFAULTS = { sort: "album", dir: "asc", seed: 1, decade: [], source: [], played: "any" };
+// Built FROM the shipping facet table, so a facet added to libFacetDefs() has
+// to appear in every saved view — which is what stops a new facet from working
+// on the Library screen and silently vanishing when the view is saved.
+const FACET_IDS = libFacetDefs().map(f => f.id);
+const DEFAULTS = Object.assign(
+  { sort: "album", dir: "asc", seed: 1, played: "any" },
+  Object.fromEntries(FACET_IDS.map(id => [id, []])));
 
 test("sanitizeLibView accepts only what libraryView accepts", async (t) => {
   await t.test("an empty or absent view becomes the default", () => {
@@ -58,7 +66,7 @@ test("sanitizeLibView accepts only what libraryView accepts", async (t) => {
   });
 
   await t.test("played is one of the offered windows", () => {
-    for (const p of ["any", "never", "6", "12"]) {
+    for (const p of libPlayedIds()) {
       assert.equal(sanitizeLibView({ played: p }).played, p);
     }
     for (const p of ["3", "24", "sometimes", "", null, {}]) {
@@ -72,24 +80,46 @@ test("sanitizeLibView accepts only what libraryView accepts", async (t) => {
     assert.equal(sanitizeLibView({ played: 12 }).played, "12");
   });
 
-  await t.test("decades must be real decade numbers", () => {
-    assert.deepEqual(sanitizeLibView({ decade: [1990, 2000] }).decade, [1990, 2000]);
-    assert.deepEqual(sanitizeLibView({ decade: "1990" }).decade, [1990], "a bare value is a list of one");
-    // 1995 isn't a decade; 90 and 12000 aren't years. Passing any of them makes
-    // the filter match nothing, which reads as an empty library.
-    assert.deepEqual(sanitizeLibView({ decade: [1995, 90, 12000, "x", null] }).decade, []);
+  await t.test("facet values survive as strings", () => {
+    // v1.7.35 widened these from a fixed vocabulary to free text: genre and
+    // label values are NAMES, which no list can enumerate. They are still
+    // normalised to strings, because the query builder appends them verbatim.
+    assert.deepEqual(sanitizeLibView({ decade: [1990, 2000] }).decade, ["1990", "2000"]);
+    assert.deepEqual(sanitizeLibView({ decade: "1990" }).decade, ["1990"], "a bare value is a list of one");
+    assert.deepEqual(sanitizeLibView({ genre: ["Jazz", "Pop/Rock"] }).genre, ["Jazz", "Pop/Rock"]);
+    assert.deepEqual(sanitizeLibView({ label: ["Blue Note"] }).label, ["Blue Note"]);
   });
 
-  await t.test("duplicate decades and sources collapse", () => {
+  await t.test("an excluded value keeps its ! and is not mistaken for junk", () => {
+    // Roon's tap-again-to-invert is encoded in the value. Stripping it here
+    // would silently turn "everything except Pop" into "only Pop".
+    assert.deepEqual(sanitizeLibView({ genre: ["!Pop"] }).genre, ["!Pop"]);
+    assert.deepEqual(sanitizeLibView({ decade: ["!1990"] }).decade, ["!1990"]);
+  });
+
+  await t.test("empty and whitespace-only facet values are dropped", () => {
+    // An empty string appended to the query matches nothing, which reads as an
+    // empty library rather than as a filter that was never really set.
+    assert.deepEqual(sanitizeLibView({ genre: ["", "  ", null, undefined] }).genre, []);
+  });
+
+  await t.test("duplicates collapse in every facet", () => {
     // A duplicate would be harmless for filtering but shows twice in the
     // description, which looks like a bug in the saved playlist.
-    assert.deepEqual(sanitizeLibView({ decade: [1990, 1990] }).decade, [1990]);
-    assert.deepEqual(sanitizeLibView({ source: ["qobuz", "qobuz"] }).source, ["qobuz"]);
+    for (const id of FACET_IDS) {
+      assert.deepEqual(sanitizeLibView({ [id]: ["x", "x"] })[id], ["x"], id);
+    }
   });
 
-  await t.test("a runaway source list is capped", () => {
-    const many = Array.from({ length: 40 }, (_, i) => "s" + i);
-    assert.equal(sanitizeLibView({ source: many }).source.length, 12);
+  await t.test("a runaway facet list is capped", () => {
+    const many = Array.from({ length: 400 }, (_, i) => "s" + i);
+    for (const id of FACET_IDS) {
+      assert.equal(sanitizeLibView({ [id]: many })[id].length, libFacetChipMax(), id);
+    }
+  });
+
+  await t.test("an absurdly long facet value is truncated, not stored whole", () => {
+    assert.equal(sanitizeLibView({ genre: ["x".repeat(9000)] }).genre[0].length, 120);
   });
 
   await t.test("seed is a positive integer", () => {
@@ -105,7 +135,7 @@ test("sanitizeLibView accepts only what libraryView accepts", async (t) => {
     // a parameter libraryView never validated.
     const out = sanitizeLibView({ sort: "album", evil: "1", offset: 999, count: 9999 });
     assert.deepEqual(Object.keys(out).sort(),
-      ["decade", "dir", "played", "seed", "sort", "source"]);
+      ["dir", "played", "seed", "sort"].concat(FACET_IDS).sort());
   });
 });
 

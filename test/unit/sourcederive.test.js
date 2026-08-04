@@ -28,7 +28,8 @@ const { loadIndexFunctions } = require("../lib/extract");
 function build(opts) {
   opts = opts || {};
   return loadIndexFunctions(
-    ["withSource", "claimingServices", "unclaimedIsLocal", "albumKeys",
+    ["withSource", "albumSource", "sourceBadgesDistinguish",
+     "claimingServices", "unclaimedIsLocal", "albumKeys",
      "albumTitleVariants", "canonText", "canonArtist", "normalize"],
     {
       localAlbumKeys:  new Set(opts.local || []),
@@ -51,12 +52,12 @@ test("with no streaming service connected, everything is local", async (t) => {
     // else could have put it in the library.
     const F = build();
     assert.equal(F.unclaimedIsLocal(), true);
-    assert.equal(F.withSource(album("Anything At All", "Someone")).source, "local");
+    assert.equal(F.albumSource("Anything At All", "Someone"), "local");
   });
 
   await t.test("file evidence still wins where it exists", () => {
     const F = build({ local: ["goo||sonic youth"] });
-    assert.equal(F.withSource(album("Goo", "Sonic Youth")).source, "local");
+    assert.equal(F.albumSource("Goo", "Sonic Youth"), "local");
   });
 
   await t.test("an ambiguous identity is local too, rather than unknown", () => {
@@ -64,7 +65,37 @@ test("with no streaming service connected, everything is local", async (t) => {
     // two albums. When nothing else can claim either of them, both are local
     // and refusing to say so just under-counts.
     const F = build({ ambiguous: ["reunion||band one"] });
-    assert.equal(F.withSource(album("Reunion", "Band One")).source, "local");
+    assert.equal(F.albumSource("Reunion", "Band One"), "local");
+  });
+});
+
+// v1.7.35. Elimination is what makes the Local COUNT right, and it is also what
+// made every tile in the library carry the same badge — because with nothing
+// else in play, every album really is local. A badge on everything is not a
+// fact about an album, so the badge and the count were split apart: the count
+// still says 2,234, and the tiles say nothing.
+test("a badge that would be on every album is not drawn", async (t) => {
+  await t.test("no service connected: the truth is local, the badge is nothing", () => {
+    const F = build();
+    assert.equal(F.sourceBadgesDistinguish(), false);
+    assert.equal(F.albumSource("Goo", "Sonic Youth"), "local",
+      "Focus still counts it — that number is the whole point");
+    assert.equal(F.withSource(album("Goo", "Sonic Youth")).source, null,
+      "but no tile carries a badge every other tile also carries");
+  });
+
+  await t.test("proved-local albums are suppressed too, not just derived ones", () => {
+    // The suppression is about whether the badge DISTINGUISHES, not about how
+    // confident we are in any one album. With one source in the library, even a
+    // file-tag match tells the user nothing they can act on.
+    const F = build({ local: ["goo||sonic youth"] });
+    assert.equal(F.withSource(album("Goo", "Sonic Youth")).source, null);
+  });
+
+  await t.test("connect a service and the badges come back", () => {
+    const F = build({ qobuzToken: "t", qobuz: ["goo||sonic youth"] });
+    assert.equal(F.sourceBadgesDistinguish(), true);
+    assert.equal(F.withSource(album("Goo", "Sonic Youth")).source, "qobuz");
   });
 });
 
