@@ -2,6 +2,55 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.39] — 2026-08-04
+
+Diagnostic build. v1.7.38's genre-harvest skip rests on an assumption nobody has verified, and this
+makes one restart answer it.
+
+### Added — the harvest says whether its own optimisation can work
+The skip decides a genre is unchanged by comparing the album count Roon states in that genre's
+subtitle. **If Roon's genre list carries no such count, `parseAlbumCount` returns null, the "any
+doubt walks" guard fires for every genre, and the skip never engages** — while the harvest goes on
+logging plausible totals. A failure that hides itself is worse than one that shouts, so it now says
+which case it is in, once per harvest, in words:
+
+```
+[genres] fingerprint OK — all 21 genres state an album count, so unchanged ones can be skipped
+```
+
+or
+
+```
+[genres] fingerprint UNUSABLE — only 0 of 21 genres state an album count (0 have any subtitle at
+all), so every genre must be walked every time. Sample: "Pop/Rock => ", "Jazz => ", …
+```
+
+The sample matters: without it there is no way to tell "Roon sends nothing" from "Roon sends
+something we failed to parse", and those need different fixes. Unconditional, not behind `RRA_DEBUG`
+— the answer matters on a quiet install too.
+
+The classification is a named function rather than an inline block, so it is testable. A library
+where the skip can never work being reported as "all good" is precisely the failure this exists to
+prevent, and that is now pinned by tests rather than by reading.
+
+A **partial** result counts as UNUSABLE. One unfingerprintable genre makes the scheme unreliable,
+and "mostly works" is the reading that would stop anyone looking further.
+
+### Fixed — the harvest summary mixed two different units
+It reported `albumGenreCache.size` as "albums genred" alongside an album count. The cache is keyed
+on identity, and albums sharing an identity share a row — so on a real library that read
+`8816 albums genred … 237 with no genre` out of 9,209, a 156-album gap that looks like data loss
+and is not. It now says identities and albums separately.
+
+### Measured, for the record
+On a 9,209-album library with 21 genres: the full snapshot build is 21 Roon calls in 0.5 s and the
+full genre harvest is ~142 calls in 3 s. Both are far cheaper than the estimates in v1.7.38's notes,
+which assumed a 2,234-album library. If the fingerprint turns out to be unusable, the honest
+conclusion is that a 3-second harvest does not justify further complexity.
+
+### Tests
+26 static / 434 unit / 243 dom.
+
 ## [1.7.38] — 2026-08-04
 
 Performance pass on the Roon Core. The extension is welcome to spend its own CPU and RAM; the

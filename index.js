@@ -5167,6 +5167,34 @@ async function syncChain() {
 // that already fetches one cover per album. It is deliberately NOT on any user
 // action.
 // ---------------------------------------------------------------------------
+// Does the skip have anything to work with?
+//
+// The whole optimisation rests on one unverified assumption: that Roon's genre
+// list states an album count in each item's subtitle. If it does not,
+// parseAlbumCount returns null, the "any doubt walks" guard fires for every
+// genre, and the skip never engages — while the harvest goes on logging
+// plausible-looking totals. That is a failure that hides itself, so it is
+// stated in words rather than left to be inferred.
+//
+// A function rather than an inline block so the classification is testable:
+// the wording is cosmetic, but "this library can never skip" being reported as
+// "all good" is the failure this exists to prevent.
+function genreFingerprintReport(genres) {
+  const total    = genres.length;
+  const parsable = genres.filter(g => parseAlbumCount(g.subtitle) !== null).length;
+  const withSub  = genres.filter(g => g.subtitle).length;
+  if (total && parsable === total) {
+    return "[genres] fingerprint OK — all " + total + " genres state an album " +
+           "count, so unchanged ones can be skipped";
+  }
+  const sample = genres.slice(0, 3)
+    .map(g => JSON.stringify(g.name + " => " + (g.subtitle || "")))
+    .join(", ");
+  return "[genres] fingerprint UNUSABLE — only " + parsable + " of " + total +
+         " genres state an album count (" + withSub + " have any subtitle at " +
+         "all), so every genre must be walked every time. Sample: " + sample;
+}
+
 let genreHarvestRunning = false;
 
 async function harvestAlbumGenres(reason, force) {
@@ -5211,6 +5239,10 @@ async function harvestAlbumGenres(reason, force) {
           image_key: String(i.image_key || "")
         }))
         .filter(g => g.name);
+
+      // Unconditional, not behind DEBUG: the answer matters on a quiet install
+      // too, and it prints once per harvest rather than once per genre.
+      console.log(genreFingerprintReport(genres));
 
       // Genres this run actually walked, mapped fresh. NOT merged into the old
       // value: the previous code did `(prev || []).concat(name)`, which made
@@ -5321,8 +5353,14 @@ async function harvestAlbumGenres(reason, force) {
                 (unreachable ? ", " + unreachable + " unreachable" : "") +
                 (sweeping ? " (full sweep)" : "") +
                 "; " + pairs + " pairs, " + written + " written, " +
-                albumGenreCache.size + " albums genred" +
-                (unmatched ? ", " + unmatched + " with no genre" : "") +
+                // IDENTITIES, not albums. The cache is keyed on
+                // normalize(title)||normalize(subtitle), and albums that share
+                // an identity share a row — so this number is legitimately
+                // lower than the count of albums that have a genre. Labelling
+                // both "albums" made a real 156-album gap look like data loss.
+                albumGenreCache.size + " identities genred, " +
+                (albumIndex.albums.length - unmatched) + " of " +
+                albumIndex.albums.length + " albums have one" +
                 " in " + Math.round((Date.now() - started) / 1000) + "s");
   } catch (e) {
     // Non-fatal by design: the Genre facet simply offers nothing this cycle.

@@ -27,7 +27,7 @@ const assert = require("node:assert/strict");
 const { loadIndexFunctions } = require("../lib/extract");
 
 const FP = ["genreFpVersion", "genreSweepMs", "setGenreScan", "setAlbumGenres",
-            "deleteAlbumGenres", "parseAlbumCount", "GENRE_SEP"];
+            "deleteAlbumGenres", "parseAlbumCount", "genreFingerprintReport", "GENRE_SEP"];
 
 function build(opts) {
   opts = opts || {};
@@ -142,5 +142,90 @@ test("an album can now LOSE a genre", async (t) => {
   await t.test("deleting a row that isn't there is not a change", () => {
     const F = build();
     assert.equal(F.deleteAlbumGenres("nope"), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.7.39: the diagnostic that says whether the skip can work at all.
+//
+// The optimisation rests on one unverified assumption — that Roon's genre list
+// states an album count in each item's subtitle. If it does not, every genre
+// walks every time while the harvest still logs plausible-looking totals. That
+// is a failure that hides itself, so the harvest now says which case it is in.
+//
+// These tests pin the CLASSIFICATION, not the wording: what matters is that a
+// library where the fingerprint cannot work is never reported as one where it
+// can.
+// ---------------------------------------------------------------------------
+test("the fingerprint diagnostic tells the two cases apart", async (t) => {
+  const F = build();
+  // The same predicate the harvest uses to decide whether a genre is skippable.
+  const usable = (subtitle) => F.parseAlbumCount(subtitle) !== null;
+  const report = (subs) => F.genreFingerprintReport(
+    subs.map((subtitle, i) => ({ name: "G" + i, subtitle })));
+
+  await t.test("Roon-style subtitles are usable", () => {
+    for (const s of ["204 Albums", "1 Album", "1,204 Albums", "6733 Albums"]) {
+      assert.equal(usable(s), true, s);
+    }
+  });
+
+  await t.test("no subtitle at all is NOT usable", () => {
+    // The case this whole diagnostic exists for. If these were treated as
+    // usable, every genre would compare null to null and skip forever with no
+    // data — the facet would empty itself and look like a harvest failure.
+    for (const s of ["", null, undefined]) {
+      assert.equal(usable(s), false, JSON.stringify(s));
+    }
+  });
+
+  await t.test("a subtitle that is not an album count is NOT usable", () => {
+    // Roon could plausibly put anything here — a genre description, a track
+    // count, sub-genre names. None of those track album membership.
+    for (const s of ["Pop/Rock", "79 Artists", "12 Tracks", "Various"]) {
+      assert.equal(usable(s), false, s);
+    }
+  });
+
+  await t.test("a track count is not mistaken for an album count", () => {
+    // The regex requires the word "album". A genre stating "10557 Tracks"
+    // would otherwise fingerprint on a number that moves for reasons that have
+    // nothing to do with which albums are in the genre.
+    assert.equal(usable("10557 Tracks"), false);
+    assert.equal(usable("500 Albums, 6000 Tracks"), true, "…but an album count anywhere counts");
+  });
+
+  await t.test("a library where every genre states a count reports OK", () => {
+    assert.match(report(["204 Albums", "12 Albums", "1 Album"]), /fingerprint OK/);
+  });
+
+  await t.test("a library where NO genre states a count reports UNUSABLE", () => {
+    // THE case. Reporting this as OK would leave the skip permanently dead and
+    // nobody would know, because the harvest's own totals look identical.
+    const out = report(["", "", ""]);
+    assert.match(out, /fingerprint UNUSABLE/);
+    assert.match(out, /only 0 of 3/);
+  });
+
+  await t.test("a PARTIAL library is UNUSABLE, not OK", () => {
+    // One genre that cannot be fingerprinted is enough to make the scheme
+    // unreliable, and "mostly works" is the reading that would stop anyone
+    // looking further.
+    const out = report(["204 Albums", "", "12 Albums"]);
+    assert.match(out, /fingerprint UNUSABLE/);
+    assert.match(out, /only 2 of 3/);
+  });
+
+  await t.test("an empty genre list is not reported as OK", () => {
+    // No genres at all is a broken harvest, not a working fingerprint.
+    assert.match(report([]), /UNUSABLE/);
+  });
+
+  await t.test("the unusable report shows what the subtitles ACTUALLY were", () => {
+    // Without a sample, a reader has no way to tell "Roon sends nothing" from
+    // "Roon sends something we failed to parse" — and those need different fixes.
+    const out = report(["79 Artists", "12 Tracks"]);
+    assert.match(out, /79 Artists/);
+    assert.match(out, /12 Tracks/);
   });
 });
