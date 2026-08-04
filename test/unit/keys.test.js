@@ -192,3 +192,49 @@ test("addFavouriteKeys — indexes a service favourite under every identity", as
     assert.deepEqual([...keys], ["title||real"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// v1.7.27: the local-albums count was too low because the two sides of the
+// join built their keys with DIFFERENT functions.
+//
+// The library index stores albumKeys() for every album — the whole credit plus
+// each name within it. The /music file scanner stored albumKey() — the whole
+// credit only. That made the match one-directional, and a one-directional
+// match is invisible: nothing errors, the count is just quietly short.
+//
+// buildFileLabelMap itself cannot be unit-tested (it is an async fs walk inside
+// a 150-line function), so what is pinned here is the property the fix relies
+// on: that the two directions are only symmetric when BOTH sides use albumKeys.
+// ---------------------------------------------------------------------------
+test("a multi-artist tag and a single-artist credit must be able to meet", async (t) => {
+  // The file's ALBUMARTIST tag names everyone; Roon's album credit names one.
+  const fileTagCredit = "Robert Plant & Alison Krauss";
+  const roonCredit    = "Robert Plant";
+
+  await t.test("albumKey alone cannot match them — the bug", () => {
+    const fileKey = albumKey("Raising Sand", fileTagCredit);
+    const roonKeys = albumKeys("Raising Sand", roonCredit);
+    assert.ok(!roonKeys.includes(fileKey),
+      "if these matched, the old code would not have under-counted");
+  });
+
+  await t.test("albumKeys on both sides does match them — the fix", () => {
+    const fileKeys = albumKeys("Raising Sand", fileTagCredit);
+    const roonKeys = albumKeys("Raising Sand", roonCredit);
+    assert.ok(fileKeys.some(k => roonKeys.includes(k)),
+      `no overlap between ${JSON.stringify(fileKeys)} and ${JSON.stringify(roonKeys)}`);
+  });
+
+  await t.test("the reverse direction always worked, which is why this hid", () => {
+    // Roon rich, tag single: the index side already split, so it matched.
+    const fileKey = albumKey("Raising Sand", roonCredit);
+    assert.ok(albumKeys("Raising Sand", fileTagCredit).includes(fileKey));
+  });
+
+  await t.test("it does not make unrelated albums collide", () => {
+    // Sharing an artist is not sharing an album — the title still has to match.
+    const a = albumKeys("Raising Sand", fileTagCredit);
+    const b = albumKeys("Led Zeppelin IV", "Led Zeppelin");
+    assert.ok(!a.some(k => b.includes(k)));
+  });
+});

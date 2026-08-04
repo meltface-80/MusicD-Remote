@@ -2379,7 +2379,19 @@ function loadLocalAlbumKeys() {
       }, 60000);
       if (t.unref) t.unref();
     }
-  } catch (e) { /* absent on first run / unreadable — rebuilt by the next file scan */ }
+  } catch (e) {
+    // Absent on first run, or unreadable. Either way there is nothing to load
+    // AND nothing scheduled to rebuild it — only the wrong-version branch above
+    // kicked a scan, so a lost file left the local badges empty until something
+    // else happened to trigger the walk.
+    const t = setTimeout(() => {
+      if (!core || labelsIndex.building) return;
+      runLabelsIndexScan().catch(err => {
+        if (DEBUG) console.error("[local] first-run scan:", err.message);
+      });
+    }, 60000);
+    if (t.unref) t.unref();
+  }
 }
 function setLocalAlbumKeys(keys) {
   localAlbumKeys = keys;
@@ -2818,7 +2830,10 @@ async function buildFileLabelMap(onProgress) {
   // When audio files are found in a directory, read tags from the first one.
   // Match is keyed on tag values (common.album + common.albumartist) so
   // directory naming convention (Artist/Album vs flat Artist - Album) doesn't matter.
-  const MAX_DEPTH = 3;
+  // 5, not 3: /music/Artist/Album/CD1 fits in 3, but /music/Genre/Artist/Album/Disc 1
+  // does not, and a subtree past the limit is skipped WHOLE and silently — the
+  // albums in it simply never count as local.
+  const MAX_DEPTH = 5;
   let _fsProcessed = 0;
   async function scanDir(dirPath, depth) {
     if (depth > MAX_DEPTH) return;
@@ -2849,8 +2864,14 @@ async function buildFileLabelMap(onProgress) {
         // album-artist can match either the ALBUMARTIST or the ARTIST tag, and
         // a miss here just means a missing badge, never a wrong one.
         if (album) {
-          const k1 = albumKey(album, albumartist || "");
-          if (k1) localKeys.add(k1);
+          // albumKeys, not albumKey: the library index stores albumKeys() for
+          // every album, which enumerates the whole credit AND each name in it.
+          // Keying the file side on the whole credit only made the match
+          // one-directional — a tag reading "Robert Plant & Alison Krauss"
+          // could never meet a Roon credit of "Robert Plant", while the reverse
+          // matched fine. That asymmetry is invisible except as a local count
+          // that is quietly too low.
+          for (const k of albumKeys(album, albumartist || "")) localKeys.add(k);
           // Also key by the track artist — Roon's album credit sometimes matches
           // that instead. NOT for compilations: one sampled track would claim a
           // various-artists disc for whichever performer happened to be first,
@@ -2858,8 +2879,15 @@ async function buildFileLabelMap(onProgress) {
           const isCompilation = /various|soundtrack|ost\b/i.test(albumartist || "") ||
                                 meta.common.compilation === true;
           if (meta.common.artist && !isCompilation) {
-            const k2 = albumKey(album, meta.common.artist);
-            if (k2) localKeys.add(k2);
+            for (const k of albumKeys(album, meta.common.artist)) localKeys.add(k);
+          }
+          // A compilation whose ALBUMARTIST tag is missing gets the first
+          // track's performer instead, which never matches Roon's "Various
+          // Artists". The title still has to match, so this cannot badge an
+          // unrelated album.
+          if (isCompilation || meta.common.compilation === true) {
+            const kv = albumKey(album, "Various Artists");
+            if (kv) localKeys.add(kv);
           }
         }
         if (label && !isLikelyNotALabel(label) && album) {
@@ -5378,12 +5406,30 @@ const SMART_MAX      = 50;   // a picker, not a database
 
 // Normalise one stored record. Returns null when it can't be salvaged, so a
 // corrupt entry is dropped rather than crashing the list for the good ones.
+// How many albums a dynamic playlist actually delivers. The query can match
+// the whole library — "Never played" on a fresh install matches everything —
+// but a playlist of 1,179 albums is ~13,000 tracks, ~300 hours, and 8 Roon
+// calls per album to queue. Nobody listens to that; they queue it once,
+// wait minutes, and replace it. The limit makes the number the user is SHOWN
+// equal the number they GET, which is the part that was misleading.
+//
+// Vocabulary as functions so the tests read the shipping values.
+function smartLimitDefault() { return 100; }
+function smartLimitMax()     { return 400; }   // the play-time ceiling; see /api/play-multi
+function smartLimitOptions() { return [25, 50, 100, 200, 400]; }
+
 function smartPlaylistRecord(p) {
   if (!p || typeof p !== "object") return null;
   const name = String(p.name || "").trim().slice(0, smartNameMax());
   const id   = String(p.id || "").trim();
   if (!name || !id) return null;
-  return { id, name, view: sanitizeLibView(p.view) };
+  // Absent on every playlist saved before this shipped, which is exactly the
+  // safe direction: they take the default rather than staying uncapped.
+  const lim = parseInt(p.limit, 10);
+  const limit = Number.isFinite(lim) && lim > 0
+    ? Math.min(lim, smartLimitMax())
+    : smartLimitDefault();
+  return { id, name, view: sanitizeLibView(p.view), limit };
 }
 
 function loadSmartPlaylists() {
@@ -5523,7 +5569,17 @@ app.get("/api/library/facets", async (req, res) => {
     for (const al of albumIndex.albums) {
       const y = albumYearOf(al);
       if (y !== null) { dated++; const d = Math.floor(y / 10) * 10; decades.set(d, (decades.get(d) || 0) + 1); }
-      const s = withSource({ title: al.title, subtitle: al.subtitle }, al).source || "none";
+      // withSource() skips identities held by more than one album, because a
+      // BADGE on those would be a coin flip. For a COUNT that is simply wrong:
+      // two copies of the same album are both local. Counting through the
+      // suppression made the total quietly lower than the truth.
+      const keys = al.srcKeys || albumKeys(al.title, al.subtitle);
+      let s = "none";
+      for (const key of keys) {
+        if (localAlbumKeys.has(key)) { s = "local"; break; }
+        if (qobuzAlbumKeys.has(key)) { s = "qobuz"; break; }
+        if (tidalAlbumKeys.has(key)) { s = "tidal"; break; }
+      }
       sources.set(s, (sources.get(s) || 0) + 1);
     }
     res.json({
@@ -5889,6 +5945,14 @@ app.post("/api/library/rescan", async (req, res) => {
     // refresh the Qobuz/Tidal badges after adding albums in those services.
     refreshStreamAlbumKeys("manual rescan").catch(e => {
       if (DEBUG) console.error("[stream] refresh:", e.message);
+    });
+    // …and the LOCAL badges, which this button did not touch. It refreshed
+    // Qobuz/TIDAL and left the /music set alone, so the one button a user
+    // presses when the local count looks wrong was the one that couldn't fix
+    // it. Fire-and-forget, like the labels rescan: the file walk is far slower
+    // than the snapshot check and must not hold the response.
+    runLabelsIndexScan(true).catch(e => {
+      if (DEBUG) console.error("[labels] rescan from library rescan:", e.message);
     });
     const r = await checkAndMaybeRebuild("manual", true);
     res.json(r);
@@ -6503,7 +6567,12 @@ app.get("/api/smart-playlist", async (req, res) => {
     if (!isIndexBuilt()) return res.status(503).json({ error: "Library index is still building" });
 
     // The saved view, re-evaluated now — that is what makes it "smart".
-    const view = libraryView(sp.view);
+    // Sliced to the playlist's own limit BEFORE paging, so "N albums left"
+    // counts down to what will actually play rather than to the query's match
+    // count. Applied here and not inside libraryView(), whose cache signature
+    // has no limit in it — two playlists sharing a query would otherwise share
+    // one cache entry and one limit.
+    const view = libraryView(sp.view).slice(0, sp.limit);
     const slice = view.slice(offset, offset + count);
 
     const tracks = [];
@@ -6567,13 +6636,20 @@ app.get("/api/smart-playlist/albums", async (req, res) => {
     // tracks (community-reported). 400 albums is ~4,400 tracks and ~2,800 calls
     // — past that the single HTTP request stops being reasonable. The response
     // always reports `total`, so a caller can tell the user what it left out.
-    const max = Math.max(1, Math.min(400, parseInt(req.query.max, 10) || 100));
+    // The caller's ask, the play-time ceiling, and the playlist's own limit —
+    // whichever is smallest wins.
+    const asked = Math.max(1, Math.min(smartLimitMax(), parseInt(req.query.max, 10) || smartLimitDefault()));
+    const max = Math.min(asked, sp.limit);
     res.json({
       id: sp.id, name: sp.name,
       albums: view.slice(0, max).map(a => ({
         offset: a.offset, title: a.title, subtitle: a.subtitle, image_key: a.image_key
       })),
-      total: view.length
+      // `total` is what this playlist delivers; `matched` is what the query
+      // found. Reporting only the second made every capped play read as a
+      // failure to play the whole playlist.
+      total: Math.min(view.length, sp.limit),
+      matched: view.length
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -7113,7 +7189,14 @@ app.get("/api/smart-playlists", (req, res) => {
           if (al.image_key && !keys.includes(al.image_key)) keys.push(al.image_key);
           if (keys.length === 4) break;
         }
-        return Object.assign({}, p, { album_total: view.length, art_keys: keys });
+        // `album_total` is what this playlist DELIVERS; `album_matched` is what
+        // the query found. The tile showed the second and played the first,
+        // which is precisely the mismatch that made the cap misleading.
+        return Object.assign({}, p, {
+          album_total: Math.min(view.length, p.limit),
+          album_matched: view.length,
+          art_keys: keys,
+        });
       }
       catch (e) { return p; }   // a bad view must not take the whole list down
     });
@@ -7121,7 +7204,7 @@ app.get("/api/smart-playlists", (req, res) => {
   res.json({ playlists: counted });
 });
 
-// Create or rename/update one.  body: { id?, name, view }
+// Create or rename/update one.  body: { id?, name, view, limit? }
 // An omitted id creates; a known id replaces in place (so "save over" works).
 app.post("/api/smart-playlists", (req, res) => {
   const body = req.body || {};
@@ -7130,8 +7213,14 @@ app.post("/api/smart-playlists", (req, res) => {
 
   const list = loadSmartPlaylists();
   const id = String(body.id || "").trim();
-  const record = { id: id || ("sp_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)),
-                   name, view: sanitizeLibView(body.view) };
+  // Built through smartPlaylistRecord so the limit is normalised by the same
+  // function that reads it back off disk — a second, hand-rolled shape here is
+  // how the two drift.
+  const record = smartPlaylistRecord({
+    id: id || ("sp_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)),
+    name, view: body.view, limit: body.limit,
+  });
+  if (!record) return res.status(400).json({ error: "name required" });
 
   const at = id ? list.findIndex(p => p.id === id) : -1;
   if (at >= 0) {
@@ -7150,7 +7239,14 @@ app.post("/api/smart-playlists", (req, res) => {
   }
   if (!saveSmartPlaylists(list)) return res.status(500).json({ error: "Couldn't save" });
   console.log(`[smart] saved "${name}"`);
-  res.json({ ok: true, playlist: record, playlists: list });
+  // album_matched travels back so the client can say "plays 100 of the 1,179
+  // that match" at the moment of saving, rather than leaving the user to
+  // discover the limit when a play falls short of the count on the tile.
+  let matched = null;
+  try { if (isIndexBuilt()) matched = libraryView(record.view).length; }
+  catch (e) { /* a bad view must not fail the save that just succeeded */ }
+  res.json({ ok: true, playlist: Object.assign({}, record, { album_matched: matched }),
+             playlists: list });
 });
 
 app.post("/api/smart-playlists/delete", (req, res) => {

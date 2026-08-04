@@ -2024,18 +2024,28 @@
   // abandoned edit — closing the sheet with X, the backdrop, or Show albums —
   // would otherwise leave that variable set, and the NEXT save from the Focus
   // bar would silently overwrite the playlist edited earlier.
+  // Album counts a dynamic playlist can be limited to. The ceiling is the
+  // play-time one: 400 albums is ~3,200 Roon calls and minutes of queueing.
+  const SMART_LIMITS = [25, 50, 100, 200, 400];
+
   async function openLibFocusSheet(editTarget) {
     // Snapshot BEFORE the edited view is applied, so abandoning the sheet can
     // put the user's own Library view back exactly as it was.
     const viewBefore = editTarget ? currentLibViewSnapshot() : null;
+    // Lives outside the view: two playlists can share a query and differ here,
+    // which is also why the server applies it by slicing rather than inside
+    // libraryView(), whose cache is keyed on the query alone.
+    let editLimit = (editTarget && editTarget.limit) || 100;
     if (editTarget) applyViewToLibView(editTarget.view);
     let committed = false;
-    if (!libFacets) {
-      try {
-        const r = await fetch("/api/library/facets");
-        if (r.ok) libFacets = await r.json();
-      } catch (e) { /* offline — the sheet still shows the play-history facet */ }
-    }
+    // Re-read every time the sheet opens. Caching these for the life of the
+    // page meant a rescan changed the library and the Focus sheet went on
+    // reporting the old counts until a full reload — which reads as the rescan
+    // having done nothing.
+    try {
+      const r = await fetch("/api/library/facets", { cache: "no-store" });
+      if (r.ok) libFacets = await r.json();
+    } catch (e) { /* offline — keep whatever we last had rather than blanking */ }
     const f = libFacets || { decades: [], sources: [] };
     openLibSheet("Focus", (body) => {
       const section = (label) => {
@@ -2097,6 +2107,23 @@
         for (const p of LIB_PLAYED_OPTIONS) {
           chip(pw, p.label, libView.played === p.id, () => { libView.played = p.id; });
         }
+        // Only when editing a saved playlist: on the Library screen there is
+        // nothing for a limit to apply to.
+        if (editTarget) {
+          const ls = section("Playlist size");
+          const lw = document.createElement("div"); lw.className = "lib-chips"; ls.appendChild(lw);
+          for (const n of SMART_LIMITS) {
+            chip(lw, String(n), editLimit === n, () => { editLimit = n; });
+          }
+          const ln = document.createElement("div");
+          ln.className = "lib-facet-note";
+          ln.textContent =
+            "How many albums this playlist actually plays. A query can match your " +
+            "whole library, but every album costs Roon work to queue — 400 albums " +
+            "is thousands of tracks and takes minutes.";
+          ls.appendChild(ln);
+        }
+
         const note = document.createElement("div");
         note.className = "lib-sheet-note";
         note.textContent = "Genre and Tag stay in the main filter — Roon keeps those in separate lists, so they can't be combined with these.";
@@ -2117,7 +2144,12 @@
       save.textContent = "Save as…";
       save.addEventListener("click", () => {
         committed = true;
-        close(); saveSmartPlaylistPrompt(editTarget);
+        close();
+        // Carry the chosen size into the save — the sheet is the only place it
+        // can be set, so it has to travel with the thing being saved.
+        saveSmartPlaylistPrompt(editTarget
+          ? Object.assign({}, editTarget, { limit: editLimit })
+          : null);
       });
       const show = document.createElement("button");
       show.type = "button"; show.className = "action-btn primary";
@@ -2191,11 +2223,19 @@
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: existing && existing.id, name: trimmed,
-                                 view: currentLibViewSnapshot() })
+                                 view: currentLibViewSnapshot(),
+                                 // Editing keeps whatever the playlist already
+                                 // had; a new one takes the server's default.
+                                 limit: existing && existing.limit })
         });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) { showToast(j.error || "Couldn't save that", "error"); return; }
-        showToast(`Saved "${trimmed}"`);
+        const lim = j.playlist && j.playlist.limit;
+        const matched = j.playlist && j.playlist.album_matched;
+        showToast(Number.isFinite(matched) && Number.isFinite(lim) && matched > lim
+          ? `Saved "${trimmed}" — it plays ${lim} of the ${matched} albums that match. ` +
+            "Change that with Edit."
+          : `Saved "${trimmed}"`, null, TOAST_REPORT_MS);
         // Editing an existing one lands back on it so the change is visible
         // immediately; a brand new one goes to the list.
         if (j.playlist && existing) openSmartPlaylist(j.playlist);
@@ -2231,11 +2271,17 @@
     const frag = document.createDocumentFragment();
     for (const p of list) {
       const n = p.album_total;
+      const matched = p.album_matched;
       const tile = buildAlbumTile({
         title: p.name,
         subtitle: (n === undefined || n === null)
           ? describeLibView(p.view)
-          : `${n} Album${n === 1 ? "" : "s"}`,
+          // Says what it PLAYS, and — when the query found more — what it left
+          // out. Showing only the match count while playing a capped subset is
+          // what made the number misleading.
+          : (Number.isFinite(matched) && matched > n
+              ? `${n} of ${matched} Albums`
+              : `${n} Album${n === 1 ? "" : "s"}`),
         image_key: null,
         // A smart playlist has no cover either — the mosaic comes from the first
         // few albums it resolves to, which the server reads straight out of the

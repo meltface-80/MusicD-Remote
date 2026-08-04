@@ -2,6 +2,53 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.27] — 2026-08-04
+
+### Fixed — the local album count was too low
+Five separate causes, found by tracing the whole join. In rough order of how many albums each
+probably cost:
+
+- **"Rescan library" never re-ran the /music file scan.** It refreshed the Roon snapshot and the
+  Qobuz/TIDAL badges and left the local set untouched — so the one button a user presses when the
+  local count looks wrong was the one button that could not fix it. It now kicks the file scan too.
+- **The two sides of the join used different key functions.** The library index stores
+  `albumKeys()` for every album — the whole credit *plus each name in it* — while the file scanner
+  stored `albumKey()`, the whole credit only. A tag reading "Robert Plant & Alison Krauss" could
+  therefore never match a Roon credit of "Robert Plant", while the reverse matched fine. A
+  one-directional match errors nowhere; the count is just quietly short.
+- **`MAX_DEPTH` was 3.** `/music/Artist/Album/CD1` fits; `/music/Genre/Artist/Album/Disc 1` does
+  not, and a subtree past the limit is skipped *whole and silently*. Raised to 5.
+- **Compilations without an `ALBUMARTIST` tag** were keyed under whichever performer happened to
+  be on the first track, which never matches Roon's "Various Artists". They are now also keyed
+  under that.
+- **The facet counted through the ambiguity suppression.** Skipping identities held by more than
+  one album is right for a *badge* — it would be a coin flip — but wrong for a *count*: two copies
+  of an album are both local. The Focus total is now counted without it.
+
+Also: a missing `local-albums.json` scheduled no rebuild (only a wrong-version one did), and the
+Focus sheet cached its counts for the life of the page, so a rescan changed the library and the
+sheet went on reporting the old numbers until a full reload.
+
+### Fixed — dynamic playlists no longer promise more than they deliver
+A dynamic playlist advertised its full match count and could only ever play 400 albums of it.
+Playlists now carry their own **album limit**, default **100**, adjustable to 400 in Edit →
+Playlist size:
+
+- The tile reads **"100 of 1179 Albums"** when the query matched more, instead of "1179 Albums".
+- The limit applies to the track list, to Play now / Queue, and to Send to Roon alike.
+- Saving says so: *Saved "Never played" — it plays 100 of the 1179 albums that match.*
+- **Playlists saved before this take the default** rather than staying uncapped.
+
+Why 100: every album costs 8 Roon calls to queue, so 400 albums is ~3,200 calls and, by the code's
+own note, "takes minutes". 400 albums is also roughly 4,400 tracks — about 88% of the ~5,000-track
+Roon queue ceiling, which is community-reported and unverified. 100 albums is ~800 calls, ~1,100
+tracks and still around 75 hours of music: more than any session will reach.
+
+### Answering "how many are added to the Roon queue"
+**Every track of every album sent.** There is no per-album track cap — the extension invokes
+Roon's own album-level Queue action, and Roon enqueues the whole album. At the previous 400-album
+cap that was roughly 4,400 tracks. It is now roughly 1,100 by default.
+
 ## [1.7.26] — 2026-08-04
 
 ### Fixed

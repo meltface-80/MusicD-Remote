@@ -18,10 +18,12 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { loadIndexFunctions } = require("../lib/extract");
 
-const { sanitizeLibView, smartPlaylistRecord } = loadIndexFunctions(
+const { sanitizeLibView, smartPlaylistRecord, smartLimitDefault, smartLimitMax } =
+  loadIndexFunctions(
   // libSortIds/libPlayedIds/smartNameMax are extracted too, not injected — the
   // whole point is that the test reads the SHIPPING vocabulary.
-  ["sanitizeLibView", "smartPlaylistRecord", "libSortIds", "libPlayedIds", "smartNameMax"]);
+  ["sanitizeLibView", "smartPlaylistRecord", "libSortIds", "libPlayedIds", "smartNameMax",
+   "smartLimitDefault", "smartLimitMax", "smartLimitOptions"]);
 
 const DEFAULTS = { sort: "album", dir: "asc", seed: 1, decade: [], source: [], played: "any" };
 
@@ -135,5 +137,33 @@ test("smartPlaylistRecord drops what it cannot salvage", async (t) => {
   await t.test("an over-long name is truncated, not rejected", () => {
     const r = smartPlaylistRecord({ id: "sp1", name: "x".repeat(500) });
     assert.equal(r.name.length, 60);
+  });
+
+  // v1.7.27: how many albums the playlist actually delivers.
+  await t.test("a playlist saved before limits existed takes the default", () => {
+    // The important direction: every record already on disk lacks the field,
+    // and must come back capped rather than unbounded. An uncapped legacy
+    // playlist would still queue its whole library on the first tap.
+    const r = smartPlaylistRecord({ id: "sp1", name: "Old one" });
+    assert.equal(r.limit, smartLimitDefault());
+  });
+
+  await t.test("a stored limit is kept", () => {
+    assert.equal(smartPlaylistRecord({ id: "sp1", name: "X", limit: 25 }).limit, 25);
+    assert.equal(smartPlaylistRecord({ id: "sp1", name: "X", limit: "50" }).limit, 50,
+      "a hand-edited settings.json holds strings");
+  });
+
+  await t.test("a limit past the play-time ceiling is clamped, not honoured", () => {
+    // 400 albums is already ~3,200 Roon calls; nothing above it is playable.
+    assert.equal(smartPlaylistRecord({ id: "sp1", name: "X", limit: 99999 }).limit,
+                 smartLimitMax());
+  });
+
+  await t.test("a nonsense limit falls back to the default", () => {
+    for (const bad of [0, -5, "many", null, {}, NaN]) {
+      assert.equal(smartPlaylistRecord({ id: "sp1", name: "X", limit: bad }).limit,
+                   smartLimitDefault(), `limit ${JSON.stringify(bad)} should have defaulted`);
+    }
   });
 });
