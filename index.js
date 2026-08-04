@@ -2835,13 +2835,22 @@ async function buildFileLabelMap(onProgress) {
   // albums in it simply never count as local.
   const MAX_DEPTH = 5;
   let _fsProcessed = 0;
+  // Diagnostics for the one question the old summary could not answer: when the
+  // local count is short, is it because the walk never SAW those albums, or
+  // because it saw them and the keys didn't match? Counting is free and the
+  // difference decides which half of the code to look at.
+  const walk = { dirs: 0, tooDeep: 0, unreadable: 0, withAudio: 0, parsed: 0,
+                 parseFailed: 0, keyed: 0, noAlbumTag: 0 };
   async function scanDir(dirPath, depth) {
-    if (depth > MAX_DEPTH) return;
+    if (depth > MAX_DEPTH) { walk.tooDeep++; return; }
+    walk.dirs++;
     let entries;
-    try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch (e) { return; /* permission denied or dir vanished mid-scan — skip silently */ }
+    try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); }
+    catch (e) { walk.unreadable++; return; /* permission denied or dir vanished mid-scan */ }
 
     const audioFile = entries.find(e => e.isFile() && AUDIO_RE.test(e.name));
     if (audioFile) {
+      walk.withAudio++;
       _fsProcessed++;
       if (onProgress && _fsProcessed % 50 === 0) onProgress(_fsProcessed);
       try {
@@ -2856,7 +2865,9 @@ async function buildFileLabelMap(onProgress) {
           const folderLabel = rel[labelFolderDepth - 1];
           if (folderLabel) label = folderLabel;
         }
+        walk.parsed++;
         const album = meta.common.album;
+        if (!album) walk.noAlbumTag++;
         const albumartist = meta.common.albumartist
           || (meta.common.artists && meta.common.artists[0])
           || meta.common.artist || null;
@@ -2889,6 +2900,7 @@ async function buildFileLabelMap(onProgress) {
             const kv = albumKey(album, "Various Artists");
             if (kv) localKeys.add(kv);
           }
+          walk.keyed++;
         }
         if (label && !isLikelyNotALabel(label) && album) {
           const key = normalize(album) + "||" + normalize(albumartist || "");
@@ -2931,7 +2943,12 @@ async function buildFileLabelMap(onProgress) {
             }
           }
         }
-      } catch (e) { /* unreadable — skip */ }
+      } catch (e) {
+        // Unreadable or untagged. Counted, because a directory whose FIRST
+        // audio file won't parse is dropped whole — no second file is tried —
+        // and that is invisible unless someone counts it.
+        walk.parseFailed++;
+      }
     }
 
     for (const entry of entries) {
@@ -2946,6 +2963,15 @@ async function buildFileLabelMap(onProgress) {
   }
   if (DEBUG) console.log("[labels:files] file scan found", map.size, "labels,", bandcampMap.size,
                          "Bandcamp URLs,", fileYears.size, "dated identities");
+  // Unconditional: this is the line that says whether a short local count is a
+  // walk problem or a match problem, and it is useless if it only appears when
+  // someone happened to have debug on.
+  console.log("[local:walk] " + walk.dirs + " dirs visited, " + walk.withAudio +
+              " with audio, " + walk.parsed + " tags read, " + walk.keyed + " albums keyed" +
+              (walk.tooDeep     ? ", " + walk.tooDeep + " SKIPPED past depth " + MAX_DEPTH : "") +
+              (walk.unreadable  ? ", " + walk.unreadable + " unreadable" : "") +
+              (walk.parseFailed ? ", " + walk.parseFailed + " tag reads failed" : "") +
+              (walk.noAlbumTag  ? ", " + walk.noAlbumTag + " had no album tag" : ""));
   // Publish in one assignment, so the join never sees a partial walk.
   fileAlbumYears = fileYears;
   // The direct tag-key writes above all deferred their bump, and the only other

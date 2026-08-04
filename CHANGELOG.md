@@ -2,6 +2,25 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.30] — 2026-08-04
+
+### Added
+- **The file scan now says what it walked.** One unconditional line per scan:
+
+      [local:walk] 1873 dirs visited, 1712 with audio, 1698 tags read, 1690 albums keyed
+
+  with counts appended for directories skipped past the depth limit, unreadable directories,
+  failed tag reads, and files with no album tag.
+
+  This exists because diagnosing the v1.7.27 local-albums shortfall was harder than fixing it.
+  The only logged number was `[local] N album keys recorded`, and keys are not albums — one
+  directory contributes one or two — so a short count could not be attributed to the walk missing
+  albums or to the keys not matching. Those live in different halves of the code. Counting is
+  free; not counting cost a round trip through the user's logs.
+
+  It also makes `SKIPPED past depth` visible, which was previously silent: a subtree one level
+  deeper than the limit is skipped whole, without a word.
+
 ## [1.7.29] — 2026-08-04
 
 ### Fixed
