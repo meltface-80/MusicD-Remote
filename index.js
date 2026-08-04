@@ -1601,16 +1601,30 @@ function parseAlbumCount(subtitle) {
 }
 
 function makeTtlCache(ttlMs) {
-  const map = new Map(); // key → { value, at }
+  const map     = new Map(); // key → { value, at }
+  const inFlight = new Map(); // key → Promise, only while a fetch is running
   return {
     async get(key, fetchFn) {
       const hit = map.get(key);
       if (hit && (Date.now() - hit.at) < ttlMs) return hit.value;
-      const value = await fetchFn();
-      map.set(key, { value, at: Date.now() });
-      return value;
+      // Two callers arriving on a cold key both used to run the fetch, because
+      // the map was only written after the await. On the Home screen several
+      // clients can wake at once, and each miss is a Roon walk — so the second
+      // caller waits on the first instead of duplicating it.
+      const running = inFlight.get(key);
+      if (running) return running;
+      // The PROMISE is shared, never the failure. A rejected fetch is deleted
+      // here rather than stored, so a transient Core blip cannot be cached for
+      // the whole TTL and turn a one-second glitch into a half-hour outage.
+      const p = (async () => {
+        const value = await fetchFn();
+        map.set(key, { value, at: Date.now() });
+        return value;
+      })().finally(() => { inFlight.delete(key); });
+      inFlight.set(key, p);
+      return p;
     },
-    clear() { map.clear(); }
+    clear() { map.clear(); }   // in-flight fetches finish and repopulate
   };
 }
 
@@ -1817,7 +1831,28 @@ function setAlbumSeen(key, ts, src) {
 let libraryMetaVersion = 0;
 const libraryViewCache = new Map();      // sig -> ordered album array
 const LIBRARY_VIEW_CACHE_MAX = 8;
-function bumpLibraryMeta() { libraryMetaVersion++; libraryViewCache.clear(); }
+// The two genre lists that are cached against the Core. Declared HERE, above
+// bumpLibraryMeta, because that is their first use — a `const` referenced
+// before its declaration is a ReferenceError, and `typeof` does not rescue it:
+// unlike an undeclared name, a const in its temporal dead zone throws from
+// `typeof` too. bumpLibraryMeta runs during startup, so a guard written that
+// way would have crashed the extension on boot.
+//
+// Both had no cache path and no invalidation path respectively; see the routes.
+const genreListCache   = makeTtlCache(30 * 60 * 1000);
+const genreGroupsCache = makeTtlCache(30 * 60 * 1000);
+
+function bumpLibraryMeta() {
+  libraryMetaVersion++;
+  libraryViewCache.clear();
+  // The genre lists too. Both are TTL-cached against the Core, and neither was
+  // on any invalidation path — so a genre added to the library stayed invisible
+  // on Home and in the filter sheet until the clock ran out, with no way to
+  // hurry it. Declared later in the file, so guarded: bumpLibraryMeta is called
+  // during startup before they exist.
+  genreListCache.clear();
+  genreGroupsCache.clear();
+}
 // Coalesced bump for the label scan, which discovers years one HTTP response at
 // a time. Bumping per year would clear the memoised orderings several times a
 // second for the hours a first scan takes — the cache would never survive long
@@ -6845,7 +6880,6 @@ app.get("/api/home/label-of-the-week", (req, res) => {
 // Pop/Rock → the Rock/Metal group. The frontend picks a random sub-genre from
 // the chosen group and applies it as a nested genre filter. Cached 30 min
 // (sub-genre lists change only on library edits).
-const genreGroupsCache = makeTtlCache(30 * 60 * 1000);
 app.get("/api/home/genre-groups", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   try {
@@ -6902,10 +6936,23 @@ app.get("/api/home/genre-groups", async (req, res) => {
 });
 
 // Available genres (top level of the "genres" hierarchy).
+//
+// Cached for thirty minutes, because it had no cache at all: every Home load
+// fetched it AND /api/home/genre-groups, which walk the same genres root, and
+// the client fires both together — two identical Roon walks, 2 ms apart, on
+// every page load, plus two more whenever the filter sheet is opened.
+//
+// The HTTP 304s these requests return are a red herring: Express computes the
+// ETag from the finished response body, so the handler has already made every
+// Roon call by then. The 304 saves bandwidth and nothing else.
+//
+// Cleared by bumpLibraryMeta, so a newly added genre appears as soon as the
+// library changes rather than waiting out the TTL. The 503 guard stays OUTSIDE
+// the cache — an unpaired answer must never be stored.
 app.get("/api/filters/genres", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   try {
-    const genres = await withBrowseSession(async (sessionKey) => {
+    const genres = await genreListCache.get("genres", () => withBrowseSession(async (sessionKey) => {
       await browse({ hierarchy: "genres", pop_all: true, multi_session_key: sessionKey });
       const lvl = await loadLevel(sessionKey, "genres", 1000);
       // Keep only genres that actually contain albums, biggest first — Roon
@@ -6925,7 +6972,7 @@ app.get("/api/filters/genres", async (req, res) => {
                 .sort((a, b) => b.count - a.count)
         : parsed
       ).map(g => ({ title: g.title, subtitle: g.subtitle }));
-    });
+    }));
     res.json({ genres });
   } catch (e) {
     res.status(500).json({ error: e.message });

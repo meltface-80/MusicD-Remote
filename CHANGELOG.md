@@ -2,6 +2,47 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.40] — 2026-08-04
+
+An agent audit of the duplicate genre walk visible in a production log. Every Home load was making
+six Roon calls, two of them a byte-for-byte duplicate.
+
+### Fixed — /api/filters/genres had no cache at all
+It walked the genres hierarchy on **every single request**. The client fetches it and
+`/api/home/genre-groups` together on Home load, and both walk the same root — which is why the log
+showed two browse sessions hitting `genres pop_all` 2 ms apart. It is now cached for thirty minutes
+like its neighbour.
+
+**The HTTP 304s these requests return are a red herring.** Express computes the ETag from the
+finished response body, so the handler has already made every Roon call by the time the 304 is
+decided. They save bandwidth and nothing else — worth knowing before anyone "fixes" this with
+`Cache-Control`.
+
+### Fixed — neither genre cache was ever invalidated
+Both are TTL-cached against the Core and neither was on any invalidation path, so a genre added to
+the library stayed invisible on Home and in the filter sheet until the clock ran out, with no way to
+hurry it. Both are now cleared by `bumpLibraryMeta()` alongside the library view cache.
+
+### Fixed — concurrent cache misses each ran their own fetch
+`makeTtlCache` only wrote the map after the fetch resolved, so two callers arriving on a cold key
+both did the work. On Home that is two Roon walks; with several clients waking together it
+multiplies. Callers now share one in-flight fetch.
+
+**A rejection is never stored.** The obvious way to share a promise is to put it in the same map as
+the values, which caches the *failure* for the whole TTL — turning a one-second Core blip into a
+half-hour outage that looks exactly like the Core being down. The next caller after a failure
+retries.
+
+### Note — a `typeof` guard that would have crashed startup
+The first draft declared the caches near their routes and guarded `bumpLibraryMeta` with
+`typeof x !== "undefined"`. That does not work: unlike an undeclared name, a `const` in its temporal
+dead zone throws from `typeof` too, and `bumpLibraryMeta` runs during startup. Caught by the
+pre-flight before it shipped; the caches are now declared at first use, as the rules require.
+
+### Tests
+26 static / 446 unit / 243 dom. `ttlcache.test.js` drives the real cache, and the failure-caching
+case is asserted directly — it is the one way this change could make things materially worse.
+
 ## [1.7.39] — 2026-08-04
 
 Diagnostic build. v1.7.38's genre-harvest skip rests on an assumption nobody has verified, and this
