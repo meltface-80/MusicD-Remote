@@ -228,7 +228,10 @@ const roon = new RoonApi({
         (data.zones_added   || []).forEach(z => { zones[z.zone_id] = z;
           (z.outputs || []).forEach(o => { outputs[o.output_id] = o; }); handleRadioZone(z, true); scrobbleUpdate(z); });
         (data.zones_changed || []).forEach(z => { zones[z.zone_id] = z;
-          (z.outputs || []).forEach(o => { outputs[o.output_id] = o; }); handleRadioZone(z); scrobbleUpdate(z); });
+          (z.outputs || []).forEach(o => { outputs[o.output_id] = o; });
+          // Before the radio decision, so the log shows the state that drove it.
+          logZoneTransition(z);
+          handleRadioZone(z); scrobbleUpdate(z); });
         (data.zones_removed || []).forEach(zid => {
           const z = zones[zid];
           // Only when the outputs feed isn't live — see outputsFeedLive above:
@@ -236,6 +239,7 @@ const roon = new RoonApi({
           if (z && !outputsFeedLive) (z.outputs || []).forEach(o => delete outputs[o.output_id]);
           delete zones[zid];
           delete zonePrevState[zid]; // zone offline — reset so it won't auto-start if it returns
+          delete zoneLogPrev[zid];   // and so its return reads as a first sighting, not a transition
         });
       }
     });
@@ -10823,6 +10827,40 @@ const radioBusy = {}; // zone_id -> { active: bool, ts: number }
 // we first see it (restart / reconnect) never gets a "play" command.
 const zonePrevState = {};
 
+// Log every genuine zone state change, ALWAYS — not behind DEBUG.
+//
+// Added because a report of "playback stops at the end of an album even when
+// another track is queued" could not be investigated at all: the one fact that
+// settles it — did the queue still have items at the instant Roon stopped? —
+// was read in exactly one place (radioDecision) and recorded nowhere. It is not
+// in the zone poll, not in /api/zones, not in any log line.
+//
+// One line per transition per zone is a handful of lines an hour on a busy
+// system, which is why it can afford to be unconditional. `radio` and
+// `auto_radio` are included because the first question about any unexpected
+// stop is which of the two radios, if either, was in play.
+const zoneLogPrev = {};
+function logZoneTransition(z) {
+  if (!z || !z.zone_id) return;
+  const prev = zoneLogPrev[z.zone_id];
+  const state = z.state || "unknown";
+  if (prev === state) return;
+  zoneLogPrev[z.zone_id] = state;
+  if (prev === undefined) return;   // first sighting is not a transition
+  const np = z.now_playing && z.now_playing.two_line;
+  const remaining = (typeof z.queue_items_remaining === "number")
+    ? z.queue_items_remaining
+    // Absent is not zero. Saying so in the log is the point: this is the field
+    // Roon may simply omit, and a reader must not mistake it for an empty queue.
+    : "absent";
+  console.log("[zone] " + JSON.stringify(z.display_name || z.zone_id) + " " +
+              prev + "\u2192" + state +
+              " remaining=" + remaining +
+              " radio=" + (radioZones.has(z.zone_id) ? "on" : "off") +
+              " auto_radio=" + !!(z.settings && z.settings.auto_radio) +
+              (np ? " np=" + JSON.stringify((np.line1 || "") + " / " + (np.line2 || "")) : ""));
+}
+
 async function radioTopUp(zoneId, mode) {
   const st = radioBusy[zoneId] || (radioBusy[zoneId] = { active: false, ts: 0 });
   if (st.active && (Date.now() - st.ts) < 30000) return; // already working; 30s safety
@@ -10830,13 +10868,18 @@ async function radioTopUp(zoneId, mode) {
   try {
     const pick = await pickSmartAlbum();
     if (!pick) { st.active = false; return; }
+    // Logged BEFORE the invoke as well as after, and unconditionally: a top-up
+    // that hangs inside the Core call is otherwise completely silent, and
+    // "play" REPLACES the queue, so it is the one automatic action in this
+    // extension that can destroy something the user set up.
+    console.log("[radio] " + mode + " -> " + zoneId + " : " + JSON.stringify(pick.title || ""));
     await openAlbumByOffset(pick.offset, zoneId, mode === "play" ? "play_now" : "queue", null,
                             { title: pick.title || "", subtitle: pick.subtitle || "" });
-    if (DEBUG) console.log("[radio] " + mode + " '" + pick.title + "' -> " + zoneId);
+    console.log("[radio] " + mode + " done -> " + zoneId);
     // st.active clears when the queue grows (handleRadioZone sees remaining > 1)
     // or via the 30s timeout above if the queue never reflects the add.
   } catch (e) {
-    if (DEBUG) console.error("[radio] top-up failed:", e.message);
+    console.error("[radio] top-up failed: " + e.message);
     if (e && e.stale) {
       // The pick's offset drifted mid-library-change (import/rescan). Zone
       // events fire ~1/sec while a queue drains, so releasing the guard here
