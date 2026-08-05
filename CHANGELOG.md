@@ -2,6 +2,103 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.46] — 2026-08-05
+
+### Fixed — a shared playlist could match the WRONG album, silently
+
+The title-only rung of the import resolver did not look at the artist at all. With Queen's
+"Greatest Hits" in the library and no Foo Fighters one, the entry *All My Life · Foo Fighters ·
+Greatest Hits* resolved to **Queen** — and was reported as a clean match, not even listed as a
+substitution. A miss is a visible, honest outcome; the wrong record placed quietly into somebody's
+playlist is the exact failure this report was built to prevent. The rung still exists, because a
+Various Artists compilation genuinely cannot name the track's artist, but an album crediting a
+*different* artist is now declined.
+
+### Fixed — owning two editions of an album made it unmatchable
+
+v1.7.44 began stripping edition suffixes to build identities, so "Greatest Hits" and "Greatest Hits
+(Deluxe Edition)" by one artist both claim the same key. They were then ambiguous *by construction*
+and every later rung declined — meaning a library that owned both editions resolved worse than one
+that owned neither, and worse than the same library did before v1.7.44. When exactly one of them is
+titled precisely what the share named, there was never anything ambiguous about it.
+
+### Added — Roon's name for a record can be longer than the one on disk
+
+Roon identifies a compilation as *"20th Century Masters - The Millennium Collection: The Best of The
+Cranberries"* where the files on disk say *"The Best Of The Cranberries (20th Century Masters)"*. No
+amount of suffix-stripping reaches that, because the extra words are on the front. A containment
+rung now bridges it, guarded hard: whole words only (never substrings — the v1.6.56 lesson), at
+least three of them, the credit must *name* the artist, and exactly one album may qualify.
+
+### Added — the extension now knows which tracks are on which album
+
+This was the real gap, and it is why the previous fix did not land. **Nothing in this extension
+recorded track titles.** The snapshot is album-level. The /music scan opens one file per *directory*
+and never reads the title tag. No service client makes a track-level call. So when a share named a
+record this library files under a different name, "which album holds this track, then?" had no
+answer at any price — every rung could only compare names, and no name comparison discovers that
+Roon groups a recording differently than the server that shared it.
+
+A new `album_tracks` table records Roon's own contents for an album, keyed by album identity rather
+than by offset so it outlives the snapshot. It fills itself for free: **every album you open in the
+app** writes its track list through. Import then answers from it with zero Roon calls, refusing on
+ambiguity exactly as the album rungs do — a track on two records is a coin flip, and the artist gate
+keeps somebody else's cover version out entirely.
+
+For what is still unknown, import runs a **second pass** that opens the handful of library albums
+credited to that artist and reads their contents — bounded to 25 albums per import and 8 per entry,
+cached permanently, and shared across entries so two tracks off one record cost one lookup. It runs
+automatically after the instant result is already on screen, because a manual search is the thing
+this replaces.
+
+Also: the play history is no longer matched byte-for-byte (Roon's "Dreams (Remastered 2020)" now
+meets a share's "Dreams"), its artist column is grouped correctly instead of being an arbitrary row's
+value used as a veto, and the import resolves each entry once rather than twice.
+
+### Fixed — a silent zone after the Random Album Radio appended an album
+
+Following the v1.7.45 investigation, with `/api/radio` confirming radio was enabled for the reporting
+user's zone. Two defects, one of which needs no timing assumption at all:
+
+- **The recovery was suppressed and its evidence spent.** When a top-up was in flight and the queue
+  ran dry, the resulting `"play"` decision was dropped by the "already working" guard — but the line
+  recording the zone's state ran anyway, consuming the playing→stopped transition that is the only
+  thing authorising `"play"`. It could then never fire again for that episode, so a slow or failed
+  top-up left the zone silent for good. A dropped decision no longer consumes the transition, and a
+  re-check reconsiders the zone once the guard lapses, because a stopped zone emits no further events
+  on its own.
+- **An append landing in a queue Roon had already stopped.** The append fires during the last track
+  but takes eight sequential Roon calls to land. If the audio runs out first, the album arrives in a
+  stopped queue and nothing restarts it: the radio's only start verb was Roon's browse Play Now,
+  which *replaces* a queue, so it is correctly never used on a queue with music in it. A third verb
+  now resumes the existing queue instead. It is scoped to finishing what the extension started —
+  it fires only when the zone stopped while *our own* append was in flight, once per episode, and
+  never when Roon says the zone cannot play. The queue floor also moved from one track of headroom
+  to two, which costs nothing because appending is not destructive.
+
+This is a mechanism that fits the report; it is not proof that it caused it. The v1.7.45 `[zone]`
+logging is what will settle that, and a `[radio] resume` line now says plainly when it happens.
+
+### Fixed — a Roon browse call that never came back hung forever
+
+`browse` and `load` were the only I/O in the file with no deadline — `/api/queue` has one, every
+HTTP fetch goes through `fetchWithTimeout`. A Core that accepted a call and never answered left its
+promise pending permanently, leaking the pooled browse session and, on the radio path, never
+clearing the "already working" guard. Now 90 seconds: a stuck-call backstop, deliberately far beyond
+any healthy call so a slow Core is not broken by it.
+
+Guard hardening throughout: `Number.isFinite`, not `typeof x === "number"`. NaN passes the typeof
+test and every comparison against it is false, so the same value read as "not empty" *and* "not
+full" — it slipped through the new resume guard during development and was caught by a mutation
+check.
+
+### Tests
+- `test/unit/import-tracks.test.js` — 38 tests over the resolver's rungs and the track index,
+  including the Queen mis-match as a named regression. 12/12 mutations caught.
+- `test/unit/radio.test.js` — extended to 32; 8/9 mutations caught (the ninth is a
+  consistency-only change with no behavioural difference, and is not claimed as covered).
+- Suite: 37 static / 642 unit / 274 dom.
+
 ## [1.7.45] — 2026-08-05
 
 ### Investigated — "playback stops at the end of an album even when another track is queued"

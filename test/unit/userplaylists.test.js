@@ -44,11 +44,11 @@ const ALBUMS = [
 ];
 
 const {
-  userTrackRecord, userPlaylistRecord, decodeSharePayload, resolveSharedTrack,
+  userTrackRecord, userPlaylistRecord, decodeSharePayload,
   encodeSharePayload, buildShareDoc, shareMagic,
   userPlNameMax, userPlTracksMax, albumKeys, resolveSharedEntry, findSharedAlbum,
 } = loadIndexFunctions(
-  ["userTrackRecord", "userPlaylistRecord", "decodeSharePayload", "resolveSharedTrack",
+  ["userTrackRecord", "userPlaylistRecord", "decodeSharePayload", "shareTrackRecord",
    "encodeSharePayload", "buildShareDoc", "shareMagic", "shareText", "shareInt",
    "shareUriList", "sharePrune", "shareTrackEntry",
    "shareTextMax", "shareNameMax", "shareTrackMax", "shareUriMax",
@@ -60,7 +60,13 @@ const {
    // library's grouping. All of it is EXTRACTED — a stubbed matcher would be
    // testing the stub's tolerance, which is the whole subject here.
    "resolveSharedAlbum", "findSharedAlbum", "libraryLookup", "playsForTrack",
-   "resolveSharedEntry", "namesEqualLoose"],
+   "resolveSharedEntry", "namesEqualLoose",
+   // v1.7.46: the resolver stopped letting a bare title outvote the artist,
+   // gained a containment rung for Roon's longer names, and gained a track
+   // index. All extracted for the same reason as above.
+   "isCompilationCredit", "sharedCreditAgrees", "titleContainsPhrase",
+   "findSharedAlbumByContainment", "sharedContainmentMinWords",
+   "trackTitleKeys", "albumKeysForTrack", "resolveSharedByTrackIndex", "albumKey"],
   {
     zlib,
     pkg: { version: "9.9.9" },
@@ -80,8 +86,18 @@ const {
     DEBUG: false,
     // libraryLookup's memo. Injected so each load gets its own rather than
     // sharing one across test files.
-    _libLookup: { builtAt: -1, byKey: null, byTitle: null },
+    _libLookup: { builtAt: -1, byKey: null, byTitle: null, byAkey: null, canon: null },
   });
+
+// v1.7.46 folded resolveSharedTrack into resolveSharedEntry — it used to
+// resolve the album a SECOND time to produce the record, which doubled the SQL
+// on the history rung and would have doubled it again on the track rung. The
+// assertions below are about resolution, not about which of the two functions
+// you call, so they keep running against the real path through this shim.
+function resolveSharedTrack(entry) {
+  const found = resolveSharedEntry(entry);
+  return found ? found.track : null;
+}
 
 // Production builds srcKeys with albumKeys(title, subtitle) in indexRecord().
 // Computing them the same way here is what lets the identity rung be exercised

@@ -18,7 +18,7 @@ const RoonApiTransport = require("node-roon-api-transport");
 const RoonApiSettings  = require("node-roon-api-settings");
 
 const { createUpdater } = require("./lib/updater");
-const { radioDecision } = require("./lib/radio");
+const { radioDecision, radioResumeDecision, radioQueueFloor } = require("./lib/radio");
 const pkg = require("./package.json");
 // Parse "1.6.31" → display "MusicD Remote v1.6 (Build 31)"
 const [_vmaj, _vmin, _vpatch] = (pkg.version || "0.0.0").split(".");
@@ -240,6 +240,7 @@ const roon = new RoonApi({
           delete zones[zid];
           delete zonePrevState[zid]; // zone offline — reset so it won't auto-start if it returns
           delete zoneLogPrev[zid];   // and so its return reads as a first sighting, not a transition
+          cancelRadioRecheck(zid);   // nothing to re-examine on a zone that is gone
         });
       }
     });
@@ -463,12 +464,43 @@ if (_updTimer.unref) _updTimer.unref();
 // Every Roon browse/load/image call is traced with its round-trip duration:
 // the request at DEBUG, the outcome with ms at DEBUG, failures ALWAYS (with
 // the offending opts — a failed Roon call should never be invisible).
+// The browse path was the only I/O in this file with no deadline at all —
+// /api/queue has one, every HTTP fetch goes through fetchWithTimeout, the
+// source probe races a deadline. A Core that accepts a call and never answers
+// left the caller's promise pending FOREVER: its pooled browse session was
+// never released, and on the radio path its "already working" guard was never
+// cleared. Generous on purpose — this is a stuck-call backstop, not a
+// performance budget, and a slow-but-working Core must not be broken by it.
+function roonCallTimeoutMs() { return 90000; }
+
+// Wrap a settle-once callback with a deadline. `who` names the call in the log.
+function withRoonDeadline(kind, who, reject) {
+  let done = false;
+  const timer = setTimeout(() => {
+    if (done) return;
+    done = true;
+    console.error("[" + kind + "] no answer after " + roonCallTimeoutMs() + "ms: " + who);
+    reject(new Error("Roon did not answer in time"));
+  }, roonCallTimeoutMs());
+  if (timer.unref) timer.unref();   // never hold the process open
+  return {
+    settle(fn) {
+      if (done) return;             // the deadline already rejected this call
+      done = true;
+      clearTimeout(timer);
+      fn();
+    },
+  };
+}
+
 function browse(opts) {
   return new Promise((resolve, reject) => {
     if (!core) return reject(new Error("Not paired with a Roon Core yet"));
     const t0 = Date.now();
     if (DEBUG) console.log("[browse]", JSON.stringify(opts));
-    core.services.RoonApiBrowse.browse(opts, (err, body) => {
+    const guard = withRoonDeadline("browse",
+      (opts.multi_session_key || "-") + " " + (opts.hierarchy || "-"), reject);
+    core.services.RoonApiBrowse.browse(opts, (err, body) => guard.settle(() => {
       const ms = Date.now() - t0;
       // Concurrent operations interleave in the log, so the :res line carries
       // the session key + request shape — a slow call is attributable without
@@ -484,7 +516,7 @@ function browse(opts) {
                              body && body.list && body.list.title,
                              "count:", body && body.list ? body.list.count : "-");
       resolve(body);
-    });
+    }));
   });
 }
 function load(opts) {
@@ -492,7 +524,9 @@ function load(opts) {
     if (!core) return reject(new Error("Not paired with a Roon Core yet"));
     const t0 = Date.now();
     if (DEBUG) console.log("[load]", JSON.stringify(opts));
-    core.services.RoonApiBrowse.load(opts, (err, body) => {
+    const guard = withRoonDeadline("load",
+      (opts.multi_session_key || "-") + " " + (opts.hierarchy || "-"), reject);
+    core.services.RoonApiBrowse.load(opts, (err, body) => guard.settle(() => {
       const ms = Date.now() - t0;
       // Same attribution as [browse:res]: key + hierarchy + offset/count.
       const who = (opts.multi_session_key || "-") + " " + (opts.hierarchy || "-") +
@@ -506,7 +540,7 @@ function load(opts) {
                             "items:", (body && body.items || []).length,
                             "total:", body && body.list ? body.list.count : "-");
       resolve(body);
-    });
+    }));
   });
 }
 function getImage(image_key, opts) {
@@ -1170,6 +1204,12 @@ async function openAlbumByOffset(offset, zoneOrOutputId, invokeKind, filter, exp
         title:    stripTrackNumber(t.title),
         subtitle: t.subtitle || ""
       }));
+
+    // Roon's own contents for this album, recorded under the album's identity.
+    // Free: the list is already in hand, and this is the only place in the
+    // extension that ever learns which tracks Roon puts on a record. Playlist
+    // import reads it back to answer the question no name comparison can.
+    rememberAlbumTracks(albumInfo.title, albumInfo.subtitle, tracks);
 
     let actions = [];
     if (playMenu) {
@@ -2024,6 +2064,35 @@ function openLabelsDb() {
         body TEXT NOT NULL,
         ts   INTEGER NOT NULL
       );
+      -- Which tracks sit on which album, in ROON's grouping.
+      --
+      -- Nothing else in this extension knows this. The snapshot is album-level,
+      -- the /music scan samples one file per directory and never reads a track
+      -- title, and no service client makes a track-level call. So when a shared
+      -- playlist names a record this library files under a different name, the
+      -- question "which album holds this track, then?" had no answer at all.
+      --
+      -- Keyed by album IDENTITY, never by offset: offsets are positions in a
+      -- list that reshuffles on every library change, and this table outlives
+      -- many of those. The tkey column is the canonical track title, so a
+      -- remaster suffix on one side does not hide a match.
+      CREATE TABLE IF NOT EXISTS album_tracks (
+        akey  TEXT NOT NULL,
+        tkey  TEXT NOT NULL,
+        title TEXT NOT NULL,
+        n     INTEGER NOT NULL,
+        ts    INTEGER NOT NULL,
+        PRIMARY KEY (akey, tkey)
+      );
+      -- The reverse lookup is the whole point of the table, and it is the one
+      -- query here that would otherwise scan. (These are the first indexes in
+      -- this database — every other table is read by primary key.)
+      CREATE INDEX IF NOT EXISTS album_tracks_tkey ON album_tracks(tkey);
+      -- The plays table is read by track title on the import path, and it is
+      -- the only table here that grows without bound. Expression index because
+      -- the query compares lower(trim(track)) — an index on the bare column
+      -- cannot serve it.
+      CREATE INDEX IF NOT EXISTS plays_track ON plays(lower(trim(track)));
     `);
     // `src` records WHERE a year came from, so a better source can correct a
     // worse one (see yearSourceRank). Added after the table shipped without
@@ -8293,12 +8362,107 @@ function playsForTrack(trackTitle) {
   const t = String(trackTitle || "").toLowerCase().trim();
   if (!t) return [];
   try {
-    return labelsDb.prepare(
-      "SELECT album, artist, COUNT(*) n FROM plays " +
+    // GROUP BY album AND artist. Grouping by album alone made `artist` a bare
+    // column over a group — SQLite returns an arbitrary row's value — and the
+    // caller uses it as a gate. One differently-rendered credit among a
+    // hundred plays could therefore veto the whole album.
+    const exact = labelsDb.prepare(
+      "SELECT track, album, artist, COUNT(*) n FROM plays " +
       "WHERE lower(trim(track)) = ? AND album != '' " +
-      "GROUP BY lower(trim(album)) ORDER BY n DESC LIMIT 8").all(t);
+      "GROUP BY lower(trim(album)), lower(trim(artist)) ORDER BY n DESC LIMIT 8").all(t);
+    if (exact.length) return exact;
+
+    // Byte-exact is how this shipped, and it misses everything an edition
+    // suffix touches: Roon's "Dreams (Remastered 2020)" never equals a share's
+    // "Dreams". Retry canonically, using the same variant stripper the album
+    // side has always used. Bounded, and only reached when the cheap query
+    // found nothing.
+    const want = trackTitleKeys(trackTitle);
+    if (!want.length) return [];
+    const rows = labelsDb.prepare(
+      "SELECT track, album, artist, COUNT(*) n FROM plays WHERE album != '' " +
+      "GROUP BY lower(trim(track)), lower(trim(album)), lower(trim(artist)) " +
+      "ORDER BY n DESC LIMIT 5000").all();
+    const out = [];
+    for (const r of rows) {
+      if (trackTitleKeys(r.track).some(k => want.includes(k))) out.push(r);
+      if (out.length === 8) break;
+    }
+    return out;
   } catch (e) {
     return [];   // DB unavailable — this rung simply does not fire
+  }
+}
+
+// Every canonical form a track title could be known by. Track titles carry the
+// same edition noise album titles do ("(Remastered)", "- 2011 Remaster"), and
+// `albumTitleVariants` already strips exactly that, so this is deliberately the
+// same function rather than a second nearly-identical one.
+function trackTitleKeys(title) {
+  return albumTitleVariants(title);
+}
+
+// Which albums, in Roon's own grouping, contain a track with this title.
+//
+// This is the answer the rest of the resolver cannot reach: it comes from
+// Roon's album contents, recorded by rememberAlbumTracks whenever this
+// extension has had an album open for any reason. Returns album identity keys,
+// most specific first; the caller maps them back to the snapshot.
+function albumKeysForTrack(trackTitle) {
+  if (!labelsDb) return [];
+  const keys = trackTitleKeys(trackTitle);
+  if (!keys.length) return [];
+  try {
+    const qs = keys.map(() => "?").join(",");
+    return labelsDb.prepare(
+      "SELECT akey, tkey, title, n FROM album_tracks WHERE tkey IN (" + qs + ") " +
+      "ORDER BY n ASC LIMIT 24").all(...keys);
+  } catch (e) {
+    return [];   // table missing (pre-migration DB) — this rung does not fire
+  }
+}
+
+// Record an album's track list under the album's identity. Called from every
+// place that already HAS a track list in hand, so the index fills itself from
+// ordinary use — opening an album in the app, adding albums to a playlist —
+// and costs not one extra Roon call to build.
+function rememberAlbumTracks(albumTitle, albumSubtitle, tracks) {
+  if (!labelsDb || !Array.isArray(tracks) || !tracks.length) return 0;
+  const akey = albumKey(albumTitle, albumSubtitle);
+  if (!akey) return 0;   // punctuation-only title — see albumKey's comment
+  try {
+    const ins = labelsDb.prepare(
+      "INSERT OR REPLACE INTO album_tracks (akey, tkey, title, n, ts) VALUES (?,?,?,?,?)");
+    const now = Date.now();
+    let n = 0;
+    const write = labelsDb.transaction(() => {
+      // Replaced wholesale rather than merged: an album whose track list
+      // changed (a re-rip, a different edition taking the same identity)
+      // must not keep the old titles as phantom members.
+      labelsDb.prepare("DELETE FROM album_tracks WHERE akey = ?").run(akey);
+      for (let i = 0; i < tracks.length; i++) {
+        const title = String((tracks[i] && tracks[i].title) || "").trim();
+        if (!title) continue;
+        // A row per VARIANT, not per track: Roon renders "Dreams (2004
+        // Remaster)" and a share carries "Dreams". The reader strips suffixes
+        // from the query, so the writer has to file both forms or the two
+        // sides never meet. Two tracks reducing to the same key just means the
+        // album is reachable by that key, which is all the reader asks.
+        let stored = false;
+        for (const tkey of trackTitleKeys(title)) {
+          ins.run(akey, tkey, title, i, now);
+          stored = true;
+        }
+        if (stored) n++;
+      }
+    });
+    write();
+    return n;
+  } catch (e) {
+    // Best-effort cache write. A failure here costs a slower import later, and
+    // must never break the album the user actually asked to open.
+    if (DEBUG) console.warn("[tracks] remember failed: " + e.message);
+    return 0;
   }
 }
 
@@ -8319,10 +8483,11 @@ function playsForTrack(trackTitle) {
 // title+artist key can ever intersect. Matching on the title alone is safe
 // only when exactly one album has it, which is why the arrays are kept rather
 // than a first-wins map.
-let _libLookup = { builtAt: -1, byKey: null, byTitle: null };
+let _libLookup = { builtAt: -1, byKey: null, byTitle: null, byAkey: null, canon: null };
 function libraryLookup() {
   if (_libLookup.builtAt === albumIndex.builtAt && _libLookup.byKey) return _libLookup;
-  const byKey = new Map(), byTitle = new Map();
+  const byKey = new Map(), byTitle = new Map(), byAkey = new Map();
+  const canon = [];
   const push = (map, k, al) => {
     if (!k) return;
     let arr = map.get(k);
@@ -8332,9 +8497,50 @@ function libraryLookup() {
   for (const al of albumIndex.albums) {
     for (const k of (al.srcKeys || [])) push(byKey, k, al);
     for (const t of albumTitleVariants(al.title || "")) push(byTitle, t, al);
+    // `byAkey` is the single identity album_tracks rows are filed under —
+    // albumKey(), not the tolerant albumKeys() set, because the writer has one
+    // album in hand and must pick one name for it.
+    push(byAkey, albumKey(al.title || "", al.subtitle || ""), al);
+    // Precomputed once per library build so the containment rung is a string
+    // scan rather than 5,000 regexes per unmatched entry.
+    const c = canonText(al.title || "");
+    if (c) canon.push({ al, c, words: c.split(" ").length });
   }
-  _libLookup = { builtAt: albumIndex.builtAt, byKey, byTitle };
+  _libLookup = { builtAt: albumIndex.builtAt, byKey, byTitle, byAkey, canon };
   return _libLookup;
+}
+
+// A credit that names no artist in particular — Roon's compilation credit.
+// This is the ONE shape where an album may legitimately fail to mention the
+// artist a share names for a track on it.
+function isCompilationCredit(credit) {
+  const c = canonText(credit || "");
+  return !c || c === "various artists" || c === "various" || c === "va";
+}
+
+// Does this library album's credit agree with the artist the share named?
+//
+// Rung 2 used to skip this check entirely, which was not a near-miss: with a
+// library holding Queen's "Greatest Hits" and no Foo Fighters one, the entry
+// "All My Life · Foo Fighters · Greatest Hits" resolved to QUEEN — reported as
+// a clean match, not even flagged as a substitution. A title-only rung has to
+// exist (a compilation cannot name the track's artist) but it must decline an
+// album that names a DIFFERENT one.
+function sharedCreditAgrees(al, artist) {
+  if (!artist) return true;
+  if (creditHasArtist(al.subtitle || "", artist)) return true;
+  return isCompilationCredit(al.subtitle);
+}
+
+// Whole-word containment: is `needle` a run of complete words inside `hay`?
+// Substring containment would match "Live" inside "Living", which is how this
+// project got the artist-matching bugs eradicated in v1.6.56.
+function titleContainsPhrase(hay, needle) {
+  if (!hay || !needle) return false;
+  return hay === needle ||
+         hay.startsWith(needle + " ") ||
+         hay.endsWith(" " + needle) ||
+         hay.includes(" " + needle + " ");
 }
 
 // Find the one album in the library that a shared entry names, or null.
@@ -8344,6 +8550,9 @@ function libraryLookup() {
 // the wrong record in someone's playlist is worse than a miss they can see.
 function findSharedAlbum(albumTitle, artist) {
   const lut = libraryLookup();
+  const titles = albumTitleVariants(albumTitle);
+  if (!titles.length) return null;
+  const exactT = titles[0];   // the full title, nothing stripped
 
   // 1. Full identity, the tolerant one. Ambiguous identities are skipped
   //    outright: those are owned by more than one album by construction.
@@ -8357,10 +8566,11 @@ function findSharedAlbum(albumTitle, artist) {
   //    is credited to "Various Artists" here and to the track's own artist in
   //    the share, so no identity key can match — but if precisely one album in
   //    the library carries that title, there is nothing to be ambiguous about.
-  const titles = albumTitleVariants(albumTitle);
+  //    The credit still has to AGREE (see sharedCreditAgrees): one album with
+  //    the right title and a flatly different artist is a different record.
   for (const t of titles) {
     const arr = lut.byTitle.get(t);
-    if (arr && arr.length === 1) return arr[0];
+    if (arr && arr.length === 1 && sharedCreditAgrees(arr[0], artist)) return arr[0];
   }
 
   // 3. Several albums share the title — let the credit choose, using the same
@@ -8371,9 +8581,50 @@ function findSharedAlbum(albumTitle, artist) {
       if (!arr || arr.length < 2) continue;
       const named = arr.filter(a => creditHasArtist(a.subtitle || "", artist));
       if (named.length === 1) return named[0];
+      // Still several, all by this artist: the EDITION-TWIN shape. v1.7.44
+      // began stripping edition suffixes to build identities, so "Greatest
+      // Hits" and "Greatest Hits (Deluxe Edition)" both claim the same key and
+      // are ambiguous by construction — which made rung 1 skip them and every
+      // later rung decline, so owning both editions resolved worse than owning
+      // neither. When exactly one of them is titled precisely what the share
+      // named, there was never anything ambiguous about it.
+      const exact = (named.length ? named : arr).filter(a => canonText(a.title || "") === exactT);
+      if (exact.length === 1) return exact[0];
     }
   }
-  return null;
+
+  // 4. Roon's name for a record is routinely a SUPERSET of the one on disk:
+  //    "20th Century Masters - The Millennium Collection: The Best of The
+  //    Cranberries" for a share's "The Best Of The Cranberries (20th Century
+  //    Masters)". No amount of suffix-stripping bridges that, because the
+  //    extra words are on the front.
+  //
+  //    Guarded hard, because containment is the loosest thing in this file:
+  //    whole words only, at least three of them, the credit must NAME the
+  //    artist (the compilation escape from rung 3 is deliberately not allowed
+  //    here), and exactly one album may qualify.
+  return findSharedAlbumByContainment(titles, artist, lut);
+}
+
+function sharedContainmentMinWords() { return 3; }
+
+function findSharedAlbumByContainment(titles, artist, lut) {
+  if (!artist) return null;   // nothing to confirm a loose title against
+  const probes = titles.filter(t => t.split(" ").length >= sharedContainmentMinWords());
+  if (!probes.length) return null;
+  let hit = null;
+  for (const entry of lut.canon) {
+    if (entry.words < sharedContainmentMinWords()) continue;
+    let touches = false;
+    for (const t of probes) {
+      if (titleContainsPhrase(entry.c, t) || titleContainsPhrase(t, entry.c)) { touches = true; break; }
+    }
+    if (!touches) continue;
+    if (!creditHasArtist(entry.al.subtitle || "", artist)) continue;
+    if (hit && hit !== entry.al) return null;   // two candidates — decline
+    hit = entry.al;
+  }
+  return hit;
 }
 
 // The whole resolution, in rungs. Returns { album, via } or null.
@@ -8387,9 +8638,20 @@ function resolveSharedAlbum(albumTitle, artist, trackTitle) {
     if (direct) return { album: direct, via: "album" };
   }
 
-  // The share's album is not in this library under any tolerant reading of its
-  // name — the compilation case. Ask the play history what Roon calls the
-  // record this track actually sits on, then resolve THAT name normally.
+  // The share's album is not in this library under any reading of its NAME.
+  // Every rung above compares names, and no name comparison can discover that
+  // Roon files a track on a different record than the sharing server does —
+  // which is the whole failure this feature keeps hitting.
+  //
+  // So stop asking about the album and ask about the TRACK. album_tracks holds
+  // Roon's own contents for every album this extension has had open, so when
+  // it has seen the album, this is exact rather than tolerant.
+  const byTrack = resolveSharedByTrackIndex(trackTitle, artist);
+  if (byTrack) return { album: byTrack, via: "tracks" };
+
+  // Last: the play history. Weaker than the track index — it knows only what
+  // this household has played, and it identifies the album by the line3 text
+  // Roon rendered at the time — so it runs after it, not before.
   for (const row of playsForTrack(trackTitle)) {
     // The history's artist column is the TRACK artist, which is exactly what a
     // share carries, so it is the right thing to compare against here.
@@ -8398,6 +8660,30 @@ function resolveSharedAlbum(albumTitle, artist, trackTitle) {
     if (hit) return { album: hit, via: "history" };
   }
   return null;
+}
+
+// Track title -> the one library album that holds it. Zero Roon calls.
+//
+// Refuses on ambiguity exactly like the album rungs do: a track title on two
+// different albums by the same artist (the original and the compilation) is a
+// coin flip, and the artist gate is what keeps a cover version by somebody
+// else out of it entirely.
+function resolveSharedByTrackIndex(trackTitle, artist) {
+  const rows = albumKeysForTrack(trackTitle);
+  if (!rows.length) return null;
+  const lut = libraryLookup();
+  let hit = null;
+  for (const row of rows) {
+    const arr = lut.byAkey.get(row.akey);
+    // A row whose album has left the library resolves to nothing — the table
+    // outlives individual snapshots by design.
+    if (!arr || arr.length !== 1) continue;
+    const al = arr[0];
+    if (artist && !sharedCreditAgrees(al, artist)) continue;
+    if (hit && hit !== al) return null;   // two albums hold it — decline
+    hit = al;
+  }
+  return hit;
 }
 
 // Match a shared entry against this library's snapshot. ZERO Roon calls.
@@ -8413,15 +8699,14 @@ function resolveSharedAlbum(albumTitle, artist, trackTitle) {
 // matched, so the report can show a substitution rather than make one quietly.
 // The album title is no longer required — the play-history rung finds a track
 // without one.
-function resolveSharedTrack(entry) {
+// Build the storable record from an album this entry has ALREADY resolved to.
+// Split out because resolveSharedEntry used to resolve twice — once for the
+// record and once for the `via` — which doubled the SQL on the history rung
+// and would have doubled it again on the track rung.
+function shareTrackRecord(entry, hit) {
   const title = shareText(entry && entry.title, shareTextMax());
-  if (!title) return null;
-  const albumTitle = shareText(entry && entry.album, shareTextMax());
+  if (!title || !hit) return null;
   const artist = shareText(entry && entry.creator, shareTextMax());
-
-  const found = resolveSharedAlbum(albumTitle, artist, title);
-  if (!found) return null;
-  const hit = found.album;
 
   return userTrackRecord({
     album_offset: hit.offset,
@@ -8437,6 +8722,78 @@ function resolveSharedTrack(entry) {
   });
 }
 
+// How many albums one import may open on the Core to fill the track index, in
+// total and for any single entry. This is the only part of import that is not
+// free, so it is bounded twice: an import of 500 unmatched entries must not
+// turn into 2,500 browse calls.
+function shareDeepAlbumMax()    { return 25; }
+function shareDeepPerEntryMax() { return 8; }
+
+// Album identities whose contents are already recorded. Read once per deep
+// pass so the candidate loop never re-opens an album this extension has
+// already seen — that is the whole economy of the cache.
+function indexedAlbumKeys() {
+  if (!labelsDb) return new Set();
+  try {
+    return new Set(labelsDb.prepare("SELECT DISTINCT akey FROM album_tracks").all().map(r => r.akey));
+  } catch (e) {
+    return new Set();   // table missing on a pre-migration DB — nothing indexed
+  }
+}
+
+// Fill the track index on demand for entries no name could resolve.
+//
+// The candidates are not a search: they are the albums in THIS library credited
+// to the artist the share names, which is a handful even for a prolific one.
+// Opening each records its contents (openAlbumByOffset writes through), so the
+// ordinary track rung answers immediately afterwards — and the work is done
+// once, for good, for every future import and every other entry by that artist
+// in this one.
+async function deepResolveSharedEntries(pending) {
+  if (!core || !pending.length) return;
+  const indexed = indexedAlbumKeys();
+  const tried = new Set();
+  let budget = shareDeepAlbumMax();
+
+  for (const p of pending) {
+    if (budget <= 0) break;
+    if (p.found || !p.artist) continue;   // no artist, no candidate list
+
+    // An earlier entry may already have opened the album this one needs —
+    // Dreams and Linger come off the same record — so ask before spending.
+    let hit = resolveSharedByTrackIndex(p.title, p.artist);
+    if (hit) { p.found = { album: hit, via: "tracks" }; continue; }
+
+    const cands = [];
+    for (const al of albumIndex.albums) {
+      if (cands.length >= shareDeepPerEntryMax()) break;
+      if (!creditHasArtist(al.subtitle || "", p.artist)) continue;
+      const k = albumKey(al.title || "", al.subtitle || "");
+      if (!k || indexed.has(k) || tried.has(k)) continue;
+      cands.push({ al, k });
+    }
+
+    for (const c of cands) {
+      if (budget <= 0) break;
+      tried.add(c.k);
+      budget--;
+      try {
+        await openAlbumByOffset(c.al.offset, null, null, null,
+                                { title: c.al.title, subtitle: c.al.subtitle });
+        indexed.add(c.k);
+      } catch (e) {
+        // A single unreadable album (moved offset mid-import, Core blip) must
+        // not abandon the rest of the pass. Logged, not swallowed.
+        console.log("[share] deep scan skipped " + JSON.stringify(c.al.title || "") +
+                    ": " + e.message);
+        continue;
+      }
+      hit = resolveSharedByTrackIndex(p.title, p.artist);
+      if (hit) { p.found = { album: hit, via: "tracks" }; break; }
+    }
+  }
+}
+
 // The same resolution, plus how it got there. Kept separate so the storable
 // record stays exactly the named-field literal it has always been — nothing
 // from a shared file may reach storage by any other route.
@@ -8447,7 +8804,7 @@ function resolveSharedEntry(entry) {
   const artist = shareText(entry && entry.creator, shareTextMax());
   const found = resolveSharedAlbum(albumTitle, artist, title);
   if (!found) return null;
-  const track = resolveSharedTrack(entry);
+  const track = shareTrackRecord(entry, found.album);
   if (!track) return null;
   return { track, via: found.via, album: found.album };
 }
@@ -8668,14 +9025,43 @@ app.post("/api/share/import", async (req, res) => {
     const resolved = [];
     const missing = [];
     const substituted = [];
-    for (const e of entries) {
-      const found = resolveSharedEntry(e);
+
+    // Pass 1 — names only, zero Roon calls, exactly as before.
+    const state = entries.map(e => ({
+      entry: e,
+      title:  shareText(e && e.title, shareTextMax()),
+      artist: shareText(e && e.creator, shareTextMax()),
+      found:  resolveSharedEntry(e),
+    }));
+
+    // Pass 2 — ask the Core what is actually ON its albums, but only for what
+    // pass 1 could not place, and only when the caller asked for it. The client
+    // renders pass 1 first and then requests this, so the report is never
+    // waiting on browse calls it may not need.
+    if (req.body && req.body.deep) {
+      try {
+        await deepResolveSharedEntries(state.filter(s => !s.found));
+      } catch (e) {
+        // The fast result is already computed and worth returning; a failed
+        // deep pass costs coverage, not the import.
+        console.warn("[share] deep pass failed: " + e.message);
+      }
+      for (const s of state) {
+        if (s.found && !s.found.track) s.found.track = shareTrackRecord(s.entry, s.found.album);
+        if (s.found && !s.found.track) s.found = null;
+      }
+    }
+
+    for (const s of state) {
+      const e = s.entry;
+      const found = s.found;
       if (found) {
         resolved.push(found.track);
-        // Matched, but not on the album the share named — the play history
-        // knew what Roon calls the record this track actually sits on. Listed
-        // so the user sees the substitution instead of wondering later why a
-        // track's album reads differently from the playlist they were sent.
+        // Matched, but not on the album the share named — the track index or
+        // the play history knew what Roon calls the record this track actually
+        // sits on. Listed so the user sees the substitution instead of
+        // wondering later why a track's album reads differently from the
+        // playlist they were sent.
         if (found.via !== "album") {
           substituted.push({
             title: shareText(e && e.title, 200),
@@ -8702,6 +9088,12 @@ app.post("/api/share/import", async (req, res) => {
       resolved,
       missing,
       substituted,
+      // Whether a second, Core-reading pass could still find some of the
+      // misses. The client uses it to decide whether to offer one — never
+      // guessing from `missing.length`, because a deep pass that has already
+      // run must not be offered again.
+      deep: !!(req.body && req.body.deep),
+      deep_available: !!core && !!missing.length && !(req.body && req.body.deep),
     });
   } catch (e) {
     console.warn("[share] import failed:", e.message);
@@ -10861,10 +11253,22 @@ function logZoneTransition(z) {
               (np ? " np=" + JSON.stringify((np.line1 || "") + " / " + (np.line2 || "")) : ""));
 }
 
+function radioBusyMs() { return 30000; }
+
+// Is a top-up already in flight for this zone? Split out of radioTopUp so the
+// caller can tell "I acted" from "I was dropped" WITHOUT awaiting — which
+// matters because it must not spend the playing→stopped transition on an
+// action that never ran. See handleRadioZone.
+function radioTopUpBlocked(zoneId) {
+  const st = radioBusy[zoneId];
+  return !!(st && st.active && (Date.now() - st.ts) < radioBusyMs());
+}
+
 async function radioTopUp(zoneId, mode) {
   const st = radioBusy[zoneId] || (radioBusy[zoneId] = { active: false, ts: 0 });
-  if (st.active && (Date.now() - st.ts) < 30000) return; // already working; 30s safety
+  if (radioTopUpBlocked(zoneId)) return; // already working
   st.active = true; st.ts = Date.now();
+  st.strandedAt = 0; st.resumed = false;   // a fresh episode
   try {
     const pick = await pickSmartAlbum();
     if (!pick) { st.active = false; return; }
@@ -10898,25 +11302,84 @@ function handleRadioZone(z, isInitial, allowPlay) {
   const zid = z.zone_id;
   const st  = radioBusy[zid] || (radioBusy[zid] = { active: false, ts: 0 });
 
-  // Clear the "working" guard once the queue is healthy again.
+  // Clear the "working" guard once the queue is healthy again — and with it
+  // the stranded episode, because a zone that is playing was never stranded.
   if ((z.state === "playing" || z.state === "loading") &&
-      typeof z.queue_items_remaining === "number" && z.queue_items_remaining > 1) {
+      typeof z.queue_items_remaining === "number" && z.queue_items_remaining > radioQueueFloor()) {
     st.active = false;
+    st.strandedAt = 0;
+    st.resumed = false;
+  }
+
+  // Latch the stranding HERE, at the moment it happens, while our own append
+  // is still in flight. It cannot be re-derived later: by the time the append
+  // lands the zone has been stopped for a while and every trace of the
+  // transition is gone.
+  if (z.state === "stopped" && st.active && !st.strandedAt) st.strandedAt = Date.now();
+
+  // Did the append land in a queue Roon had already stopped? Then finish what
+  // we started — resume the queue, never replace it.
+  if (radioResumeDecision(z, true, st)) {
+    st.resumed = true;
+    console.log("[radio] resume -> " + zid + " (our append landed on a stopped zone, remaining=" +
+                z.queue_items_remaining + ")");
+    try {
+      core.services.RoonApiTransport.control(zid, "play", (err) => {
+        if (err) console.error("[radio] resume failed -> " + zid + ": " +
+                               (typeof err === "string" ? err : JSON.stringify(err)));
+      });
+    } catch (e) {
+      console.error("[radio] resume threw -> " + zid + ": " + e.message);
+    }
   }
 
   const decision = radioDecision(z, true);
+  // Whether the decision was actually CARRIED OUT. A decision the busy guard
+  // dropped must not consume the transition below: doing so spent the one
+  // piece of evidence that authorises "play" on an action that never ran, so
+  // a slow or failed top-up left the zone silent for good.
+  let acted = true;
   if (decision === "queue") {
-    radioTopUp(zid, "queue");
+    if (radioTopUpBlocked(zid)) acted = false;
+    else radioTopUp(zid, "queue");
   } else if (decision === "play" && !isInitial) {
     // Only start playback when we witnessed this zone transition from
     // playing/loading → stopped (queue ran out naturally), OR when the caller
     // explicitly requested it (user just enabled radio on an idle zone).
     const wasPlaying = zonePrevState[zid] === "playing" || zonePrevState[zid] === "loading";
-    if (wasPlaying || allowPlay) radioTopUp(zid, "play");
+    if (wasPlaying || allowPlay) {
+      if (radioTopUpBlocked(zid)) acted = false;
+      else radioTopUp(zid, "play");
+    }
   }
 
-  // Record state AFTER the decision so the next event sees a real transition.
-  zonePrevState[zid] = z.state;
+  // A stopped zone emits no further events on its own, so a dropped decision
+  // would otherwise never be reconsidered. Re-examine it once the guard has
+  // lapsed, with whatever the zone looks like then.
+  if (!acted) scheduleRadioRecheck(zid);
+
+  // Record state AFTER the decision so the next event sees a real transition —
+  // but only when the decision was acted on, for the reason above.
+  if (acted) zonePrevState[zid] = z.state;
+}
+
+// One pending re-examination per zone, at most. Cleared when it fires, when
+// radio is switched off for the zone, and when the zone goes away.
+const radioRecheckTimers = {};
+function scheduleRadioRecheck(zid) {
+  if (radioRecheckTimers[zid]) return;
+  const t = setTimeout(() => {
+    delete radioRecheckTimers[zid];
+    const z = zones[zid];
+    if (z && radioZones.has(zid)) handleRadioZone(z);
+  }, radioBusyMs() + 2000);
+  if (t.unref) t.unref();   // a pending recheck must never hold the process open
+  radioRecheckTimers[zid] = t;
+}
+function cancelRadioRecheck(zid) {
+  if (!radioRecheckTimers[zid]) return;
+  clearTimeout(radioRecheckTimers[zid]);
+  delete radioRecheckTimers[zid];
 }
 
 // ---------------------------------------------------------------------------
@@ -10988,7 +11451,11 @@ app.post("/api/radio", (req, res) => {
     radioZones.add(zoneId);
   } else {
     radioZones.delete(zoneId);
-    if (radioBusy[zoneId]) radioBusy[zoneId].active = false;
+    if (radioBusy[zoneId]) {
+      radioBusy[zoneId].active = false;
+      radioBusy[zoneId].strandedAt = 0;   // radio off means no episode to finish
+    }
+    cancelRadioRecheck(zoneId);
   }
   persistRadio();
   res.json({ ok: true, enabled });

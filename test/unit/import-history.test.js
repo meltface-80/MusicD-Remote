@@ -62,10 +62,13 @@ function build(rows) {
 
   const F = loadIndexFunctions(
     ["resolveSharedAlbum", "findSharedAlbum", "libraryLookup", "playsForTrack",
-     "resolveSharedTrack", "resolveSharedEntry", "userTrackRecord",
+     "shareTrackRecord", "resolveSharedEntry", "userTrackRecord",
      "shareText", "shareInt", "shareTextMax",
-     "normalize", "canonText", "canonArtist", "albumKeys", "albumTitleVariants",
-     "creditHasArtist", "namesEqualLoose"],
+     "normalize", "canonText", "canonArtist", "albumKey", "albumKeys",
+     "albumTitleVariants", "creditHasArtist", "namesEqualLoose",
+     "isCompilationCredit", "sharedCreditAgrees", "titleContainsPhrase",
+     "findSharedAlbumByContainment", "sharedContainmentMinWords",
+     "trackTitleKeys", "albumKeysForTrack", "resolveSharedByTrackIndex"],
     {
       labelsDb: db,
       DEBUG: false,
