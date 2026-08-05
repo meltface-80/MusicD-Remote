@@ -244,19 +244,6 @@
           <span>Rescan library</span>
         </button>
         <div class="menu-sep"></div>
-        <!-- Roon's own all-zone actions (pause_all / mute_all). -->
-        <button class="menu-item" type="button" data-action="pause-all">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
-          <span>Pause all zones</span>
-        </button>
-        <button class="menu-item" type="button" data-action="mute-all">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><line x1="16" y1="9" x2="21" y2="15"/><line x1="21" y1="9" x2="16" y2="15"/></svg>
-          <span>Mute all zones</span>
-        </button>
-        <button class="menu-item" type="button" data-action="unmute-all">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>
-          <span>Unmute all zones</span>
-        </button>
         <button class="menu-item" type="button" data-target="settings-toggle">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           <span>Settings</span>
@@ -535,6 +522,9 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
                 <div class="np-device-list" id="np-device-list"></div>
                 <button class="np-popover-action" type="button" id="np-group-open">Group zones…</button>
                 <button class="np-popover-action" type="button" id="np-power-open">Device power…</button>
+                <button class="np-popover-action" type="button" id="np-pause-all">Pause all zones</button>
+                <button class="np-popover-action" type="button" id="np-mute-all">Mute all zones</button>
+                <button class="np-popover-action" type="button" id="np-unmute-all">Unmute all zones</button>
               </div>
 
               <!-- Roon Radio: Roon's own keep-playing-forever feature. Lives
@@ -672,6 +662,9 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
       <div class="np-device-list" id="mt-zone-list"></div>
       <button class="np-popover-action" type="button" id="mt-group-open">Group zones…</button>
       <button class="np-popover-action" type="button" id="mt-power-open">Device power…</button>
+      <button class="np-popover-action" type="button" id="mt-pause-all">Pause all zones</button>
+      <button class="np-popover-action" type="button" id="mt-mute-all">Mute all zones</button>
+      <button class="np-popover-action" type="button" id="mt-unmute-all">Unmute all zones</button>
     </div>
 
     <!-- Roon-style volume sheet: [icon + value] [slider with min/max scale] [− +] -->
@@ -872,6 +865,17 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             <span class="settings-nav-txt">
               <span class="settings-nav-title">Streaming accounts</span>
               <span class="settings-nav-desc">Qobuz &amp; Tidal</span>
+            </span>
+            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+
+          <button class="settings-nav-item" type="button" data-pane="smartpicks">
+            <span class="settings-nav-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.5-4.5"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>
+            </span>
+            <span class="settings-nav-txt">
+              <span class="settings-nav-title">Smart Picks</span>
+              <span class="settings-nav-desc">Daily discoveries &amp; schedule</span>
             </span>
             <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
@@ -1159,6 +1163,43 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
               <span class="switch-track"><span class="switch-thumb"></span></span>
             </label>
           </div>
+        </div>
+      </div>
+
+      <!-- Smart Picks -->
+      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="smartpicks">
+        <div class="settings-pane-head">
+          <button class="settings-back" type="button" data-settings-back aria-label="Back to settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h2>Smart Picks</h2>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Build the day's picks at <button class="settings-info-btn" data-info="The hour the daily build runs, in this server's local time. It analyses your library, asks ListenBrainz and MusicBrainz for artists you don't own, and adds the five genre-based picks to your streaming library so Roon can import them. Early morning keeps all of that away from Roon's own work and gives Roon the rest of the night to import. If the extension is off at that hour, the build runs the next time it starts." aria-label="Info">ⓘ</button></span>
+            <select id="picks-hour" class="settings-select" aria-label="Smart Picks build hour"></select>
+          </div>
+          <div class="settings-note">Nothing here touches your Roon Core — the analysis reads the library snapshot the extension already keeps.</div>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Add the five genre picks automatically <button class="settings-info-btn" data-info="Favourites the five genre-based picks in your Qobuz or TIDAL library as soon as they are chosen, so Roon imports them overnight and they are ready to play by morning. The stretch pick is never added automatically — that one is always yours to accept or reject. Turn this off and all six become Add / Not for me." aria-label="Info">ⓘ</button></span>
+            <label class="switch">
+              <input type="checkbox" id="picks-autoadd" aria-label="Add the five genre picks automatically">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+          <div class="settings-note" id="picks-service-note"></div>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Rebuild today's picks now</span>
+            <button id="picks-rebuild" class="settings-update-btn" type="button">Rebuild</button>
+          </div>
+          <div class="settings-note">Discards today's set and chooses six again. Takes a minute or two.</div>
         </div>
       </div>
 

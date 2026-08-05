@@ -696,10 +696,15 @@
       });
       const j = await r.json();
       if (j && j.ok) {
-        button.textContent = smartPickAddLabel(true);
+        // Deliberately not just "Added": the album is in the streaming library
+        // now, but Roon imports on its own schedule, and the first version's
+        // bare "Added" left people wondering why they still could not play it.
+        button.textContent = "✓ Added — waiting for Roon";
         button.classList.add("is-done");
+        button.disabled = true;
         button.dataset.added = "1";
-        showToast("Added — Roon will import it shortly", "ok");
+        showToast("Added to " + (pick.service === "tidal" ? "TIDAL" : "Qobuz") +
+                  " — Roon will import it on its next sync", "ok");
       } else {
         button.textContent = before;
         button.disabled = false;
@@ -777,12 +782,48 @@
     if (full) {
       const actions = document.createElement("div");
       actions.className = "pick-actions";
-      const add = document.createElement("button");
-      add.type = "button";
-      add.className = "pick-add";
-      add.textContent = smartPickAddLabel(false);
-      add.addEventListener("click", () => addSmartPick(pick, add));
-      actions.appendChild(add);
+
+      // Three states, and which one a pick is in is entirely about whether Roon
+      // has it yet:
+      //
+      //   PLAY     — Roon has imported it, so it has an offset and every
+      //              ordinary play route works. This is where the five adjacent
+      //              picks should be by morning.
+      //   WAITING  — favourited on the service but not imported yet. Roon
+      //              decides when, so there is nothing to press.
+      //   ADD      — not in the streaming library. The stretch pick lives here
+      //              permanently, because it is the one to accept or reject.
+      if (pick.offset !== null && pick.offset !== undefined) {
+        const play = document.createElement("button");
+        play.type = "button";
+        play.className = "pick-add pick-play";
+        play.textContent = "▶ Play";
+        play.addEventListener("click", () => openAlbum({
+          offset:    pick.offset,
+          // Roon's OWN strings for the album, not Qobuz's — the play routes
+          // check identity against the snapshot, and an edition suffix that
+          // differs would be refused as a stale offset.
+          title:     pick.library_title || pick.album || "",
+          subtitle:  pick.library_subtitle || pick.artist || "",
+          image_key: pick.image_key || null
+        }, { filter: null }));
+        actions.appendChild(play);
+      } else if (pick.added) {
+        const wait = document.createElement("button");
+        wait.type = "button";
+        wait.className = "pick-add is-done";
+        wait.disabled = true;
+        wait.textContent = "✓ Added — waiting for Roon";
+        actions.appendChild(wait);
+      } else {
+        const add = document.createElement("button");
+        add.type = "button";
+        add.className = "pick-add";
+        add.textContent = smartPickAddLabel(false);
+        add.addEventListener("click", () => addSmartPick(pick, add));
+        actions.appendChild(add);
+      }
+
       const nope = document.createElement("button");
       nope.type = "button";
       nope.className = "pick-block";
@@ -795,7 +836,20 @@
       // actions live. A tile that did nothing on tap would read as broken.
       card.setAttribute("role", "button");
       card.tabIndex = 0;
-      const open = () => showSmartPicks();
+      // A pick Roon already has behaves like any other album tile; one it does
+      // not opens the Smart Picks screen, where Add and the reason live.
+      const open = () => {
+        if (pick.offset !== null && pick.offset !== undefined) {
+          openAlbum({
+            offset:    pick.offset,
+            title:     pick.library_title || pick.album || "",
+            subtitle:  pick.library_subtitle || pick.artist || "",
+            image_key: pick.image_key || null
+          }, { filter: null });
+        } else {
+          showSmartPicks();
+        }
+      };
       card.addEventListener("click", open);
       card.addEventListener("keydown", (e) => {
         if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
@@ -4562,6 +4616,21 @@
     });
   }
 
+  // Roon's all-zone actions, in the sheet that is already about which zones.
+  // Looked up at click time rather than at wiring time: the side menu's
+  // closure defines __allZoneActions, and the two run in either order.
+  for (const act of ["pause-all", "mute-all", "unmute-all"]) {
+    const btn = document.getElementById("np-" + act);
+    if (!btn) continue;
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (npDevicePopover) npDevicePopover.classList.add("hidden");
+      if (npDeviceBtn) npDeviceBtn.setAttribute("aria-expanded", "false");
+      const fn = window.__allZoneActions && window.__allZoneActions[act];
+      if (fn) fn();
+    });
+  }
+
   // ----- Modal -----
   let currentSource = "random";
   let currentSourceZoneId = null;
@@ -4708,6 +4777,7 @@
     } catch (e) { /* ignore */ }
 
     const isNP = currentSource === "now-playing";
+    resetModalScroll();   // a reopened modal must never start mid-scroll
 
     // Tabs visible only in now-playing mode
     const tabsEl = document.getElementById("modal-tabs");
@@ -4750,6 +4820,23 @@
     }
   }
 
+  // Put the modal's scroller back to the top.
+  //
+  // .modal-body is a LONG-LIVED node — the modal is hidden and shown, never
+  // rebuilt — so its scrollTop outlives everything drawn inside it. An album
+  // opened after another one was scrolled halfway down therefore started
+  // halfway down, and switching back from the Queue tab kept the queue's
+  // offset. No caller ever wants to open a screen already scrolled.
+  //
+  // NOT the fix for "now playing is stretched too high above the top of the
+  // screen" — that was the missing status-bar inset (style.css, np-mode
+  // padding-top), and the Now playing tab is `overflow: hidden` anyway, so its
+  // scrollTop cannot be anything but 0 on a phone-sized viewport.
+  function resetModalScroll() {
+    const body = modal ? modal.querySelector(".modal-body") : null;
+    if (body) body.scrollTop = 0;
+  }
+
   function showTab(name) {
     document.querySelectorAll(".modal-tab").forEach(b => {
       b.classList.toggle("is-active", b.dataset.tab === name);
@@ -4769,6 +4856,7 @@
       npScreen.classList.toggle("hidden",
         !(name === "album" && modal.classList.contains("np-mode")));
     }
+    resetModalScroll();
 
     if (name === "queue") loadQueue();
     if (typeof window.__refreshTransport === "function") window.__refreshTransport();
@@ -7310,6 +7398,18 @@
     };
     popoverAction("mt-group-open", "__openGroupSheet");
     popoverAction("mt-power-open", "__openDevicePowerSheet");
+    // Same three all-zone actions as the now-playing picker, same source.
+    for (const act of ["pause-all", "mute-all", "unmute-all"]) {
+      const b = document.getElementById("mt-" + act);
+      if (!b) continue;
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        zonePop.classList.add("hidden");
+        btnZone.setAttribute("aria-expanded", "false");
+        const fn = window.__allZoneActions && window.__allZoneActions[act];
+        if (fn) fn();
+      });
+    }
   }
 
   // Tap the info area (art + text) to open the now-playing album in the modal
@@ -8425,7 +8525,99 @@
     });
   }
 
-  const open = () => { showView("home"); pendingThemeId = null; renderThemeList(); loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); loadDisplaySettings(); loadLabelFolderDepth(); loadQobuzStatus(); loadTidalStatus(); overlay.classList.remove("hidden"); };
+
+  // ----- Smart Picks -----------------------------------------------------
+  // The build reaches three external services and then hands Roon a batch of
+  // albums to import, so WHEN it runs is a real setting rather than a nicety:
+  // 4am costs nothing, the same work at 8pm competes with whatever Roon is
+  // doing while somebody is listening.
+  const picksHour    = document.getElementById("picks-hour");
+  const picksAutoAdd = document.getElementById("picks-autoadd");
+  const picksRebuild = document.getElementById("picks-rebuild");
+  const picksNote    = document.getElementById("picks-service-note");
+
+  if (picksHour && !picksHour.options.length) {
+    for (let h = 0; h < 24; h++) {
+      const o = document.createElement("option");
+      o.value = String(h);
+      o.textContent = (h < 10 ? "0" + h : String(h)) + ":00";
+      picksHour.appendChild(o);
+    }
+  }
+
+  async function saveSmartPicksSettings(patch) {
+    try {
+      const r = await fetch("/api/settings/smart-picks", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch)
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) { showToast(j.error || "Couldn't save", "error"); return false; }
+      return true;
+    } catch (e) {
+      showToast("Couldn't save: " + e.message, "error");
+      return false;
+    }
+  }
+
+  async function loadSmartPicksSettings() {
+    if (!picksHour && !picksAutoAdd) return;
+    try {
+      const r = await fetch("/api/settings/smart-picks");
+      if (!r.ok) return;
+      const j = await r.json();
+      if (picksHour && Number.isFinite(j.hour)) picksHour.value = String(j.hour);
+      if (picksAutoAdd) picksAutoAdd.checked = !!j.auto_add;
+      if (picksNote) {
+        picksNote.textContent = j.service_ready
+          ? "The stretch pick is never added automatically — that one is always yours to accept or reject."
+          : "Connect Qobuz or TIDAL under Streaming accounts first — without one, picks can be shown but not added.";
+      }
+    } catch (e) {
+      // Settings simply show their last values; the pane is not the place to
+      // report a transient fetch failure.
+    }
+  }
+
+  if (picksHour) {
+    picksHour.addEventListener("change", async () => {
+      const h = parseInt(picksHour.value, 10);
+      if (await saveSmartPicksSettings({ hour: h })) {
+        showToast("Smart Picks will build at " + (h < 10 ? "0" + h : h) + ":00");
+      }
+    });
+  }
+  if (picksAutoAdd) {
+    picksAutoAdd.addEventListener("change", async () => {
+      const on = picksAutoAdd.checked;
+      if (await saveSmartPicksSettings({ auto_add: on })) {
+        showToast(on ? "The five genre picks will be added automatically"
+                     : "All six picks will ask before adding");
+      } else {
+        picksAutoAdd.checked = !on;   // the server refused — do not lie about it
+      }
+    });
+  }
+  if (picksRebuild) {
+    picksRebuild.addEventListener("click", async () => {
+      picksRebuild.disabled = true;
+      const orig = picksRebuild.textContent;
+      picksRebuild.textContent = "…";
+      try {
+        const r = await fetch("/api/smart-picks/rebuild", { method: "POST" });
+        const j = await r.json().catch(() => ({}));
+        showToast(r.ok ? "Rebuilding today's picks — check back in a minute"
+                       : (j.error || "Couldn't rebuild"), r.ok ? "ok" : "error");
+      } catch (e) {
+        showToast("Couldn't rebuild: " + e.message, "error");
+      } finally {
+        picksRebuild.disabled = false;
+        picksRebuild.textContent = orig;
+      }
+    });
+  }
+
+  const open = () => { showView("home"); pendingThemeId = null; renderThemeList(); loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); loadDisplaySettings(); loadLabelFolderDepth(); loadQobuzStatus(); loadTidalStatus(); loadSmartPicksSettings(); overlay.classList.remove("hidden"); };
   const close = () => {
     overlay.classList.add("hidden");
     // Closing Settings ends the client side of any pending Tidal device flow
@@ -10003,11 +10195,12 @@ initServiceBrowser({
     }
   }
 
-  // Roon's all-zone actions. The drawer is already closed by the time these
-  // run, so a toast is the only feedback channel — same as rescanLibrary above.
-  // Mute and unmute are separate rows rather than one toggle: the row's label
-  // can't be refreshed while the menu is shut, so a single "Mute all" would be
-  // wrong half the time.
+  // Roon's all-zone actions. They live in the zone picker — the sheet that is
+  // already about "which zones", which is what these act on — and the popover
+  // is closed by the time they run, so a toast is the only feedback channel.
+  // Mute and unmute are separate rows rather than one toggle: the popover is
+  // shut when the state changes, so a single "Mute all" would be wrong half
+  // the time.
   async function allZones(url, body, pending, okMsg, failMsg) {
     const toast = window.__showToast || (() => {});
     toast(pending);
@@ -10024,6 +10217,18 @@ initServiceBrowser({
       toast(failMsg, "error");
     }
   }
+
+  // Exposed for the two zone pickers (now-playing and mini-transport), which
+  // are built in different closures. One implementation, three named actions,
+  // so the two pickers cannot drift apart on wording or endpoint.
+  window.__allZoneActions = {
+    "pause-all":  () => allZones("/api/pause-all", null, "Pausing every zone…",
+                                 "All zones paused", "Could not pause all zones"),
+    "mute-all":   () => allZones("/api/mute-all", { how: "mute" }, "Muting every zone…",
+                                 "All zones muted", "Could not mute all zones"),
+    "unmute-all": () => allZones("/api/mute-all", { how: "unmute" }, "Unmuting every zone…",
+                                 "All zones unmuted", "Could not unmute all zones"),
+  };
 
   const openMenu  = () => overlay.classList.remove("hidden");
   const closeMenu = () => overlay.classList.add("hidden");
@@ -10071,21 +10276,6 @@ initServiceBrowser({
       }
       if (action === "import-playlist") {
         if (window.__openImportSheet) window.__openImportSheet();
-        return;
-      }
-      if (action === "pause-all") {
-        allZones("/api/pause-all", null, "Pausing every zone…",
-                 "All zones paused", "Could not pause all zones");
-        return;
-      }
-      if (action === "mute-all") {
-        allZones("/api/mute-all", { how: "mute" }, "Muting every zone…",
-                 "All zones muted", "Could not mute all zones");
-        return;
-      }
-      if (action === "unmute-all") {
-        allZones("/api/mute-all", { how: "unmute" }, "Unmuting every zone…",
-                 "All zones unmuted", "Could not unmute all zones");
         return;
       }
 

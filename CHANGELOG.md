@@ -2,6 +2,66 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.42] — 2026-08-05
+
+### Fixed — Now playing sat under the status bar
+
+Reported as "occasionally when I reopen the extension and go to the now playing screen it is
+stretched too high above the top of the screen".
+
+The page is served `viewport-fit=cover`, which is what lets the app fill the display edge to edge —
+and which also means the layout viewport starts at the *physical* top of the screen, under the
+status bar and the dynamic island. The topbar has always added `env(safe-area-inset-top)` back. The
+modal never did, and Now playing is where it shows worst: its design deliberately shortens the top
+padding to 14px so the tabs sit beside the corner buttons, leaving nothing to absorb a ~59px status
+bar. Only visible in the installed PWA — in a browser tab the address bar occupies that space — which
+is why it read as occasional. The inset is now applied to the modal body, the Now playing body, and
+all three pinned corner buttons.
+
+My first diagnosis was wrong and is worth recording: I assumed a retained `scrollTop` on the shared
+`.modal-body`. The Now playing tab is `overflow: hidden` and cannot scroll at all, so that could
+never have been it. The scroll reset that came out of the wrong theory is kept — an album opened
+after another was scrolled halfway down really did start halfway down — but it is not this fix.
+
+### Fixed — Smart Picks kept asking you to add albums you had already added
+
+Tapping Add favourited the album on Qobuz and latched the button to "Added" — **in the DOM node
+only**. Reopening the app rebuilt the card from the server, which had no idea, so every pick read
+"+ Add" again and tapping it asked to add an album that was already in the Qobuz library.
+
+`added` is now derived on every read from the service's own favourite ids — the same source the
+Qobuz browser already uses — so it is true on every device and after every restart. A service that
+cannot be reached reports `null` (not asked) rather than `false`, so a Qobuz outage never claims an
+album is un-added.
+
+### Added — the five genre picks are ready to play
+
+They are favourited automatically when they are chosen, so Roon has the whole night to import them.
+Each card then shows one of three states, and which one is entirely about what Roon has done:
+
+- **Play** — Roon has imported it, so it has a real library offset and plays like any other album.
+- **Added — waiting for Roon** — favourited on the service, not imported yet. Roon decides when.
+- **Add** — not in the streaming library.
+
+The **stretch pick is never auto-added**: it is the one album a day you are actually being asked to
+judge, and putting it in your library unasked would remove the only decision the feature makes.
+Auto-add can be turned off, at which point all six behave as Add / Not for me.
+
+### Added — Settings → Smart Picks
+
+The daily build now runs at an hour **you choose** (default 04:00 local) rather than whenever the
+first request of the day happened to arrive. It reaches three external services and then hands Roon a
+batch of albums to import, so keeping it away from Roon's own work matters. If the box is off at that
+hour the build runs the next time it starts, so a day is never skipped. The pane also carries the
+auto-add switch and a **Rebuild** button that discards today's set and chooses six again.
+
+### Changed — Pause all / Mute all / Unmute all moved to the zone picker
+
+They were in the side menu; they act on zones, so they now live in the sheet that is already about
+zones — both the now-playing picker and the mini-transport one. One implementation behind all six
+buttons, so the two pickers cannot drift apart. A test now asserts they are **gone** from the side
+menu, because a move that only adds leaves two copies of every action.
+
 ## [1.7.41] — 2026-08-05
 
 ### Added — Smart Picks: six albums a day by artists you don't own

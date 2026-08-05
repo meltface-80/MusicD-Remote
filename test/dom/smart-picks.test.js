@@ -25,10 +25,15 @@ const assert = require("node:assert/strict");
 const harness = require("./harness");
 
 const PICKS = [
+  // Roon has imported this one — it has an offset, so it is playable.
   { kind: "adjacent", artist: "Labradford", album: "Mi Media Naranja",
-    album_id: "q1", service: "qobuz", image: "", reason: "Because you play Stars of the Lid", genre: "" },
+    album_id: "q1", service: "qobuz", image: "", reason: "Because you play Stars of the Lid", genre: "",
+    added: true, offset: 42, library_title: "Mi Media Naranja", library_subtitle: "Labradford",
+    image_key: "k42" },
+  // Favourited on Qobuz but Roon has not imported it yet.
   { kind: "adjacent", artist: "Bowery Electric", album: "Beat",
-    album_id: "q2", service: "qobuz", image: "", reason: "Because you play Slowdive", genre: "" },
+    album_id: "q2", service: "qobuz", image: "", reason: "Because you play Slowdive", genre: "",
+    added: true, offset: null },
   { kind: "adjacent", artist: "Flying Saucer Attack", album: "Further",
     album_id: "q3", service: "qobuz", image: "", reason: "Because you play Bark Psychosis", genre: "" },
   { kind: "adjacent", artist: "Seefeel", album: "Quique",
@@ -163,12 +168,27 @@ const DRIVER = `
   })();
 
   // ---- Add favourites the album, once --------------------------------------
-  var add = document.querySelector("#album-grid .pick-add");
+  // Which state each card landed in — Play / waiting / Add.
+  T("action_labels", Array.prototype.map.call(
+    document.querySelectorAll("#album-grid .pick-card-full"), function (c) {
+      var b = c.querySelector(".pick-add");
+      return b ? b.textContent.trim() : null;
+    }));
+  T("play_buttons", document.querySelectorAll("#album-grid .pick-play").length);
+
+  // The Add flow is exercised on a card that is genuinely not added yet.
+  var add = null;
+  Array.prototype.forEach.call(document.querySelectorAll("#album-grid .pick-add"), function (b) {
+    if (!add && !b.disabled && b.textContent.indexOf("Add") > -1 &&
+        b.textContent.indexOf("Added") === -1) add = b;
+  });
+  T("found_addable", !!add);
   add.click();
   await window.__sleep(350);
   T("fav_calls", window.__favCalls.length);
   T("fav_url", window.__favCalls.length ? window.__favCalls[0].url : null);
   T("fav_body", window.__favCalls.length ? window.__favCalls[0].body : null);
+  T("add_is_disabled_after", !!add.disabled);
   T("add_label_after", add.textContent);
   T("add_disabled_after", !!add.disabled);
 
@@ -274,10 +294,35 @@ test("Smart Picks: six a day, addable, never playable (v1.7.41)",
         "matches something in it is simply false");
     });
 
+    await t.test("a pick Roon has imported offers Play, not Add", () => {
+      // THE fix for the reported bug. The first version latched "Added" on the
+      // button and nowhere else, so a reopen showed "+ Add" for albums already
+      // sitting in the user's Qobuz library — and tapping it asked to add them
+      // again. State now comes from the server on every load.
+      assert.equal(r.play_buttons, 1, "the imported pick did not offer Play");
+      assert.match(r.action_labels[0], /Play/);
+    });
+
+    await t.test("a pick added but not yet imported says so, and cannot be re-added", () => {
+      // Roon decides when it imports. Showing "+ Add" here is what made the
+      // feature look broken; showing a dead "Added" with no explanation would
+      // be nearly as bad.
+      assert.match(r.action_labels[1], /Added/);
+      assert.match(r.action_labels[1], /waiting for Roon/i);
+    });
+
+    await t.test("only genuinely un-added picks offer Add", () => {
+      assert.equal(r.found_addable, true);
+      assert.match(r.action_labels[2], /Add$/);
+      // The stretch pick is always addable — it is never auto-added.
+      assert.match(r.action_labels[5], /Add$/);
+    });
+
     await t.test("Add favourites the album on its own service", () => {
       assert.equal(r.fav_calls, 1);
       assert.match(r.fav_url, /\/api\/qobuz\/favorite/);
-      assert.deepEqual(r.fav_body, { album_id: "q1" });
+      assert.deepEqual(r.fav_body, { album_id: "q3" },
+        "Add hit the wrong card — it must act on the one it is attached to");
     });
 
     await t.test("Add latches — a second tap cannot un-favourite it", () => {
@@ -285,6 +330,8 @@ test("Smart Picks: six a day, addable, never playable (v1.7.41)",
       // the user asked for the album to enter their library, and an accidental
       // second tap silently taking it out again is much worse than a no-op.
       assert.match(r.add_label_after, /Added/);
+      assert.match(r.add_label_after, /waiting for Roon/i,
+        "a bare \"Added\" leaves the user wondering why they still cannot play it");
       assert.equal(r.add_disabled_after, true);
       assert.equal(r.fav_calls_after_second_tap, 1,
         "a second tap sent another request — Add is one-way");

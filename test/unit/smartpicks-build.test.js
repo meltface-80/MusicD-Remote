@@ -46,7 +46,7 @@ const RESOLVE_FNS = ["resolveSmartAlbum"].concat(SHARED);
 // returns are what the assertions read.
 function harness(opts) {
   opts = opts || {};
-  const calls = { resolves: [], cacheSets: [], persisted: null, logs: [], errors: [] };
+  const calls = { resolves: [], cacheSets: [], persisted: null, autoAdded: [], logs: [], errors: [] };
   const cache = new Map(Object.entries(opts.cache || {}));
 
   const candidates = opts.candidates !== undefined ? opts.candidates
@@ -92,6 +92,11 @@ function harness(opts) {
       return opts.resolveAll === false ? null
         : { service: "qobuz", id: "id" + calls.resolves.length, title: "T", image: "" };
     },
+    // v1.7.42: the five genre picks are favourited at build time so Roon can
+    // import them overnight. Recorded here so the tests can prove WHICH picks
+    // get that treatment.
+    smartPicksAutoAdd: opts.autoAdd !== false,
+    autoAddSmartAlbum: async (album) => { calls.autoAdded.push(album.id); return true; },
     persistSmartPicks: (day, picks) => { calls.persisted = picks; },
   };
   return { F: loadIndexFunctions(BUILD_FNS, Object.assign(inj, opts.inject || {})), calls, cache };
@@ -132,6 +137,47 @@ test("the build is bounded in how many lookups it makes", { concurrency: 1 }, as
     assert.equal(adjacentTries, h.F.smartAdjacentCount());
     assert.equal(h.calls.persisted.filter(p => p.kind === "adjacent").length, 5);
     assert.equal(h.calls.persisted.filter(p => p.kind === "stretch").length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.7.42. The five genre picks are favourited at build time so Roon has all
+// night to import them and they simply play by morning. The stretch pick is
+// NOT — it is the one deliberately unlike the library, and adding it to
+// somebody's streaming library unasked is the opposite of offering it.
+// ---------------------------------------------------------------------------
+test("only the genre picks are added automatically", { concurrency: 1 }, async (t) => {
+  await t.test("the five adjacent picks are auto-added", async () => {
+    const h = harness({});
+    await h.F.buildSmartPicks("2026-08-05");
+    const adjacent = h.calls.persisted.filter(p => p.kind === "adjacent");
+    assert.equal(adjacent.length, 5);
+    assert.equal(h.calls.autoAdded.length, 5,
+      "the genre picks were not added, so Roon has nothing to import and they " +
+      "cannot be ready to play");
+    assert.ok(adjacent.every(p => p.autoAdded === true));
+  });
+
+  await t.test("the stretch pick is NEVER auto-added", async () => {
+    // THE one. The stretch pick is the single thing the user is asked to judge;
+    // silently putting it in their library removes the only decision the
+    // feature asks them to make.
+    const h = harness({});
+    await h.F.buildSmartPicks("2026-08-05");
+    const stretch = h.calls.persisted.find(p => p.kind === "stretch");
+    assert.ok(stretch, "no stretch pick was built");
+    assert.notEqual(stretch.autoAdded, true);
+    // Its album id must not appear among the auto-added ones.
+    assert.ok(!h.calls.autoAdded.includes(stretch.album.id),
+      "the stretch pick was added to the library without being offered");
+  });
+
+  await t.test("the setting turns auto-add off for everything", async () => {
+    const h = harness({ autoAdd: false });
+    await h.F.buildSmartPicks("2026-08-05");
+    assert.deepEqual(h.calls.autoAdded, [],
+      "auto-add ran despite the setting being off");
+    assert.equal(h.calls.persisted.length, 6, "the picks themselves must still be built");
   });
 });
 

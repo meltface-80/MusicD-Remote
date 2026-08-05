@@ -742,7 +742,11 @@ main {
   }
 }
 
-.modal-close { position: absolute; top: 12px; right: 12px; z-index: 2; }
+/* The page is viewport-fit=cover, so the panel's own top edge is the physical
+   top of the display — under the status bar / dynamic island on a phone. Every
+   pinned corner button therefore needs the inset the topbar already applies;
+   env() is 0 where there is no inset, so nothing changes on desktop. */
+.modal-close { position: absolute; top: calc(12px + env(safe-area-inset-top)); right: 12px; z-index: 2; }
 
 .modal-body {
   /* Positioned (NO z-index) so it paints above the #modal-ambient glow layer
@@ -752,7 +756,7 @@ main {
   position: relative;
   display: flex; flex-direction: column;
   gap: 22px;
-  padding: 64px 18px 40px;
+  padding: calc(64px + env(safe-area-inset-top)) 18px 40px;
   /* Leave room at the bottom so the mini transport (≈78px tall + safe area)
      stays visible / not overlapping the last bit of content. */
   padding-bottom: calc(96px + env(safe-area-inset-bottom));
@@ -1003,7 +1007,7 @@ main {
 /*  Modal share button (top-right, beside the close)                   */
 /* ------------------------------------------------------------------ */
 .modal-share {
-  position: absolute; top: 12px; right: 60px; z-index: 2;
+  position: absolute; top: calc(12px + env(safe-area-inset-top)); right: 60px; z-index: 2;
 }
 /* ------------------------------------------------------------------ */
 /*  Mini transport (sticky now-playing bar)                            */
@@ -1342,8 +1346,13 @@ main {
   align-items: center;
   gap: 14px;
   /* The tabs row sits up beside the corner buttons (Roon-style) instead of
-     below a tall reserved header band. */
-  padding-top: 14px;
+     below a tall reserved header band — which is exactly why this one must
+     carry the status-bar inset. With viewport-fit=cover and a 14px padding,
+     the Now playing screen started at the physical top of the display and the
+     tabs/title sat under the dynamic island: the "stretched too high above the
+     top of the screen" report. Only visible in the installed PWA, because in a
+     browser tab the address bar occupies that space anyway. */
+  padding-top: calc(14px + env(safe-area-inset-top));
 }
 .modal.np-mode .modal-info {
   width: 100%;
@@ -1358,7 +1367,7 @@ main {
 .modal.np-mode .modal-share { right: 12px; }
 .modal.np-mode .modal-home {
   display: inline-flex;
-  position: absolute; top: 12px; left: 12px; z-index: 2;
+  position: absolute; top: calc(12px + env(safe-area-inset-top)); left: 12px; z-index: 2;
 }
 
 /* The Now playing tab must NEVER scroll (Roon parity): the body clips, the
@@ -2229,6 +2238,9 @@ input.vol-range::-moz-range-thumb {
 }
 .settings-token-input:focus { outline: none; border-color: var(--accent); }
 .settings-token-status { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+/* Explanatory line under a settings row — the sentence that says why the
+   control above it exists, rather than what it is called. */
+.settings-note { font-size: 12px; color: var(--text-faint); margin-top: 6px; line-height: 1.45; }
 
 /* ------------------------------------------------------------------ */
 /*  Docker migration banner                                            */
@@ -3163,6 +3175,9 @@ input.vol-range::-moz-range-thumb {
 }
 .pick-add { background: var(--accent); color: var(--on-accent); border-color: transparent; }
 .pick-add.is-done { background: var(--bg); color: var(--text-dim); border-color: var(--border); }
+/* Roon has the album — this is an ordinary play, so it reads as the primary
+   action rather than as another "add something" step. */
+.pick-play { letter-spacing: .01em; }
 .pick-add:disabled, .pick-block:disabled { opacity: .6; cursor: default; }
 .pick-block { color: var(--text-dim); }
 /* On a phone the two buttons sit under the text rather than beside it — a

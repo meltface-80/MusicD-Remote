@@ -144,27 +144,40 @@ const DRIVER_EMPTY = OPEN_SHEET + `
 
 const DRIVER_MENU = `
   await window.__sleep(400);
+  // v1.7.42: these moved out of the side menu and into the zone picker — the
+  // sheet that is already about which zones, which is what they act on.
+  var pop = document.getElementById("mt-zone-popover");
+  document.getElementById("mt-zone").click();
+  await window.__sleep(250);
+  T("menu_open", !pop.classList.contains("hidden"));
+  function item(action) { return document.getElementById("mt-" + action); }
+  T("labels", ["pause-all", "mute-all", "unmute-all"].map(function (a) {
+    var el = item(a);
+    return el ? el.textContent.trim() : null;
+  }));
+  // They must NOT still be in the side menu, or the move only half happened.
   document.getElementById("menu-toggle").click();
   await window.__sleep(200);
   var overlay = document.getElementById("menu-overlay");
-  T("menu_open", !overlay.classList.contains("hidden"));
-  function item(action) { return overlay.querySelector('[data-action="' + action + '"]'); }
-  T("labels", ["pause-all", "mute-all", "unmute-all"].map(function (a) {
-    var el = item(a);
-    return el ? el.querySelector("span").textContent : null;
+  T("still_in_side_menu", ["pause-all", "mute-all", "unmute-all"].filter(function (a) {
+    return !!overlay.querySelector('[data-action="' + a + '"]');
   }));
+  document.querySelector("#menu-overlay [data-menu-close]").click();
+  await window.__sleep(200);
 
+  document.getElementById("mt-zone").click();
+  await window.__sleep(250);
   item("pause-all").click();
   await window.__sleep(500);
-  T("menu_closed_after", overlay.classList.contains("hidden"));
+  T("menu_closed_after", pop.classList.contains("hidden"));
   T("toast_after_pause", (document.querySelector(".toast") || {}).textContent || null);
 
-  document.getElementById("menu-toggle").click();
-  await window.__sleep(200);
+  document.getElementById("mt-zone").click();
+  await window.__sleep(250);
   item("mute-all").click();
   await window.__sleep(500);
-  document.getElementById("menu-toggle").click();
-  await window.__sleep(200);
+  document.getElementById("mt-zone").click();
+  await window.__sleep(250);
   item("unmute-all").click();
   await window.__sleep(500);
   T("posts", window.__posts);
@@ -253,7 +266,7 @@ test("the device-power sheet drives Roon standby and convenience switch (v1.7.2)
   });
 });
 
-test("the side menu drives Roon's all-zone actions (v1.7.2)", async (t) => {
+test("the zone picker drives Roon's all-zone actions (v1.7.42)", async (t) => {
   if (!harness.available) {
     t.skip("no chromium binary available");
     return;
@@ -265,14 +278,21 @@ test("the side menu drives Roon's all-zone actions (v1.7.2)", async (t) => {
   });
   harness.assertNoPageError(assert, r);
 
-  await t.test("all three rows exist, mute and unmute separately", () => {
+  await t.test("all three rows exist in the zone picker, mute and unmute separately", () => {
     assert.equal(r.menu_open, true);
     assert.deepEqual(r.labels, ["Pause all zones", "Mute all zones", "Unmute all zones"]);
   });
 
-  await t.test("the menu closes and a toast reports the action", () => {
+  await t.test("they are GONE from the side menu", () => {
+    // A move that only adds leaves two copies of every action, and the one in
+    // the drawer is the one that was asked to go.
+    assert.deepEqual(r.still_in_side_menu, [],
+      "the all-zone actions are still in the side menu as well as the zone picker");
+  });
+
+  await t.test("the popover closes and a toast reports the action", () => {
     assert.equal(r.menu_closed_after, true);
-    // The drawer is gone before the fetch resolves, so the toast is the only
+    // The popover is gone before the fetch resolves, so the toast is the only
     // feedback that can exist — its absence would leave the tap silent.
     assert.ok(r.toast_after_pause, "no toast after Pause all zones");
   });

@@ -1631,6 +1631,16 @@ function makeTtlCache(ttlMs) {
   };
 }
 
+// Smart Picks scheduling. The build talks to MusicBrainz, ListenBrainz and a
+// streaming service, and the albums it favourites then land in Roon's import
+// queue — so it wants to run when nothing else does. Default 04:00 local.
+let smartPicksHour    = Number.isFinite(_persisted.smartPicksHour)
+  ? Math.min(23, Math.max(0, Math.trunc(_persisted.smartPicksHour))) : 4;
+// Whether the five adjacent picks are favourited automatically at build time,
+// so Roon has all night to import them and they are playable by morning. The
+// stretch pick is NEVER auto-added — it is the one the user is meant to judge.
+let smartPicksAutoAdd = _persisted.smartPicksAutoAdd !== false;
+
 // Qobuz (UNOFFICIAL API — see lib/qobuz.js). Credentials/token set via Settings.
 // We persist the username, the md5 of the password (for silent re-login), the
 // user_auth_token, and the display name. Never the plaintext password.
@@ -9956,6 +9966,36 @@ async function smartTagArtists(genre) {
 function qobuzReady() { return !!(qobuzToken || (qobuzUsername && qobuzPasswordMd5)); }
 function tidalReady() { return !!(tidalRefreshToken && tidalUserId); }
 
+// Favourite a resolved pick's album on the service it came from.
+//
+// Used for the five adjacent picks at build time so Roon has the whole night to
+// import them: by morning they are in the library and simply play, which is the
+// point of running this at 4am. Idempotent on both services — favouriting an
+// album already favourited is a no-op — so a rebuild cannot double anything.
+//
+// Returns true when the service accepted it. A failure is logged and the pick
+// still ships; the user can add it by hand.
+async function autoAddSmartAlbum(album) {
+  if (!album || !album.id || !album.service) return false;
+  try {
+    if (album.service === "qobuz") {
+      await qobuzWithToken(t => qobuz.favoriteAlbum(t, String(album.id)));
+      qobuzFavIds.add(String(album.id));
+    } else if (album.service === "tidal") {
+      await tidalWithToken((t, cc, uid) => tidal.favoriteAlbum(t, cc, uid, String(album.id)));
+      tidalFavIds.add(String(album.id));
+    } else {
+      return false;
+    }
+    return true;
+  } catch (e) {
+    if (smartRateLimited(e)) throw e;   // let the build stop rather than hammer
+    console.error("[picks] could not auto-add " + JSON.stringify(album.title) +
+                  " to " + album.service + ": " + e.message);
+    return false;
+  }
+}
+
 // Is a streaming service connected at all? Without one a pick can be shown but
 // never added, so the UI needs to say so rather than presenting a dead button —
 // and the build must not run at all, since every resolve would return null.
@@ -10049,6 +10089,31 @@ async function resolveSmartAlbum(artistName) {
 // ---------------------------------------------------------------------------
 // Smart Picks: the daily build.
 // ---------------------------------------------------------------------------
+
+// Has Roon imported this album yet? Returns its snapshot record, or null.
+//
+// This is what turns a pick from "Add" into "Play". The user favourites an
+// album on Qobuz, Roon imports it on its own schedule, and it appears in the
+// next snapshot — at which point it has an offset and every ordinary play route
+// works on it. Matching goes through albumKeys, the same tolerant identity the
+// source badges use, because Roon's title for an album routinely differs from
+// Qobuz's by an edition suffix.
+let _smartLibIndex = { builtAt: -1, map: null };
+function smartLibraryRecord(title, artist) {
+  if (!title) return null;
+  if (_smartLibIndex.builtAt !== albumIndex.builtAt || !_smartLibIndex.map) {
+    const map = new Map();
+    for (const al of albumIndex.albums) {
+      for (const k of (al.srcKeys || [])) if (!map.has(k)) map.set(k, al);
+    }
+    _smartLibIndex = { builtAt: albumIndex.builtAt, map };
+  }
+  for (const k of albumKeys(title, artist || "")) {
+    const hit = _smartLibIndex.map.get(k);
+    if (hit) return hit;
+  }
+  return null;
+}
 
 function smartDayKey(d) {
   const t = d || new Date();
@@ -10188,9 +10253,13 @@ async function buildSmartPicks(day) {
       const album = await resolveSmartAlbum(c.name);
       if (!album) continue;      // nothing addable — a pick nobody can act on
       used.add(c.canon);
+      // The five adjacent picks go into the streaming library now, so Roon can
+      // import them before anybody looks at the screen. Only these five: the
+      // stretch pick is the one the user is meant to accept or reject.
+      const added = smartPicksAutoAdd ? await autoAddSmartAlbum(album) : false;
       picks.push({
         kind: "adjacent", mbid: c.mbid, artist: c.name, canon: c.canon,
-        seedNames: c.seedNames, album, genre: ""
+        seedNames: c.seedNames, album, genre: "", autoAdded: added
       });
     }
 
@@ -10278,11 +10347,17 @@ function persistSmartPicks(day, picks) {
 // it does not collapse duplicates, so three devices opening Home would enqueue
 // three identical builds and triple every upstream call.
 let _smartBuilding = null;
-function kickSmartPicks(why) {
+function kickSmartPicks(why, force) {
   const day = smartDayKey();
   if (_smartBuilding) return;
-  if (readSmartPicks(day).length) return;
-  if (smartAttemptedToday(day)) return;   // already tried today; do not retry per request
+  if (!force) {
+    if (readSmartPicks(day).length) return;
+    if (smartAttemptedToday(day)) return; // already tried today; do not retry per request
+    // ONE place decides whether the schedule has been reached, so the timer,
+    // the post-sync kick and an ordinary page view cannot disagree — the whole
+    // point of the setting is that the build never runs at an unexpected time.
+    if (!smartPicksDue()) return;
+  }
   _smartBuilding = bgRun("smart picks (" + why + ")", () => buildSmartPicks(day))
     .finally(() => { _smartBuilding = null; });
 }
@@ -10291,48 +10366,144 @@ function kickSmartPicks(why) {
 // A timer rather than the first request of the day, so the cost never lands on
 // somebody's page load and the retry cadence isn't a function of how often
 // anyone taps Back.
+// Should the scheduled build run right now?
+//
+// Only at or after the configured hour, and only on a day that has not been
+// built — so a box that was switched off at 4am still gets its picks when it
+// comes back, rather than skipping the day entirely. That is why this is
+// "hour reached" and not "hour equals".
+function smartPicksDue(now) {
+  return (now || new Date()).getHours() >= smartPicksHour;
+}
+
 let smartPicksTimer = null;
 function startSmartPicksMaintenance() {
   if (smartPicksTimer) return;
+  // Checked every 10 minutes so the configured hour is honoured closely without
+  // the timer itself being the expensive thing — the work behind it is gated on
+  // "today has no picks", which is a single indexed read.
   smartPicksTimer = setInterval(() => {
     if (!core || !albumIndex.count) return;
-    kickSmartPicks("daily");
-  }, 60 * 60 * 1000);
+    if (!smartPicksDue()) return;
+    kickSmartPicks("scheduled " + smartPicksHour + ":00");
+  }, 10 * 60 * 1000);
   if (smartPicksTimer.unref) smartPicksTimer.unref();
 }
 
-function smartPickJson(row) {
+// One pick as the client sees it.
+//
+// `added` and `offset` are both DERIVED at read time rather than stored, and
+// that is the whole point. The first version latched "Added" on the button and
+// nowhere else, so reopening the app showed "+ Add" for albums that were
+// already sitting in the user's Qobuz library — the state lived in a DOM node
+// that does not survive a reload. Reading it back from the service's own
+// favourites makes it true on every device and after every restart.
+//
+// `offset` is present once Roon has actually imported the album, and it is what
+// lets the card offer Play instead of Add.
+function smartPickJson(row, favs) {
+  const id  = row.album_id || "";
+  const set = row.service === "qobuz" ? favs.qobuz
+            : row.service === "tidal" ? favs.tidal : null;
+  const rec = smartLibraryRecord(row.album, row.artist);
   return {
     kind:    row.kind,
     artist:  row.artist,
     mbid:    row.mbid || null,
     album:   row.album || "",
-    album_id: row.album_id || "",
+    album_id: id,
     service: row.service || "",
     image:   row.image || "",
     reason:  row.reason || "",
-    genre:   row.genre || ""
+    genre:   row.genre || "",
+    // null (not false) when the service could not be asked, so the client can
+    // leave the button alone rather than claiming it is not added.
+    added:   set ? set.has(id) : null,
+    // In the Roon library right now — playable.
+    offset:      rec ? rec.offset : null,
+    library_title:    rec ? rec.title : "",
+    library_subtitle: rec ? rec.subtitle : "",
+    image_key:        rec ? (rec.image_key || null) : null
   };
+}
+
+// The user's current favourite ids on each connected service. Either side
+// failing is reported as null — "not asked" — rather than as an empty set,
+// which would tell the client that nothing is added.
+async function smartPickFavourites() {
+  const out = { qobuz: null, tidal: null };
+  const jobs = [];
+  if (qobuzReady()) {
+    jobs.push(qobuzFavIds.get().then(s => { out.qobuz = s; })
+      .catch(e => { console.error("[picks] Qobuz favourites unavailable: " + e.message); }));
+  }
+  if (tidalReady()) {
+    jobs.push(tidalFavIds.get().then(s => { out.tidal = s; })
+      .catch(e => { console.error("[picks] TIDAL favourites unavailable: " + e.message); }));
+  }
+  await Promise.all(jobs);
+  return out;
 }
 
 // GET /api/smart-picks — today's six. A pure read: it answers from the table
 // and, if today has not been built yet, kicks the build and returns what it has
 // (nothing, first time). It never waits — see kickSmartPicks.
-app.get("/api/smart-picks", (req, res) => {
+app.get("/api/smart-picks", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   try {
     const day  = smartDayKey();
     const rows = readSmartPicks(day);
     if (!rows.length) kickSmartPicks("requested");
+    // The favourites read is a 60s-cached lookup, not a per-request round trip.
+    const favs = rows.length ? await smartPickFavourites() : { qobuz: null, tidal: null };
     res.json({
       day,
       service_ready: smartPicksServiceReady(),
+      auto_add: smartPicksAutoAdd,
+      hour: smartPicksHour,
       building: !rows.length && !!_smartBuilding,
-      picks: rows.map(smartPickJson)
+      picks: rows.map(r => smartPickJson(r, favs))
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// Smart Picks settings: when the daily build runs, and whether the five
+// adjacent picks are added automatically.
+app.get("/api/settings/smart-picks", (req, res) => {
+  res.json({ hour: smartPicksHour, auto_add: smartPicksAutoAdd,
+             service_ready: smartPicksServiceReady() });
+});
+app.post("/api/settings/smart-picks", (req, res) => {
+  const body = req.body || {};
+  if (body.hour !== undefined) {
+    const h = Number(body.hour);
+    if (!Number.isFinite(h) || h < 0 || h > 23) {
+      return res.status(400).json({ error: "hour must be 0-23" });
+    }
+    smartPicksHour = Math.trunc(h);
+  }
+  if (body.auto_add !== undefined) smartPicksAutoAdd = !!body.auto_add;
+  savePersistedSettings({ smartPicksHour, smartPicksAutoAdd });
+  res.json({ ok: true, hour: smartPicksHour, auto_add: smartPicksAutoAdd });
+});
+
+// Rebuild today's picks now, ignoring the schedule and the attempt marker.
+// The button somebody presses when they want to see it work.
+app.post("/api/smart-picks/rebuild", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  const day = smartDayKey();
+  try {
+    if (labelsDb) {
+      labelsDb.prepare("DELETE FROM smart_picks WHERE day = ?").run(day);
+      labelsDb.prepare("DELETE FROM smart_cache WHERE key = ?").run(smartAttemptKey(day));
+    }
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+  kickSmartPicks("manual", true);   // the button means now, schedule or not
+  res.json({ ok: true, building: !!_smartBuilding });
 });
 
 // POST /api/smart-picks/block { artist } — "not for me", permanently.
