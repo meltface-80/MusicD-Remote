@@ -26,7 +26,9 @@ function rec(offset, title, artist, sortTitle) {
     nTitle: title.toLowerCase(), nArtist: artist.toLowerCase(),
     sortTitle: (sortTitle || title).toLowerCase(),
     cFirst: artist.toLowerCase(),
-    srcKeys: [],
+    // Populated so albumAddedOf() can find a first-seen date the way it does
+    // live — it looks the album up under every identity it is keyed by.
+    srcKeys: [title.toLowerCase() + "||" + artist.toLowerCase()],
   };
 }
 
@@ -48,20 +50,35 @@ function build(opts) {
     if (y) albumYearCache.set(al.nTitle + "||" + al.nArtist, y);
   }
   const albumIndex = { albums: ALBUMS.slice(), builtAt: 1, count: ALBUMS.length };
+  // Alpha and Delta have a first-seen date; Bravo and Charlie do not. Keys
+  // match ALBUMS' srcKeys so albumAddedOf() finds them the way it does live.
+  const albumSeenCache = new Map(opts.seen || [
+    ["alpha||charlie", { ts: 1000, src: "file" }],
+    ["delta||alpha",   { ts: 3000, src: "first-seen" }],
+  ]);
   const F = loadIndexFunctions(
-    ["libraryView", "albumYearOf", "seededRank"],
+    // libFacetDefs and facetMatch are EXTRACTED, not stubbed: they are the
+    // shipping facet vocabulary, and a stub beside them would let a facet's
+    // predicate change without a single test noticing.
+    ["libraryView", "albumPlayKey", "albumYearOf", "albumAddedOf", "seededRank",
+     "libFacetDefs", "facetMatch", "albumGenresOf", "albumFileFactsOf", "albumFileFacts",
+     "rateLabel", "channelLabel", "libAddedWindows"],
     {
       albumYearCache,
+      albumSeenCache,
+      albumGenreCache: opts.genres || new Map(),
+      albumFileCache:  opts.files  || new Map(),
       albumIndex,
       libraryMetaVersion: 0,
       // A fresh cache per build, so memoisation can never leak an ordering
       // from one test case into the next.
       libraryViewCache: new Map(),
       LIBRARY_VIEW_CACHE_MAX: 8,
-      LIB_SORTS: new Set(["album", "artist", "year", "plays", "lastplayed", "random"]),
-      withSource: (a) => { a.source = null; return a; },
-      getPlayedTitlesSince: () => new Set(),
-      playedTitleSet: () => new Set(),
+      LIB_SORTS: new Set(["album", "artist", "year", "added", "plays", "lastplayed", "random"]),
+      albumSource: (t, s, rec) => (opts.sources && opts.sources[rec.nTitle]) || null,
+      resolveAlbumLabelName: (al) => (opts.labels && opts.labels[al.nTitle]) || null,
+      getPlayedTitlesSince: () => opts.played || new Set(),
+      playedTitleSet: () => opts.played || new Set(),
       playStats: () => opts.stats || { count: new Map(), last: new Map() },
     }
   );
@@ -69,6 +86,51 @@ function build(opts) {
 }
 
 const titles = (list) => list.map(a => a.title);
+
+// v1.7.31: Roon publishes no import date, so every value behind this sort is
+// the extension's own evidence and coverage is partial by construction. The
+// undated albums are the interesting case: on an established library they are
+// the MAJORITY at first, and a sort that put them at position zero — or, worse,
+// floated them to the top when reversed — would look broken rather than
+// incomplete.
+test("libraryView — recently added holds undated albums out of the ordering", async (t) => {
+  const F = build();
+
+  await t.test("only dated albums take part in the ordering", () => {
+    // Alpha ts=1000, Delta ts=3000; Bravo and Charlie have no date.
+    assert.deepEqual(titles(F.libraryView({ sort: "added", dir: "asc" })),
+      ["Alpha", "Delta", "Bravo", "Charlie"]);
+  });
+
+  await t.test("reversing reverses the DATED ones and leaves the rest at the end", () => {
+    // The whole point: desc must not put undated albums first.
+    assert.deepEqual(titles(F.libraryView({ sort: "added", dir: "desc" })),
+      ["Delta", "Alpha", "Bravo", "Charlie"]);
+  });
+
+  await t.test("undated albums keep a stable alphabetical order of their own", () => {
+    // Otherwise the tail of the list reshuffles between requests while paging.
+    const asc = titles(F.libraryView({ sort: "added", dir: "asc" })).slice(2);
+    const desc = titles(F.libraryView({ sort: "added", dir: "desc" })).slice(2);
+    assert.deepEqual(asc, ["Bravo", "Charlie"]);
+    assert.deepEqual(desc, ["Bravo", "Charlie"]);
+  });
+
+  await t.test("a library with no dates at all is alphabetical, not empty", () => {
+    // The first-run state. It must degrade to something sensible rather than
+    // returning nothing or an arbitrary order.
+    const none = build({ seen: [] });
+    assert.deepEqual(titles(none.libraryView({ sort: "added", dir: "desc" })),
+      ["Alpha", "Bravo", "Charlie", "Delta"]);
+  });
+
+  await t.test("albumAddedOf reports null rather than zero for an undated album", () => {
+    // Zero would sort as 1970 and quietly claim to be a date.
+    const dated = F.libraryView({ sort: "added", dir: "asc" });
+    assert.equal(F.albumAddedOf(dated.find(a => a.title === "Bravo")), null);
+    assert.equal(F.albumAddedOf(dated.find(a => a.title === "Alpha")), 1000);
+  });
+});
 
 test("libraryView — alphabetical sorts run both ways", async (t) => {
   const F = build();

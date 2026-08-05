@@ -25,23 +25,58 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const harness = require("./harness");
 
-// Enough decades/sources that the Focus sheet's body overflows a phone screen —
-// that is the case where a squeezed footer would be lost.
+// Enough categories and values that the Focus sheet's body overflows a phone
+// screen with everything expanded — that is the case where a squeezed footer
+// would be lost. The payload is the v1.7.35 shape (a `facets` array the sheet
+// renders generically); the old decades/sources shape rendered NOTHING here,
+// which quietly made "no control is covered" a test of an almost empty sheet.
+const dec = (d, n) => ({ value: String(d), label: d + "s", count: n });
 const FACETS = {
-  decades: [
-    { value: 1950, label: "1950s", count: 12 },
-    { value: 1960, label: "1960s", count: 40 },
-    { value: 1970, label: "1970s", count: 88 },
-    { value: 1980, label: "1980s", count: 71 },
-    { value: 1990, label: "1990s", count: 130 },
-    { value: 2000, label: "2000s", count: 96 },
-    { value: 2010, label: "2010s", count: 142 },
-    { value: 2020, label: "2020s", count: 55 },
-  ],
-  sources: [
-    { value: "local", label: "Local files", count: 320 },
-    { value: "qobuz", label: "Qobuz", count: 210 },
-    { value: "tidal", label: "TIDAL", count: 96 },
+  total: 626,
+  coverage: { decade: 600, genre: 610, label: 400, format: 320, added: 300 },
+  sources_derived: false,
+  hasPlays: true,
+  facets: [
+    { id: "genre", label: "Genre", total_values: 40, values: [
+      { value: "Pop/Rock", label: "Pop/Rock", count: 300 },
+      { value: "Jazz", label: "Jazz", count: 88 },
+      { value: "Electronic", label: "Electronic", count: 61 },
+      { value: "Classical", label: "Classical", count: 40 },
+    ] },
+    { id: "source", label: "Source", total_values: 3, values: [
+      { value: "local", label: "Local albums", count: 320 },
+      { value: "qobuz", label: "Qobuz", count: 210 },
+      { value: "tidal", label: "TIDAL", count: 96 },
+    ] },
+    { id: "decade", label: "Decade", total_values: 8, values: [
+      dec(2020, 55), dec(2010, 142), dec(2000, 96), dec(1990, 130),
+      dec(1980, 71), dec(1970, 88), dec(1960, 40), dec(1950, 12),
+    ] },
+    { id: "label", label: "Record label", total_values: 212, values: [
+      { value: "Blue Note", label: "Blue Note", count: 40 },
+      { value: "4AD", label: "4AD", count: 22 },
+    ] },
+    { id: "format", label: "Format", total_values: 3, values: [
+      { value: "FLAC", label: "FLAC", count: 280 },
+      { value: "MP3", label: "MP3", count: 40 },
+    ] },
+    { id: "rate", label: "Sample rate", total_values: 3, values: [
+      { value: "44100", label: "44.1 kHz", count: 250 },
+      { value: "96000", label: "96 kHz", count: 70 },
+    ] },
+    { id: "bits", label: "Bit depth", total_values: 2, values: [
+      { value: "16", label: "16-bit", count: 250 },
+      { value: "24", label: "24-bit", count: 70 },
+    ] },
+    { id: "letter", label: "Starts with", total_values: 27, values: [
+      { value: "A", label: "A", count: 40 }, { value: "B", label: "B", count: 51 },
+    ] },
+    { id: "added", label: "Added in the last", total_values: 4, values: [
+      { value: "7", label: "7 days", count: 3 },
+      { value: "30", label: "30 days", count: 12 },
+      { value: "90", label: "3 months", count: 44 },
+      { value: "365", label: "A year", count: 190 },
+    ] },
   ],
 };
 
@@ -105,8 +140,10 @@ const DRIVER = `
 
   var controls = document.getElementById("library-controls");
   T("controls_present", !!controls && !controls.classList.contains("hidden"));
-  var pills = controls ? controls.querySelectorAll(".lib-pill") : [];
-  T("pill_count", pills.length);
+  // v1.7.35: Focus first, Sort second — Roon's own order.
+  var focusCtl = controls && controls.querySelector(".lib-ctl-focus");
+  var sortCtl  = controls && controls.querySelector(".lib-ctl-sort");
+  T("ctl_count", controls ? controls.querySelectorAll(".lib-ctl").length : 0);
 
   // Is the point at (x,y) owned by the open sheet? Walk up from whatever
   // Chromium hit-tests there; if we reach .lib-sheet the control is reachable,
@@ -150,7 +187,7 @@ const DRIVER = `
     // builders — a renamed row class silently empties it, and "no control is
     // covered" would then be true because no control was looked at.
     var controlsIn = sheet.querySelectorAll(
-      ".lib-row, .lib-sort-row, .lib-chip, .lib-sheet-foot button");
+      ".lib-row, .lib-sort-row, .lib-chip, .lib-sheet-section-head, .lib-sheet-foot button");
     T(label + "_control_count", controlsIn.length);
 
     var covered = [];
@@ -192,15 +229,28 @@ const DRIVER = `
   }
 
   // ---- Sort sheet ---------------------------------------------------------
-  pills[0].click();
+  sortCtl.click();
   await window.__sleep(200);
   await probeSheet("sort");
   closeSheet();
   await window.__sleep(100);
 
   // ---- Focus sheet (has the pinned footer) --------------------------------
-  pills[1].click();
+  focusCtl.click();
   await window.__sleep(400);          // fetches /api/library/facets first
+  // Expand every category first: collapsed sections are the default now, and a
+  // sheet that is short because nothing is open would make "no control is
+  // covered by the transport bar" vacuously true — which is precisely how the
+  // first draft of this test passed against the un-fixed CSS.
+  var heads = document.querySelectorAll(".lib-sheet-section-head");
+  for (var h = 0; h < heads.length; h++) {
+    if (document.querySelectorAll(".lib-sheet-section-head")[h]) {
+      var live = document.querySelectorAll(".lib-sheet-section-head")[h];
+      if (live.getAttribute("aria-expanded") === "false") live.click();
+      await window.__sleep(30);
+    }
+  }
+  T("focus_section_count", document.querySelectorAll(".lib-sheet-section-head").length);
   await probeSheet("focus");
 
   // The footer buttons must genuinely still work, not merely be visible.
@@ -235,7 +285,7 @@ test("Library Sort/Focus sheets clear the mini transport bar (v1.6.58)",
         `control failed: the mini transport rendered ${r.bar_height}px tall, so ` +
         "it cannot cover anything and the rest of this test proves nothing");
       assert.equal(r.controls_present, true, "the Sort/Focus row never rendered");
-      assert.equal(r.pill_count, 2);
+      assert.equal(r.ctl_count, 2);
     });
 
     for (const label of ["sort", "focus"]) {

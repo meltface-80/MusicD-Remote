@@ -140,13 +140,18 @@ function scanBalanced(src, openIdx, open, close) {
  */
 function extractFunction(name) {
   const src = indexSource();
-  const re = new RegExp("^function\\s+" + name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\(", "m");
+  // `async function` counts too. Without this every async top-level function in
+  // index.js was simply untestable, which quietly steered tests towards the
+  // synchronous half of the file — and the scan/harvest pipeline, where the
+  // interesting sequencing bugs live, is entirely async.
+  const re = new RegExp(
+    "^(?:async\\s+)?function\\s+" + name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\(", "m");
   const m = re.exec(src);
   if (!m) {
     throw new Error(
-      `extract: no top-level "function ${name}(" found in index.js. ` +
-      `It was renamed, moved, or turned into a const/arrow — update the test, ` +
-      `do not delete it.`
+      `extract: no top-level "function ${name}(" or "async function ${name}(" ` +
+      `found in index.js. It was renamed, moved, or turned into a const/arrow — ` +
+      `update the test, do not delete it.`
     );
   }
   const start = m.index;

@@ -2,6 +2,1520 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.43] — 2026-08-05
+
+### Fixed — "Couldn't play from here: Load failed" when opening the app
+
+A native dialog appeared over Now playing on reopening the installed PWA, while the music was
+playing perfectly well.
+
+"Load failed" is WebKit's message for a fetch that never completed. The chain: you tap a queue row
+and confirm, `/api/play-from-here` goes out, Roon answers from inside a Core callback (which this
+project has already measured at seconds under import congestion), iOS backgrounds the app before the
+response arrives and tears the connection down. The rejection is delivered **when you reopen the
+app**, and the catch reported a failure for a tap you made minutes earlier. The server had already
+carried the command out — which is exactly why the music was playing.
+
+A request interrupted by the app being suspended is no longer reported: the queue is quietly
+re-pulled instead (the success path's own follow-up never ran). A request that fails while the app
+is in the *foreground* still reports, so nothing real is swallowed.
+
+While in there: these were the app's last two `window.alert` / `window.confirm` calls. They now use
+the app's own confirm sheet and toast like everything else — which also closes a second route to the
+same bug, since a native confirm left open while the app is backgrounded resolves on reopen and
+fires the request into a network stack that is still coming back up.
+
+### Changed — one overflow menu, Roon's three-dots-in-a-circle
+
+The playlist action row ran six pill buttons across one line. `.action-btn` is `flex: 1 1 0`, so they
+shrank together instead of wrapping and "Send to Roon" rendered as "end to Roo".
+
+**Play now** and **Queue** stay on the row; everything else moves behind a ⋯ button:
+
+- Dynamic Playlist — Send to Roon, Share, Edit, Delete
+- Roon playlist — Share
+- Stored playlist — Share, Delete
+- Album view — Next, Shuffle, Radio (five pills had the same problem)
+
+The multi-select menu already *was* an overflow menu; it wore a chevron, which reads as "expand"
+rather than "more actions", so it now wears the same glyph. Its count badge stays — it is the only
+indication of how many items are selected.
+
+One SVG and one `buildOverflowMenu()` for all of it, and the dropdown reuses the existing
+`.sel-menu` styling rather than introducing a second dropdown that almost matches.
+
+Deliberately **not** converted, after a survey of every candidate: tab bars, the side menu, the
+Settings list, the zone pickers (the trigger is a picker for where the music plays — hiding that
+behind ⋯ would bury the most-used control in the app), the Library Sort/Focus row (its labels are a
+state readout, not a name), and the wall display (a 10-foot screen where a small circular glyph is
+the wrong ergonomics, and which cannot reach the shared helper without copying it).
+
+### Fixed — the playlist name was shown twice
+
+The topbar printed a truncated copy ("My Dynamic Playlist - Electroni…") directly above the full
+heading. All three playlist detail screens already print their own name, so the topbar copy is gone;
+an empty title now hides the readout rather than showing a blank one.
+
+## [1.7.42] — 2026-08-05
+
+### Fixed — Now playing sat under the status bar
+
+Reported as "occasionally when I reopen the extension and go to the now playing screen it is
+stretched too high above the top of the screen".
+
+The page is served `viewport-fit=cover`, which is what lets the app fill the display edge to edge —
+and which also means the layout viewport starts at the *physical* top of the screen, under the
+status bar and the dynamic island. The topbar has always added `env(safe-area-inset-top)` back. The
+modal never did, and Now playing is where it shows worst: its design deliberately shortens the top
+padding to 14px so the tabs sit beside the corner buttons, leaving nothing to absorb a ~59px status
+bar. Only visible in the installed PWA — in a browser tab the address bar occupies that space — which
+is why it read as occasional. The inset is now applied to the modal body, the Now playing body, and
+all three pinned corner buttons.
+
+My first diagnosis was wrong and is worth recording: I assumed a retained `scrollTop` on the shared
+`.modal-body`. The Now playing tab is `overflow: hidden` and cannot scroll at all, so that could
+never have been it. The scroll reset that came out of the wrong theory is kept — an album opened
+after another was scrolled halfway down really did start halfway down — but it is not this fix.
+
+### Fixed — Smart Picks kept asking you to add albums you had already added
+
+Tapping Add favourited the album on Qobuz and latched the button to "Added" — **in the DOM node
+only**. Reopening the app rebuilt the card from the server, which had no idea, so every pick read
+"+ Add" again and tapping it asked to add an album that was already in the Qobuz library.
+
+`added` is now derived on every read from the service's own favourite ids — the same source the
+Qobuz browser already uses — so it is true on every device and after every restart. A service that
+cannot be reached reports `null` (not asked) rather than `false`, so a Qobuz outage never claims an
+album is un-added.
+
+### Added — the five genre picks are ready to play
+
+They are favourited automatically when they are chosen, so Roon has the whole night to import them.
+Each card then shows one of three states, and which one is entirely about what Roon has done:
+
+- **Play** — Roon has imported it, so it has a real library offset and plays like any other album.
+- **Added — waiting for Roon** — favourited on the service, not imported yet. Roon decides when.
+- **Add** — not in the streaming library.
+
+The **stretch pick is never auto-added**: it is the one album a day you are actually being asked to
+judge, and putting it in your library unasked would remove the only decision the feature makes.
+Auto-add can be turned off, at which point all six behave as Add / Not for me.
+
+### Added — Settings → Smart Picks
+
+The daily build now runs at an hour **you choose** (default 04:00 local) rather than whenever the
+first request of the day happened to arrive. It reaches three external services and then hands Roon a
+batch of albums to import, so keeping it away from Roon's own work matters. If the box is off at that
+hour the build runs the next time it starts, so a day is never skipped. The pane also carries the
+auto-add switch and a **Rebuild** button that discards today's set and chooses six again.
+
+### Changed — Pause all / Mute all / Unmute all moved to the zone picker
+
+They were in the side menu; they act on zones, so they now live in the sheet that is already about
+zones — both the now-playing picker and the mini-transport one. One implementation behind all six
+buttons, so the two pickers cannot drift apart. A test now asserts they are **gone** from the side
+menu, because a move that only adds leaves two copies of every action.
+
+## [1.7.41] — 2026-08-05
+
+### Added — Smart Picks: six albums a day by artists you don't own
+
+A discovery feature rather than a playlist generator. Every day it surfaces **five "adjacent" picks**
+— artists absent from your library but rooted in genres it already lives in — and **one "stretch"
+pick** from a genre your library barely touches. There is a Smart Picks row on Home and a full
+screen from the side menu carrying each pick's reason and its actions.
+
+**Nothing here touches the Roon Core.** Library analysis reads the existing snapshot; similarity
+comes from ListenBrainz and MusicBrainz over plain HTTP; albums are resolved against Qobuz/TIDAL.
+The only Core cost is the sync that already runs, noticing a newly favourited album. The build runs
+on the v1.7.38 global background queue, so it can never burst alongside a genre walk or an art
+prewarm.
+
+**Picks are addable, not playable.** Roon plays only what is in the library, so an artist name alone
+is useless — every pick is resolved to a real streaming album, and Add favourites it so Roon imports
+it and it becomes playable on the next sync. Add is deliberately one-way: unlike the Qobuz browser's
+toggle, a second tap cannot silently un-favourite what you just asked for.
+
+Three decisions do the actual work, and each was made against measured output rather than intuition:
+
+- **Seeds come from the obscure end of your library.** Similarity quality *inverts* with seed
+  popularity — Radiohead returns Nirvana, RHCP and Coldplay, while Bark Psychosis returns Mogwai,
+  Talk Talk, Tortoise, Slint and Labradford. One request for ListenBrainz's sitewide top 1000 gives
+  a hub list, and no artist on it is ever used as a seed or offered as a pick.
+- **Ranking is by distance from your library, not similarity to it.** An artist reachable from one
+  seed outranks one reachable from twelve: the latter is somebody you have had every opportunity to
+  buy and haven't. Every other recommender sorts the other way, which is why they all return the
+  obvious.
+- **The picks are dealt round-robin across seeds.** Caught by running the real pipeline against the
+  live APIs: ranking alone returned Loscil, Harold Budd, Hammock, Helios and Biosphere — five
+  ambient records that were all neighbours of one album, saying one thing between them. Once most
+  candidates sit in the one-seed bucket the sort decides on score alone and the loudest seed takes
+  every slot. Dealing one candidate per seed per round turns that into Loscil, Do Make Say Think,
+  Galaxie 500, Benoît Pioulard and The White Birch.
+
+The stretch pick draws from MusicBrainz's relevance order for a genre, so it is that genre's
+canonical name (Flamenco → Camarón de la Isla) rather than a random unknown — a stretch worth
+listening to, not just an unfamiliar one. Its reason line never claims similarity to anything,
+because it was chosen for the opposite.
+
+Every reason line is derived from the chain that produced the pick, so it is always true. **No LLM
+is involved.** A generated sentence would read better and would sometimes be wrong, and a
+hallucinated album cannot be favourited — it just looks broken.
+
+**"Not for me" is permanent and explicit; silence is never rejection.** The premise is albums you
+would not otherwise reach for, so treating an ignored pick as a no would empty the pool within a
+week. Shown artists rotate out for 120 days and come back.
+
+### Added
+- `lib/discovery.js` — keyless clients for ListenBrainz similar-artists (batched, one request per
+  ten seeds, each result attributed to the seed that reached it), the sitewide hub chart, and
+  MusicBrainz genre rosters.
+- New tables on the data volume: `smart_picks`, `smart_pick_seen`, `smart_pick_blocks`, and
+  `smart_cache` — every third-party read is persisted, so a rebuild on an unchanged library costs no
+  network calls either. Expired cache rows are swept once per build.
+- 114 new tests (97 unit, 17 DOM), with all 20 policy and safety mutations verified to fail the
+  suite.
+
+### Fixed — the 8-angle review, before this ever shipped
+
+The review found nine defects in the new code. Six would have been visible to a user:
+
+- **The TIDAL path could never succeed.** `searchArtists` returns `{items, total}`, not an array,
+  so `(found || []).find(...)` threw on every lookup — the `|| []` never fires because an object is
+  truthy. For a TIDAL-only setup that meant zero picks, permanently.
+- **The whole Smart Picks screen rendered in one grid cell** — 110px on a phone, 125px on desktop.
+  A container appended into the shared `#album-grid` must carry `grid-column: 1 / -1`, exactly as
+  `.playlist-detail` does. Every element was present and every count correct, so only a measurement
+  could see it; the DOM test now takes one.
+- **The stretch pick led the row every day.** The read sorted `ORDER BY kind DESC` and "stretch"
+  sorts after "adjacent", inverting the rank the writer had just assigned. Now covered by a test
+  that builds the real schema out of index.js and exercises the real query.
+- **An unbounded build.** Every candidate *tried* costs a streaming search, so the pool size was not
+  the bound. A day with expired credentials would walk 150 candidates and then every outside genre
+  times its 60-artist roster — thousands of live calls against the unofficial Qobuz/TIDAL APIs.
+  Capped, plus a 429 abort matching the existing Discogs/iTunes precedent.
+- **A zero-pick day was retried on every request**, because "did we build today?" was answered by
+  "are there rows?". Now marked. The build is also skipped outright with no service connected, since
+  every resolve would return null.
+- **`/api/smart-picks` awaited the whole background queue.** `bgRun` returns the tail *after*
+  appending, so awaiting it waits for everything already queued — on a fresh pair, an art prewarm of
+  the entire library. The build is now timer-driven and the route is a pure read.
+
+Three more were latent but would have been very hard to diagnose:
+
+- An empty hub chart would have **silently disabled the seed policy** — no hubs means no filtering,
+  so the feature would seed from the library's most famous artists, the exact inversion it exists to
+  avoid. It now refuses to build rather than produce a day of picks that discredit it.
+- A negative album lookup was cached for seven days **even when no service had been consulted**, so
+  a user who connected Qobuz would have got an empty feature for a week. A transient failure was
+  cached the same way.
+- Rows the similarity endpoint failed to attribute to a seed would have **poisoned every seed's
+  cache with an empty array for 30 days**, with nothing in the log, because the request succeeded.
+
+### Changed
+- `libraryArtistProfile` is deliberately uncached: the obvious key (`albumIndex.builtAt`) only moves
+  on a full walk, so on a library that has stopped growing it would freeze the play counts forever —
+  and plays-per-album-owned *is* the seed policy.
+- `albumPlayKey` replaces the duplicated plays-table key expression in `libraryView`.
+
+## [1.7.40] — 2026-08-04
+
+An agent audit of the duplicate genre walk visible in a production log. Every Home load was making
+six Roon calls, two of them a byte-for-byte duplicate.
+
+### Fixed — /api/filters/genres had no cache at all
+It walked the genres hierarchy on **every single request**. The client fetches it and
+`/api/home/genre-groups` together on Home load, and both walk the same root — which is why the log
+showed two browse sessions hitting `genres pop_all` 2 ms apart. It is now cached for thirty minutes
+like its neighbour.
+
+**The HTTP 304s these requests return are a red herring.** Express computes the ETag from the
+finished response body, so the handler has already made every Roon call by the time the 304 is
+decided. They save bandwidth and nothing else — worth knowing before anyone "fixes" this with
+`Cache-Control`.
+
+### Fixed — neither genre cache was ever invalidated
+Both are TTL-cached against the Core and neither was on any invalidation path, so a genre added to
+the library stayed invisible on Home and in the filter sheet until the clock ran out, with no way to
+hurry it. Both are now cleared by `bumpLibraryMeta()` alongside the library view cache.
+
+### Fixed — concurrent cache misses each ran their own fetch
+`makeTtlCache` only wrote the map after the fetch resolved, so two callers arriving on a cold key
+both did the work. On Home that is two Roon walks; with several clients waking together it
+multiplies. Callers now share one in-flight fetch.
+
+**A rejection is never stored.** The obvious way to share a promise is to put it in the same map as
+the values, which caches the *failure* for the whole TTL — turning a one-second Core blip into a
+half-hour outage that looks exactly like the Core being down. The next caller after a failure
+retries.
+
+### Note — a `typeof` guard that would have crashed startup
+The first draft declared the caches near their routes and guarded `bumpLibraryMeta` with
+`typeof x !== "undefined"`. That does not work: unlike an undeclared name, a `const` in its temporal
+dead zone throws from `typeof` too, and `bumpLibraryMeta` runs during startup. Caught by the
+pre-flight before it shipped; the caches are now declared at first use, as the rules require.
+
+### Tests
+26 static / 446 unit / 243 dom. `ttlcache.test.js` drives the real cache, and the failure-caching
+case is asserted directly — it is the one way this change could make things materially worse.
+
+## [1.7.39] — 2026-08-04
+
+Diagnostic build. v1.7.38's genre-harvest skip rests on an assumption nobody has verified, and this
+makes one restart answer it.
+
+### Added — the harvest says whether its own optimisation can work
+The skip decides a genre is unchanged by comparing the album count Roon states in that genre's
+subtitle. **If Roon's genre list carries no such count, `parseAlbumCount` returns null, the "any
+doubt walks" guard fires for every genre, and the skip never engages** — while the harvest goes on
+logging plausible totals. A failure that hides itself is worse than one that shouts, so it now says
+which case it is in, once per harvest, in words:
+
+```
+[genres] fingerprint OK — all 21 genres state an album count, so unchanged ones can be skipped
+```
+
+or
+
+```
+[genres] fingerprint UNUSABLE — only 0 of 21 genres state an album count (0 have any subtitle at
+all), so every genre must be walked every time. Sample: "Pop/Rock => ", "Jazz => ", …
+```
+
+The sample matters: without it there is no way to tell "Roon sends nothing" from "Roon sends
+something we failed to parse", and those need different fixes. Unconditional, not behind `RRA_DEBUG`
+— the answer matters on a quiet install too.
+
+The classification is a named function rather than an inline block, so it is testable. A library
+where the skip can never work being reported as "all good" is precisely the failure this exists to
+prevent, and that is now pinned by tests rather than by reading.
+
+A **partial** result counts as UNUSABLE. One unfingerprintable genre makes the scheme unreliable,
+and "mostly works" is the reading that would stop anyone looking further.
+
+### Fixed — the harvest summary mixed two different units
+It reported `albumGenreCache.size` as "albums genred" alongside an album count. The cache is keyed
+on identity, and albums sharing an identity share a row — so on a real library that read
+`8816 albums genred … 237 with no genre` out of 9,209, a 156-album gap that looks like data loss
+and is not. It now says identities and albums separately.
+
+### Measured, for the record
+On a 9,209-album library with 21 genres: the full snapshot build is 21 Roon calls in 0.5 s and the
+full genre harvest is ~142 calls in 3 s. Both are far cheaper than the estimates in v1.7.38's notes,
+which assumed a 2,234-album library. If the fingerprint turns out to be unusable, the honest
+conclusion is that a 3-second harvest does not justify further complexity.
+
+### Tests
+26 static / 434 unit / 243 dom.
+
+## [1.7.38] — 2026-08-04
+
+Performance pass on the Roon Core. The extension is welcome to spend its own CPU and RAM; the
+Core is not. Two agents audited the real call counts before anything was changed, and one of them
+corrected a wrong assumption of mine before it became code.
+
+### Changed — the genre harvest now skips genres that haven't changed
+It cost ~6 Roon calls per genre, ~180 per sync, and ran in full whenever the library changed at
+all — even when the change had nothing to do with genres. Roon states each genre's album count in
+the subtitle of the root listing the harvest **already fetches**, so the fingerprint that decides
+whether a genre needs walking was free and was being discarded one line later.
+
+A genre is skipped only when its raw subtitle *and* its image key are unchanged, its count parses,
+and the count it last stated matches the count its album list actually reported. Any doubt walks.
+
+- **Steady state with nothing changed: 2 calls instead of ~180.**
+- A sync that touched three genres: ~20.
+- **A full sweep runs weekly regardless.** No free fingerprint can see a same-count membership
+  swap, or an album Roon re-identified — that changes the mapping's key without moving any genre's
+  count. So the skip is bounded by time rather than trusted indefinitely.
+- The Rescan button always forces a full walk. It is what you press when the Genre facet looks
+  wrong, and a recourse that can be skipped is not a recourse.
+
+### Fixed — an album could gain a genre but never lose one
+The harvest merged into the previous value (`(prev || []).concat(name)`), which made album→genres a
+monotonic union: **no full walk could ever correct a removal**, and an album that left a genre kept
+it forever. A walked genre's membership is now rebuilt from scratch, and an album that has left
+every genre has its row deleted rather than kept empty. This was a real bug shipped in v1.7.35 —
+the skip would have been built on top of it.
+
+### Changed — all heavy background work goes through one queue
+The art prewarm, the genre walk and the streaming refresh were three fire-and-forget kicks issued
+together. The number of calls was never the problem; the **burst** was — it all shares one
+multiplexed Core websocket with browse and transport.
+
+The first attempt at this serialised each chain internally and was still wrong: a manual Rescan
+starts its own chain *and* triggers a rebuild whose chain starts too, so the two ran side by side
+and the two most expensive jobs still overlapped. There is now a single global queue, so at most
+one job talks to the Core at a time however many chains are in flight. Order within a sync is
+cheapest-first: streaming favourites (no Roon calls at all) → genres → art prewarm last, because
+nothing waits on it.
+
+### Fixed — the genre harvest ran during a Roon import
+Every other heavy path consults `libraryIsImporting()`; this one only got it transitively, and the
+Rescan button called it directly and bypassed the check entirely — at exactly the moment a user is
+most likely to press it, right after adding albums.
+
+### Fixed — a failed background job could silently kill every job behind it
+The queue used a two-argument `.then`, which treats a rejected tail as handled and **skips the next
+job's callback**. One failure would drop the job after it while everything later ran normally.
+
+### Corrected — a claim I made about the art prewarm was wrong
+I said it re-fetched every thumbnail on each rebuild. It does not: it has always built its work
+list by skipping keys already on disk, so on an unchanged library it makes **zero** image requests —
+and on that path it is never even called. The audit also found it is the *only* place that can
+answer whether Roon's image keys churn: its own `pruned N stale` log line. Worth watching after a
+rebuild.
+
+### Where the load actually is, measured
+Idle and paired, with the library unchanged: **14 Roon calls per day**, all of it the two 12-hourly
+freshness probes. Everything else is snapshot reads. The genre harvest was the only thing in a
+rebuild cycle worth attacking, which is why it is the one thing attacked.
+
+### Changed — the test extractor understands `async function`
+Every async top-level function in `index.js` was previously untestable, which had been quietly
+steering tests toward the synchronous half of the file. The scan pipeline is entirely async.
+
+### Tests
+26 static / 424 unit / 243 dom. New: `syncchain.test.js` drives the real queue (never a stub —
+"serialised" is exactly what it provides) including two chains racing, and `genreskip.test.js`
+covers the fingerprint's refusal to skip on ambiguous evidence. All new assertions mutation-checked.
+
+## [1.7.37] — 2026-08-04
+
+### Changed — Order and Playlist size now lead the Dynamic Playlist sheet
+They are decisions about the *playlist*, not about which albums match, and they were sitting below
+ten collapsed facets — a full scroll away from the two controls that screen exists to set. Both now
+come first and open by default; the filters follow, still collapsed.
+
+### Added — formats for albums you have no file for, cross-referenced from Qobuz and TIDAL
+The quality badge only knew about local files, so a Roon library with streamed albums in it showed
+badges on some tiles and nothing on the rest. Those albums are in your library because you *added*
+them, which favourites them in the service — and the favourites pages are already being fetched for
+the source badges. So this reads one more field off a response already in hand: **no extra request,
+no new API, no extra scan.**
+
+- **Qobuz** states an exact bit depth and sample rate, so those albums badge `24/96`, `16/44.1` and
+  so on, exactly like local files.
+- **TIDAL** states a *tier* rather than numbers, and its hi-res spans 24/44.1 to 24/192. Turning a
+  tier into "24/96" would be inventing both numbers, so those badge **Hi-Res**, **Lossless** or
+  **AAC** — what TIDAL itself says. Hi-Res is still highlighted.
+
+**A local file always wins.** Sources are ranked (file → Qobuz → TIDAL), so if you own a CD rip of
+an album you have also favourited in hi-res, the badge says `16/44.1` — what will actually play.
+Claiming `24/96` for audio you will never hear is precisely the confident lie this badge must not
+tell. The ranking survives the race between the file walk and the favourites refresh in either
+order, and rows written by v1.7.35–36 carry no source, so the first identified one corrects them.
+
+Disconnecting a service takes its formats with it, the way it already takes its badges — otherwise
+a bit depth sourced from a removed account would persist on the data volume and come back on the
+next restart.
+
+The Focus sheet's Format coverage note and the Appearance toggle's help text both say where the
+numbers came from, including that Qobuz gives numbers and TIDAL gives a tier.
+
+### Tests
+26 static / 394 unit / 243 dom. The precedence rules are driven in both write orders, because which
+of the file scan and the favourites refresh finishes first is a race. All new assertions
+mutation-checked.
+
+## [1.7.36] — 2026-08-04
+
+### Added — Dynamic Playlists have an Order: Album order or Random
+A Tracks playlist came out in album order, marching through one record at a time. Order is now its
+own section in the Focus sheet, separate from what the playlist is made of:
+
+- **Album order** — the sort you chose, each album's tracks in disc order.
+- **Random** — shuffles the albums, *and* the tracks within each page, so a Tracks playlist
+  genuinely interleaves rather than reordering whole records.
+
+It applies to Albums playlists too, where it shuffles which albums and what order they play in.
+
+The shuffle is **seeded, not `Math.random()`** — deliberately. Tracks are paged by album, so a
+fresh shuffle per request would repeat some tracks and skip others as you scroll. It is a pure
+function of the playlist's seed, so page 2 continues page 1 instead of reshuffling underneath it.
+
+Random also shuffles **before** the playlist's size limit, not after: a random playlist of 100 is
+100 drawn from everything that matched, not the first 100 by title then jumbled.
+
+Listing and playing now read one function, so the wall of albums you are looking at and the queue
+the Play button builds cannot be in different orders. The detail screen also states the mode and
+order under the title — "Tracks · random · Electronic" — so "why are these shuffled?" is
+answerable without opening Edit.
+
+### Added — sample rate and bit depth on the artwork (off by default)
+**Appearance → Show sample rate on artwork.** Puts `24/96`, `16/44.1`, or the file type for a
+lossy one on every album tile, and on the album view's own cover. Hi-res — anything above 16-bit
+or 48 kHz — is tinted with the accent.
+
+It is read from your own files during the library scan, so it costs nothing extra: the scanner
+already parsed the format block and had simply never looked at it. A **streamed album has no file
+to read, so it gets no badge at all** rather than an empty box or a guess.
+
+A lossy file shows its container (`MP3`, `AAC`) and never a bit depth — music-metadata reports a
+`bitsPerSample` for MP3 that describes the decoder, not the recording, so "16/44.1" on a 128 kbps
+rip would be a confident lie about CD quality.
+
+The value rides on every album payload, so the switch is one class on `<body>`: it changes the
+wall already on screen rather than waiting for a navigation. Stored per device, like the theme.
+
+### Tests
+26 static / 381 unit / 242 dom. New: `test/dom/quality-badge.test.js` measures painted boxes
+rather than counting elements — `display:none` is how the badge hides, so an element count would
+pass with every badge on screen. All new assertions mutation-checked.
+
+## [1.7.35] — 2026-08-04
+
+### Changed — the Library control row now matches Roon
+The row read as three heavy boxed pills — SORT | ↑ | FOCUS — where Roon's own phone header is
+`› Focus` on the left and the current sort on the right, as plain text over a hairline. That is
+what it is now.
+
+**The separate direction arrow is gone.** Roon has no such button: direction is a property of the
+sort and lives inside the sort menu, which has flipped it on a re-tap since v1.6.59. The row still
+*shows* the direction (and the ⟳ glyph for Random) as part of the sort's own label, so nothing is
+hidden — it just isn't its own control any more.
+
+### Added — Focus grew from three categories to ten
+Roon's Focus offers genre, format, sample rate, label and more. Ours offered Source, Decade and
+Listening. Now:
+
+| Category | Where it comes from |
+|---|---|
+| **Genre** | Roon's own genres hierarchy, walked once per library sync |
+| **Record label** | the label scan that already runs |
+| **Format / Sample rate / Bit depth / Channels** | your file tags — free, the scan already parsed them |
+| **Starts with** (A–Z) | the snapshot's sort titles |
+| **Added in the last** (7 days → a year) | the dates v1.7.31 taught it to work out |
+| Source, Decade, Listening | as before, with **Played** added beside Never played |
+
+**Genre is the significant one.** It used to live in the old "main filter", which navigated Roon
+into a genre's own list and therefore could not be combined with anything — that list has its own
+offset space, unrelated to the full-library offsets every other facet returns. Genres are now
+harvested into the snapshot the way release years were in v1.6.59, so Genre is an ordinary chip
+that combines with the rest. The join is Roon-to-Roon (both sides are Roon's own title strings),
+so unlike years it lands on essentially every album.
+
+### Added — tap a filter again to exclude it
+Roon's signature Focus interaction. First tap includes, second excludes (red, struck through),
+third clears. Encoded in the value itself, so saved playlists and shared links carry it unchanged.
+
+### Changed — Focus categories collapse
+Ten categories, some hundreds of labels long, do not fit on a phone. Each is now a header that
+opens, and a category holding an active filter opens by itself — a filter you cannot see is a
+filter you cannot clear. Each says how many albums it actually covers, because none of this comes
+from Roon and the chips will not add up to the library.
+
+### Added — a new Dynamic Playlist asks Albums or Tracks first
+Then it opens the Focus screen, whose options fuel the playlist. **Albums** queues whole records
+and its detail screen now shows a wall of albums — read straight from the snapshot, zero Roon
+calls, where listing tracks costs ~5 calls per album just to look. **Tracks** behaves as before.
+
+The filter is always album-level, and the sheet says so: Roon publishes no track list without
+opening each album, so a genuinely track-level *filter* would mean indexing every track in the
+library — ~10,000 Roon calls, redone on every change. That is the traffic the snapshot model
+exists to avoid.
+
+### Fixed — the source badge appeared on every single album
+v1.7.34 made the Local count right by elimination, and in doing so put a "Local albums" badge on
+all 2,234 tiles. A badge that is on everything is not a fact about an album. The count and the
+badge are now separate: Focus still says 2,234, and no tile carries a badge unless more than one
+source is actually in play.
+
+### Fixed — a capped playlist under-reported what it left out
+The "N of M albums" message compared the queued count against the number of albums the endpoint
+returned — which is always the same number, so the message was dead code. It now compares against
+how many the query *matched*, which is what the playlist was capped against.
+
+### Fixed — clearing the last filter in a category collapsed it
+The section's active count dropped to zero mid-repaint and it shut under your finger, taking its
+other chips with it.
+
+### Fixed — a filter the server didn't list could not be cleared
+Genre and Label are truncated to the commonest 40 values. A saved playlist naming one outside that
+list left an active filter with no chip — invisible, and clearable only by wiping every other
+filter with it.
+
+### Fixed — `sanitizeLibView` stored `null` as the text "null"
+A JSON round-trip of a sparse array produced a valid-looking filter value that matched nothing.
+
+### Changed — "Dynamic Playlists" is capitalised as a feature name
+
+### Not possible, and why
+Roon's Focus also offers star ratings, its own favourites, album types (Main/EP/Single) and the
+Inspector states. The extension browse API returns `title`, `subtitle`, `image_key`, `item_key`
+and `hint` per item — nothing else — and the request side has no sort, filter or focus parameter
+at all. The sort/filter feature request has been open on RoonLabs/node-roon-api since 2020. The
+Focus sheet says this rather than leaving the gap unexplained.
+
+### Tests
+26 static / 360 unit / 233 dom. New: `test/unit/facets.test.js` drives the shipping facet table so
+counting and filtering cannot disagree, and `test/dom/focus-sheet.test.js` proves an excluded chip
+reaches the server as an exclusion — the chip turning red proves only that the chip turned red.
+Every new assertion was mutation-checked.
+
+## [1.7.34] — 2026-08-04
+
+### Changed — the Source facet is now derived, not proved
+Every version from v1.7.27 to v1.7.33 attacked the local-album count the same way: prove each
+album is local by matching a file tag against Roon's album title. Each fix moved the number
+(1601 → 1648 → 1831 → 1953) and none of them could ever finish, because **Roon replaces file tags
+with its own metadata for albums it identifies** — so the two sides legitimately disagree about
+the album's name and no amount of matching closes the gap.
+
+The question was the wrong one. Roon's library is local files plus streaming albums you have
+added, and adding a streaming album favourites it in the service — which is what makes the
+Qobuz/TIDAL key sets meaningful in the first place. So **with no streaming service connected,
+there is nothing else an album can be**, and locality does not need proving album-by-album at all.
+
+An album no connected service claims is now counted as local. On an all-local library that is
+exactly the library size, always, with no join to leak through.
+
+The guard rails matter as much as the rule:
+
+- **With a service connected, elimination is switched off.** An unclaimed album could be local, or
+  from a service that isn't connected here — guessing would badge someone's TIDAL album as a local
+  file. Positive evidence is all we have there, and the old behaviour stands.
+- **A connected service whose favourites failed to load claims nothing, and that is silence, not
+  an answer.** Treating it as "claims nothing" would call every one of its albums local,
+  confidently and wrongly. A service counts only when it is connected *and* its key set loaded.
+- The facet and the filter now go through **one** function. A facet that counts one way while the
+  filter selects another is worse than either being wrong on its own: the number promises
+  something the list then fails to deliver.
+
+The Focus sheet says which reasoning produced the number, because "we matched your files" and
+"nothing else could have put these here" mean different things and only one of them is exact.
+
+The file scan is unchanged and still earns its keep — it supplies release years, labels, and the
+positive evidence used whenever a service *is* connected.
+
+## [1.7.33] — 2026-08-04
+
+### Fixed — the remaining local-album shortfall
+The `[local:walk]` line added in v1.7.30 settled it in one reading:
+
+    2831 dirs visited, 2383 with audio, 2383 tags read, 2383 albums keyed
+
+No skipped depths, no unreadable directories, no failed tag reads. The walk finds **more** album
+directories than Roon has albums, so the missing 403 were never a scanning problem — they fail the
+**tag↔Roon match**.
+
+The cause is that Roon replaces file tags with its own metadata for albums it identifies. A rip
+tagged *Rumours* sits in a library where Roon calls it *Rumours (Deluxe Edition)*, and with one
+title string on each side those can never meet. The streaming path has had edition tolerance since
+v1.6.55 — `addFavouriteKeys` indexes both `Album` and `Album (Deluxe)` — and the local path never
+got it.
+
+`albumKeys()` now generates an extra key with the edition marker removed, which means **both**
+sides inherit it, symmetrically:
+
+- a trailing bracketed chunk — `(Deluxe Edition)`, `[2016 Remaster]`
+- a trailing dash suffix, but **only** when it reads as an edition. *Album - Remastered* collapses;
+  *Album - Part Two* does not, because that is a different record and merging them would be worse
+  than missing one.
+
+The stripped form is always an **extra** key, never a replacement, so albums that differ only by
+edition can still match each other exactly. Two albums that collapse to the same stripped title
+simply share an identity, which `ambiguousAlbumKeys` already suppresses for badging.
+
+### Fixed — a regression caught by the existing suite
+The first version applied the ≥3-character floor to the **original** title as well as the stripped
+one, so an album genuinely called *X* or *÷* came back with **no keys at all** — every identity
+gone, silently. The floor belongs only on stripped forms, where a short result means the marker was
+most of the title and what remains would match everything.
+
+## [1.7.32] — 2026-08-04
+
+### Added
+- **Create a dynamic playlist from the Dynamic playlists screen.** A "New dynamic playlist" tile
+  leads the wall and opens **the same editor Edit opens** — every focus section plus the Playlist
+  size control, which exists nowhere else and so could not be set at all during creation before.
+
+  Creating is editing a playlist that doesn't exist yet: the same sheet is passed a target with no
+  id, and the absent id is what makes the save create rather than overwrite. One editor rather
+  than two that have to be kept in step.
+- The empty-state message now points at New instead of sending the user to the Library screen to
+  discover Focus → Save as… on their own.
+
+## [1.7.31] — 2026-08-04
+
+### Fixed
+- **Pasting a shared playlist failed because iOS lowercased the marker.** Autocorrect treats
+  `MDRP1` as a word it doesn't know and rewrites it on paste, leaving the payload untouched but
+  the marker unrecognisable. Two changes: the import box now sets `autocapitalize`, `autocorrect`
+  and `spellcheck` off so it stops happening, and the decoder matches the marker
+  case-insensitively so a blob that was already mangled still works.
+- The payload's own case is **never** normalised — base64url is case-sensitive, so "helpfully"
+  lowercasing it would decode to different bytes. A blob whose payload has been case-folded fails
+  the checksum, which is the correct outcome, and there is a test that says so.
+
+### Added — Recently added
+A new Library sort, built from the only evidence available: Roon's extension API publishes **no
+import date of any kind**, so nothing here comes from Roon.
+
+- **Local files** are dated by the timestamp of the file the scanner already reads — a real date,
+  and the strongest evidence available.
+- **Anything else** is dated when it first appears in a library rebuild.
+- Where those disagree, the file wins; within one source, the earliest date wins, because "first
+  seen" means the earliest evidence rather than the most recent scan to notice.
+
+**What it gets wrong, stated plainly:** an existing library has no history to recover. The first
+run therefore records **nothing at all** and leaves those albums undated — stamping them with the
+moment the feature was installed would be a timestamp that is technically a date and factually a
+lie, producing a list that sorts perfectly and means nothing. Accuracy accrues going forward:
+albums added after this ships get real dates within 12 hours.
+
+Undated albums are **held out of the ordering and appended**, in both directions, exactly as the
+Release year sort already does — so reversing to newest-first can't float them to the top. The
+Focus sheet reports the coverage number the same way it does for release years.
+
+## [1.7.30] — 2026-08-04
+
+### Added
+- **The file scan now says what it walked.** One unconditional line per scan:
+
+      [local:walk] 1873 dirs visited, 1712 with audio, 1698 tags read, 1690 albums keyed
+
+  with counts appended for directories skipped past the depth limit, unreadable directories,
+  failed tag reads, and files with no album tag.
+
+  This exists because diagnosing the v1.7.27 local-albums shortfall was harder than fixing it.
+  The only logged number was `[local] N album keys recorded`, and keys are not albums — one
+  directory contributes one or two — so a short count could not be attributed to the walk missing
+  albums or to the keys not matching. Those live in different halves of the code. Counting is
+  free; not counting cost a round trip through the user's logs.
+
+  It also makes `SKIPPED past depth` visible, which was previously silent: a subtree one level
+  deeper than the limit is skipped whole, without a word.
+
+## [1.7.29] — 2026-08-04
+
+### Fixed
+- **Importing a playlist you had just shared failed with "That doesn't look like a MusicD Remote
+  playlist".** Two causes, and the first made the second inevitable:
+  - **Copy never worked on this app's own origin.** `navigator.clipboard` is a *secure-context*
+    API and the extension is served over plain http on the LAN, so on most devices it does not
+    exist at all — the button fell through to "the text is selected, copy it by hand" every time.
+    A hand-selected 3 KB blob on a phone comes back short or wrapped. `document.execCommand("copy")`
+    still works on http and is now tried **first**, with the async API as the fallback.
+  - **The decoder demanded the marker at character zero** of a trimmed string, so a paste carrying
+    a leading newline, soft-wrapped lines, or the words the sender typed around it was rejected
+    while holding a perfectly good playlist. It now finds the marker wherever it sits and ignores
+    whitespace and quote markers inside the payload.
+- Trailing prose ("…Enjoy!") cannot be separated by inspection — letters are valid base64url. But
+  gzip carries a checksum, so the decoder shaves characters off the end and retries, bounded at 40.
+  A wrong length fails the CRC rather than yielding plausible garbage, which is what makes that a
+  recovery rather than a guess. A genuinely truncated blob still reports itself as cut short.
+
+### Added
+- **Import from a file.** The import sheet takes a `.musicd` file as well as a pasted blob — the
+  other half of Share's Download button, and far more reliable on a phone than a clipboard.
+
+## [1.7.28] — 2026-08-04
+
+### Fixed
+- **Albums can be added to a playlist.** Selecting albums and choosing *Add to playlist* refused
+  with "Playlists hold tracks — open an album and pick the ones you want". That was a design
+  decision made in v1.7.23 and it was the wrong one: a stored entry does name a specific track,
+  but resolving albums into tracks is this app's job, not something to hand back to the user.
+
+  The new `/api/user-playlists/add-albums` reads each selected album's tracklist off the Core —
+  ~5 browse calls each, one album at a time, capped at 30 per add — and stores every track. The
+  result is reported per album: *Added 137 tracks from 12 albums to "Mix"*. An album Roon won't
+  open is **named** rather than counted, because knowing which one is the only way to act on it.
+
+### Changed
+- Both add routes now share one target resolver and one append helper. They had separate copies
+  of "find the playlist or create it", which is how two routes end up disagreeing about what a
+  name with no id means.
+
+## [1.7.27] — 2026-08-04
+
+### Fixed — the local album count was too low
+Five separate causes, found by tracing the whole join. In rough order of how many albums each
+probably cost:
+
+- **"Rescan library" never re-ran the /music file scan.** It refreshed the Roon snapshot and the
+  Qobuz/TIDAL badges and left the local set untouched — so the one button a user presses when the
+  local count looks wrong was the one button that could not fix it. It now kicks the file scan too.
+- **The two sides of the join used different key functions.** The library index stores
+  `albumKeys()` for every album — the whole credit *plus each name in it* — while the file scanner
+  stored `albumKey()`, the whole credit only. A tag reading "Robert Plant & Alison Krauss" could
+  therefore never match a Roon credit of "Robert Plant", while the reverse matched fine. A
+  one-directional match errors nowhere; the count is just quietly short.
+- **`MAX_DEPTH` was 3.** `/music/Artist/Album/CD1` fits; `/music/Genre/Artist/Album/Disc 1` does
+  not, and a subtree past the limit is skipped *whole and silently*. Raised to 5.
+- **Compilations without an `ALBUMARTIST` tag** were keyed under whichever performer happened to
+  be on the first track, which never matches Roon's "Various Artists". They are now also keyed
+  under that.
+- **The facet counted through the ambiguity suppression.** Skipping identities held by more than
+  one album is right for a *badge* — it would be a coin flip — but wrong for a *count*: two copies
+  of an album are both local. The Focus total is now counted without it.
+
+Also: a missing `local-albums.json` scheduled no rebuild (only a wrong-version one did), and the
+Focus sheet cached its counts for the life of the page, so a rescan changed the library and the
+sheet went on reporting the old numbers until a full reload.
+
+### Fixed — dynamic playlists no longer promise more than they deliver
+A dynamic playlist advertised its full match count and could only ever play 400 albums of it.
+Playlists now carry their own **album limit**, default **100**, adjustable to 400 in Edit →
+Playlist size:
+
+- The tile reads **"100 of 1179 Albums"** when the query matched more, instead of "1179 Albums".
+- The limit applies to the track list, to Play now / Queue, and to Send to Roon alike.
+- Saving says so: *Saved "Never played" — it plays 100 of the 1179 albums that match.*
+- **Playlists saved before this take the default** rather than staying uncapped.
+
+Why 100: every album costs 8 Roon calls to queue, so 400 albums is ~3,200 calls and, by the code's
+own note, "takes minutes". 400 albums is also roughly 4,400 tracks — about 88% of the ~5,000-track
+Roon queue ceiling, which is community-reported and unverified. 100 albums is ~800 calls, ~1,100
+tracks and still around 75 hours of music: more than any session will reach.
+
+### Answering "how many are added to the Roon queue"
+**Every track of every album sent.** There is no per-album track cap — the extension invokes
+Roon's own album-level Queue action, and Roon enqueues the whole album. At the previous 400-album
+cap that was roughly 4,400 tracks. It is now roughly 1,100 by default.
+
+## [1.7.26] — 2026-08-04
+
+### Fixed
+- **Selecting a track in the album view gave you ticks and no way to act on them.** The
+  multi-select menu lives in the top bar, and the album view is a full-viewport modal painted over
+  the entire app shell — so while an album was open the menu was both invisible and untappable.
+  The live menu node now moves into the album view's own header band, left of Share and ×, and
+  moves back when the album closes.
+
+### Changed
+- The menu in the album view reads **Play now / Add to end of queue / Add to playlist… / Clear
+  selection**. "Add to playlist" is hidden for ALBUM selections — a stored playlist entry names a
+  specific track, so offering it there would only explain itself after being tapped.
+- "Add to queue" is now **"Add to end of queue"**, which is what it does.
+- The source facet and badge now say **"Local albums"** rather than "Local files".
+
+### Class of error
+A stacking failure that every logic assertion passes. The count was right, the handlers were
+bound, the element was in the DOM with the correct text — and the feature was unusable. The DOM
+test written for it in v1.7.22 asserted all of that and never asked whether the button could be
+touched. The new test is a hit test — `elementFromPoint` at the button's centre must land on the
+button — with a control assertion proving the probe is capable of failing, following the
+precedent set for the v1.6.58 sort-sheet regression.
+
+## [1.7.25] — 2026-08-03
+
+### Changed
+- **One Playlists screen.** "My playlists" is gone as a separate destination; playlists stored by
+  this extension now appear on the Playlists wall alongside Roon's, stored ones first. Imports
+  land there. Finding a fresh import buried under the Roon list would read as an import that
+  failed.
+- The two sources are fetched together but tolerated separately: **Roon being unreachable no
+  longer hides the playlists on this disk** — they render, with a banner saying the list is
+  incomplete.
+- **Side menu order** is now Dynamic playlists → Playlists → Import a playlist.
+- **Filter removed from the side menu.** It lives on the Library screen, which is the only place
+  it applies. "Random albums" already clears any active filter, so a random wall is a random wall.
+- **"Play something unheard" removed from the side menu** and put on Home, as the first tile of
+  the "Not played in 6 months" carousel. That row *is* the unheard albums, so the action and the
+  row it leads mean the same thing — and it sits at the top of Home without needing a slot of its
+  own. Built as a normal tile, so it inherits the carousel's sizing at every screen width instead
+  of carrying breakpoints of its own.
+
+### Fixed
+- The unheard action now spins **whichever control was pressed**. Forwarding the Home tile's click
+  to the hidden top-bar button would have left the pressed tile visibly inert for the two seconds
+  the pick takes.
+
+## [1.7.24] — 2026-08-03
+
+### Changed
+- **Smart playlists are now called Dynamic playlists** everywhere they appear: the side menu, the
+  wall heading, the Back button, the naming prompt, the empty state, every toast and confirm, and
+  the server's error text.
+
+### Not renamed, deliberately
+The internal name stays `smart` — the `smartPlaylists` key in settings.json, the
+`/api/smart-playlist*` routes, the `sp_` record ids and every identifier in the source. Renaming
+the persisted key would drop every existing dynamic playlist unless a migration shipped with it,
+and that is real risk for a cosmetic change. The rename is skin-deep on purpose, and a new test
+pins the visible name so it cannot silently drift back — the internals were already covered.
+
+## [1.7.23] — 2026-08-03
+
+The other half of Share: import. Plus the playlist store both it and "Add to playlist" needed.
+
+### Added
+- **Import a playlist.** Side menu → *Import a playlist*, paste the blob, and every entry is
+  matched against **your** library. A shared file names music, it doesn't carry it, so what you
+  get is whatever your own library can answer for. Resolution is entirely in memory — zero Roon
+  calls — so it answers in milliseconds however long the playlist is.
+- **The report is the deliverable.** "2 of 3 tracks found in your library", and the ones that
+  didn't match are *listed*, not just counted. Every tool in this space quietly substitutes the
+  wrong version; showing the misses is what makes it worth trusting. Saving is a separate, named
+  act, and an import that matched nothing doesn't offer to save nothing.
+- **My playlists** — an ordered list of specific tracks, stored by this extension on the data
+  volume. Play now, Queue, Share and Delete, with each row carrying its album's artwork.
+- **Add to playlist** in the multi-select menu, for tracks selected in the album view: add to an
+  existing playlist or name a new one.
+
+### Notes on what this is and isn't
+Roon's API cannot create or modify a playlist — verified against a live Core in v1.7.15, and
+unanswered on Roon's own tracker since 2017. So an imported playlist is a **MusicD Remote**
+playlist: it lives here, and it will not appear on other Roon remotes. Filling the Roon queue and
+using Roon's own *Add the queue to a Playlist* is still the only route to a real Roon playlist.
+
+Albums cannot be added to a playlist. A stored entry names a specific track, and an album's
+tracklist only exists on the Core — opening every selected album behind a menu tap would be
+seconds of Roon calls. Selecting albums and choosing *Add to playlist* says so rather than
+quietly doing something slower than expected.
+
+### Storage
+Imported playlists live in `data/playlists.json`, written atomically, **not** in `settings.json` —
+that file is written non-atomically, has no key whitelist, and holds the Qobuz password hash and
+the TIDAL refresh token. Third-party content has no business in it. Unlike the other versioned
+files on that volume, a version mismatch here **renames the file aside** rather than discarding
+it: those are derived caches that cost a rescan, this is the only copy of something the user made.
+
+### Safety
+An entry the resolver cannot identify with confidence is reported, never guessed at — two albums
+sharing a title is a coin flip, and a coin flip that silently puts the wrong record in someone's
+playlist is worse than a miss they can see. Nothing from a shared file reaches storage except
+through a fresh object literal built from a named field list, and a Roon `item_key` can never be
+stored: those are session-scoped and already invalid by the time anyone reads them back.
+
+## [1.7.22] — 2026-08-03
+
+Multi-select, part one: the selection mechanics. "Add to playlist" and "Recently added" follow
+in the next build — the first needs an extension-side playlist store, the second needs dates
+Roon does not give us.
+
+### Added
+- **Long-press to multi-select tracks in the album view.** The press *arms* the mode without
+  selecting the track under your finger. Each row then shows a hollow circle on the right; the
+  circle becomes a tick only once it is tapped. With the mode armed, tapping anywhere on a row
+  selects it — hunting for a small circle is the wrong ergonomics for a list you are working
+  through deliberately.
+- **An actions menu in the top bar**, appearing only once at least one thing is selected, with
+  the count on it: Play now, Add to queue, Clear selection. The same menu serves both selections;
+  they can never be live together, because opening an album ends a grid selection.
+- Selected tracks play in **album order, not tap order**, and only the first honours the requested
+  kind — sending `play_now` for each would leave the last track playing alone, having wiped the
+  ones before it.
+
+### Fixed
+- **Long-press on an album tile was broken and had been all along.** The callback fires at 500ms
+  while the finger is still down, so the browser went on to dispatch a click on release — which
+  selected the album a second time and toggled it straight back off. A long press opened select
+  mode with nothing in it. The right outcome was resting on a double-fire; it is now a suppression
+  flag consumed by the next click, in the capture phase.
+- **Multi-select was unavailable on seven of the eleven album-grid screens** — including the two
+  biggest walls (Library A–Z, "Not played in 6 months"), label albums and the Home carousels. Not
+  by design: `buildAlbumTile` inferred "selectable" from "was a custom opener passed", and those
+  screens pass one purely to force `filter: null`. Selectability is now stated outright, so it
+  works everywhere. Playlist and smart-playlist tiles state `false` — a playlist is not an album
+  and cannot be queued as one.
+- **`/api/play-track` never received the album's identity**, so `albumIdentityMatches` short-
+  circuited and the whole stale-offset ladder — relocate in memory, then live search — was
+  unreachable for a per-track play. Survivable while the only caller was a modal opened seconds
+  earlier; not survivable at all once a track reference outlives the session. `album_title` /
+  `album_subtitle` now travel with every per-track play.
+- Exiting select mode cleared the selection outline only inside `#album-grid`. Now that Home's
+  carousels are selectable, that left ticks behind on rows already scrolled past.
+
+### Changed
+- The bottom action bar no longer carries Play Now / Queue — those live in the top-bar menu now.
+  It survives as the "select mode is on, nothing chosen yet" hint, because without it a long
+  press produces no visible change until the first tap.
+
+## [1.7.21] — 2026-08-03
+
+Review findings against v1.7.19's export. Six defects, all sitting in the test suite's blind
+spot, and four of them the same mistake: a limit applied without being reported — the exact
+failure v1.7.17 was written to fix and which v1.7.19's own comments claimed to have avoided.
+
+### Fixed
+- **Stopping at the 100-album cap was silent.** Share expands a smart playlist album by album and
+  stops at 100. The sheet reported truncation only from the *server's* flag, which describes the
+  list it was handed and knows nothing about what the client stopped collecting. A 900-album smart
+  playlist shared roughly a ninth of itself and said "1180 tracks" with no caveat.
+- **A failed page was indistinguishable from a finished one.** `done` is set both when the
+  playlist ends and when a page errors, and Share's only completion test was `!done`. A timeout on
+  album 4 of 40 exited the loop and opened the share sheet — over the error message still on
+  screen — announcing a complete export of 10% of the playlist. Failure is now recorded
+  separately, and the file is marked INCOMPLETE.
+- **A Roon playlist longer than 1,000 tracks** arrives already cut short from `/api/playlist`. The
+  screen said so; the share sheet claimed a clean "1000 tracks". It now carries the caveat.
+- **`truncated` could be true when nothing was truncated.** It was derived from the input length,
+  so 2,100 entries of which 300 were untitled encoded 1,800 tracks — nothing dropped for the cap —
+  and still claimed "stopped at the sharing limit". It is now set only when the cap actually
+  stopped the loop.
+- **The JSPF trackList vanished when empty.** Pruning drops empty arrays, so a document with no
+  shareable tracks omitted `track` entirely. An absent trackList means "malformed"; an empty one
+  means "a playlist with no tracks". Phase 2's importer has to tell those apart.
+- **`meta.creator` was unreachable** and has been removed; **`bytes` was computed and read by
+  nobody** and now drives a warning — above 40 KB a paste gets silently truncated by messaging
+  apps, which produces a blob that decodes to nothing on the far end.
+- Smaller: the progress toast used the 9-second duration meant for end-of-operation reports, so
+  "Reading album 1…" sat over the finished share sheet; clamped text could keep a trailing space,
+  which canonicalises differently on the far end in a file that is never re-issued; "1 entries had
+  no title and were left out"; and `/api/share/encode` now bounds how many entries it will walk,
+  not just how many it will encode.
+
+### Class of error
+Reporting that describes the wrong layer. Every one of these limits was correctly *applied*; each
+was reported by asking a component that could not know. The server's `truncated` answers "was the
+list you gave me too long", which is not the question the user has. **And the tests were green
+throughout**: the DOM stub hardcoded `truncated: true`, so the assertion named after v1.7.17's
+lesson passed for a reason unrelated to the caps it was testing — the same shape as v1.7.16, a
+test asserting the right sentence about the wrong mechanism. The stub now returns `false` and the
+client-side caps are asserted from client state, with fixtures for the album cap, a mid-crawl
+failure, and a mixed skip/over-cap input.
+
+## [1.7.20] — 2026-08-03
+
+### Fixed
+- **Qobuz stayed in the side menu and the top bar after logging out.** The Qobuz controls were
+  gated on the connection in exactly one place — the Disconnect button inside Settings. The
+  top-bar Qobuz button and the side-menu entry were never touched, and `loadQobuzStatus()` was
+  never called at boot, so it only ran when Settings was opened. The result: after disconnecting
+  the account, the Qobuz browser was still one tap away, and every catalogue call behind it threw
+  "Qobuz not connected".
+- Both surfaces now start hidden and are toggled on the connection, and the status loads at boot
+  rather than waiting for someone to open Settings. Tidal already worked this way — it was built
+  second and got the wiring; Qobuz came first and never had it retrofitted.
+
+### Class of error
+A second implementation of the same idea, done properly, while the first was left behind. Nothing
+about the Qobuz code was wrong on its own terms — it did what it had always done. The bug was that
+"a disconnected service disappears" became the rule when Tidal shipped, and Qobuz was never held
+to it. The new test holds *both* services to the rule, in both directions, so a third service
+cannot be added with half the wiring either.
+
+### Not changed (checked, already correct)
+The badge and album paths were verified rather than assumed: disconnecting clears the cached
+Qobuz album keys and `refreshStreamAlbumKeys` skips Qobuz entirely without credentials, so source
+badges do go; every Qobuz catalogue call routes through `qobuzWithToken`, which refuses without a
+token; and the global search skips a service that returned nothing. Albums that came from Qobuz
+and remain in the Roon library are Roon's own state, not the extension's cache.
+
+## [1.7.19] — 2026-08-03
+
+First half of playlist sharing: **export**. A playlist leaves the app as a description of the
+music — never the audio — so that another MusicD Remote user can import it and have it resolved
+against their own library or streaming service. Import is the next phase; see
+`docs/design/playlist-sharing.md` for the whole design and the research behind it.
+
+### Added
+- **Share on a Roon playlist and on a smart playlist.** Produces a `MDRP1:` blob (gzipped,
+  base64url) that can be copied into a message or downloaded as a `.musicd` file.
+- **The format is JSPF**, the JSON serialisation of XSPF, in the dialect ListenBrainz uses — the
+  only formally specified open playlist interchange format, and its MusicBrainz extension
+  namespaces give real slots for identifiers instead of a bespoke schema. M3U was rejected on
+  capability, not taste: it has nowhere to put an identifier of any kind, which makes it useless
+  to a streaming-only library.
+- **Identifier slots are present from day one** — ISRC, UPC, service ids, MusicBrainz URIs,
+  duration — and populated whenever we have them. We have none yet. They exist anyway because a
+  share file is forever: a reader written against this format must keep working once exports
+  start carrying IDs, and that cannot be retrofitted to files already sent.
+- **Track numbers are now recovered** from the `"N. "` prefix Roon puts on track titles.
+  `stripTrackNumber()` was discarding it, and Roon's browse API exposes no track-number field of
+  its own — so this prefix was the only place it existed, and it is the one piece of hard identity
+  an export can carry today at no cost.
+
+### Notes
+- A smart playlist is a **query**, so its tracks do not exist until each album has been opened on
+  the Core. Share finishes the paging the "Load more" button drives, with progress shown, capped
+  at 100 albums — and reports what it left out rather than looking complete.
+- Share reports skipped and truncated counts in the sheet. An export that quietly dropped half a
+  playlist is worse than one that refused to build.
+- Fixed while building: tapping Share while the first page of a smart playlist was still loading
+  saw "already loading", returned instantly and shared nothing. Awaiting a load that is already
+  running now means waiting for it.
+- A Roon playlist row carries the track and its artist but **no album** — Roon does not put one on
+  the row. That slot is left absent rather than guessed, so an importer can tell it was never
+  told, instead of concluding the album is empty.
+
+## [1.7.18] — 2026-08-03
+
+Review findings against v1.7.17. Raising the album cap to 400 made four latent problems
+reachable that the old 100/200 ceiling had kept out of range.
+
+### Fixed
+- **One failed album turned a 400-album queue fill into a total failure.** `/api/play-multi`
+  answered HTTP 500 whenever *any* album failed, and both callers return early on `!ok` — so a
+  run that queued 399 of 400 showed a red error, and the truncation the whole of v1.7.17 exists
+  to surface was never mentioned. A partial result is a success: the first album is already
+  playing and everything that queued is queued. The route now answers 200 with
+  `{queued, failed, total}` and the toast reports them: `Playing 397 of 1179 albums (Roon refused
+  3) — that's the limit per go`. With 4× the albums, the odds of hitting one stale offset are 4×.
+- **A dropped connection let a retry wipe the queue mid-fill.** A 400-album run takes minutes,
+  and nothing cancels the server side of it — backgrounding the PWA drops the fetch, the button
+  re-enables, and a second tap starts a run whose *first* album is `play_now`, destroying the
+  queue the first run is still building; the two then interleave into garbage order.
+  `/api/play-multi` now allows one run per zone and answers 409 to a second, and the client says
+  "Lost contact while filling the queue — check Roon before trying again" instead of inviting the
+  retry.
+- **A 400-album request could exceed express's body limit.** 400 × `{offset,title,subtitle}` runs
+  ~250 bytes an item on a classical library with long work titles and performer credits, past the
+  100 kb default — and express answers that with an HTML 413 the client can only render as a
+  generic "Roon refused that". Limit raised to 1 MB.
+- **Send to Roon asked for consent without disclosing the cap.** The confirm destroys the existing
+  queue; agreeing to send 1,179 albums is not agreeing to wipe the queue for 400 of them. It now
+  says "Only the first 400 of 1179 albums fit in one go" *before* the user commits.
+- **The report vanished before it could be read.** Toasts hide after 2.4s — the end of a
+  multi-minute operation is exactly when the user has looked away. Reports about a queue fill now
+  stay up for 9s.
+- **"Queued 1 albums."** The non-truncated Send to Roon branch never got the pluralisation its
+  sibling gained. All three callers now share one `multiOutcome()` so the wording cannot drift
+  again.
+
+### Class of error
+A limit raised without re-checking what the old limit had been protecting. Every one of these was
+present at 200 albums too; 400 just made them likely enough to hit. The lesson recorded for next
+time: when a ceiling moves, re-walk the whole path under the new number rather than only the code
+that changed.
+
+## [1.7.17] — 2026-08-03
+
+### Fixed
+- **Playing a large smart playlist silently queued only 100 albums.** `/api/smart-playlist/albums`
+  defaulted to 100 albums and clamped at 200, and the Play now / Queue buttons asked for no limit
+  at all — so a 1,179-album playlist put 100 albums in the Roon queue while the toast said
+  "Playing <name>", exactly as if it had queued everything. Both halves are fixed: the client now
+  requests the full ceiling, and the ceiling is 400 albums (~4,400 tracks, near Roon's own queue
+  limit) instead of 200.
+- **The cap is no longer silent.** When a playlist is larger than one go can take, Play now, Queue
+  and Send to Roon now report `Playing 400 of 1179 albums — that's the limit per go` rather than a
+  bare success. Send to Roon says the same before repeating its "save the queue as a playlist in
+  Roon" instruction.
+- **`Play now` swallowed server errors.** A failed `/api/play-multi` showed the error toast and
+  then fell through to the success toast, so a refusal read as a success. It now returns on error,
+  matching every other caller.
+
+### Class of error
+A limit that is applied but never reported. The code was correct at every step — the server capped
+honestly, the client rendered what it got — but nothing in the chain told the user that what
+happened was smaller than what was asked for. The regression test now pins both the requested
+ceiling and the reported count, and both halves were mutation-checked.
+
+## [1.7.16] — 2026-07-30
+
+Review findings against v1.7.6–v1.7.15. Five confirmed defects, all introduced by the playlist
+work, one of which made a shipped feature fail on every use.
+
+### Fixed
+- **Every smart-playlist track tap returned HTTP 400 — nothing could be played.** The track row
+  posted the *playlist* route's field names (`track_index` / `track_title`) to the *album* route,
+  which destructures `track` / `title`. The DOM test asserted the same wrong names against a stub
+  that accepts any body, so it stayed green while the feature was entirely broken. The success
+  toast also read a `j.invoked` the route never returns.
+- **Editing a smart playlist permanently rewrote the Library screen.** `editSmartPlaylist` copied
+  the playlist's view into `libView` and called `saveLibView()` immediately, so opening Edit and
+  closing it again left the user's own Library sort and focus silently replaced. The view is now
+  applied without persisting, and restored if the sheet is abandoned — `openLibSheet` gained an
+  `onClose` hook that fires on every dismissal path.
+- **Decades were written into the live view as numbers.** The server stores them as numbers while
+  the whole client compares against `String(decade)`, so Edit opened with the active decade's chip
+  showing *off*, and tapping it pushed a duplicate (`[1990, "1990"]`) instead of toggling.
+- **Four screens took over the shared grid without orphaning playlist work** (`showWall`, the two
+  label screens, the artist view). A late `/api/playlists` response could paint its tiles over the
+  labels or artist screen, and `fillPlaylistMosaics` kept firing a browse walk per playlist at the
+  Core after the user had left. Centralised as `leavePlaylistScreens()` so a future screen calls
+  one thing instead of remembering four flags.
+- **Every Roon playlist claimed to be truncated.** `truncated` compared the browse level's row
+  count against the track count, and the level includes the play-menu row — so a fully loaded
+  20-track playlist reported "showing the first 20 of 21". It now reports truncation only when the
+  read ceiling is actually reached.
+- A failed track page left a "Load more" button that did nothing, and a network blip on the smart
+  playlist list rendered "No smart playlists yet", which reads as *your saved playlists are gone*.
+  The two states are now distinguished.
+
+### Added
+- **A static guard against client/server field-name drift.** For each guarded route, the client's
+  POST body must carry every field the handler 400s without. This is the class of bug above, and
+  it is invisible to a DOM test whose stub accepts any body.
+  - Worth recording: the first version of this guard was **vacuous**. Its regex
+    (`/if\s*\(([^)]*?)\)\s*return\s+res\.status\(400\)/`) could not match
+    `if (!Number.isFinite(offset))` because of the nested paren, so it asserted nothing and passed.
+    Only re-introducing the real bug exposed that. It now scans line by line.
+
+### Not changed
+- v1.7.15 hardened the playlist art cache against a read-modify-write race. Review showed the race
+  is unreachable — `savePlaylistArt` is synchronous end to end, so Node cannot interleave the two
+  mosaic workers inside it. The hardening is harmless and stays, but it guarded a window that did
+  not exist.
+
+## [1.7.15] — 2026-07-30
+
+### Added
+- **"Send to Roon" on a smart playlist.** Roon's extension API has no playlist write of any kind —
+  no create, add, remove or reorder, and no "Add to Playlist" action anywhere in the browse tree.
+  Three independent extension authors report the same, and Roon Labs has left the request
+  unanswered since 2017. What Roon *does* offer is saving the current queue as a playlist from its
+  own remote, so this does the half an extension can: it fills the queue in the saved view's
+  order, then says exactly which two taps finish the job (queue → 3 dots → "Add the queue to a
+  Playlist"). Confirms first, because it replaces the queue.
+- **The debug browse probe can now drill an action menu, and can be zone-scoped.**
+  `?album=<n>&action=<i>&zone=<id>` lists the actions Roon offers on an item. This exists because
+  the browse tree *does* carry non-playback actions — "Add to Library" is one — so "there is no
+  playlist action" is worth confirming against a real Core rather than assumed. Roon gates some
+  items on a zone, so a probe without one can only prove absence *without* a zone. Still
+  read-only: menus are listed, nothing is invoked.
+
+### Tests
+- 1 new test (403 total) covering Send to Roon: the confirm naming the destructive effect and the
+  Roon-side step, the queue built in the saved order, and the toast telling the user what only
+  Roon can do.
+
+## [1.7.14] — 2026-07-30
+
+Two defects found reviewing the playlist work, both introduced by it.
+
+### Fixed
+- **An abandoned edit could hijack the next save.** `smartEditTarget` was a module-level variable
+  set by a smart playlist's Edit button and cleared only on save. Closing the editor without
+  saving — the X, the backdrop, or "Show albums" — left it set, so a later "Save as…" from the
+  Library screen's Focus bar would silently overwrite the playlist edited earlier, with no
+  indication anything had happened to it.
+  - The edit target is now a parameter of `openLibFocusSheet`, so it cannot outlive the sheet it
+    was opened for. The Focus-bar entry point is wrapped rather than passed by reference, because
+    `mk()` hands its callback an event object, which would otherwise arrive as "a playlist to
+    save over".
+- **The playlist art cache could drop an entry.** `loadPlaylistArtCache()` handed back a fresh
+  `{}` when no cache existed. Mosaics are fetched by two workers at once, so on a first run both
+  would build their own object and the second save would discard the first's entry — costing a
+  re-walk on the next visit. It now installs the map into the settings object on first use, so
+  both writers share the reference `savePersistedSettings` mutates in place.
+
+### Tests
+- 1 new test (402 total; the count fell from 414 as the Roon smart-playlist tests were removed in
+  v1.7.12). It walks the real UI path — edit, close with X, Home, Library, Focus, Save as — and a
+  mutation reintroducing the leaked target went red.
+
+## [1.7.13] — 2026-07-30
+
+### Added
+- **Playlist tiles show a cover mosaic**, built from the artwork of the first few tracks, the way
+  Roon draws them. Every playlist tile was a music-note placeholder before, because Roon hands an
+  extension no artwork for a playlist at the list level.
+  - Four distinct covers make a 2×2; two make halves; one fills the tile — a lone quarter-sized
+    sleeve in an empty square looks broken. Covers are de-duplicated, so a playlist drawn from one
+    album doesn't show the same sleeve four times.
+  - **Smart playlists get this for free** — the first few albums their view resolves to are already
+    in the snapshot, so the keys cost no Roon calls at all.
+  - **Roon playlists cost a browse walk each**, so the grid renders immediately and the mosaics
+    fill in behind it, two at a time. An unthrottled sweep would fire a browse walk per playlist at
+    the Core at once. Results are cached on the data volume and keyed by playlist name, so only the
+    first visit pays; a playlist with no artwork is cached as empty rather than being re-walked
+    every time.
+
+### Tests
+- 3 new tests (414 total) covering the mosaic on both playlist types, the artwork request firing
+  once per playlist that lacks it, and a playlist with no artwork keeping its placeholder instead
+  of going blank. Two mutations planted — never fetching mosaics, and using a single cover — both
+  went red.
+
+## [1.7.12] — 2026-07-30
+
+### Removed
+- **All handling of Roon's own Smart Playlists.** Roon's extension API cannot open them — the
+  Core returns a placeholder row and omits the play action — and that is confirmed by the authors
+  of three other extensions, not something this app can work around. The special-case detection,
+  messaging and comments are gone. What remains is a general rule that earns its place on its
+  own: a browse item with no `item_key` cannot be invoked, so it is not a track and never reaches
+  a track list.
+
+### Changed
+- **Smart playlists now open like playlists, not like the library.** Previously, tapping one
+  applied its saved view and showed the library wall — the query working exactly right, and
+  reading as "it just took me to the library screen".
+  - The side menu now shows a **wall of tiles** (name + album count) instead of a cramped sheet.
+  - Opening one shows a **detail screen listing tracks**, in the saved sort order, with **Play
+    now**, **Queue**, **Edit** and **Delete**.
+  - **Every track row carries the artwork of the album it came from** — for Roon playlists too,
+    which previously rendered as bare text.
+  - Tapping a track plays that track from its album.
+- Play now / Queue resolve the view to albums (no Roon calls) and hand them to `/api/play-multi`,
+  which already batches and carries the stale-offset defense.
+- **Edit** reopens the Focus editor with the saved view loaded and writes back to the **same**
+  record, so editing can't leave two near-identical playlists behind.
+- The name prompt no longer suggests the view's description — the sheet was printing the same
+  string as both a row's title and its subtitle.
+
+### Added
+- `GET /api/smart-playlist` expands a saved view to tracks, **paged by album**. Albums only yield
+  tracks by being opened on the Core (~half a dozen calls each), so nothing is expanded until a
+  playlist is opened and the screen fills a batch at a time with a Load more control. One
+  unreadable album is skipped and logged rather than emptying the whole playlist.
+- `GET /api/smart-playlist/albums` resolves a view to its albums for play-all — zero Roon calls.
+
+### Tests
+- The smart-playlist DOM test is rewritten for the new screen (411 total): tiles not a sheet, a
+  detail screen not the library wall, tracks with their album artwork, paging that resumes at the
+  right album, the action set, the play-multi payload, and an edit that keeps the same id. Two
+  mutations planted — reverting to the library wall, and an edit that mints a duplicate — both
+  went red.
+
+## [1.7.8] — 2026-07-30
+
+### Added
+- **Smart playlists.** Set up a sort and focus on the Library screen, then **Focus → Save as…**
+  to keep it under a name. A new "Smart playlists" entry in the side menu lists them; opening one
+  applies its view and shows the library wall. They re-run every time they're opened, so they
+  follow the library as it grows.
+  - **Zero Roon calls.** A smart playlist is nothing but a saved `libraryView` query, and
+    `libraryView` filters the extension's own in-memory album index — the same engine the Library
+    Sort + Focus screen has used since v1.6.57. Saving one adds no Core traffic and no Core
+    memory.
+  - Each row describes what the view *does* ("Year ↓ · 1990s · not played in 12 months"), not
+    just what it was named — a name alone can't be checked against reality.
+  - Saved to `settings.json` on the data volume, so they survive container recreation. Saving
+    under an existing name replaces it rather than creating an indistinguishable duplicate.
+  - Every saved view is re-sanitised on load against the same vocabulary `libraryView` accepts.
+    `settings.json` is a plain file that can be hand-edited or half-written, and a view that got
+    through with a bogus field wouldn't error — it would quietly return the whole library, or
+    nothing.
+
+### Changed
+- The library-view vocabulary (`libSortIds`, `libPlayedIds`) is now exposed as functions rather
+  than bare constants, so the sanitiser's tests read the **shipping** list instead of a copy
+  injected beside them. A duplicated vocabulary is how a mutation adding a bogus sort would slip
+  past the suite — the v1.6.59 year-source-ranking hole in a new place.
+
+### Tests
+- 22 new tests (398 total: static 22, unit 213, dom 163). The unit tests cover the sanitiser
+  exhaustively (unknown sorts, non-decade years, runaway lists, extra keys, corrupt records) and
+  the DOM test covers the save → list → open → delete round trip, asserting the **query the wall
+  actually fetches with** rather than merely that a row was clicked. Three mutations planted — a
+  bogus sort added to the shipping vocabulary, extra keys leaking through, and a nameless record
+  kept — all three went red.
+
+## [1.7.7] — 2026-07-30
+
+### Added
+- **Roon playlists.** A new "Playlists" entry in the side menu lists every playlist in your Roon
+  library; tapping one shows its tracks with **Play now** / **Queue** for the whole playlist, and
+  a tap on any track to play it.
+  - Uses `hierarchy: "playlists"` — a first-class browse hierarchy the extension had simply never
+    used. Every existing helper worked unchanged: the pooled browse sessions, the offset cache,
+    and the action-menu drill (`drillActionMenu` takes the hierarchy as a parameter, so Play Now /
+    Queue needed no new code).
+  - **Read and play only.** There is no playlist create, add, remove or reorder anywhere in the
+    Roon extension API — `playlists` appears exactly once in the whole browse SDK, as a hierarchy
+    value. This is a limit of the official API, not a decision.
+  - A playlist is identified across requests by **(offset, title)**, never `item_key` —
+    item_keys are session-scoped server-side. The offset is a hint and the title is the check, so
+    a playlist added or renamed above the one you tapped costs a re-scan instead of opening the
+    wrong playlist. Same defense the album path took v1.6.38–.49 to get right.
+  - Reached from the **side menu, not a Home row**: listing playlists is a Roon browse walk, and a
+    Home row would pay for it on every Home load.
+  - Play actions read the **live** zone selector, so switching zone before pressing play targets
+    the zone you're actually on (the defect fixed for the Queue tab in v1.7.6).
+  - Long playlists report how many of their tracks are shown rather than looking silently
+    truncated.
+
+### Tests
+- 7 new tests (376 total: static 22, unit 197, dom 157) covering the menu entry, that both offset
+  *and* title travel on every request, the track list, play-all and play-track payloads (with a
+  zone switch between them), Back returning to the playlist list rather than Home, and the empty
+  state explaining itself. Two mutations planted — the title dropped from the open request, and a
+  captured zone instead of the live one — both went red.
+
+## [1.7.6] — 2026-07-30
+
+### Fixed
+- **The Queue tab showed the wrong zone's queue.** Playing to a Sonos zone, switching the
+  extension's zone selector to another zone *without* moving playback left the Queue tab still
+  showing the Sonos queue — and "Play from here" acted on it, so tapping a row played on the
+  zone you thought you'd left.
+  - Root cause: `currentSourceZoneId` is a snapshot taken in `openAlbum()`, so the queue was
+    pinned to whichever zone was selected when the screen was *opened*. A queue belongs to a
+    zone, and the zone the user is pointed at changes underneath an open screen.
+  - The queue now reads the live zone selector — the single source of truth the transport bar
+    and now-playing screen already follow — and "Play from here" re-reads it at click time, so
+    the action can't target a different zone from the rows on screen.
+  - Switching zones with the Queue tab open now refetches immediately. Fixing only the fetch
+    would have left the stale list on screen until you left the tab and came back, so the test
+    holds both halves separately.
+
+### Tests
+- 4 new tests (369 total: static 22, unit 197, dom 150) reproducing the reported scenario
+  end-to-end — two zones with distinct queues, switch the selector without moving playback,
+  assert the rows swap and the tab doesn't bounce. Two mutations planted (the original snapshot
+  bug, and a fetch-only half-fix with no refetch); both went red.
+
+## [1.7.5] — 2026-07-30
+
+Production logs from a real Core, which confirmed one fix and disproved one assumption.
+
+**Confirmed:** the v1.7.3 keyless retry works. A WiiM/Linkplay output rejected keyed
+`convenience_switch` in 1 ms (`SourceControlNotFound`), the keyless fallback ran, and the call
+succeeded in 519 ms — real work on the device, not a silent no-op.
+
+**Disproved:** v1.7.4's premise that the Power button shared the weakness. Keyed
+`toggle_standby` succeeds on that same output with that same `control_key` — every attempt
+returned 200 with no fallback. So `control_key` is *valid*; `toggle_standby` and
+`convenience_switch` simply resolve down different paths inside the Core. The v1.7.4 entry has
+been corrected, and its fallback is now described as defensive cover rather than a bug fix.
+
+### Fixed
+- **The `source_controls` diagnostic never actually printed.** It sat *after* the retry
+  decision, and a keyed not-found always retries — so the one log line that explains the
+  failure was unreachable in the only situation it was written for. It now prints when the
+  error arrives, before the retry, in both power routes. A recovered failure is still the
+  failure worth recording.
+- A not-found that recovers no longer logs the same block twice.
+
+### Changed
+- The comment above the keyed-toggle path no longer claims device-provided controls fail it —
+  production shows the opposite.
+
+## [1.7.4] — 2026-07-30
+
+Follow-up to v1.7.3, hardening the Power button against the failure "Roon input" hit.
+
+**Corrected after testing against a real Core (see v1.7.5).** This entry originally claimed the
+Power button "had the same weakness as Roon input". Production logs disproved that: keyed
+`toggle_standby` succeeds on the very device and `control_key` that keyed `convenience_switch`
+rejects with `SourceControlNotFound`. The key is valid; the two calls simply resolve down
+different paths inside the Core. The fallback below is therefore **defensive cover for other
+devices, not a fix for an observed bug** — nothing was broken on this path.
+
+The reasoning that motivated it still holds and is worth recording: `control_key` is minted by
+the *provider* extension, defaults to the literal `"1"`, and is only unique within one
+provider — and the SDK documents it neither as a field of `Output.source_controls` nor as a
+required argument to any of the three power calls.
+
+### Added
+- **A keyless fallback for the Power button.** If keyed `toggle_standby` is ever refused with
+  `SourceControlNotFound`, it retries keyless rather than surfacing an error.
+  - `toggle_standby` is the one power call with no documented keyless form, so there is no
+    like-for-like retry — the fallback has to infer what the press meant. In standby → wake
+    (`convenience_switch`, which Roon documents as taking a device out of standby). On →
+    `standby`. **Anything else refuses and reports the error**, because guessing on an unknown
+    status is how a Power button turns a device the wrong way.
+- **A `SourceControlNotFound` logs what the Core actually said** — both power routes dump the
+  raw `source_controls` for that output, so `docker logs` shows the real key shape.
+  (v1.7.5 moves this ahead of the retry, where it actually fires.)
+
+### Tests
+- 10 new tests (365 total: static 22, unit 197, dom 146) over the fallback's intent mapping and
+  the live-status lookup, including that the two directions can never collapse to one value and
+  that a malformed cache can't throw on the failure path. Two mutations planted — an unknown
+  status guessed at, and the status lookup ignoring the key — both went red.
+
+## [1.7.3] — 2026-07-30
+
+### Fixed
+- **"Roon input" failed with `SourceControlNotFound` on a WiiM/Linkplay endpoint.** Roon
+  defines two forms of `convenience_switch`: addressed at one source control by `control_key`,
+  or — with the key omitted — at every control on the output. The device answered the keyed
+  form with `SourceControlNotFound` while reporting that exact `control_key` to us in its own
+  `source_controls` array, so the keyed form is not universally honoured by device-provided
+  source controls. The keyed call is now retried as the keyless form.
+  - Only `SourceControlNotFound` retries. Every other error means Roon *found* the control and
+    refused on its own terms, and repeating the call as a broadcast would act on outputs the
+    user never tapped — the one genuinely harmful outcome available here.
+  - Both attempts are logged with which form was used, so `docker logs` gives a one-line
+    diagnosis instead of a bare error name.
+- **Roon's bare error names no longer leak into the interface.** `SourceControlNotFound` is a
+  useful log line and a useless toast. The names a user can actually hit now map to a sentence,
+  while the raw name still travels in the response for support. An *unmapped* name passes
+  through unchanged rather than being swallowed by a generic apology — hiding an unknown
+  failure is how a new Roon error becomes unreportable.
+
+### Tests
+- 10 new tests (355 total: static 22, unit 187, dom 146). The retry rule and the error mapping
+  are both extracted top-level functions so the suite exercises the shipping code — the error
+  text is a `switch`, not a lookup table, specifically so an injected copy can't shadow it (the
+  hole that let a v1.6.59 mutation reorder the year-source ranking unnoticed). Two mutations
+  planted — retry on any error, and unmapped errors swallowed — both went red.
+
+## [1.7.2] — 2026-07-30
+
+The last four unused Roon transport methods. With these, every capability the vendored
+extension SDK exposes is now wired up — nothing official is left on the table.
+
+### Added
+- **Device power.** A new "Device power…" sheet (from either zone picker) can put a device
+  into standby and switch it to its Roon input, via Roon's `standby` / `toggle_standby` /
+  `convenience_switch`. Roon can only do this through a *source control* the device itself
+  exposes — many network streamers and AVRs have one, plain audio endpoints don't — so the
+  sheet lists source controls rather than zones, and says so plainly when there are none
+  rather than opening empty and looking broken.
+  - Power is `toggle_standby` on one control, because that is how Roon defines it. A separate
+    "Put whole device into standby" appears only on a device with more than one
+    standby-capable control, where the keyless bulk `standby` form is genuinely a different
+    action.
+  - Controls with no `control_key` are dropped: they can't be addressed individually, so a
+    power button on one would have done nothing at all.
+  - Each control's state is spelled out ("On — Roon input selected", "In standby"), and an
+    unrecognised status reads as unknown rather than as a blank line.
+- **Pause all zones / Mute all zones / Unmute all zones** in the side menu, via Roon's
+  `pause_all` and `mute_all`. Mute and unmute are separate rows on purpose: the drawer closes
+  before the action runs, so a single toggling label could not be refreshed and would be wrong
+  half the time.
+
+### Tests
+- 21 new tests (345 total: static 22, unit 177, dom 146): `unit/zonemodes` gains the
+  source-control projection, `dom/device-power` covers the sheet (row element type, which
+  buttons appear, the live power state, the request bodies, the empty state) and the three
+  menu actions. Four more mutations planted — keyless controls kept, unknown status passed
+  through, Power shown regardless of `supports_standby`, and the bulk form sent with a
+  control_key — all four went red.
+
+## [1.7.1] — 2026-07-29
+
+Roon parity from the official extension API. Six transport capabilities the SDK has always
+offered were simply unused here; these are the four that close the biggest gaps, with no
+reverse-engineered protocol involved.
+
+### Added
+- **Shuffle, repeat and Roon Radio** on the now-playing screen, via Roon's own
+  `change_settings`. Repeat cycles off → whole queue → this track the way Roon's remote does,
+  with the mode named on the button and a "1" inside the repeat arrows for track-repeat.
+- **Zone grouping.** A new "Group zones…" sheet (from either zone picker) ticks the outputs
+  that should play in sync and applies the change with `group_outputs` / `ungroup_outputs`.
+  Only outputs the Core says it can sync with the current zone are offered, and the zone you
+  are listening to is always sent first, so grouping can never lose the playing queue.
+- Grouped zones now name their member outputs on a second line in both zone pickers — a real
+  "Kitchen + Study" group was previously indistinguishable from a zone called that.
+- `GET /api/outputs`, `POST /api/zone-settings`, `POST /api/group-outputs`,
+  `POST /api/ungroup-outputs`; `settings` (shuffle/loop/auto_radio) added to
+  `/api/zone-state` and `/api/zones`.
+
+### Changed
+- A second long-lived Roon subscription (`subscribe_outputs`) now feeds the output cache.
+  The zone feed only ever mentions an output as a member of a zone, so it cannot report a
+  change that is purely about the output — and grouping depends on exactly that
+  (`can_group_with_output_ids`). While that feed is live it owns the cache's removals,
+  because grouping an output into another zone *removes* its old zone and the zone feed's
+  removal path would have deleted a perfectly live output.
+- The now-playing transport row holds five buttons instead of three; its gap is now
+  responsive and the buttons no longer shrink, so the row fits a 360px phone.
+- The mode buttons repaint only when the zone's modes actually change. They are painted from
+  the 1.5s poll, and `setAttribute` marks an attribute dirty even when the value is unchanged
+  — the same paint-invalidation the mini bar's `lastBarSig` gate exists to avoid.
+- Turning Roon Radio on reports that the app's own Random Album Radio stands down for that
+  zone (it always did — `lib/radio.js` defers to `auto_radio` — but nothing said so).
+
+### Error classes documented
+- **State the client invented.** Every mode button is painted from the zone poll and sends a
+  concrete state rather than "toggle", so a change the Core rejects leaves the button dark
+  instead of lit-but-wrong. `loop: "next"` is deliberately not exposed for the same reason.
+- **"Unknown" read as "none".** An absent `can_group_with_output_ids` means the Core didn't
+  say, and must offer every output; an empty array means it did say, and offers none.
+  Collapsing the two would have made grouping silently list nothing on some Cores.
+- **A fixed wait standing in for a signal.** Grouping retires zone ids asynchronously, so the
+  app polls for the settled topology instead of guessing a delay, and closes the sheet as soon
+  as Roon accepts rather than waiting for it.
+
+### Tests
+- 33 new tests (324 total: static 22, unit 170, dom 132): `unit/zonemodes` for the two server projections,
+  `dom/np-modes` for the three mode buttons (including a 360px layout assertion that the
+  five-button row neither overflows nor squashes), `dom/group-sheet` for the grouping diff,
+  the locked anchor, the can-group filter and the unknown-list fallback. Seven mutations were
+  planted — a fixed transport gap, an unchecked `loop` passthrough, "unknown" collapsed to
+  "none", a dropped ungroup half, a mis-ordered group call, an unlocked anchor and an
+  over-eager repaint gate — and all seven went red.
+
 ## [1.7.0] — 2026-07-29
 
 A minor-version bump rather than another point release, because the app looks and behaves

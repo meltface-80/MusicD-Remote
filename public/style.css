@@ -742,7 +742,11 @@ main {
   }
 }
 
-.modal-close { position: absolute; top: 12px; right: 12px; z-index: 2; }
+/* The page is viewport-fit=cover, so the panel's own top edge is the physical
+   top of the display — under the status bar / dynamic island on a phone. Every
+   pinned corner button therefore needs the inset the topbar already applies;
+   env() is 0 where there is no inset, so nothing changes on desktop. */
+.modal-close { position: absolute; top: calc(12px + env(safe-area-inset-top)); right: 12px; z-index: 2; }
 
 .modal-body {
   /* Positioned (NO z-index) so it paints above the #modal-ambient glow layer
@@ -752,7 +756,7 @@ main {
   position: relative;
   display: flex; flex-direction: column;
   gap: 22px;
-  padding: 64px 18px 40px;
+  padding: calc(64px + env(safe-area-inset-top)) 18px 40px;
   /* Leave room at the bottom so the mini transport (≈78px tall + safe area)
      stays visible / not overlapping the last bit of content. */
   padding-bottom: calc(96px + env(safe-area-inset-bottom));
@@ -1003,7 +1007,7 @@ main {
 /*  Modal share button (top-right, beside the close)                   */
 /* ------------------------------------------------------------------ */
 .modal-share {
-  position: absolute; top: 12px; right: 60px; z-index: 2;
+  position: absolute; top: calc(12px + env(safe-area-inset-top)); right: 60px; z-index: 2;
 }
 /* ------------------------------------------------------------------ */
 /*  Mini transport (sticky now-playing bar)                            */
@@ -1342,8 +1346,13 @@ main {
   align-items: center;
   gap: 14px;
   /* The tabs row sits up beside the corner buttons (Roon-style) instead of
-     below a tall reserved header band. */
-  padding-top: 14px;
+     below a tall reserved header band — which is exactly why this one must
+     carry the status-bar inset. With viewport-fit=cover and a 14px padding,
+     the Now playing screen started at the physical top of the display and the
+     tabs/title sat under the dynamic island: the "stretched too high above the
+     top of the screen" report. Only visible in the installed PWA, because in a
+     browser tab the address bar occupies that space anyway. */
+  padding-top: calc(14px + env(safe-area-inset-top));
 }
 .modal.np-mode .modal-info {
   width: 100%;
@@ -1358,7 +1367,7 @@ main {
 .modal.np-mode .modal-share { right: 12px; }
 .modal.np-mode .modal-home {
   display: inline-flex;
-  position: absolute; top: 12px; left: 12px; z-index: 2;
+  position: absolute; top: calc(12px + env(safe-area-inset-top)); left: 12px; z-index: 2;
 }
 
 /* The Now playing tab must NEVER scroll (Roon parity): the body clips, the
@@ -1562,10 +1571,15 @@ main {
 
 .np-transport {
   display: flex; align-items: center; justify-content: center;
-  gap: 28px; margin-top: 12px;
+  /* Five buttons now (shuffle · prev · play · next · repeat), as on Roon's own
+     remote. The gap collapses on narrow phones so the row still fits without
+     the circles being squashed — .np-btn is flex: 0 0 auto for that reason, and
+     test/dom/np-modes.test.js asserts the row never overflows at 360px. */
+  gap: clamp(6px, 3.4vw, 28px); margin-top: 12px;
 }
 .np-btn {
   display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto;
   width: 56px; height: 56px;
   background: transparent; color: var(--text);
   border: 0; border-radius: 50%; cursor: pointer;
@@ -1582,6 +1596,34 @@ main {
 }
 .np-playpause:hover { background: var(--text); filter: brightness(.95); }
 .np-playpause svg { width: 30px; height: 30px; }
+
+/* Playback modes (shuffle / repeat): smaller and dimmer than the transport
+   proper until they're on, so the row still reads play-pause-first. */
+.np-mode-btn {
+  position: relative;   /* anchors the repeat-one badge */
+  width: 46px; height: 46px;
+  color: var(--text-dim);
+}
+.np-mode-btn svg { width: 22px; height: 22px; }
+.np-mode-btn.is-on { color: var(--accent-text); background: var(--accent-soft); }
+.np-mode-btn.is-on:hover { background: var(--accent-soft); }
+/* The "1" sits INSIDE the repeat arrows, where the icon is hollow — a corner
+   badge small enough not to crowd a 40px button was too small to read. */
+.np-mode-badge {
+  position: absolute; top: 0; right: 0; bottom: 0; left: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; line-height: 1; font-weight: 700;
+  color: currentColor; pointer-events: none;
+}
+.np-mode-badge.hidden { display: none; }
+/* Roon Radio sits in the secondary row; same on-state as the mode buttons. */
+.np-mini-btn.is-on { color: var(--accent-text); background: var(--accent-soft); }
+.np-mini-btn.is-on:hover { background: var(--accent-soft); color: var(--accent-text); }
+
+@media (max-width: 420px) {
+  .np-mode-btn { width: 40px; height: 40px; }
+  .np-mode-btn svg { width: 20px; height: 20px; }
+}
 
 .np-secondary {
   display: flex; align-items: center; justify-content: space-between;
@@ -2196,6 +2238,9 @@ input.vol-range::-moz-range-thumb {
 }
 .settings-token-input:focus { outline: none; border-color: var(--accent); }
 .settings-token-status { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+/* Explanatory line under a settings row — the sentence that says why the
+   control above it exists, rather than what it is called. */
+.settings-note { font-size: 12px; color: var(--text-faint); margin-top: 6px; line-height: 1.45; }
 
 /* ------------------------------------------------------------------ */
 /*  Docker migration banner                                            */
@@ -2306,6 +2351,140 @@ input.vol-range::-moz-range-thumb {
 .np-device-item:hover { background: var(--bg-elev); }
 .np-device-item.is-current { background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
 .np-device-empty { color: var(--text-faint); font-size: 14px; padding: 8px 10px; }
+/* Second line under a zone name, listing the outputs in a grouped zone. */
+.np-device-item { line-height: 1.25; }
+.np-device-sub {
+  display: block; margin-top: 2px;
+  font-size: 12px; font-weight: 400; color: var(--text-faint);
+  overflow: hidden; text-overflow: ellipsis;
+}
+.np-device-item.is-current .np-device-sub { color: inherit; opacity: .8; }
+/* Footer action in a zone popover ("Group zones…"). */
+.np-popover-action {
+  display: block; width: 100%; margin-top: 8px;
+  padding: 9px 10px; border: 0; border-top: 1px solid var(--border);
+  border-radius: 0 0 8px 8px;
+  background: transparent; color: var(--accent-text);
+  font-size: 14px; font-weight: 600; text-align: left; cursor: pointer;
+}
+.np-popover-action:hover { background: var(--bg-elev); }
+
+/* --- Zone grouping sheet (built by openLibSheet, so it inherits .lib-sheet) - */
+.group-row {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  padding: 11px 12px; border: 1px solid var(--border); border-radius: 10px;
+  background: transparent; color: var(--text);
+  font-size: 15px; text-align: left; cursor: pointer;
+}
+.group-row + .group-row { margin-top: 6px; }
+.group-row.is-on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
+/* The anchor is disabled because it must stay ticked, not because it is
+   unavailable — dimming it would read as "this zone can't be used". */
+.group-row.is-anchor { cursor: default; }
+.group-row:disabled:not(.is-anchor) { cursor: not-allowed; opacity: .5; }
+.group-box {
+  flex: 0 0 auto;
+  width: 20px; height: 20px; border-radius: 5px;
+  border: 1.5px solid var(--text-faint);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; line-height: 1; color: transparent;
+}
+.group-row.is-on .group-box { border-color: currentColor; color: currentColor; }
+.group-text { min-width: 0; flex: 1 1 auto; }
+.group-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-note {
+  display: block; margin-top: 2px;
+  font-size: 12px; color: var(--text-faint);
+}
+.group-row.is-on .group-note { color: inherit; opacity: .8; }
+
+/* Smart-playlist rows reuse .dev-row; the name is the tappable part. */
+.smart-open {
+  flex: 1 1 auto; min-width: 0;
+  background: transparent; border: 0; padding: 0;
+  text-align: left; cursor: pointer; color: inherit; font: inherit;
+}
+.smart-open:hover .dev-name { color: var(--accent-text); }
+
+/* Playlist tiles: a 2x2 mosaic of the first few tracks' covers, as Roon draws
+   them. The wrap already sizes and clips the tile, so the grid just fills it.
+   Three covers leave the last cell empty rather than stretching one to fit. */
+.album-art-mosaic {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 1px;
+}
+/* The base .album-art-wrap img rule (100%/cover) already sizes each one to its
+   grid cell, so nothing more is needed here. */
+/* Two covers read better as halves than as a half-empty 2x2. */
+.album-art-mosaic[data-mosaic="2"] { grid-template-rows: 1fr; }
+
+/* --- Roon playlist detail (read + play) ----------------------------------- */
+/* Rendered into the shared grid container, so it must span every column
+   rather than sitting in one cell. */
+.playlist-detail { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 14px; }
+.playlist-back { align-self: flex-start; }
+.playlist-head { display: flex; flex-direction: column; gap: 4px; }
+.playlist-title {
+  margin: 0; font-size: 22px; font-weight: 700; color: var(--text);
+  border-bottom: 1px solid var(--panel-hairline); padding-bottom: 8px;
+}
+.playlist-sub { font-size: 14px; color: var(--text-dim); }
+.playlist-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.playlist-empty { font-size: 14px; color: var(--text-faint); }
+/* An albums playlist shows a wall of tiles, sized by .album-grid exactly as
+   every other wall is. It sits inside .playlist-detail's flex column, so it
+   must NOT inherit the grid-column span that container needed for itself. */
+.playlist-albums { grid-column: auto; }
+.playlist-tracks { list-style: none; margin: 0; padding: 0; }
+.playlist-tracks .track-row {
+  padding: 11px 2px; border-bottom: 1px solid var(--border); cursor: pointer;
+}
+.playlist-tracks .track-row:last-child { border-bottom: 0; }
+.playlist-tracks .track-row:hover { background: var(--bg-elev); }
+.playlist-tracks .track-title { color: var(--text); font-size: 15px; }
+.playlist-tracks .track-artist { color: var(--text-dim); font-size: 13px; margin-top: 2px; }
+.playlist-more { align-self: flex-start; }
+.playlist-more.hidden { display: none; }
+
+/* Track rows that carry the artwork of the album they came from. */
+.track-row-art { display: flex; align-items: center; gap: 12px; }
+.track-art {
+  flex: 0 0 auto; width: 44px; height: 44px; border-radius: 4px;
+  overflow: hidden; background: var(--bg-elev-2);
+}
+.track-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.track-art.no-image { background: var(--bg-elev-2); }
+.track-text { min-width: 0; flex: 1 1 auto; }
+.track-row-art .track-title,
+.track-row-art .track-artist {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* --- Device power sheet (Roon standby / convenience switch) --------------- */
+/* A row here is NOT a button: the name is static and the actions inside it are
+   the controls, so it must not be a <button> containing buttons. */
+.dev-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px;
+  color: var(--text); font-size: 15px;
+}
+.dev-row + .dev-row { margin-top: 6px; }
+.dev-text { min-width: 0; flex: 1 1 auto; }
+.dev-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dev-status { display: block; margin-top: 2px; font-size: 12px; color: var(--text-faint); }
+.dev-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+.dev-btn {
+  padding: 7px 11px; border: 1px solid var(--border); border-radius: 999px;
+  background: transparent; color: var(--text-dim);
+  font-size: 13px; font-family: inherit; cursor: pointer; white-space: nowrap;
+}
+.dev-btn:hover { background: var(--bg-elev-2); color: var(--text); }
+.dev-btn:disabled { opacity: .5; cursor: not-allowed; }
+/* Powered up — the button reads as the live state, not as the action. */
+.dev-btn.is-on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
+.dev-all-off { width: 100%; margin-top: 6px; text-align: center; }
 
 .np-vol-fixed {
   display: flex; align-items: center; gap: 8px;
@@ -2932,6 +3111,82 @@ input.vol-range::-moz-range-thumb {
    source order — media queries add no specificity — so it never wraps. */
 .home-carousel.home-carousel-1row { grid-template-rows: 1fr; }
 .home-carousel-empty { color: var(--text-faint); font-size: 13px; padding: 8px 2px; }
+
+/* --------------------------------------------------------------------------
+   Smart Picks — albums by artists NOT in the library.
+   Two presentations of one card: a plain tile in the Home carousel (so the row
+   reads like the ones around it) and a full row on the Smart Picks screen with
+   the reason line and the actions. Every colour is a theme token, so both light
+   and dark palettes come out right without a second rule set.
+   -------------------------------------------------------------------------- */
+.pick-card { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.home-carousel .pick-card { width: 150px; cursor: pointer; }
+.pick-art {
+  position: relative; width: 100%; aspect-ratio: 1 / 1; border-radius: 8px;
+  overflow: hidden; background: var(--bg-elev); border: 1px solid var(--border);
+}
+.pick-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Marks the one pick a day that is deliberately unlike the library, so it is
+   not mistaken for a bad adjacent recommendation. */
+.pick-flag {
+  position: absolute; left: 6px; bottom: 6px;
+  padding: 2px 7px; border-radius: 999px;
+  background: var(--accent); color: var(--on-accent);
+  font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+}
+.pick-meta { min-width: 0; }
+.pick-artist {
+  font-size: 13px; font-weight: 600; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pick-album {
+  font-size: 12px; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pick-reason {
+  font-size: 12px; color: var(--text-faint); margin-top: 4px;
+  white-space: normal;              /* the reason is the point — never clip it */
+}
+
+/* The full screen: one card per row, art beside the text.
+   Rendered into the shared #album-grid container, so it must span every column
+   rather than sitting in one cell — without this the whole screen renders at
+   1/3 of the viewport on a phone and 1/9 on desktop (~110px), inside which the
+   96px art block and the two pill buttons cannot fit. Same rule, and the same
+   reason, as .playlist-detail above. */
+.pick-list { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 14px; }
+.pick-card-full {
+  flex-direction: row; align-items: flex-start; gap: 14px;
+  padding: 12px; border-radius: 12px;
+  background: var(--bg-elev); border: 1px solid var(--border);
+}
+/* The one pick a day chosen for being UNLIKE the library gets an accent edge,
+   so it reads as deliberate rather than as the recommender misfiring. */
+.pick-card-full.pick-card-stretch { border-left: 3px solid var(--accent); }
+.pick-card-full .pick-art { width: 96px; flex: 0 0 96px; }
+.pick-card-full .pick-meta { flex: 1 1 auto; }
+.pick-card-full .pick-artist { font-size: 15px; white-space: normal; }
+.pick-card-full .pick-album  { font-size: 13px; white-space: normal; }
+.pick-actions { display: flex; flex-direction: column; gap: 8px; flex: 0 0 auto; }
+.pick-add, .pick-block {
+  padding: 8px 12px; border-radius: 999px; font-size: 13px; font-weight: 600;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  cursor: pointer; white-space: nowrap;
+}
+.pick-add { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+.pick-add.is-done { background: var(--bg); color: var(--text-dim); border-color: var(--border); }
+/* Roon has the album — this is an ordinary play, so it reads as the primary
+   action rather than as another "add something" step. */
+.pick-play { letter-spacing: .01em; }
+.pick-add:disabled, .pick-block:disabled { opacity: .6; cursor: default; }
+.pick-block { color: var(--text-dim); }
+/* On a phone the two buttons sit under the text rather than beside it — a
+   96px art block plus two stacked pill buttons does not fit a 360px screen. */
+@media (max-width: 520px) {
+  .pick-card-full { flex-wrap: wrap; }
+  .pick-actions { flex-direction: row; width: 100%; }
+  .pick-add, .pick-block { flex: 1 1 0; text-align: center; }
+}
 /* 12 genre buttons divide evenly into 2 / 3 / 4 / 6 columns, so every screen
    width shows full rows with no lone trailing card. */
 .home-genre-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
@@ -2984,6 +3239,30 @@ input.vol-range::-moz-range-thumb {
   -webkit-mask-size: 13px 13px;  mask-size: 13px 13px;
   -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
 }
+/* Sample rate / bit depth on the artwork — "24/96", "16/44.1", "MP3".
+   Bottom-left, so it never collides with the source badge top-right.
+   Hidden unless Appearance → Show sample rate is on: the value is always in
+   the payload, so the switch is this one class rather than a refetch. */
+.album-quality {
+  position: absolute; left: 6px; bottom: 6px; z-index: 2;
+  display: none;
+  padding: 2px 5px; border-radius: 5px;
+  background: rgba(10, 14, 20, .62);
+  backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+  box-shadow: 0 1px 4px rgba(0,0,0,.35);
+  color: rgba(255,255,255,.92);
+  font-size: 10px; font-weight: 700; line-height: 1.3;
+  letter-spacing: .02em; font-variant-numeric: tabular-nums;
+  white-space: nowrap; pointer-events: none;
+}
+body.show-quality .album-quality { display: block; }
+/* Better than CD. Roon marks hi-res; there is no room to say so in words, so
+   the badge takes the accent instead. */
+.album-quality.is-hires { color: var(--accent-text); }
+/* The album view's artwork is far bigger than a tile, so the badge scales with
+   it rather than sitting lost in a corner. */
+#modal-quality { left: 8px; bottom: 8px; padding: 3px 7px; font-size: 12px; border-radius: 6px; }
+
 /* Larger on the album detail artwork, which is far bigger than a tile. */
 #modal-source { width: 28px; height: 28px; top: 8px; right: 8px; border-radius: 8px; }
 #modal-source::before { -webkit-mask-size: 16px 16px; mask-size: 16px 16px; }
@@ -3085,6 +3364,30 @@ input.vol-range::-moz-range-thumb {
 }
 [data-theme="light"] .track-list li.t-row:hover { background: rgba(26,39,64,.05); }
 [data-theme="light"] .track-list li.t-row.is-open { background: rgba(26,39,64,.06); }
+/* Track select target. Hidden until the list is armed, so entering select
+   mode doesn't reflow every row. align-self:center because .track-list li is
+   align-items:flex-start — a two-line row would otherwise top-align it. */
+.t-mark {
+  display: none;
+  flex: 0 0 auto; align-self: center;
+  width: 22px; height: 22px; padding: 0;
+  border: 2px solid var(--text-faint); border-radius: 50%;
+  background: transparent; cursor: pointer;
+  position: relative;
+}
+.track-list.is-selecting .t-mark { display: block; }
+.t-mark:hover { border-color: var(--text-dim); }
+/* The tick appears only once the circle has actually been tapped — a hollow
+   circle means "selectable", a tick means "selected". */
+.t-row.is-picked .t-mark { border-color: var(--accent); background: var(--accent); }
+.t-row.is-picked .t-mark::after {
+  content: ""; position: absolute;
+  left: 5px; top: 1px; width: 6px; height: 11px;
+  border: solid var(--on-accent); border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.t-row.is-picked { background: var(--accent-soft); border-radius: 8px; }
+
 .t-actions {
   flex-basis: 100%;
   display: flex; gap: 8px;
@@ -3159,48 +3462,49 @@ input.vol-range::-moz-range-thumb {
 /* ------------------------------------------------------------------ */
 /* Sort pill | direction arrow | Focus pill. The arrow is sized to content so
    the two pills stay equal width whatever the sort label says. */
+/* Roon's own phone header: Focus on the left, Sort on the right, nothing
+   between them and no boxes around either. The row used to be three heavy
+   pills in a grid — SORT | arrow | FOCUS — which is the part that did not
+   look like Roon. Text controls, one hairline, and the row recedes behind the
+   albums where it belongs. */
 .library-controls {
-  display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px;
-  margin: 0 0 12px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin: 0 0 12px; padding-bottom: 8px;
+  border-bottom: 1px solid var(--panel-hairline);
 }
 .library-controls.hidden { display: none; }
-.lib-pill {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
-  /* A `1fr` track is minmax(auto, 1fr) and will not shrink below its content,
-     so without this the pill's own ellipsis never engages — the track grows and
-     the row overflows sideways instead. Only matters once a sort label is long
-     and the viewport narrow, which is exactly when it matters. */
+.lib-ctl {
+  display: flex; align-items: center; gap: 6px;
+  /* Without this the flex item will not shrink below its content, so a long
+     sort label pushes the row wider than the viewport instead of ellipsising. */
   min-width: 0;
-  padding: 7px 12px; border-radius: 10px;
-  background: var(--bg-elev); border: 1px solid var(--border);
-  color: var(--text); font-family: inherit; cursor: pointer; text-align: left;
-  min-height: 44px; justify-content: center;
-}
-.lib-pill:hover { border-color: var(--accent); }
-.lib-pill.is-active { border-color: var(--accent); background: var(--accent-soft); }
-.lib-pill-label {
-  font-size: 10px; font-weight: 700; letter-spacing: .14em;
-  text-transform: uppercase; color: var(--text-faint);
-}
-.lib-pill-value {
-  font-size: 13px; font-weight: 600; color: var(--text);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
-}
-
-/* The direction arrow. One tap reverses the order, another puts it back —
-   the entire control, no wording (Roon ARC's pattern). 44px keeps it inside
-   the minimum touch target even though the glyph is small. */
-.lib-dir-btn {
-  min-width: 44px; min-height: 44px; padding: 0 12px;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 10px;
-  background: var(--bg-elev); border: 1px solid var(--border);
-  color: var(--accent-text); font-family: inherit; font-size: 20px; line-height: 1;
+  padding: 6px 2px; min-height: 44px;
+  background: none; border: 0; border-radius: 8px;
+  color: var(--text); font-family: inherit; font-size: 14px; font-weight: 600;
   cursor: pointer;
 }
-.lib-dir-btn:hover  { border-color: var(--accent); }
-.lib-dir-btn:active { background: var(--accent-soft); }
-.lib-dir-btn.is-shuffle { color: var(--text-dim); font-size: 19px; }
+.lib-ctl:hover  { color: var(--accent-text); }
+.lib-ctl:active { opacity: .7; }
+.lib-ctl-text {
+  min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* The chevron reads as "there is a screen behind this", matching
+   .home-section-link's treatment. */
+.lib-ctl-chevron { font-size: 19px; line-height: 1; color: var(--text-faint); }
+.lib-ctl-focus.is-active,
+.lib-ctl-focus.is-active .lib-ctl-chevron { color: var(--accent-text); }
+/* How many filters are on. A count, not the filter names: two facets already
+   wrap onto a second line on a phone, and the sheet is where the detail lives. */
+.lib-ctl-badge {
+  flex: 0 0 auto;
+  min-width: 18px; padding: 0 5px; border-radius: 999px;
+  background: var(--accent); color: var(--on-accent);
+  font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
+}
+/* A label, not a button: it says which way the current sort runs. The control
+   that CHANGES it is the sort sheet, which the whole row opens. */
+.lib-ctl-arrow { flex: 0 0 auto; font-size: 15px; line-height: 1; color: var(--accent-text); }
+.lib-ctl-caret { flex: 0 0 auto; font-size: 13px; line-height: 1; color: var(--text-faint); }
 
 .lib-sheet-backdrop {
   position: fixed; inset: 0;
@@ -3247,6 +3551,120 @@ input.vol-range::-moz-range-thumb {
   flex: 0 0 auto;
 }
 .lib-sheet-foot .action-btn { flex: 1 1 0; }
+
+/* Multi-select actions menu. Anchored to its own button rather than to the
+   topbar so it tracks the button wherever the row's flex layout puts it.
+   z-index clears the mini-transport (70) and the album modal (50) — the menu
+   is reachable from the album view, which paints over the topbar entirely. */
+.sel-menu-wrap { position: relative; margin-left: auto; flex: 0 0 auto; }
+.sel-menu-wrap.hidden { display: none; }
+/* When both are present the shuffle button keeps its own right-edge anchor,
+   so the pair sits together instead of splitting across the bar. */
+.sel-menu-wrap:not(.hidden) ~ #topbar-refresh { margin-left: 8px; }
+#select-menu-btn { display: flex; align-items: center; gap: 4px; width: auto; padding: 0 8px; }
+.sel-count {
+  min-width: 20px; height: 20px; padding: 0 5px;
+  border-radius: 10px; background: var(--accent); color: var(--on-accent);
+  font-size: 12px; font-weight: 700; line-height: 20px; text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.sel-menu {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 90;
+  min-width: 200px; padding: 6px;
+  background: var(--bg-elev-2); border: 1px solid var(--border);
+  border-radius: 12px; box-shadow: var(--shadow-modal);
+}
+.sel-menu.hidden { display: none; }
+.sel-menu-title {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--text-faint); padding: 4px 8px 8px;
+}
+.sel-menu-item {
+  display: block; width: 100%; padding: 10px;
+  border: 0; border-radius: 8px; background: transparent;
+  color: var(--text); font-size: 15px; text-align: left; cursor: pointer;
+}
+.sel-menu-item:hover { background: var(--bg-elev); }
+.sel-menu-item[data-sel-act="clear"] { color: var(--text-dim); }
+.sel-menu-item.hidden { display: none; }
+.sel-menu-item.is-danger { color: var(--danger); }
+
+/* Overflow menu — the three-dots-in-a-circle affordance, used wherever a screen
+   has more secondary actions than belong on a row. The dropdown reuses
+   .sel-menu above so there is one dropdown look in the app. */
+.overflow-wrap { position: relative; flex: 0 0 auto; }
+.overflow-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; padding: 0;
+  border-radius: 999px; border: 0; background: transparent;
+  color: var(--text); cursor: pointer;
+}
+.overflow-btn svg { width: 26px; height: 26px; }
+.overflow-btn:hover { filter: brightness(1.2); }
+.overflow-btn:active { transform: scale(.94); }
+/* The menu is anchored to the button, and on a narrow screen the button is at
+   the right-hand end of its row — so it opens leftwards to stay on screen. */
+.overflow-menu { top: calc(100% + 6px); right: 0; }
+
+/* Parked inside the album view. The modal paints over the top bar, so the menu
+   moves into the modal's own header band — to the LEFT of Share and ×, which
+   sit at right:12px and right:60px. z-index clears those (2). */
+.sel-menu-wrap.in-modal {
+  position: absolute; top: 12px; right: 108px; z-index: 3;
+  margin-left: 0;
+}
+.sel-menu-wrap.in-modal .sel-menu { right: 0; }
+
+/* Import report + the add-to-playlist picker rows. */
+/* A <label> wrapping a hidden <input type=file> — the only way to style a file
+   picker consistently, and it keeps the whole control tappable. */
+.import-file { display: block; width: 100%; margin-top: 10px; text-align: center; cursor: pointer; }
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  clip: rect(0 0 0 0); clip-path: inset(50%); overflow: hidden; white-space: nowrap;
+}
+.import-result { margin-top: 12px; }
+.import-missing {
+  margin: 6px 0 12px; padding-left: 18px;
+  color: var(--text-dim); font-size: 0.86rem; line-height: 1.5;
+}
+.import-save { width: 100%; margin-top: 8px; }
+.sheet-row { display: block; width: 100%; margin-bottom: 8px; text-align: left; }
+
+/* "Play something unheard", as the first tile of the Not-played row. Borrows
+   .album wholesale so it sizes with the carousel on every screen; only the
+   art square is different. */
+.unheard-art {
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+}
+.unheard-glyph { font-size: 2.4rem; line-height: 1; color: var(--accent-text); }
+.home-unheard-tile .album-title { color: var(--accent-text); }
+.home-unheard-tile:hover .unheard-art { background: var(--accent); }
+.home-unheard-tile:hover .unheard-glyph { color: var(--on-accent); }
+.home-unheard-tile.spinning .unheard-glyph { animation: unheard-spin 1s linear infinite; }
+@keyframes unheard-spin { to { transform: rotate(360deg); } }
+/* Share sheet — the blob is the payload, so it gets the room and the monospace
+   face; everything above it is the honest accounting of what went in. */
+.share-sum { font-weight: 600; margin: 4px 0 6px; }
+/* Each reason the file is less than the whole playlist gets its own line —
+   run together in one sentence, the important half went unread. */
+.share-warn {
+  color: var(--danger); font-size: 0.86rem; line-height: 1.4; margin-bottom: 6px;
+}
+.share-note { color: var(--text-dim); font-size: 0.86rem; margin: 10px 0; }
+.share-blob {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem; line-height: 1.35;
+  padding: 8px; border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev); color: var(--text);
+  /* Long unbroken base64 must wrap, or the sheet scrolls sideways. */
+  word-break: break-all; white-space: pre-wrap;
+}
 /* Sort rows — ARC's layout: a fixed arrow column, then the label. The arrow
    is present only on the selected row, and tapping that row flips it. */
 .lib-sort-row {
@@ -3266,12 +3684,34 @@ input.vol-range::-moz-range-thumb {
 .lib-sort-label { font-size: 15px; font-weight: 600; }
 .lib-sort-row.is-on .lib-sort-label { font-weight: 700; }
 .lib-sort-note { font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
-.lib-sheet-section { margin-top: 14px; }
-.lib-sheet-section-label {
-  font-size: 10.5px; font-weight: 700; letter-spacing: .14em;
-  text-transform: uppercase; color: var(--text-faint); margin-bottom: 7px;
+/* Collapsible Focus categories. With ten of them — some hundreds of labels
+   long — a flat sheet is a scroll with no end, so each is a header that opens.
+   The header is a real button spanning the full width: on a phone the whole row
+   is the target, not the little caret. */
+.lib-sheet-section { border-top: 1px solid var(--panel-hairline); }
+.lib-sheet-section:first-child { border-top: 0; }
+.lib-sheet-section-head {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 13px 2px; min-height: 44px;
+  background: none; border: 0; color: inherit; font-family: inherit;
+  cursor: pointer; text-align: left;
 }
-.lib-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.lib-sheet-section-label {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 10.5px; font-weight: 700; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--text-faint);
+}
+.lib-sheet-section.is-open .lib-sheet-section-label { color: var(--text); }
+/* How many of this category's filters are on, so a collapsed section still
+   says whether it is doing anything. */
+.lib-sheet-section-count {
+  flex: 0 0 auto;
+  min-width: 18px; padding: 0 5px; border-radius: 999px;
+  background: var(--accent); color: var(--on-accent);
+  font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
+}
+.lib-sheet-section-caret { flex: 0 0 auto; font-size: 13px; color: var(--text-faint); }
+.lib-chips { display: flex; flex-wrap: wrap; gap: 7px; padding-bottom: 12px; }
 .lib-chip {
   padding: 7px 12px; border-radius: 999px;
   background: var(--bg-elev-2); border: 1px solid var(--border);
@@ -3280,6 +3720,15 @@ input.vol-range::-moz-range-thumb {
 }
 .lib-chip:hover { border-color: var(--accent); }
 .lib-chip.is-on { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+/* Excluded — Roon's tap-again-to-invert, which it shows in red against the
+   green of an included one. The strike-through carries the same meaning
+   without relying on colour alone, which red-on-dark does not survive for
+   every reader. */
+.lib-chip.is-not {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  color: var(--text); text-decoration: line-through;
+}
 .lib-sheet-note {
   margin-top: 16px; font-size: 11.5px; line-height: 1.5;
   color: var(--text-faint);

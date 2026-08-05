@@ -6,6 +6,7 @@
 
 const path = require("path");
 const fs   = require("fs");
+const zlib = require("zlib");
 const express = require("express");
 const compression = require("compression");
 
@@ -142,7 +143,23 @@ const updater = createUpdater({
 // ---------------------------------------------------------------------------
 let core      = null;
 let zones     = {};
+// output_id -> raw Roon output object. Fed by BOTH subscriptions: the zone
+// deltas (an output always arrives inside its zone) and subscribe_outputs.
+// They describe the same objects from the same Core, so merging is consistent
+// and last-writer-wins is safe. The outputs feed exists because grouping needs
+// `can_group_with_output_ids`, which Roon can revise without a zone delta.
 let outputs   = {};
+// True once subscribe_outputs has delivered its snapshot. While it is live the
+// outputs feed owns the map's lifecycle (full replace on Subscribed, removals
+// on outputs_removed) and the zone feed only ever ADDS to it.
+//
+// That split matters for grouping: grouping output A into zone B *removes* zone
+// A, and the zone feed's removal path would delete A's output from this map —
+// even though the output still exists and has merely changed zone. The outputs
+// feed reports it as outputs_changed, so letting it own removals keeps the
+// output visible throughout. Without the feed (older Core, failed subscribe)
+// the zone feed keeps its original full ownership, so nothing regresses.
+let outputsFeedLive = false;
 const scrobbleState = new Map();
 
 // Roon pairing state must survive container rebuilds. node-roon-api's default
@@ -197,7 +214,8 @@ const roon = new RoonApi({
       if (cmd === "Subscribed") {
         console.log("[roon] zone subscription established —",
                     (data.zones || []).length, "zone(s)");
-        zones = {}; outputs = {};
+        zones = {};
+        if (!outputsFeedLive) outputs = {};
         // Reset transition tracking — treat every zone as newly seen.
         Object.keys(zonePrevState).forEach(k => delete zonePrevState[k]);
         (data.zones || []).forEach(z => {
@@ -213,17 +231,46 @@ const roon = new RoonApi({
           (z.outputs || []).forEach(o => { outputs[o.output_id] = o; }); handleRadioZone(z); scrobbleUpdate(z); });
         (data.zones_removed || []).forEach(zid => {
           const z = zones[zid];
-          if (z) (z.outputs || []).forEach(o => delete outputs[o.output_id]);
+          // Only when the outputs feed isn't live — see outputsFeedLive above:
+          // a grouped-away zone's output is still a real output.
+          if (z && !outputsFeedLive) (z.outputs || []).forEach(o => delete outputs[o.output_id]);
           delete zones[zid];
           delete zonePrevState[zid]; // zone offline — reset so it won't auto-start if it returns
         });
       }
     });
+    // A second, long-lived subscription for outputs. The zone feed above only
+    // ever mentions an output as a member of a zone, so it cannot report a
+    // change that is purely about the output itself — and grouping depends on
+    // exactly that: `can_group_with_output_ids` tells us which outputs the Core
+    // will let us group together, and it moves as devices come and go.
+    //
+    // One subscription for the life of the pairing (cleared in core_unpaired),
+    // the same shape as the zone feed — NOT the subscribe-then-unsubscribe
+    // pattern /api/queue uses, because this is a cache, not a one-shot read.
+    // Unlike subscribe_zones, the SDK's subscribe_outputs keeps no internal
+    // cache of its own, so the merge below is the only copy.
+    c.services.RoonApiTransport.subscribe_outputs((cmd, data) => {
+      if (cmd === "Subscribed") {
+        console.log("[roon] output subscription established —",
+                    ((data && data.outputs) || []).length, "output(s)");
+        outputsFeedLive = true;
+        outputs = {};
+        ((data && data.outputs) || []).forEach(o => { outputs[o.output_id] = o; });
+      } else if (cmd === "Changed") {
+        ((data && data.outputs_added)   || []).forEach(o => { outputs[o.output_id] = o; });
+        ((data && data.outputs_changed) || []).forEach(o => { outputs[o.output_id] = o; });
+        ((data && data.outputs_removed) || []).forEach(oid => { delete outputs[oid]; });
+      }
+    });
     // Build the local search index in the background and keep it fresh.
     startIndexMaintenance();
+    // Smart Picks rebuild once a day, on their own timer. Nothing user-facing
+    // ever waits on that build — see kickSmartPicks.
+    startSmartPicksMaintenance();
   },
   core_unpaired: function () {
-    core = null; zones = {}; outputs = {};
+    core = null; zones = {}; outputs = {}; outputsFeedLive = false;
     Object.keys(zonePrevState).forEach(k => delete zonePrevState[k]);
     stopIndexMaintenance();
     // The album index is deliberately KEPT across an unpair: it's plain
@@ -1055,12 +1102,28 @@ function isTrackItem(t, playMenu) {
   if (t === playMenu)                          return false;
   if (t.hint === "action_list" && !t.subtitle) return false;
   if (t.hint === "header")                     return false;
+  // No item_key means nothing can be invoked on it, so it cannot be a track —
+  // rendering one produces a row that silently does nothing when tapped.
+  if (!t.item_key)                             return false;
   return true;
 }
 
 // Roon prefixes track titles with "N. "; the UI renders its own counter.
 function stripTrackNumber(title) {
   return (title || "").replace(/^\d+\.\s+/, "");
+}
+
+// The number stripTrackNumber throws away. Roon's browse API exposes no track
+// number field of its own — this prefix is the only place it exists, so it is
+// the one piece of hard identity a shared playlist can carry for free. Returns
+// null when there is no prefix, which is normal (playlists renumber nothing).
+function trackNumberOf(title) {
+  const m = /^(\d+)\.\s+/.exec(title || "");
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  // A "track 0" or an absurd number means we misread a title that merely
+  // begins with digits ("1999. The Party" would parse as track 1999).
+  return Number.isFinite(n) && n > 0 && n <= 999 ? n : null;
 }
 
 // ---- Stale-offset defense ---------------------------------------------------
@@ -1170,9 +1233,16 @@ async function drillActionMenu(hierarchy, sessionKey, itemKey) {
 // if the library changed since the modal opened, the track is re-matched by
 // title rather than firing whatever now sits at that index; if the title is
 // gone entirely the caller gets a stale error (route maps it to 409).
-async function invokeTrackAction(offset, trackIndex, trackTitle, zoneOrOutputId, kind, filter) {
+// `expect` is the ALBUM's identity ({title, subtitle}). It used to be omitted,
+// which meant albumIdentityMatches() short-circuited to true and the entire
+// stale-offset ladder below loadAlbumSession — relocate in-memory, then live
+// search — was unreachable for a per-track play. That was survivable while the
+// only caller was an album modal opened seconds earlier; it stops being
+// survivable the moment a track reference is stored and replayed later.
+async function invokeTrackAction(offset, trackIndex, trackTitle, zoneOrOutputId, kind, filter, expect) {
   return withBrowseSession(async (sessionKey) => {
-    const { hierarchy, items, playMenu } = await loadAlbumSession(sessionKey, offset, filter);
+    const { hierarchy, items, playMenu } =
+      await loadAlbumSession(sessionKey, offset, filter, expect, zoneOrOutputId);
     const trackItems = items.filter(t => isTrackItem(t, playMenu));
 
     const wanted = normalize(trackTitle || "");
@@ -1200,6 +1270,180 @@ async function invokeTrackAction(offset, trackIndex, trackTitle, zoneOrOutputId,
     await browse({
       hierarchy,
       item_key:  action.item_key,
+      zone_or_output_id: zoneOrOutputId,
+      multi_session_key: sessionKey
+    });
+    return { invoked: action.title, track: stripTrackNumber(item.title) };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Roon playlists — official API, read and play only.
+//
+// "playlists" is a first-class browse hierarchy, the same shape as "albums", so
+// every helper above works unchanged: the pooled sessions, the offset cache, the
+// action-menu drill. There is NO playlist write anywhere in the extension API —
+// no create, add, remove or reorder — so this is read-only by necessity, not
+// by choice.
+//
+// A playlist's cross-request identity is (offset, title), NEVER item_key.
+// item_keys are session-scoped and must not outlive the operation that read
+// them (see the browse session pool). The offset is a hint and the title is the
+// check, so a stale offset costs a re-scan and never opens the wrong playlist —
+// the same defense the album path grew over v1.6.38–.49.
+// ---------------------------------------------------------------------------
+const PLAYLIST_CTX  = "playlists:root";
+const PLAYLIST_MAX  = 5000;   // how far we'll scan for a playlist by title
+const PLAYLIST_ITEMS = 1000;  // tracks read per playlist (see /api/playlist)
+
+function playlistKeyOf(title) {
+  return String(title || "").trim().toLowerCase();
+}
+
+// Every playlist, with the offset each one sits at. Also refreshes the offset
+// cache so a later open can jump straight to its position.
+async function listPlaylists() {
+  return withBrowseSession(async (sessionKey) => {
+    await browse({ hierarchy: "playlists", pop_all: true, multi_session_key: sessionKey });
+    const { items, total } = await loadLevel(sessionKey, "playlists", PLAYLIST_MAX);
+    const ctx = browseOffsetCtx(PLAYLIST_CTX);
+    ctx.clear();
+    const out = [];
+    // The raw index IS the offset (loadLevel pages from 0), so headers are
+    // skipped for display without shifting anyone else's position.
+    items.forEach((it, i) => {
+      if (it.hint === "header") return;
+      const key = playlistKeyOf(it.title);
+      if (key) ctx.set(key, i);
+      out.push({
+        offset:    i,
+        title:     it.title || "",
+        subtitle:  it.subtitle || "",
+        image_key: it.image_key || null
+      });
+    });
+    console.log(`[playlists] listed ${out.length} playlist(s)`);
+    return { playlists: out, total };
+  });
+}
+
+// Navigate a session into one playlist and return its contents. `expectTitle`
+// is verified against the item actually found at `offset`; on drift we re-locate
+// by title rather than opening whatever moved into that slot.
+// `zoneId` is passed on every browse in this walk: the Browse API documents it
+// as required for playback-related functionality, and it costs nothing to carry.
+async function loadPlaylistSession(sessionKey, offset, expectTitle, zoneId) {
+  const hierarchy = "playlists";
+  const zone = zoneId || undefined;
+  await browse({ hierarchy, pop_all: true, multi_session_key: sessionKey,
+                 zone_or_output_id: zone });
+
+  let item = null;
+  if (Number.isFinite(offset) && offset >= 0) {
+    const at = await load({ hierarchy, offset, count: 1, multi_session_key: sessionKey });
+    item = (at.items && at.items[0]) || null;
+  }
+  const want = playlistKeyOf(expectTitle);
+  if (want && (!item || playlistKeyOf(item.title) !== want)) {
+    // The offset drifted (a playlist was added/renamed/removed above it).
+    console.log(`[playlists] offset ${offset} drifted, re-locating "${expectTitle}"`);
+    await browse({ hierarchy, pop_all: true, multi_session_key: sessionKey,
+                   zone_or_output_id: zone });
+    item = await findItemByTitle(sessionKey, hierarchy, expectTitle, PLAYLIST_MAX, PLAYLIST_CTX);
+  }
+  if (!item) {
+    const err = new Error("Playlist not found — reopen the playlist list");
+    err.stale = true;
+    throw err;
+  }
+
+  const d = await browse({ hierarchy, item_key: item.item_key, multi_session_key: sessionKey,
+                           zone_or_output_id: zone });
+  // Same guard as drillActionMenu: without it a non-list response would leave
+  // the follow-up load reading the CURRENT level, and we'd report the playlist
+  // list itself as the playlist's tracks.
+  if (d.action !== "list") throw new Error("Unexpected browse action: " + d.action);
+
+  const inside = await load({
+    hierarchy, offset: 0, count: PLAYLIST_ITEMS, multi_session_key: sessionKey
+  });
+  const items = inside.items || [];
+  // Identical shape to an album's contents: the playlist's own Play menu comes
+  // back as a subtitle-less action_list alongside the tracks.
+  const playMenu = items.find(i =>
+       i.hint === "action_list" && !i.subtitle && /^play/i.test(i.title || "")
+  ) || items.find(i =>
+       i.hint === "action_list" && !i.subtitle
+  );
+  const total = (inside.list && inside.list.count) || items.length;
+
+  const realTracks = items.filter(t => isTrackItem(t, playMenu));
+  if (!realTracks.length) {
+    console.warn(`[playlist] "${item.title || ""}" resolved ${realTracks.length} track(s)` +
+                 ` (zone=${zone || "none"}, raw items=${items.length}, list count=${total})`);
+    for (const it of items.slice(0, 10)) {
+      console.warn(`  - hint=${it.hint || "<none>"} title=${JSON.stringify(it.title)}` +
+                   ` subtitle=${JSON.stringify(it.subtitle || "")}` +
+                   ` item_key=${it.item_key ? "yes" : "no"}`);
+    }
+  }
+  return { hierarchy, item, items, playMenu, total };
+}
+
+// Play or queue a WHOLE playlist through its own Play menu.
+async function invokePlaylistAction(offset, title, zoneOrOutputId, kind) {
+  return withBrowseSession(async (sessionKey) => {
+    const { hierarchy, item, playMenu } =
+      await loadPlaylistSession(sessionKey, offset, title, zoneOrOutputId);
+    if (!playMenu) throw new Error("This playlist offers no play action");
+    const actions = await drillActionMenu(hierarchy, sessionKey, playMenu.item_key);
+    const action = matchAction(actions, kind);
+    if (!action) {
+      throw new Error("No matching action for '" + kind +
+                      "'. Available: " + actions.map(a => a.title).join(", "));
+    }
+    await browse({
+      hierarchy,
+      item_key: action.item_key,
+      zone_or_output_id: zoneOrOutputId,
+      multi_session_key: sessionKey
+    });
+    return { invoked: action.title, playlist: item.title || "" };
+  });
+}
+
+// Play or queue ONE track of a playlist. Mirrors invokeTrackAction: the tapped
+// title is verified against the re-resolved list, so a playlist edited since the
+// screen opened re-matches by title instead of firing whatever now sits at that
+// index.
+async function invokePlaylistTrackAction(offset, title, trackIndex, trackTitle, zoneOrOutputId, kind) {
+  return withBrowseSession(async (sessionKey) => {
+    const { hierarchy, items, playMenu } =
+      await loadPlaylistSession(sessionKey, offset, title, zoneOrOutputId);
+    const trackItems = items.filter(t => isTrackItem(t, playMenu));
+
+    const wanted = normalize(trackTitle || "");
+    let item = trackItems[trackIndex];
+    if (!item || (wanted && normalize(stripTrackNumber(item.title)) !== wanted)) {
+      item = wanted
+        ? trackItems.find(t => normalize(stripTrackNumber(t.title)) === wanted)
+        : null;
+    }
+    if (!item) {
+      const err = new Error("Playlist changed — reopen it");
+      err.stale = true;
+      throw err;
+    }
+
+    const actions = await drillActionMenu(hierarchy, sessionKey, item.item_key);
+    const action = matchAction(actions, kind);
+    if (!action) {
+      throw new Error("No matching action for '" + kind +
+                      "'. Available: " + actions.map(a => a.title).join(", "));
+    }
+    await browse({
+      hierarchy,
+      item_key: action.item_key,
       zone_or_output_id: zoneOrOutputId,
       multi_session_key: sessionKey
     });
@@ -1360,18 +1604,42 @@ function parseAlbumCount(subtitle) {
 }
 
 function makeTtlCache(ttlMs) {
-  const map = new Map(); // key → { value, at }
+  const map     = new Map(); // key → { value, at }
+  const inFlight = new Map(); // key → Promise, only while a fetch is running
   return {
     async get(key, fetchFn) {
       const hit = map.get(key);
       if (hit && (Date.now() - hit.at) < ttlMs) return hit.value;
-      const value = await fetchFn();
-      map.set(key, { value, at: Date.now() });
-      return value;
+      // Two callers arriving on a cold key both used to run the fetch, because
+      // the map was only written after the await. On the Home screen several
+      // clients can wake at once, and each miss is a Roon walk — so the second
+      // caller waits on the first instead of duplicating it.
+      const running = inFlight.get(key);
+      if (running) return running;
+      // The PROMISE is shared, never the failure. A rejected fetch is deleted
+      // here rather than stored, so a transient Core blip cannot be cached for
+      // the whole TTL and turn a one-second glitch into a half-hour outage.
+      const p = (async () => {
+        const value = await fetchFn();
+        map.set(key, { value, at: Date.now() });
+        return value;
+      })().finally(() => { inFlight.delete(key); });
+      inFlight.set(key, p);
+      return p;
     },
-    clear() { map.clear(); }
+    clear() { map.clear(); }   // in-flight fetches finish and repopulate
   };
 }
+
+// Smart Picks scheduling. The build talks to MusicBrainz, ListenBrainz and a
+// streaming service, and the albums it favourites then land in Roon's import
+// queue — so it wants to run when nothing else does. Default 04:00 local.
+let smartPicksHour    = Number.isFinite(_persisted.smartPicksHour)
+  ? Math.min(23, Math.max(0, Math.trunc(_persisted.smartPicksHour))) : 4;
+// Whether the five adjacent picks are favourited automatically at build time,
+// so Roon has all night to import them and they are playable by morning. The
+// stretch pick is NEVER auto-added — it is the one the user is meant to judge.
+let smartPicksAutoAdd = _persisted.smartPicksAutoAdd !== false;
 
 // Qobuz (UNOFFICIAL API — see lib/qobuz.js). Credentials/token set via Settings.
 // We persist the username, the md5 of the password (for silent re-login), the
@@ -1425,13 +1693,179 @@ const labelMbidCache = new Map();  // group key → MusicBrainz MBID
 const labelLogoCache = new Map();  // group key → logo URL | null (null = tried, not found)
 const labelMerges    = new Map();  // source groupKey → { targetKey, targetDisplay, sourceDisplay }
 const albumYearCache = new Map();  // album key → release year (4-digit string) — powers the Decade filter
+// album key → { ts, src } — powers the "Recently added" sort. Roon's extension
+// API exposes no date-added of any kind, so every value here is this
+// extension's own evidence, ranked: a local file's mtime is a real date; an
+// album simply appearing in a rebuild is weaker but still true.
+const albumSeenCache = new Map();
+let stmtInsertSeen = null;
+
+// album key → [genre, ...] — powers the Genre focus facet.
+//
+// Roon's browse response carries no genre, so these are harvested by walking
+// the `genres` hierarchy once per library sync (see harvestAlbumGenres). That
+// walk is the one place in this file where a facet costs Roon calls, and it is
+// worth it because the join back is Roon-to-Roon: both sides are Roon's OWN
+// title/subtitle strings, so unlike years — which come from foreign sources and
+// are stuck at partial coverage — this lands on essentially every album.
+const albumGenreCache = new Map();
+let stmtInsertGenres = null;
+// genre name → { subtitle, image_key, total, ts } as of its last successful
+// walk. Bumping GENRE_FP_VERSION makes every stored row incomparable, which
+// forces one full walk and is how a change to what a fingerprint MEANS heals
+// itself instead of silently comparing two different things.
+const genreScanCache = new Map();
+let stmtInsertGenreScan = null;
+function genreFpVersion() { return 1; }
+// How long a genre may go unwalked. No free fingerprint can see an equal-count
+// membership swap, or an album Roon re-identified (which changes the key
+// without moving any genre's count) — so the skip is bounded by time rather
+// than trusted indefinitely.
+function genreSweepMs() { return 7 * 24 * 60 * 60 * 1000; }
+// Genre names contain commas ("Rap, Hip-Hop" is one Roon genre) and slashes
+// ("Pop/Rock"), but never a newline — so that is the one separator that can
+// round-trip the list without an escaping scheme.
+const GENRE_SEP = String.fromCharCode(10);
+// Remember what a genre looked like when we last walked it. Written per genre
+// rather than in one batch at the end: the walk is wrapped in a single catch,
+// so a run that dies partway must still leave the genres it finished
+// fingerprinted instead of starting from nothing next time.
+function setGenreScan(name, subtitle, imageKey, total) {
+  if (!name) return;
+  const rec = { subtitle: subtitle || "", image_key: imageKey || "",
+                total: Number.isFinite(total) ? total : null, ts: Date.now() };
+  genreScanCache.set(name, rec);
+  if (stmtInsertGenreScan) {
+    try { stmtInsertGenreScan.run(name, rec.subtitle, rec.image_key, rec.total,
+                                  rec.ts, genreFpVersion()); }
+    catch (e) { if (DEBUG) console.error("[genres] fingerprint write failed:", e.message); }
+  }
+}
+
+// An album that is in no genre at all has no row, rather than an empty one.
+// setAlbumGenres refuses an empty list (a genre-less album is the normal state
+// for most of a library and storing millions of empty rows would be silly), so
+// removal needs its own path — without it, an album that left its ONLY genre
+// would keep that genre forever.
+function deleteAlbumGenres(key) {
+  if (!albumGenreCache.has(key)) return false;
+  albumGenreCache.delete(key);
+  if (labelsDb) {
+    try { labelsDb.prepare("DELETE FROM album_genres WHERE key = ?").run(key); }
+    catch (e) { if (DEBUG) console.error("[genres] delete failed:", e.message); }
+  }
+  return true;
+}
+
+function setAlbumGenres(key, genres) {
+  if (!key || !Array.isArray(genres) || !genres.length) return false;
+  const list = [...new Set(genres.filter(Boolean))].sort();
+  const prev = albumGenreCache.get(key);
+  if (prev && prev.length === list.length && prev.every((g, i) => g === list[i])) return false;
+  albumGenreCache.set(key, list);
+  if (stmtInsertGenres) {
+    try { stmtInsertGenres.run(key, list.join(GENRE_SEP)); }
+    catch (e) { if (DEBUG) console.error("[genres] write failed:", e.message); }
+  }
+  return true;
+}
+
+// album key → { container, bits, rate, chan, lossless } — powers the Format,
+// Sample rate, Bit depth and Channels focus facets, and comes free: the local
+// scan ALREADY calls music-metadata's parseFile for labels and years, and every
+// one of these fields is on the `format` block of the object it hands back.
+// Nothing extra is read from disk.
+//
+// Local files only, by definition — a streamed album has no file to inspect —
+// which is why the sheet prints the coverage rather than implying the whole
+// library was measured. It is also one SAMPLED track per directory, which is
+// safe for these four (albums are ripped uniformly) in a way it would not be
+// for anything per-track like rating or BPM.
+const albumFileCache = new Map();
+let stmtInsertFileFacts = null;
+// Where a format came from, ranked. A local file is the thing that actually
+// plays, so it outranks a streaming service's description of the same album —
+// which may be the hi-res master when what is on disk is the CD rip.
+//
+// Same shape as seenSourceRank and yearSourceRank; a row written before this
+// column existed reads back as 0 and any identified source beats it.
+function formatSourceRank(src) {
+  if (src === "file")  return 3;   // measured from the file we would actually play
+  if (src === "qobuz") return 2;   // the service states an exact bit depth and rate
+  if (src === "tidal") return 1;   // a quality TIER, not an exact rate
+  return 0;
+}
+function setAlbumFileFacts(key, f, src) {
+  if (!key || !f) return false;
+  const prev = albumFileCache.get(key);
+  // Better evidence replaces worse. A tie keeps the first writer, which matters
+  // for the file walk: it recurses into disc subdirectories (MAX_DEPTH exists
+  // for exactly that), so a 2-disc album is parsed twice under one key and the
+  // second pass must not overwrite the first.
+  if (prev && formatSourceRank(src) <= formatSourceRank(prev.src)) return false;
+  const rec = Object.assign({}, f, { src: src || "" });
+  albumFileCache.set(key, rec);
+  if (stmtInsertFileFacts) {
+    try {
+      stmtInsertFileFacts.run(key, rec.container || null, rec.bits || null,
+                              rec.rate || null, rec.chan || null,
+                              rec.lossless ? 1 : 0, rec.src);
+    } catch (e) { if (DEBUG) console.error("[format] write failed:", e.message); }
+  }
+  return true;
+}
+function seenSourceRank(src) {
+  if (src === "file")       return 2;   // the file landed on disk on this date
+  if (src === "first-seen") return 1;   // it appeared between two rebuilds
+  return 0;
+}
+// Records when an album was first seen, keeping the best-ranked evidence.
+// Returns true when something changed, so callers can bump the view cache.
+function setAlbumSeen(key, ts, src) {
+  if (!key || !Number.isFinite(ts) || ts <= 0) return false;
+  const prev = albumSeenCache.get(key);
+  if (prev) {
+    const better = seenSourceRank(src) > seenSourceRank(prev.src);
+    // Same source, earlier date wins: "first seen" means the earliest evidence,
+    // not the most recent scan that happened to notice it again.
+    const earlier = seenSourceRank(src) === seenSourceRank(prev.src) && ts < prev.ts;
+    if (!better && !earlier) return false;
+  }
+  albumSeenCache.set(key, { ts, src: src || "" });
+  if (stmtInsertSeen) {
+    try { stmtInsertSeen.run(key, Math.round(ts), src || ""); }
+    catch (e) { if (DEBUG) console.error("[seen] write failed:", e.message); }
+  }
+  return true;
+}
 // Ordered/filtered library views are memoised (see libraryView). Declared here,
 // ABOVE setAlbumYear, because that function invalidates the cache and would hit
 // the temporal dead zone if these lived with the rest of the view code.
 let libraryMetaVersion = 0;
 const libraryViewCache = new Map();      // sig -> ordered album array
 const LIBRARY_VIEW_CACHE_MAX = 8;
-function bumpLibraryMeta() { libraryMetaVersion++; libraryViewCache.clear(); }
+// The two genre lists that are cached against the Core. Declared HERE, above
+// bumpLibraryMeta, because that is their first use — a `const` referenced
+// before its declaration is a ReferenceError, and `typeof` does not rescue it:
+// unlike an undeclared name, a const in its temporal dead zone throws from
+// `typeof` too. bumpLibraryMeta runs during startup, so a guard written that
+// way would have crashed the extension on boot.
+//
+// Both had no cache path and no invalidation path respectively; see the routes.
+const genreListCache   = makeTtlCache(30 * 60 * 1000);
+const genreGroupsCache = makeTtlCache(30 * 60 * 1000);
+
+function bumpLibraryMeta() {
+  libraryMetaVersion++;
+  libraryViewCache.clear();
+  // The genre lists too. Both are TTL-cached against the Core, and neither was
+  // on any invalidation path — so a genre added to the library stayed invisible
+  // on Home and in the filter sheet until the clock ran out, with no way to
+  // hurry it. Declared later in the file, so guarded: bumpLibraryMeta is called
+  // during startup before they exist.
+  genreListCache.clear();
+  genreGroupsCache.clear();
+}
 // Coalesced bump for the label scan, which discovers years one HTTP response at
 // a time. Bumping per year would clear the memoised orderings several times a
 // second for the hours a first scan takes — the cache would never survive long
@@ -1450,6 +1884,11 @@ function scheduleLibraryMetaBump() {
 let labelsDb = null;
 let stmtInsertName, stmtInsertMbid, stmtInsertLogo, stmtInsertMerge, stmtDeleteMerge, stmtInsertYear;
 let stmtInsertPlay, stmtCompletePlay;
+// Smart Picks. Declared here with the rest so they exist (as undefined) before
+// openLabelsDb runs — a bare assignment below a later `let` is the startup
+// ReferenceError this file has been bitten by before.
+let stmtInsertSmartPick = null, stmtInsertSmartSeen = null;
+let stmtInsertSmartBlock = null, stmtInsertSmartCache = null;
 
 // Non-label filter — must be defined before openLabelsDb() is called.
 const NON_LABEL_RE = /\b(management|agency|agencies|booking|touring|representation|ministry|foundation|fund)\b/i;
@@ -1500,12 +1939,98 @@ function openLabelsDb() {
         key  TEXT PRIMARY KEY,
         year TEXT NOT NULL
       );
+      -- When this extension first became aware of an album. NOT Roon's import
+      -- date: Roon publishes none, so there is nothing to read. The src column
+      -- ranks the evidence: a file mtime beats "it appeared in a rebuild".
+      CREATE TABLE IF NOT EXISTS album_seen (
+        key TEXT PRIMARY KEY,
+        ts  INTEGER NOT NULL,
+        src TEXT
+      );
+      -- Genres per album, harvested from Roon's own genres hierarchy because
+      -- the browse response for an album carries none. Stored newline-joined:
+      -- genre names contain commas ("Rap, Hip-Hop") but never newlines.
+      CREATE TABLE IF NOT EXISTS album_genres (
+        key    TEXT PRIMARY KEY,
+        genres TEXT NOT NULL
+      );
+      -- What the local file for an album actually is. Read from tags the label
+      -- scan already parses, so it costs no extra disk work; absent for every
+      -- album that has no local file.
+      CREATE TABLE IF NOT EXISTS album_files (
+        key       TEXT PRIMARY KEY,
+        container TEXT,
+        bits      INTEGER,
+        rate      INTEGER,
+        chan      INTEGER,
+        lossless  INTEGER
+      );
+      -- What each genre looked like the last time it was walked, so an
+      -- unchanged one can be skipped. The subtitle is stored RAW ("204 Albums")
+      -- rather than as a parsed integer: strictly more information for the same
+      -- zero cost, and it cannot collapse two different states into null.
+      -- The total column is the album count the walk itself observed, which is
+      -- what catches a subtitle that does not describe the set we harvest.
+      CREATE TABLE IF NOT EXISTS genre_scan (
+        name      TEXT PRIMARY KEY,
+        subtitle  TEXT,
+        image_key TEXT,
+        total     INTEGER,
+        ts        INTEGER NOT NULL,
+        v         INTEGER NOT NULL
+      );
+      -- Smart Picks: the six albums surfaced on a given day. Stored rather than
+      -- recomputed so the set is stable for everyone looking at it, and so a
+      -- restart does not hand somebody a different day's picks.
+      CREATE TABLE IF NOT EXISTS smart_picks (
+        day      TEXT NOT NULL,
+        kind     TEXT NOT NULL,
+        rank     INTEGER NOT NULL,
+        mbid     TEXT,
+        artist   TEXT NOT NULL,
+        canon    TEXT NOT NULL,
+        album    TEXT,
+        album_id TEXT,
+        service  TEXT,
+        image    TEXT,
+        reason   TEXT,
+        genre    TEXT,
+        ts       INTEGER NOT NULL,
+        PRIMARY KEY (day, kind, rank)
+      );
+      -- Artists already shown, so the set turns over instead of repeating.
+      CREATE TABLE IF NOT EXISTS smart_pick_seen (
+        canon TEXT PRIMARY KEY,
+        ts    INTEGER NOT NULL
+      );
+      -- "Not for me" — an EXPLICIT tap only, and permanent. Silence is never
+      -- recorded here: the premise of the feature is albums the user would not
+      -- otherwise reach for, so treating no-response as rejection would empty
+      -- the pool within a week.
+      CREATE TABLE IF NOT EXISTS smart_pick_blocks (
+        canon TEXT PRIMARY KEY,
+        name  TEXT,
+        ts    INTEGER NOT NULL
+      );
+      -- Cached third-party reads (the sitewide hub chart, per-seed similarity,
+      -- per-genre rosters). Persisted so a rebuild on an unchanged library
+      -- costs no network calls at all.
+      CREATE TABLE IF NOT EXISTS smart_cache (
+        key  TEXT PRIMARY KEY,
+        body TEXT NOT NULL,
+        ts   INTEGER NOT NULL
+      );
     `);
     // `src` records WHERE a year came from, so a better source can correct a
     // worse one (see yearSourceRank). Added after the table shipped without
     // it, so it goes on as a migration; existing rows read back as rank 0 and
     // any identified source outranks them.
     try { labelsDb.exec("ALTER TABLE album_years ADD COLUMN src TEXT"); }
+    catch (e) { /* already present — SQLite has no ADD COLUMN IF NOT EXISTS */ }
+    // v1.7.37: formats can now come from a streaming service as well as from a
+    // local file, and a local file must win. Rows written by v1.7.35-36 have no
+    // src and read back as rank 0, so the first identified source corrects them.
+    try { labelsDb.exec("ALTER TABLE album_files ADD COLUMN src TEXT"); }
     catch (e) { /* already present — SQLite has no ADD COLUMN IF NOT EXISTS */ }
     stmtInsertName  = labelsDb.prepare("INSERT OR REPLACE INTO label_names (key, label) VALUES (?, ?)");
     stmtInsertMbid  = labelsDb.prepare("INSERT OR REPLACE INTO label_mbids (group_key, mbid) VALUES (?, ?)");
@@ -1515,6 +2040,22 @@ function openLabelsDb() {
     stmtInsertPlay  = labelsDb.prepare("INSERT INTO plays (ts, zone, track, artist, album, image_key, duration) VALUES (?,?,?,?,?,?,?)");
     stmtCompletePlay = labelsDb.prepare("UPDATE plays SET completed=1 WHERE id=?");
     stmtInsertYear  = labelsDb.prepare("INSERT OR REPLACE INTO album_years (key, year, src) VALUES (?, ?, ?)");
+    stmtInsertSeen  = labelsDb.prepare("INSERT OR REPLACE INTO album_seen (key, ts, src) VALUES (?, ?, ?)");
+    stmtInsertGenres = labelsDb.prepare("INSERT OR REPLACE INTO album_genres (key, genres) VALUES (?, ?)");
+    stmtInsertGenreScan = labelsDb.prepare(
+      "INSERT OR REPLACE INTO genre_scan (name, subtitle, image_key, total, ts, v) VALUES (?,?,?,?,?,?)");
+    stmtInsertFileFacts = labelsDb.prepare(
+      "INSERT OR REPLACE INTO album_files (key, container, bits, rate, chan, lossless, src) VALUES (?,?,?,?,?,?,?)");
+    stmtInsertSmartPick = labelsDb.prepare(
+      "INSERT OR REPLACE INTO smart_picks " +
+      "(day, kind, rank, mbid, artist, canon, album, album_id, service, image, reason, genre, ts) " +
+      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
+    stmtInsertSmartSeen  = labelsDb.prepare(
+      "INSERT OR REPLACE INTO smart_pick_seen (canon, ts) VALUES (?, ?)");
+    stmtInsertSmartBlock = labelsDb.prepare(
+      "INSERT OR REPLACE INTO smart_pick_blocks (canon, name, ts) VALUES (?, ?, ?)");
+    stmtInsertSmartCache = labelsDb.prepare(
+      "INSERT OR REPLACE INTO smart_cache (key, body, ts) VALUES (?, ?, ?)");
     const stmtDeleteName = labelsDb.prepare("DELETE FROM label_names WHERE key = ?");
     for (const r of labelsDb.prepare("SELECT key, label FROM label_names").all()) {
       if (!r.label) continue;
@@ -1539,6 +2080,31 @@ function openLabelsDb() {
         albumYearCache.set(r.key, r.year);
         if (r.src) albumYearSource.set(r.key, r.src);
       }
+    }
+    for (const r of labelsDb.prepare("SELECT key, ts, src FROM album_seen").all()) {
+      if (r.ts) albumSeenCache.set(r.key, { ts: r.ts, src: r.src || "" });
+    }
+    for (const r of labelsDb.prepare(
+        "SELECT name, subtitle, image_key, total, ts, v FROM genre_scan").all()) {
+      // A row at another fingerprint version is not comparable — drop it and
+      // the genre gets a full walk.
+      if (r.v !== genreFpVersion()) continue;
+      genreScanCache.set(r.name, {
+        subtitle: r.subtitle || "", image_key: r.image_key || "",
+        total: r.total, ts: r.ts
+      });
+    }
+    for (const r of labelsDb.prepare("SELECT key, genres FROM album_genres").all()) {
+      const list = String(r.genres || "").split(GENRE_SEP).filter(Boolean);
+      if (list.length) albumGenreCache.set(r.key, list);
+    }
+    for (const r of labelsDb.prepare(
+        "SELECT key, container, bits, rate, chan, lossless, src FROM album_files").all()) {
+      albumFileCache.set(r.key, {
+        container: r.container || null, bits: r.bits || null,
+        rate: r.rate || null, chan: r.chan || null, lossless: !!r.lossless,
+        src: r.src || ""
+      });
     }
     migrateOldJsonCaches();
     if (DEBUG) console.log(
@@ -2138,7 +2704,19 @@ function loadLocalAlbumKeys() {
       }, 60000);
       if (t.unref) t.unref();
     }
-  } catch (e) { /* absent on first run / unreadable — rebuilt by the next file scan */ }
+  } catch (e) {
+    // Absent on first run, or unreadable. Either way there is nothing to load
+    // AND nothing scheduled to rebuild it — only the wrong-version branch above
+    // kicked a scan, so a lost file left the local badges empty until something
+    // else happened to trigger the walk.
+    const t = setTimeout(() => {
+      if (!core || labelsIndex.building) return;
+      runLabelsIndexScan().catch(err => {
+        if (DEBUG) console.error("[local] first-run scan:", err.message);
+      });
+    }, 60000);
+    if (t.unref) t.unref();
+  }
 }
 function setLocalAlbumKeys(keys) {
   localAlbumKeys = keys;
@@ -2234,13 +2812,54 @@ function albumKey(title, artist) {
 // every collaboration. Each individual artist is offered as an alternative.
 // The TITLE always has to match, so a wrong badge would need the same album
 // title AND a shared artist on genuinely different releases.
+// Every spelling of an album TITLE worth matching under. The plain title, plus
+// the same title with an edition marker removed.
+//
+// This exists because Roon replaces file tags with its own metadata for albums
+// it identifies. A rip tagged "Rumours" sits in a library where Roon calls it
+// "Rumours (Deluxe Edition)", and with one title string on each side those two
+// can never meet — silently, in a way that shows up only as a source count
+// that is hundreds short. The streaming path has had this since v1.6.55
+// (addFavouriteKeys indexes both "Album" and "Album (Deluxe)"); the local path
+// never got it.
+//
+// The stripped form is an EXTRA key, never a replacement: the full titles still
+// match each other, and two albums that collapse to the same stripped title
+// simply share an identity, which ambiguousAlbumKeys already suppresses for
+// badging.
+function albumTitleVariants(title) {
+  const raw = String(title || "").trim();
+  const out = [];
+  // The original title goes in whatever its length — albums really are called
+  // "X" and "÷", and rejecting those would strip them of every identity they
+  // have. The floor applies only to STRIPPED forms, where a short result means
+  // the marker was most of the title and what's left would match everything.
+  const first = canonText(raw);
+  if (first) out.push(first);
+  const add = (v) => {
+    const c = canonText(v);
+    if (c && c.length >= 3 && !out.includes(c)) out.push(c);
+  };
+  // A trailing bracketed chunk: "(Deluxe Edition)", "[2016 Remaster]".
+  add(raw.replace(/\s*[([][^()[\]]*[)\]]\s*$/, ""));
+  // A trailing dash suffix, but ONLY when it reads as an edition — "Album -
+  // Part Two" is a different record, "Album - Remastered" is not.
+  add(raw.replace(
+    /\s+-\s+[^-]*\b(remaster(ed)?|deluxe|edition|expanded|anniversary|bonus|reissue|mono|stereo|version|remix(ed)?)\b[^-]*$/i,
+    ""));
+  return out;
+}
+
 function albumKeys(title, subtitle) {
-  const t = canonText(title);
-  if (!t) return [];
+  const titles = albumTitleVariants(title);
+  if (!titles.length) return [];
   const out = [], seen = new Set();
   const push = (artist) => {
-    const k = t + "||" + canonArtist(artist);
-    if (!seen.has(k)) { seen.add(k); out.push(k); }
+    const a = canonArtist(artist);
+    for (const t of titles) {
+      const k = t + "||" + a;
+      if (!seen.has(k)) { seen.add(k); out.push(k); }
+    }
   };
   push(subtitle || "");
   // Same separators the artist links use, plus the unspaced slash.
@@ -2291,7 +2910,7 @@ async function refreshStreamAlbumKeys(reason) {
         // objects carry their release date, so the Decade filter gets it for
         // free rather than needing a lookup pass of its own.
         const years = new Map();
-        let fetched = 0, skipped = 0;
+        let fetched = 0, skipped = 0, qualities = 0;
         for (let page = 0; page < MAX_PAGES; page++) {
           const items = await qobuzWithToken((t) => qobuz.getFavoriteAlbums(t, PAGE, page * PAGE));
           if (!items.length) break;
@@ -2302,9 +2921,20 @@ async function refreshStreamAlbumKeys(reason) {
             addFavouriteKeys(keys, a.title, a.version, artists);
             addHarvestedYear(years, a.title, a.version, artists,
               a.release_date_original || a.release_date_stream || a.release_date_download);
+            // ...and the bit depth and sample rate, from the same object. An
+            // album in the Roon library with no local file is one of these, so
+            // this is what gives it a quality badge at all.
+            const q = qobuzQualityOf(a);
+            if (q) qualities += addHarvestedQuality(a.title, a.version, artists, q, "qobuz");
             if (keys.size === before) skipped++;
           }
           if (items.length < PAGE) break;
+        }
+        if (qualities) {
+          // The Format/Sample rate/Bit depth facets just gained values, and the
+          // memoised orderings were built without them.
+          bumpLibraryMeta();
+          console.log("[format] " + qualities + " album identities given a format by Qobuz");
         }
         // Assigned even when EMPTY — the user may have un-favourited everything,
         // and keeping the old set would badge albums that are no longer theirs.
@@ -2326,7 +2956,7 @@ async function refreshStreamAlbumKeys(reason) {
           tidal.getFavoriteAlbums(token, cc, tidalUserId));
         const keys = new Set();
         const years = new Map();   // free release dates — see the Qobuz note above
-        let skipped = 0;
+        let skipped = 0, qualities = 0;
         for (const row of rows) {
           const a = (row && row.item) ? row.item : row;
           if (!a || !a.title) continue;
@@ -2335,7 +2965,13 @@ async function refreshStreamAlbumKeys(reason) {
             .concat((a.artists || []).map(x => x && x.name));
           addFavouriteKeys(keys, a.title, a.version, artists);
           addHarvestedYear(years, a.title, a.version, artists, a.releaseDate);
+          const q = tidalQualityOf(a);
+          if (q) qualities += addHarvestedQuality(a.title, a.version, artists, q, "tidal");
           if (keys.size === before) skipped++;
+        }
+        if (qualities) {
+          bumpLibraryMeta();
+          console.log("[format] " + qualities + " album identities given a format by TIDAL");
         }
         tidalAlbumKeys = keys;   // empty is a valid answer — see the Qobuz note
         tidalAlbumYears = years;
@@ -2369,35 +3005,143 @@ function clearStreamAlbumKeys(which) {
   if (which === "qobuz") qobuzAlbumKeys = new Set();
   if (which === "tidal") tidalAlbumKeys = new Set();
   saveStreamAlbumKeys();
-  console.log("[stream] cleared " + which + " album keys (disconnected)");
+  // The formats that service told us go with it. Leaving them behind would show
+  // a bit depth sourced from an account the user has removed — and, because the
+  // rows are on the data volume, reinstate it on the next restart.
+  let dropped = 0;
+  for (const [key, f] of albumFileCache) {
+    if (f && f.src === which) { albumFileCache.delete(key); dropped++; }
+  }
+  if (dropped && labelsDb) {
+    try { labelsDb.prepare("DELETE FROM album_files WHERE src = ?").run(which); }
+    catch (e) { if (DEBUG) console.error("[format] clear failed:", e.message); }
+  }
+  if (dropped) bumpLibraryMeta();
+  console.log("[stream] cleared " + which + " album keys (disconnected)" +
+              (dropped ? ", " + dropped + " formats" : ""));
 }
 
-// Attach the source flag to an album payload. One helper so every endpoint
-// that returns albums reports it identically.
+// Which streaming services could be claiming albums in this library right now.
+// A service counts only when it is connected AND its favourites actually
+// loaded — a connected account whose fetch failed knows nothing, and treating
+// its silence as "claims nothing" would call its albums local.
+function claimingServices() {
+  const out = [];
+  if ((qobuzToken || (qobuzUsername && qobuzPasswordMd5)) && qobuzAlbumKeys.size) out.push("qobuz");
+  if (tidalRefreshToken && tidalAlbumKeys.size) out.push("tidal");
+  return out;
+}
+
+// True when an album no service claims must be local.
+//
+// Roon's library is local files plus streaming albums you have added, and
+// adding a streaming album favourites it in the service (that is what makes the
+// qobuz/tidal key sets meaningful in the first place). So with NO service
+// connected there is nothing else an album can be, and locality does not have
+// to be proved album-by-album at all.
+//
+// That matters because proving it is a lossy join: file tags versus Roon's own
+// metadata, which Roon rewrites for every album it identifies. That join left
+// 281 of 2,234 albums uncounted on a library that was entirely local, and no
+// amount of matching work closes a gap whose cause is that the two sides
+// legitimately disagree about the album's name.
+//
+// With a service connected the elimination does not hold — an unclaimed album
+// could be local, or from a service that is NOT connected here — so positive
+// evidence is all we have and the old behaviour stands.
+function unclaimedIsLocal() {
+  return claimingServices().length === 0;
+}
+
+// Where an album came from, as far as the evidence goes: "local" | "qobuz" |
+// "tidal" | null. This is the TRUTH function — Focus counting and Focus
+// filtering both call it, and they must agree exactly.
 //
 // `rec` is the albumIndex record the payload came from, when there is one: it
-// already carries the normalized title/artist, so the hot list paths (walls,
+// already carries the precomputed identity keys, so the hot list paths (walls,
 // Library paging, artist screens) do no string work at all here.
 //
 // Local wins over a streaming match — the files are what actually plays. But
 // an album favourited in BOTH services is genuinely ambiguous: Roon pulled it
-// from one of them and we can't tell which, so it gets no badge rather than a
-// coin-flip logo.
-function withSource(a, rec) {
-  const keys = (rec && rec.srcKeys) ? rec.srcKeys : albumKeys(a.title, a.subtitle);
-  let source = null;
+// from one of them and we can't tell which, so it gets nothing rather than a
+// coin-flip answer.
+function albumSource(title, subtitle, rec) {
+  const keys = (rec && rec.srcKeys) ? rec.srcKeys : albumKeys(title, subtitle);
   for (const key of keys) {
     // Two library albums share this identity — we can't tell which is which,
     // so neither gets a badge.
     if (ambiguousAlbumKeys.has(key)) continue;
-    if (localAlbumKeys.has(key)) { source = "local"; break; }
+    if (localAlbumKeys.has(key)) return "local";
     const inQobuz = qobuzAlbumKeys.has(key);
     const inTidal = tidalAlbumKeys.has(key);
     if (inQobuz && inTidal) break;              // favourited in both — unknowable
-    if (inQobuz) { source = "qobuz"; break; }
-    if (inTidal) { source = "tidal"; break; }
+    if (inQobuz) return "qobuz";
+    if (inTidal) return "tidal";
   }
-  a.source = source;
+  return unclaimedIsLocal() ? "local" : null;
+}
+
+// Does a source badge tell the user anything? Only when the library could hold
+// more than one source. With no streaming service connected, elimination makes
+// EVERY album local (see unclaimedIsLocal), so the badge stops being a fact
+// about an album and becomes decoration on every tile in the library — which is
+// exactly what shipping v1.7.34 did.
+//
+// The Focus sheet is unaffected on purpose: there the count is the whole point,
+// and "Local albums (2,234)" answers a question the user actually asked.
+function sourceBadgesDistinguish() { return !unclaimedIsLocal(); }
+
+// A sample rate as people say it: 44.1, 48, 96, 192. Trailing ".0" is noise on
+// a badge two characters wide.
+function rateShort(hz) {
+  if (!hz) return null;
+  const k = hz / 1000;
+  return String(Number.isInteger(k) ? k : Math.round(k * 10) / 10);
+}
+
+// What an album IS, in Roon's own shorthand: "24/96", "16/44.1", or just the
+// container for a lossy file where bit depth means nothing.
+//
+// Returns null when there is no local file to inspect — a streamed album has
+// no format this extension can read, and inventing one would be worse than an
+// empty badge.
+function albumQualityLabel(f) {
+  if (!f) return null;
+  // Lossy first: MP3 and AAC report a bitsPerSample that describes the decoder,
+  // not the recording, so "16/44.1" on an MP3 would claim CD quality.
+  if (!f.lossless) return f.container || null;
+  if (f.bits && f.rate) return f.bits + "/" + rateShort(f.rate);
+  if (f.rate) return rateShort(f.rate) + " kHz";
+  return f.container || null;
+}
+// Better than CD. Roon calls this hi-res and marks it; the badge tints rather
+// than saying so in words, which would not fit.
+//
+// TIDAL states a TIER rather than numbers, so its hi-res albums arrive with no
+// bit depth to compare — the tier's own label is the evidence.
+function albumIsHiRes(f) {
+  if (!f || !f.lossless) return false;
+  if (f.container === "Hi-Res") return true;
+  return !!((f.bits && f.bits > 16) || (f.rate && f.rate > 48000));
+}
+
+// Attach the derived per-album fields to a payload. One helper so every
+// endpoint that returns albums reports them identically — and so a badge is
+// omitted in one place rather than suppressed on each screen that draws one.
+function withSource(a, rec) {
+  a.source = sourceBadgesDistinguish() ? albumSource(a.title, a.subtitle, rec) : null;
+  // Sample rate / bit depth, for the optional quality badge. Always sent: it is
+  // a dozen bytes, it comes from a Map already in memory, and sending it
+  // unconditionally means the Appearance toggle takes effect immediately
+  // instead of after a reload. Absent when there is no local file.
+  //
+  // Keys resolved the same way albumSource does, because several callers
+  // (the single-album lookup, the label browser, the Home rows) have only a
+  // payload and no index record — and a badge that appears on the Library wall
+  // but not on Home reads as a bug in the data, not in the plumbing.
+  const f = albumFileFacts(a.title, a.subtitle, rec);
+  const q = albumQualityLabel(f);
+  if (q) { a.quality = q; if (albumIsHiRes(f)) a.hires = true; }
   return a;
 }
 
@@ -2445,6 +3189,71 @@ function fileTagYear(common) {
 }
 // Record a harvested year under every identity the source can offer, mirroring
 // addFavouriteKeys so the join keys line up with the badge keys exactly.
+// The same join, for the format of an album this extension has no file for.
+//
+// Roon's library is local files plus streaming albums you added, and adding one
+// favourites it in the service — which is why the favourites pages are already
+// being fetched for the source badges. Those album objects state the bit depth
+// and sample rate the service will stream, so cross-referencing them costs no
+// extra request at all: it is the same response, read for one more field.
+//
+// Written straight through to the ranked store, so a local file still wins if
+// the album turns out to exist on disk too.
+function addHarvestedQuality(title, version, artists, facts, src) {
+  if (!title || !facts) return 0;
+  const titles = version ? [title, title + " " + version] : [title];
+  let n = 0;
+  for (const t of titles) {
+    for (const artist of artists) {
+      if (!artist) continue;
+      const key = albumKey(t, artist);
+      if (key && setAlbumFileFacts(key, facts, src)) n++;
+    }
+  }
+  return n;
+}
+
+// What Qobuz says it will stream for this album. Exact numbers, not a tier —
+// which is why Qobuz outranks TIDAL in formatSourceRank.
+//
+// No container: Qobuz serves FLAC for lossless and MP3 for its lowest tier, and
+// the favourites payload doesn't say which you'd get. bits+rate is what the
+// badge shows anyway, and claiming a container we weren't told would be a
+// guess dressed as a fact.
+function qobuzQualityOf(a) {
+  const bits = parseInt(a.maximum_bit_depth, 10);
+  // Qobuz reports kHz as a number (44.1, 96, 192); everything downstream works
+  // in Hz.
+  const khz  = parseFloat(a.maximum_sampling_rate);
+  if (!Number.isFinite(bits) || !Number.isFinite(khz) || bits <= 0 || khz <= 0) return null;
+  return { container: null, bits, rate: Math.round(khz * 1000), chan: null, lossless: true };
+}
+
+// What TIDAL says about an album — a quality TIER, not a rate.
+//
+// TIDAL publishes "LOSSLESS" / "HI_RES_LOSSLESS" / "HIGH" / "LOW" rather than a
+// bit depth and sample rate, and its hi-res spans 24/44.1 to 24/192. Turning a
+// tier into "24/96" would be inventing two numbers, so the badge carries the
+// tier's own name instead. That is why formatSourceRank puts TIDAL below Qobuz:
+// if both know an album, the one with real numbers wins.
+function tidalQualityOf(a) {
+  const tags = (a.mediaMetadata && Array.isArray(a.mediaMetadata.tags))
+    ? a.mediaMetadata.tags.map(String) : [];
+  const tier = String(a.audioQuality || "").toUpperCase();
+  const hi = tier === "HI_RES_LOSSLESS" || tier === "HI_RES" ||
+             tags.includes("HIRES_LOSSLESS");
+  if (hi) return { container: "Hi-Res", bits: null, rate: null, chan: null, lossless: true };
+  if (tier === "LOSSLESS" || tags.includes("LOSSLESS")) {
+    return { container: "Lossless", bits: null, rate: null, chan: null, lossless: true };
+  }
+  // HIGH and LOW are TIDAL's lossy tiers. Reported as AAC, which is what they
+  // are, rather than as a bit depth the format does not have.
+  if (tier === "HIGH" || tier === "LOW") {
+    return { container: "AAC", bits: null, rate: null, chan: null, lossless: false };
+  }
+  return null;
+}
+
 function addHarvestedYear(map, title, version, artists, year) {
   const y = yearOfDate(year);
   if (!y || !title) return;
@@ -2525,6 +3334,34 @@ function harvestAlbumYears(reason) {
 // alongside a streaming copy Roon didn't group). Any badge on those would be a
 // coin flip, so they're suppressed. Rebuilt with the snapshot.
 let ambiguousAlbumKeys = new Set();
+// "First seen" dates for albums that appeared between two rebuilds.
+//
+// The hard part is the FIRST run: an established library would otherwise be
+// stamped with one identical timestamp for every album, which is not a date —
+// it is the moment this feature was installed, wearing a date's clothes. So the
+// first run records nothing at all and leaves those albums undated, and only
+// albums that turn up in a LATER rebuild get a real first-seen. Accuracy
+// accrues going forward; it cannot be back-filled, and pretending otherwise
+// would make the sort confidently wrong rather than honestly incomplete.
+function recordFirstSeenAlbums() {
+  const baseline = albumSeenCache.size === 0;
+  let n = 0;
+  for (const al of albumIndex.albums) {
+    const keys = al.srcKeys || [];
+    if (!keys.length) continue;
+    if (keys.some(k => albumSeenCache.has(k))) continue;
+    if (baseline) continue;   // nothing to compare against — see above
+    if (setAlbumSeen(keys[0], Date.now(), "first-seen")) n++;
+  }
+  if (n) {
+    bumpLibraryMeta();
+    console.log("[seen] " + n + " albums newly seen in this rebuild");
+  } else if (baseline) {
+    console.log("[seen] first run — existing albums left undated, " +
+                "new ones will be dated from here");
+  }
+}
+
 function rebuildAmbiguousAlbumKeys() {
   const seen = new Map();
   const dupes = new Set();
@@ -2559,6 +3396,7 @@ async function buildFileLabelMap(onProgress) {
   // guard; this keeps the map itself from ever being observed half-built.)
   const fileYears = new Map();
   let yearsWritten = 0;
+  let formatWrites = 0;
   if (!musicDirMounted()) return { labelMap: map, bandcampMap, localKeys };
   let mm;
   try { mm = await import("music-metadata"); } catch (e) {
@@ -2577,15 +3415,30 @@ async function buildFileLabelMap(onProgress) {
   // When audio files are found in a directory, read tags from the first one.
   // Match is keyed on tag values (common.album + common.albumartist) so
   // directory naming convention (Artist/Album vs flat Artist - Album) doesn't matter.
-  const MAX_DEPTH = 3;
+  // 5, not 3: /music/Artist/Album/CD1 fits in 3, but /music/Genre/Artist/Album/Disc 1
+  // does not, and a subtree past the limit is skipped WHOLE and silently — the
+  // albums in it simply never count as local.
+  const MAX_DEPTH = 5;
   let _fsProcessed = 0;
+  // Diagnostics for the one question the old summary could not answer: when the
+  // local count is short, is it because the walk never SAW those albums, or
+  // because it saw them and the keys didn't match? Counting is free and the
+  // difference decides which half of the code to look at.
+  const walk = { dirs: 0, tooDeep: 0, unreadable: 0, withAudio: 0, parsed: 0,
+                 parseFailed: 0, keyed: 0, noAlbumTag: 0 };
+  // album key → earliest file mtime seen for it. Published after the walk, the
+  // same way the label and year maps are, so a partial walk never lands.
+  const fileSeen = new Map();
   async function scanDir(dirPath, depth) {
-    if (depth > MAX_DEPTH) return;
+    if (depth > MAX_DEPTH) { walk.tooDeep++; return; }
+    walk.dirs++;
     let entries;
-    try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch (e) { return; /* permission denied or dir vanished mid-scan — skip silently */ }
+    try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); }
+    catch (e) { walk.unreadable++; return; /* permission denied or dir vanished mid-scan */ }
 
     const audioFile = entries.find(e => e.isFile() && AUDIO_RE.test(e.name));
     if (audioFile) {
+      walk.withAudio++;
       _fsProcessed++;
       if (onProgress && _fsProcessed % 50 === 0) onProgress(_fsProcessed);
       try {
@@ -2600,7 +3453,16 @@ async function buildFileLabelMap(onProgress) {
           const folderLabel = rel[labelFolderDepth - 1];
           if (folderLabel) label = folderLabel;
         }
+        walk.parsed++;
+        // The file's own timestamp — the closest thing to "when did this album
+        // arrive" that exists anywhere. It is when the FILE landed on this
+        // disk, not when Roon imported it, which is why it is ranked evidence
+        // rather than treated as fact.
+        let fileMtime = 0;
+        try { fileMtime = fs.statSync(path.join(dirPath, audioFile.name)).mtimeMs || 0; }
+        catch (e) { /* stat can fail where the read succeeded; simply no date */ }
         const album = meta.common.album;
+        if (!album) walk.noAlbumTag++;
         const albumartist = meta.common.albumartist
           || (meta.common.artists && meta.common.artists[0])
           || meta.common.artist || null;
@@ -2608,8 +3470,14 @@ async function buildFileLabelMap(onProgress) {
         // album-artist can match either the ALBUMARTIST or the ARTIST tag, and
         // a miss here just means a missing badge, never a wrong one.
         if (album) {
-          const k1 = albumKey(album, albumartist || "");
-          if (k1) localKeys.add(k1);
+          // albumKeys, not albumKey: the library index stores albumKeys() for
+          // every album, which enumerates the whole credit AND each name in it.
+          // Keying the file side on the whole credit only made the match
+          // one-directional — a tag reading "Robert Plant & Alison Krauss"
+          // could never meet a Roon credit of "Robert Plant", while the reverse
+          // matched fine. That asymmetry is invisible except as a local count
+          // that is quietly too low.
+          for (const k of albumKeys(album, albumartist || "")) localKeys.add(k);
           // Also key by the track artist — Roon's album credit sometimes matches
           // that instead. NOT for compilations: one sampled track would claim a
           // various-artists disc for whichever performer happened to be first,
@@ -2617,8 +3485,41 @@ async function buildFileLabelMap(onProgress) {
           const isCompilation = /various|soundtrack|ost\b/i.test(albumartist || "") ||
                                 meta.common.compilation === true;
           if (meta.common.artist && !isCompilation) {
-            const k2 = albumKey(album, meta.common.artist);
-            if (k2) localKeys.add(k2);
+            for (const k of albumKeys(album, meta.common.artist)) localKeys.add(k);
+          }
+          // A compilation whose ALBUMARTIST tag is missing gets the first
+          // track's performer instead, which never matches Roon's "Various
+          // Artists". The title still has to match, so this cannot badge an
+          // unrelated album.
+          if (isCompilation || meta.common.compilation === true) {
+            const kv = albumKey(album, "Various Artists");
+            if (kv) localKeys.add(kv);
+          }
+          walk.keyed++;
+          if (fileMtime > 0) {
+            for (const k of albumKeys(album, albumartist || "")) {
+              fileSeen.set(k, Math.min(fileSeen.get(k) || Infinity, fileMtime));
+            }
+          }
+          // What this album actually IS on disk. music-metadata has already
+          // parsed all of it as part of the read above, so these four facets
+          // cost nothing beyond the assignment — the `format` block was simply
+          // never looked at before.
+          const fmt = meta.format || {};
+          if (fmt.container || fmt.sampleRate) {
+            const facts = {
+              container: fmt.container ? String(fmt.container).toUpperCase() : null,
+              bits: Number.isFinite(fmt.bitsPerSample) ? fmt.bitsPerSample : null,
+              rate: Number.isFinite(fmt.sampleRate) ? fmt.sampleRate : null,
+              chan: Number.isFinite(fmt.numberOfChannels) ? fmt.numberOfChannels : null,
+              lossless: !!fmt.lossless
+            };
+            // Written under the same key space the badges match on, so the
+            // facet reaches the album through its srcKeys even when Roon's
+            // title and the file's tags disagree about the album's name.
+            for (const k of albumKeys(album, albumartist || "")) {
+              if (setAlbumFileFacts(k, facts, "file")) formatWrites++;
+            }
           }
         }
         if (label && !isLikelyNotALabel(label) && album) {
@@ -2662,7 +3563,12 @@ async function buildFileLabelMap(onProgress) {
             }
           }
         }
-      } catch (e) { /* unreadable — skip */ }
+      } catch (e) {
+        // Unreadable or untagged. Counted, because a directory whose FIRST
+        // audio file won't parse is dropped whole — no second file is tried —
+        // and that is invisible unless someone counts it.
+        walk.parseFailed++;
+      }
     }
 
     for (const entry of entries) {
@@ -2677,8 +3583,27 @@ async function buildFileLabelMap(onProgress) {
   }
   if (DEBUG) console.log("[labels:files] file scan found", map.size, "labels,", bandcampMap.size,
                          "Bandcamp URLs,", fileYears.size, "dated identities");
+  // Unconditional: this is the line that says whether a short local count is a
+  // walk problem or a match problem, and it is useless if it only appears when
+  // someone happened to have debug on.
+  console.log("[local:walk] " + walk.dirs + " dirs visited, " + walk.withAudio +
+              " with audio, " + walk.parsed + " tags read, " + walk.keyed + " albums keyed" +
+              (walk.tooDeep     ? ", " + walk.tooDeep + " SKIPPED past depth " + MAX_DEPTH : "") +
+              (walk.unreadable  ? ", " + walk.unreadable + " unreadable" : "") +
+              (walk.parseFailed ? ", " + walk.parseFailed + " tag reads failed" : "") +
+              (walk.noAlbumTag  ? ", " + walk.noAlbumTag + " had no album tag" : ""));
   // Publish in one assignment, so the join never sees a partial walk.
   fileAlbumYears = fileYears;
+  let seenWrites = 0;
+  for (const [k, ts] of fileSeen) if (setAlbumSeen(k, ts, "file")) seenWrites++;
+  if (seenWrites) {
+    bumpLibraryMeta();   // the Recently added ordering just changed
+    console.log("[seen] " + seenWrites + " albums dated from file timestamps");
+  }
+  if (formatWrites) {
+    bumpLibraryMeta();   // the Format/Sample rate/Bit depth facets just gained values
+    console.log("[format] " + albumFileCache.size + " album identities carry file format");
+  }
   // The direct tag-key writes above all deferred their bump, and the only other
   // flush is harvestAlbumYears' `if (added)` — which counts ONLY the albums the
   // srcKeys join filled. A well-tagged library whose tags agree with Roon lands
@@ -4253,6 +5178,7 @@ async function buildAlbumIndex() {
     albumIndex.albums   = albums.filter(Boolean);  // drop any holes
     albumIndex.count    = albumIndex.albums.length;
     rebuildAmbiguousAlbumKeys();   // identities shared by >1 album get no badge
+    recordFirstSeenAlbums();       // anything new since the last rebuild
     albumIndex.builtAt  = Date.now();
     rebuildCreditIdentities();     // AFTER builtAt — see the function's comment
     albumIndex.progress = 1;
@@ -4262,23 +5188,295 @@ async function buildAlbumIndex() {
 
   try {
     const idx = await albumIndex.building;
-    // Thumbnails ride along with every sync: warm the disk store as soon as the
-    // snapshot lands (fire-and-forget; it self-aborts if a newer build starts).
-    prewarmAlbumArt().catch(e => { if (DEBUG) console.error("[art] prewarm:", e.message); });
     // Join whatever release years are already in hand onto the new snapshot,
-    // BEFORE the favourites refresh below — the file-tag years from the last
-    // scan survive a rebuild and should apply immediately, without waiting on
-    // a network round trip that may never come back.
+    // BEFORE anything that goes to the network — the file-tag years from the
+    // last scan survive a rebuild and should apply immediately, without waiting
+    // on a round trip that may never come back. Synchronous, no I/O.
     harvestAlbumYears("library sync");
-    // So do the streaming favourites that decide the Qobuz/Tidal badges — the
-    // library just changed, so which albums came from where may have too. That
-    // call harvests its own years and re-runs the join when it lands.
-    refreshStreamAlbumKeys("library sync").catch(e => {
-      if (DEBUG) console.error("[stream] refresh:", e.message);
-    });
+    // The rest is background work, and it runs ONE AT A TIME rather than as
+    // three simultaneous kicks. The art prewarm and the genre walk both go over
+    // the single multiplexed Core websocket that browse and transport share, so
+    // issuing them together is a burst the Core feels even though the total
+    // number of calls is unchanged. Nothing here is awaited by the caller.
+    syncChain().catch(e => { if (DEBUG) console.error("[sync] chain:", e.message); });
     return idx;
   } finally {
     albumIndex.building = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ONE background queue for every heavy job.
+//
+// Serialising each chain internally is not enough, and the first attempt at
+// this got it wrong: a manual Rescan starts its own chain AND triggers a
+// rebuild whose chain starts too, so the two ran side by side — putting the
+// genre walk and the art prewarm, the two most expensive things here, on the
+// Core simultaneously. Exactly the burst the serialising was meant to remove.
+//
+// Everything now goes through one promise tail, so at most one job is talking
+// to the Core at a time no matter how many chains are in flight. The total
+// number of calls is unchanged; what changes is that they arrive in a queue
+// rather than a spike, which is the part the Core actually feels while somebody
+// is trying to listen to something.
+//
+// Each job is caught individually — one failing must never cancel the queue —
+// and the tail is reset to a resolved promise on failure so a rejection can
+// never poison every job behind it.
+let _bgTail = Promise.resolve();
+function bgRun(what, fn) {
+  // .catch BEFORE .then, not a rejection handler alongside it. A two-argument
+  // .then would treat a rejected tail as "handled" and skip THIS job's callback
+  // entirely — so the first job queued after any rejection would be silently
+  // dropped while everything after it ran normally. Neutralise first, then run.
+  _bgTail = _bgTail.catch(() => {}).then(async () => {
+    try { await fn(); }
+    catch (e) { console.error("[bg] " + what + " failed: " + e.message); }
+  });
+  return _bgTail;
+}
+
+// Post-rebuild background work. Order is deliberate: the streaming favourites
+// cost the Core nothing (they are Qobuz/TIDAL HTTP) and decide the source
+// badges, so they go first and finish fast; then genres; then the art prewarm,
+// which is the longest-running and the most patient — nothing is waiting on it,
+// the store serves from disk the moment each file lands, and an album with no
+// thumbnail yet simply falls back to the Core path it used before the store
+// existed.
+async function syncChain() {
+  await bgRun("stream favourites", () => refreshStreamAlbumKeys("library sync"));
+  await bgRun("genres",            () => harvestAlbumGenres("library sync"));
+  await bgRun("art prewarm",       () => prewarmAlbumArt());
+  // Last, and only if today has none: the picks need the genre harvest above to
+  // have run at least once (the stretch pick reads genre weights), and a fresh
+  // pair should not have to wait up to an hour for the timer's first tick.
+  kickSmartPicks("after sync");
+}
+
+// ---------------------------------------------------------------------------
+// Genre harvest.
+//
+// Roon's album browse response carries no genre, which is why Genre lived in
+// the old "main filter" — a mode that navigated Roon into a genre's own list
+// and therefore could not be combined with anything else, because that list has
+// its own offset space with no relation to the full-library offsets every other
+// facet returns.
+//
+// Decade had exactly this shape until its years entered the snapshot, at which
+// point it became an ordinary combinable chip. This does the same for genre:
+// walk the genres hierarchy ONCE per library sync and write album → genres into
+// a side table, after which the filter is a Set lookup on data already in
+// memory and composes with Source, Decade, Label and the rest.
+//
+// Cost: about six browse calls per top-level genre — resolve it by title (item
+// keys are session-scoped, so this cannot be cached), drill in, find its
+// "Albums" child, drill in again, then page the titles. For a typical 25-40
+// genre library that is a few hundred calls every twelve hours, against a sync
+// that already fetches one cover per album. It is deliberately NOT on any user
+// action.
+// ---------------------------------------------------------------------------
+// Does the skip have anything to work with?
+//
+// The whole optimisation rests on one unverified assumption: that Roon's genre
+// list states an album count in each item's subtitle. If it does not,
+// parseAlbumCount returns null, the "any doubt walks" guard fires for every
+// genre, and the skip never engages — while the harvest goes on logging
+// plausible-looking totals. That is a failure that hides itself, so it is
+// stated in words rather than left to be inferred.
+//
+// A function rather than an inline block so the classification is testable:
+// the wording is cosmetic, but "this library can never skip" being reported as
+// "all good" is the failure this exists to prevent.
+function genreFingerprintReport(genres) {
+  const total    = genres.length;
+  const parsable = genres.filter(g => parseAlbumCount(g.subtitle) !== null).length;
+  const withSub  = genres.filter(g => g.subtitle).length;
+  if (total && parsable === total) {
+    return "[genres] fingerprint OK — all " + total + " genres state an album " +
+           "count, so unchanged ones can be skipped";
+  }
+  const sample = genres.slice(0, 3)
+    .map(g => JSON.stringify(g.name + " => " + (g.subtitle || "")))
+    .join(", ");
+  return "[genres] fingerprint UNUSABLE — only " + parsable + " of " + total +
+         " genres state an album count (" + withSub + " have any subtitle at " +
+         "all), so every genre must be walked every time. Sample: " + sample;
+}
+
+let genreHarvestRunning = false;
+
+async function harvestAlbumGenres(reason, force) {
+  if (genreHarvestRunning) return;
+  if (!core || !isIndexBuilt()) return;
+  // Never walk while Roon is importing. Every other heavy path consults this —
+  // the label scan and the snapshot rebuild both do — and this one only got it
+  // transitively, via the rebuild that happened to call it. The manual Rescan
+  // path called it directly and bypassed the check entirely, which is exactly
+  // when a user is most likely to press it: right after adding albums.
+  //
+  // `force` is for the explicit Rescan button, matching runLabelsIndexScan's
+  // contract, so a user who insists can still make it run.
+  if (!force && await libraryIsImporting()) {
+    console.log("[genres] " + reason + ": deferred — Roon is importing");
+    return;
+  }
+  genreHarvestRunning = true;
+  const started = Date.now();
+  let walked = 0, skipped = 0, unreachable = 0, pairs = 0, written = 0, unmatched = 0;
+  // A full sweep ignores fingerprints. Bounded by time because no free
+  // fingerprint can see a same-count membership swap, or an album Roon
+  // re-identified — that changes the mapping's key without moving any genre's
+  // album count, so a subtitle-based skip would never re-walk it.
+  const oldest = genreScanCache.size
+    ? Math.min(...[...genreScanCache.values()].map(v => v.ts || 0)) : 0;
+  const sweeping = force || !genreScanCache.size || !albumGenreCache.size ||
+                   (Date.now() - oldest) > genreSweepMs();
+  try {
+    await withBrowseSession(async (sessionKey) => {
+      await browse({ hierarchy: "genres", pop_all: true, multi_session_key: sessionKey });
+      const root = await loadLevel(sessionKey, "genres", 1000);
+      // Keep the SUBTITLE and IMAGE KEY, not just the title. Roon states each
+      // genre's album count in the subtitle of this very response, so the
+      // fingerprint that decides whether a genre needs walking is already in
+      // hand — it used to be thrown away one line later.
+      const genres = root.items
+        .filter(i => i.hint !== "header" && i.title)
+        .map(i => ({
+          name: String(i.title).trim(),
+          subtitle: String(i.subtitle || ""),
+          image_key: String(i.image_key || "")
+        }))
+        .filter(g => g.name);
+
+      // Unconditional, not behind DEBUG: the answer matters on a quiet install
+      // too, and it prints once per harvest rather than once per genre.
+      console.log(genreFingerprintReport(genres));
+
+      // Genres this run actually walked, mapped fresh. NOT merged into the old
+      // value: the previous code did `(prev || []).concat(name)`, which made
+      // the mapping a monotonic union — a genre could only ever be ADDED to an
+      // album, never removed, so an album leaving a genre kept it forever and
+      // no full walk could correct it. Rebuilding a walked genre's membership
+      // from scratch is also what gives a SKIP a precise meaning: "keep the
+      // previous answer for this genre" rather than "add to an answer that only
+      // grows".
+      const fresh = new Map();   // album key → Set(genre name)
+      const addFresh = (key, name) => {
+        let set = fresh.get(key);
+        if (!set) { set = new Set(); fresh.set(key, set); }
+        set.add(name);
+      };
+      const walkedNames = new Set();
+
+      for (const g of genres) {
+        // Skip only when every signal says nothing moved. A missing parse is
+        // NOT a match: a genre with no subtitle, or a Roon format change, would
+        // otherwise compare null to null and skip forever with no data at all.
+        const seen = genreScanCache.get(g.name);
+        const count = parseAlbumCount(g.subtitle);
+        if (!sweeping && seen && count !== null &&
+            seen.subtitle === g.subtitle && seen.image_key === g.image_key &&
+            // Self-calibration: if this genre's stated count and the count its
+            // album list actually reported ever disagreed, the subtitle is not
+            // describing the set we harvest — never trust it for this genre.
+            seen.total === count) {
+          skipped++;
+          continue;   // NOT in walkedNames — its stored mapping stays authoritative
+        }
+
+        // Re-resolve from the top every time. item_key values are scoped to the
+        // session AND to the level the session is currently on, so the keys
+        // captured in the loadLevel above are stale the moment we drill into
+        // the first genre.
+        await browse({ hierarchy: "genres", pop_all: true, multi_session_key: sessionKey });
+        const found = await findItemByTitle(sessionKey, "genres", g.name, 3000, "genres:root");
+        // Counted, not silent. Once skipping is normal, "didn't walk it" and
+        // "Roon wouldn't expand it" look identical from the outside, and a user
+        // staring at a low coverage number needs to be able to tell them apart.
+        if (!found) { unreachable++; continue; }
+        await browse({ hierarchy: "genres", item_key: found.item_key, multi_session_key: sessionKey });
+        const lvl = await loadLevel(sessionKey, "genres", 300);
+        const albumsChild = lvl.items.find(i => /^albums$/i.test((i.title || "").trim()));
+        if (!albumsChild) { unreachable++; continue; }
+        await browse({ hierarchy: "genres", item_key: albumsChild.item_key, multi_session_key: sessionKey });
+
+        let observed = 0;
+        for (let off = 0; ; off += SEARCH_PAGE) {
+          const page = await load({
+            hierarchy: "genres", offset: off, count: SEARCH_PAGE, multi_session_key: sessionKey
+          });
+          const items = page.items || [];
+          if (!items.length) break;
+          for (const it of items) {
+            if (!it.title) continue;
+            // Roon-to-Roon join: both sides are Roon's own strings, so this is
+            // exact rather than the lossy cross-source matching the year and
+            // local-file joins have to do.
+            addFresh(normalize(it.title) + "||" + normalize(it.subtitle || ""), g.name);
+            pairs++;
+          }
+          observed = page.list && page.list.count ? page.list.count : observed;
+          if (off + SEARCH_PAGE >= observed) break;
+        }
+
+        walked++;
+        walkedNames.add(g.name);
+        // Written per genre, immediately, INSIDE the session: the whole walk is
+        // wrapped in one catch, so a run that dies at genre 12 must still leave
+        // the first eleven fingerprinted rather than starting over next time.
+        setGenreScan(g.name, g.subtitle, g.image_key,
+                     count !== null ? count : observed);
+      }
+
+      // Carry forward every genre this run did NOT walk — the skipped ones and
+      // any Roon wouldn't expand. A walked genre is deliberately not carried
+      // forward: `fresh` is its complete, current membership, so an album that
+      // is absent from it has genuinely left that genre and must lose it. That
+      // is the removal the old union could never express.
+      for (const [key, list] of albumGenreCache) {
+        for (const name of list) {
+          if (walkedNames.has(name)) continue;
+          addFresh(key, name);
+        }
+      }
+      // An album absent from `fresh` entirely had every one of its genres
+      // walked and appeared in none of them — it has left them all. Collected
+      // first, because deleting while iterating the map being read is how a
+      // cleanup quietly drops half of what it meant to.
+      const gone = [];
+      for (const key of albumGenreCache.keys()) if (!fresh.has(key)) gone.push(key);
+      for (const key of gone) if (deleteAlbumGenres(key)) written++;
+
+      for (const [key, set] of fresh) {
+        if (setAlbumGenres(key, [...set])) written++;
+      }
+    });
+
+    // How many albums the harvest actually reached. Reported rather than
+    // assumed: a genre list Roon declines to expand is invisible otherwise.
+    for (const al of albumIndex.albums) if (!albumGenresOf(al).length) unmatched++;
+    if (written) bumpLibraryMeta();
+    console.log("[genres] " + reason + ": " + (walked + skipped + unreachable) +
+                " genres — " + walked + " walked, " + skipped + " unchanged" +
+                (unreachable ? ", " + unreachable + " unreachable" : "") +
+                (sweeping ? " (full sweep)" : "") +
+                "; " + pairs + " pairs, " + written + " written, " +
+                // IDENTITIES, not albums. The cache is keyed on
+                // normalize(title)||normalize(subtitle), and albums that share
+                // an identity share a row — so this number is legitimately
+                // lower than the count of albums that have a genre. Labelling
+                // both "albums" made a real 156-album gap look like data loss.
+                albumGenreCache.size + " identities genred, " +
+                (albumIndex.albums.length - unmatched) + " of " +
+                albumIndex.albums.length + " albums have one" +
+                " in " + Math.round((Date.now() - started) / 1000) + "s");
+  } catch (e) {
+    // Non-fatal by design: the Genre facet simply offers nothing this cycle.
+    // Everything else in the Focus sheet is unaffected, so failing loudly here
+    // would take down a working screen over an optional column.
+    console.error("[genres] harvest failed:", e.message);
+  } finally {
+    genreHarvestRunning = false;
   }
 }
 
@@ -4843,7 +6041,12 @@ function matchLibraryAlbum(album, artist) {
 // Express HTTP API
 // ---------------------------------------------------------------------------
 const app = express();
-app.use(express.json());
+// 1 MB, not express's 100 kb default: /api/play-multi now accepts up to 400
+// albums, each carrying {offset,title,subtitle}. A classical library with long
+// work titles and long performer credits runs ~250 bytes an item, which clears
+// 100 kb — and express answers that with an HTML 413 the client can only
+// render as a generic "Roon refused that".
+app.use(express.json({ limit: "1mb" }));
 // API request tracing (DEBUG): method, path, status, duration — one line per
 // user action. The steady pollers are excluded: they'd bury everything else
 // under a line every 1.5s (zone-state) and per art tile (image).
@@ -4882,16 +6085,81 @@ app.get("/api/status", (req, res) => {
   });
 });
 
+// Roon's per-zone playback modes, normalised so no client has to cope with a
+// missing `settings` block (a zone that has never been played doesn't get one).
+// `loop` keeps Roon's own vocabulary: "disabled" | "loop" (whole queue) |
+// "loop_one" (repeat this track). Anything unrecognised reads as off rather
+// than being passed through — a value we can't render is worse than off.
+function zoneSettings(zone) {
+  const s = (zone && zone.settings) || {};
+  const loop = (s.loop === "loop" || s.loop === "loop_one") ? s.loop : "disabled";
+  return { shuffle: !!s.shuffle, loop, auto_radio: !!s.auto_radio };
+}
+
+// One output as the client sees it. `can_group_with_output_ids` is Roon's own
+// answer to "what may this be grouped with" — it isn't in the vendored SDK's
+// JSDoc but it is part of the Output object on the wire. When the Core doesn't
+// send it we return null, which the client reads as "unknown, offer everything"
+// rather than "nothing is groupable".
+function outputInfo(o) {
+  return {
+    output_id:    o.output_id,
+    zone_id:      o.zone_id || null,
+    display_name: o.display_name || "",
+    can_group_with_output_ids: Array.isArray(o.can_group_with_output_ids)
+      ? o.can_group_with_output_ids.slice()
+      : null,
+    source_controls: sourceControls(o)
+  };
+}
+
+// An output's source controls — Roon's handle on the physical device behind it:
+// the amp or DAC that can be put into standby, or switched to its Roon input.
+//
+// Only controls we can actually DO something with are returned. A control with
+// no `control_key` can't be addressed individually, and Roon's toggle_standby
+// is defined per control, so a keyless control would render a power button that
+// silently does nothing. `supports_standby` is Roon's own answer for the power
+// half; the convenience-switch half needs no capability flag.
+function sourceControls(o) {
+  const list = Array.isArray(o && o.source_controls) ? o.source_controls : [];
+  return list
+    .filter(sc => sc && sc.control_key)
+    .map(sc => ({
+      control_key:      sc.control_key,
+      display_name:     sc.display_name || o.display_name || "",
+      // 'selected' | 'deselected' | 'standby' | 'indeterminate'. Anything we
+      // don't recognise reads as indeterminate: the UI then offers the action
+      // without claiming to know the current state.
+      status:           ["selected", "deselected", "standby"].includes(sc.status)
+        ? sc.status : "indeterminate",
+      supports_standby: !!sc.supports_standby
+    }));
+}
+
 app.get("/api/zones", (req, res) => {
   const list = Object.values(zones).map(z => ({
     zone_id:      z.zone_id,
     display_name: z.display_name,
     state:        z.state,
-    outputs: (z.outputs || []).map(o => ({
-      output_id: o.output_id, display_name: o.display_name
-    }))
+    settings:     zoneSettings(z),
+    outputs: (z.outputs || []).map(outputInfo)
   })).sort((a, b) => a.display_name.localeCompare(b.display_name));
   res.json({ zones: list });
+});
+
+// Every output the Core knows about, for the zone-grouping sheet. Served from
+// the outputs cache (subscribe_outputs), falling back to the outputs carried by
+// the zone feed so this still answers on a Core that never subscribed us.
+app.get("/api/outputs", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  const src = Object.keys(outputs).length
+    ? Object.values(outputs)
+    : Object.values(zones).reduce((acc, z) => acc.concat(z.outputs || []), []);
+  const zoneName = (zid) => (zones[zid] && zones[zid].display_name) || "";
+  const list = src.map(o => Object.assign(outputInfo(o), { zone_name: zoneName(o.zone_id) }))
+                  .sort((a, b) => a.display_name.localeCompare(b.display_name));
+  res.json({ outputs: list });
 });
 
 // Read an optional genre/tag filter from query params (or POST body).
@@ -5021,11 +6289,312 @@ app.get("/api/random-albums", async (req, res) => {
 // alone would serve a stale ordering for hours.
 // ---------------------------------------------------------------------------
 
-const LIB_SORTS = new Set(["album", "artist", "year", "plays", "lastplayed", "random"]);
+// The library view vocabulary, as FUNCTIONS so the sanitiser below can be
+// tested against the shipping list instead of a copy injected beside it. A
+// duplicated vocabulary is how a mutation adding a bogus sort would slip past
+// the suite (the v1.6.59 year-source-ranking hole, in a new place).
+function libSortIds()   { return ["album", "artist", "year", "added", "plays", "lastplayed", "random"]; }
+function libPlayedIds() { return ["any", "never", "played", "6", "12"]; }
+function smartNameMax() { return 60; }
+const LIB_SORTS = new Set(libSortIds());
+
+// ---------------------------------------------------------------------------
+// Focus facets.
+//
+// ONE table, read by both the filter (libraryView) and the counter
+// (/api/library/facets). They used to be two hand-written loops that happened
+// to agree; a facet that counts one way and selects another is worse than
+// either being wrong on its own, because the number promises something the
+// list then fails to deliver.
+//
+// Each entry answers one question — "which values does this album have?" —
+// returning an array. An empty array means the album has no value for this
+// facet, and such an album matches only when the facet is unselected.
+//
+// What is NOT here, because Roon's extension API does not publish it (browse
+// returns title, subtitle, image_key, item_key, hint and nothing else): star
+// ratings, Roon favourites, Roon's own play counts, Roon's date-added, album
+// type (Main/EP/Single), and the Inspector states. Those need private API
+// access Roon has never shipped. Everything below is either navigated out of
+// the browse tree or worked out by this extension from its own evidence.
+// ---------------------------------------------------------------------------
+
+// Album → its genre names, from the harvested side table.
+function albumGenresOf(al) {
+  return albumGenreCache.get(al.nTitle + "||" + al.nArtist) || [];
+}
+// Album → what its local file is, or null when there is no local file.
+//
+// Same shape as albumSource: a snapshot record carries its identity keys
+// precomputed, and anything else has them worked out from its title and credit.
+function albumFileFacts(title, subtitle, rec) {
+  const keys = (rec && rec.srcKeys) ? rec.srcKeys : albumKeys(title, subtitle);
+  for (const key of keys) {
+    const f = albumFileCache.get(key);
+    if (f) return f;
+  }
+  return null;
+}
+function albumFileFactsOf(al) { return albumFileFacts(al.title, al.subtitle, al); }
+// Sample rates land on the tidy audio values; anything else is reported as it
+// is rather than forced into a bucket that would misdescribe it.
+function rateLabel(hz) {
+  if (!hz) return null;
+  const k = hz / 1000;
+  return (Number.isInteger(k) ? k : k.toFixed(1)) + " kHz";
+}
+function channelLabel(n) {
+  if (!n) return null;
+  if (n === 1) return "Mono";
+  if (n === 2) return "Stereo";
+  return n + " channels";
+}
+// "Added in the last" windows, in days. Roon has this bucket too; its values
+// come from Roon's own import date, and ours from the dates this extension
+// could work out, so the numbers will not agree — which is why the sheet says
+// where they came from.
+function libAddedWindows() {
+  return [
+    { value: "7",   label: "7 days",   days: 7 },
+    { value: "30",  label: "30 days",  days: 30 },
+    { value: "90",  label: "3 months", days: 90 },
+    { value: "365", label: "A year",   days: 365 }
+  ];
+}
+
+function libFacetDefs() {
+  return [
+    { id: "genre",  label: "Genre",
+      values: (al) => albumGenresOf(al) },
+    { id: "source", label: "Source",
+      // Fixed order and friendly names; the chip list is built from whichever
+      // of these actually occur.
+      order: ["local", "qobuz", "tidal"],
+      labels: { local: "Local albums", qobuz: "Qobuz", tidal: "TIDAL" },
+      values: (al) => { const s = albumSource(al.title, al.subtitle, al); return s ? [s] : []; } },
+    { id: "decade", label: "Decade",
+      sort: "numeric-desc",
+      labels: (v) => v + "s",
+      values: (al) => { const y = albumYearOf(al); return y === null ? [] : [String(Math.floor(y / 10) * 10)]; } },
+    { id: "label",  label: "Record label",
+      values: (al) => { const n = resolveAlbumLabelName(al); return n ? [n] : []; } },
+    { id: "format", label: "Format",
+      values: (al) => { const f = albumFileFactsOf(al); return f && f.container ? [f.container] : []; } },
+    { id: "rate",   label: "Sample rate",
+      sort: "numeric-asc",
+      labels: (v) => rateLabel(parseInt(v, 10)) || v,
+      values: (al) => { const f = albumFileFactsOf(al); return f && f.rate ? [String(f.rate)] : []; } },
+    { id: "bits",   label: "Bit depth",
+      sort: "numeric-asc",
+      labels: (v) => v + "-bit",
+      values: (al) => { const f = albumFileFactsOf(al); return f && f.bits ? [String(f.bits)] : []; } },
+    { id: "chan",   label: "Channels",
+      sort: "numeric-asc",
+      labels: (v) => channelLabel(parseInt(v, 10)) || v,
+      values: (al) => { const f = albumFileFactsOf(al); return f && f.chan ? [String(f.chan)] : []; } },
+    { id: "letter", label: "Starts with",
+      // Sorted-title first character, so "The Wall" files under W exactly as it
+      // does in the A-Z wall. Everything non-alphabetic shares one bucket.
+      values: (al) => {
+        const c = (al.sortTitle || "").charAt(0).toUpperCase();
+        return c ? [/[A-Z]/.test(c) ? c : "#"] : [];
+      } },
+    { id: "added",  label: "Added in the last",
+      // Windows nest, so an album added yesterday appears under every window
+      // that contains it — picking "3 months" must not exclude this week's.
+      sort: "none",
+      labels: (v) => (libAddedWindows().find(w => w.value === v) || { label: v }).label,
+      values: (al) => {
+        const ts = albumAddedOf(al);
+        if (ts === null) return [];
+        const age = Date.now() - ts;
+        return libAddedWindows().filter(w => age <= w.days * 86400000).map(w => w.value);
+      } }
+  ];
+}
+
+// Does an album pass one facet's selection?
+//
+// A value prefixed with "!" is EXCLUDED rather than included — Roon's
+// tap-again-to-invert, which is the signature Focus interaction. Encoding it in
+// the value keeps every selection a plain string array, so saved dynamic
+// playlists, the URL query and the share format all round-trip it with no
+// schema change.
+//
+// Excludes always win: asking for FLAC but not 24-bit means both must hold.
+function facetMatch(selected, values) {
+  if (!selected || !selected.length) return true;
+  const has = (v) => values.includes(v);
+  let wanted = false, sawInclude = false;
+  for (const sel of selected) {
+    if (sel.charAt(0) === "!") {
+      if (has(sel.slice(1))) return false;
+    } else {
+      sawInclude = true;
+      if (has(sel)) wanted = true;
+    }
+  }
+  // Excludes alone ("everything except Pop") must not require an include too.
+  return sawInclude ? wanted : true;
+}
+
+// ---------------------------------------------------------------------------
+// Smart playlists — named, saved library views.
+//
+// A smart playlist is nothing but a saved `libraryView` query. It is
+// re-evaluated every time it is opened, so it follows the library as it grows,
+// and it costs ZERO Roon calls: libraryView filters the in-memory album index,
+// exactly as the Library Sort + Focus screen has since v1.6.57. Storing one adds
+// no Core traffic and no Core memory at all.
+// ---------------------------------------------------------------------------
+
+// Sanitise a saved view against the SAME vocabulary libraryView accepts, so a
+// hand-edited or half-written settings.json can't produce a query that silently
+// returns the whole library (or nothing). Anything unrecognised falls back to
+// the default rather than being passed through.
+function sanitizeLibView(v) {
+  v = (v && typeof v === "object") ? v : {};
+  const asList = (x) => (x === undefined || x === null ? [] : (Array.isArray(x) ? x : [x]));
+  const seed = parseInt(v.seed, 10);
+  const out = {
+    sort:   libSortIds().includes(String(v.sort)) ? String(v.sort) : "album",
+    dir:    String(v.dir) === "desc" ? "desc" : "asc",
+    seed:   Number.isFinite(seed) && seed > 0 ? seed : 1,
+    played: libPlayedIds().includes(String(v.played)) ? String(v.played) : "any",
+  };
+  // Facet selections are free text — they are genre and label NAMES, which no
+  // fixed vocabulary can enumerate — so they are bounded and de-duplicated
+  // rather than checked against a list. A value that matches nothing yields an
+  // empty view, which is honest; the danger being guarded against is an
+  // unbounded array from a hand-edited settings.json, not a wrong name.
+  for (const def of libFacetDefs()) {
+    out[def.id] = [...new Set(
+      asList(v[def.id])
+        // null and undefined are dropped BEFORE stringifying. String(null) is
+        // "null" — a perfectly valid-looking genre name that matches nothing,
+        // and a JSON round-trip of a sparse array produces them for free.
+        .filter(x => x !== null && x !== undefined && typeof x !== "object")
+        .map(String).map(s => s.trim()).filter(Boolean)
+        .map(s => s.slice(0, 120))
+    )].slice(0, libFacetChipMax());
+  }
+  return out;
+}
+
+const SMART_NAME_MAX = smartNameMax();
+const SMART_MAX      = 50;   // a picker, not a database
+
+// Normalise one stored record. Returns null when it can't be salvaged, so a
+// corrupt entry is dropped rather than crashing the list for the good ones.
+// How many albums a dynamic playlist actually delivers. The query can match
+// the whole library — "Never played" on a fresh install matches everything —
+// but a playlist of 1,179 albums is ~13,000 tracks, ~300 hours, and 8 Roon
+// calls per album to queue. Nobody listens to that; they queue it once,
+// wait minutes, and replace it. The limit makes the number the user is SHOWN
+// equal the number they GET, which is the part that was misleading.
+//
+// Vocabulary as functions so the tests read the shipping values.
+function smartLimitDefault() { return 100; }
+function smartLimitMax()     { return 400; }   // the play-time ceiling; see /api/play-multi
+function smartLimitOptions() { return [25, 50, 100, 200, 400]; }
+
+// What a dynamic playlist is made OF.
+//
+// This is a presentation mode, not a second kind of query, and the distinction
+// is worth being precise about because it is the honest limit of what an
+// extension can do. The snapshot indexes ALBUMS — Roon's browse API publishes
+// no track list without opening each album, at roughly five calls a time — so a
+// playlist whose FILTER ran on track attributes would mean indexing every track
+// in the library: ~10,000 Roon calls for a 2,000-album library, rebuilt on every
+// change. That is exactly the traffic the snapshot model exists to avoid.
+//
+// So the query always selects albums, and the mode decides what comes out:
+//   "albums" — queue whole albums, in order, the way the record was made.
+//   "tracks" — expand those albums and present their tracks individually.
+// Both already existed as separate endpoints; naming the choice is what lets a
+// playlist remember which one it is.
+function smartModes()       { return ["albums", "tracks"]; }
+function smartModeDefault() { return "albums"; }
+
+// What order the playlist comes out in.
+//
+//   "album"  — the view's own sort, and each album's tracks in disc order. A
+//              record played the way it was sequenced.
+//   "random" — albums shuffled, and the tracks within each expanded page
+//              shuffled too, so a Tracks playlist doesn't march through one
+//              album at a time.
+//
+// The shuffle is SEEDED, not Math.random(): tracks are paged by album, so a
+// fresh shuffle per request would repeat some tracks and skip others as the
+// user scrolls. It is a pure function of (playlist seed, album, track), which
+// means page 2 continues page 1 instead of reshuffling underneath it.
+function smartOrders()       { return ["album", "random"]; }
+function smartOrderDefault() { return "album"; }
+
+// Every album a saved playlist matches, in the order it asks for. One function
+// so the screen that LISTS a playlist and the button that PLAYS it can never
+// disagree about what order it is in.
+//
+// UNSLICED on purpose. The caller applies the playlist's limit, because the
+// count of what matched is what makes "100 of 1,179" honest — slicing here
+// would make those two numbers the same and the message meaningless. Shuffling
+// before the slice is also the right way round: a random playlist of 100 should
+// be 100 drawn from the whole match, not the first 100 by title then jumbled.
+function smartPlaylistAlbums(sp) {
+  const view = libraryView(sp.view);
+  if ((sp.order || smartOrderDefault()) !== "random") return view;
+  const seed = (sp.view && sp.view.seed) || 1;
+  return view.slice().sort((a, b) =>
+    seededRank(a.nTitle + a.nArtist, seed) - seededRank(b.nTitle + b.nArtist, seed));
+}
+
+function smartPlaylistRecord(p) {
+  if (!p || typeof p !== "object") return null;
+  const name = String(p.name || "").trim().slice(0, smartNameMax());
+  const id   = String(p.id || "").trim();
+  if (!name || !id) return null;
+  // Absent on every playlist saved before this shipped, which is exactly the
+  // safe direction: they take the default rather than staying uncapped.
+  const lim = parseInt(p.limit, 10);
+  const limit = Number.isFinite(lim) && lim > 0
+    ? Math.min(lim, smartLimitMax())
+    : smartLimitDefault();
+  const mode  = smartModes().includes(String(p.mode))   ? String(p.mode)  : smartModeDefault();
+  const order = smartOrders().includes(String(p.order)) ? String(p.order) : smartOrderDefault();
+  return { id, name, view: sanitizeLibView(p.view), limit, mode, order };
+}
+
+function loadSmartPlaylists() {
+  const raw = loadPersistedSettings().smartPlaylists;
+  return (Array.isArray(raw) ? raw : []).map(smartPlaylistRecord).filter(Boolean);
+}
+
+function saveSmartPlaylists(list) {
+  return savePersistedSettings({ smartPlaylists: list.slice(0, SMART_MAX) });
+}
+
 
 function albumYearOf(al) {
   const y = parseInt(albumYearCache.get(al.nTitle + "||" + al.nArtist) || "", 10);
   return Number.isFinite(y) ? y : null;
+}
+// When this extension first became aware of the album, or null. Checked across
+// every identity the album is keyed under, because the file scan and the index
+// may have recorded it under different ones.
+function albumAddedOf(al) {
+  let best = null;
+  for (const k of (al.srcKeys || [])) {
+    const hit = albumSeenCache.get(k);
+    if (hit && hit.ts > 0 && (best === null || hit.ts < best)) best = hit.ts;
+  }
+  return best;
+}
+// How many albums we can actually date. Reported to the user rather than left
+// to be inferred from a list that looks half-sorted.
+function albumsWithAddedDate() {
+  let n = 0;
+  for (const al of albumIndex.albums) if (albumAddedOf(al) !== null) n++;
+  return n;
 }
 // Deterministic shuffle: paging must not reshuffle between requests, so the
 // order is a pure function of (album, seed) rather than Math.random().
@@ -5057,39 +6626,35 @@ function libraryView(q) {
   const desc   = String(q.dir || "asc") === "desc";
   const seed   = parseInt(q.seed, 10) || 1;
   const asList = (v) => (v === undefined ? [] : (Array.isArray(v) ? v : [v])).map(String).filter(Boolean);
-  const decades = asList(q.decade).map(d => parseInt(d, 10)).filter(Number.isFinite);
-  const sources = asList(q.source);
   const played  = String(q.played || "any");
-  const sig = [albumIndex.builtAt, libraryMetaVersion, sort, desc, seed,
-               decades.join(","), sources.join(","), played].join("|");
+  // Every facet in the one table, so adding a facet to libFacetDefs() makes it
+  // filterable AND countable without touching this function again.
+  const defs = libFacetDefs();
+  const picked = defs.map(d => ({ def: d, sel: asList(q[d.id]) }))
+                     .filter(x => x.sel.length);
+  const sig = [albumIndex.builtAt, libraryMetaVersion, sort, desc, seed, played]
+    .concat(picked.map(x => x.def.id + "=" + x.sel.slice().sort().join(","))).join("|");
   const hit = libraryViewCache.get(sig);
   if (hit) return hit;
 
   let list = albumIndex.albums;
 
-  if (decades.length) {
-    list = list.filter(al => {
-      const y = albumYearOf(al);
-      return y !== null && decades.some(d => y >= d && y < d + 10);
-    });
-  }
-  if (sources.length) {
-    list = list.filter(al => {
-      const s = withSource({ title: al.title, subtitle: al.subtitle }, al).source;
-      return sources.includes(s || "none");
-    });
+  for (const { def, sel } of picked) {
+    list = list.filter(al => facetMatch(sel, def.values(al)));
   }
   if (played !== "any") {
-    const months = played === "never" ? 0 : parseInt(played, 10);
-    // "never" uses the whole history; "6"/"12" mean "not in the last N months".
-    const seen = played === "never"
+    // "never" uses the whole history; "played" is its complement; "6"/"12"
+    // mean "not in the last N months".
+    const months = parseInt(played, 10);
+    const seen = (played === "never" || played === "played")
       ? getPlayedTitlesSince(0)
       : playedTitleSet(Number.isFinite(months) && months > 0 ? months : 6);
-    list = list.filter(al => !seen.has(String(al.title || "").toLowerCase().trim()));
+    const want = played === "played";
+    list = list.filter(al => seen.has(String(al.title || "").toLowerCase().trim()) === want);
   }
 
   const stats = (sort === "plays" || sort === "lastplayed") ? playStats() : null;
-  const playKey = (al) => String(al.title || "").toLowerCase().trim();
+  const playKey = albumPlayKey;   // one definition of the plays-table key
   const cmp = {
     album:  (a, b) => a.sortTitle.localeCompare(b.sortTitle) || a.nArtist.localeCompare(b.nArtist),
     artist: (a, b) => (a.cFirst || a.nArtist).localeCompare(b.cFirst || b.nArtist) ||
@@ -5107,16 +6672,21 @@ function libraryView(q) {
                       a.sortTitle.localeCompare(b.sortTitle),
     lastplayed: (a, b) => (stats.last.get(playKey(a)) || 0) - (stats.last.get(playKey(b)) || 0) ||
                       a.sortTitle.localeCompare(b.sortTitle),
+    added: (a, b) => (albumAddedOf(a) || 0) - (albumAddedOf(b) || 0) ||
+                      a.sortTitle.localeCompare(b.sortTitle),
     random: (a, b) => seededRank(a.nTitle + a.nArtist, seed) - seededRank(b.nTitle + b.nArtist, seed)
   }[sort];
 
   let out;
-  if (sort === "year") {
-    // Albums whose year hasn't been discovered yet are UNKNOWN, not year zero:
-    // they're held out of the ordering entirely and appended, so reversing to
-    // newest-first can't float them to the top.
+  if (sort === "year" || sort === "added") {
+    // Albums we have no date for are UNKNOWN, not date zero: they're held out
+    // of the ordering entirely and appended, so reversing to newest-first can't
+    // float them to the top. "Recently added" needs this even more than "year"
+    // does — Roon publishes no import date at all, so on an established library
+    // the undated set starts out large and only shrinks going forward.
+    const dateOf = sort === "year" ? albumYearOf : albumAddedOf;
     const known = [], unknown = [];
-    for (const al of list) (albumYearOf(al) === null ? unknown : known).push(al);
+    for (const al of list) (dateOf(al) === null ? unknown : known).push(al);
     known.sort(cmp);
     if (desc) known.reverse();
     unknown.sort((a, b) => a.sortTitle.localeCompare(b.sortTitle));
@@ -5139,36 +6709,110 @@ function libraryView(q) {
   return out;
 }
 
+// How many chips one facet may offer. Genre and Label are open-ended — a big
+// library has hundreds of labels — and a sheet that lists all of them is a
+// scroll with no end. The commonest are the useful ones, and the count beside
+// each says what is being left out.
+function libFacetChipMax() { return 40; }
+
 // Which focus values actually exist, with counts — so the sheet never offers a
 // facet that would return nothing.
+//
+// Counted through libFacetDefs(), the SAME table the filter selects through. A
+// facet that counts one way and selects another is worse than either being
+// wrong on its own: the number promises something the list then fails to
+// deliver, and the user has no way to tell which half lied.
 app.get("/api/library/facets", async (req, res) => {
   if (!core && !isIndexBuilt()) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   try {
     await ensureAlbumIndex();
-    const decades = new Map(), sources = new Map();
-    let dated = 0;
+    const defs = libFacetDefs();
+    const counts = defs.map(() => new Map());
     for (const al of albumIndex.albums) {
-      const y = albumYearOf(al);
-      if (y !== null) { dated++; const d = Math.floor(y / 10) * 10; decades.set(d, (decades.get(d) || 0) + 1); }
-      const s = withSource({ title: al.title, subtitle: al.subtitle }, al).source || "none";
-      sources.set(s, (sources.get(s) || 0) + 1);
+      for (let i = 0; i < defs.length; i++) {
+        for (const v of defs[i].values(al)) counts[i].set(v, (counts[i].get(v) || 0) + 1);
+      }
     }
+
+    const facets = defs.map((def, i) => {
+      const m = counts[i];
+      let values = [...m.keys()];
+      if (def.order) {
+        values = def.order.filter(v => m.has(v));
+      } else if (def.sort === "numeric-desc") {
+        values.sort((a, b) => parseFloat(b) - parseFloat(a));
+      } else if (def.sort === "numeric-asc") {
+        values.sort((a, b) => parseFloat(a) - parseFloat(b));
+      } else if (def.sort === "none") {
+        // Author-defined order — the "Added in the last" windows must read
+        // shortest-first, which neither alphabetical nor by-count gives.
+        values = (def.id === "added" ? libAddedWindows().map(w => w.value) : values)
+                   .filter(v => m.has(v));
+      } else {
+        // Commonest first, then alphabetically — a 300-label list is only
+        // usable if the labels you actually own are at the top.
+        values.sort((a, b) => (m.get(b) - m.get(a)) || a.localeCompare(b));
+      }
+      const shown = values.slice(0, libFacetChipMax());
+      const labelOf = (v) => {
+        if (typeof def.labels === "function") return def.labels(v);
+        if (def.labels && def.labels[v]) return def.labels[v];
+        return v;
+      };
+      return {
+        id: def.id,
+        label: def.label,
+        // How many values exist versus how many are offered, so a truncated
+        // list says it is truncated instead of looking complete.
+        total_values: values.length,
+        values: shown.map(v => ({ value: v, label: labelOf(v), count: m.get(v) }))
+      };
+    }).filter(f => f.values.length);
+
     res.json({
       total: albumIndex.albums.length,
-      // Roon publishes no release year, so every one of these had to be found
-      // elsewhere and coverage is never guaranteed to be complete. The sheet
-      // says so rather than quietly showing a decade list that doesn't add up
-      // to the library.
-      dated,
-      decades: [...decades.entries()].sort((a, b) => b[0] - a[0]).map(([d, n]) => ({ value: d, label: d + "s", count: n })),
-      sources: ["local", "qobuz", "tidal"].filter(s => sources.get(s))
-                 .map(s => ({ value: s, label: { local: "Local files", qobuz: "Qobuz", tidal: "TIDAL" }[s], count: sources.get(s) })),
+      facets,
+      // Per-facet coverage. Every one of these comes from somewhere other than
+      // Roon — the browse API publishes none of it — so the sheet prints the
+      // ratio rather than showing chips that quietly don't add up to the
+      // library and leaving the user to work out why.
+      coverage: {
+        // Release years: file tags and Qobuz/TIDAL, never Roon.
+        decade: countWithAny(defs, "decade"),
+        // Genres: harvested from Roon's own genres hierarchy, so this one
+        // SHOULD approach the whole library; a low number means the harvest
+        // hasn't run yet or a genre list wouldn't expand.
+        genre:  countWithAny(defs, "genre"),
+        label:  countWithAny(defs, "label"),
+        // Format and friends exist only for albums with a local file.
+        format: countWithAny(defs, "format"),
+        // Roon publishes no import date at all, so this is what the extension
+        // could work out for itself.
+        added:  albumsWithAddedDate()
+      },
+      // Whether the Local count was PROVED album-by-album from file tags, or
+      // DERIVED from "no streaming service is connected, so there is nothing
+      // else it could be". The sheet says which, because they mean different
+      // things and one of them is exact.
+      sources_derived: unclaimedIsLocal(),
+      played: libPlayedIds(),
       hasPlays: !!(labelsDb && getPlayedTitlesSince(0).size)
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
+
+// How many albums have at least one value for a facet. Recomputed from the
+// per-value counts would be wrong — an album with two genres is counted twice
+// there — so this re-walks the index for the facets whose coverage is quoted.
+function countWithAny(defs, id) {
+  const def = defs.find(d => d.id === id);
+  if (!def) return 0;
+  let n = 0;
+  for (const al of albumIndex.albums) if (def.values(al).length) n++;
+  return n;
+}
 
 app.get("/api/library/albums", async (req, res) => {
   if (!core && !isIndexBuilt()) return res.status(503).json({ error: "Not paired with Roon Core yet" });
@@ -5309,7 +6953,6 @@ app.get("/api/home/label-of-the-week", (req, res) => {
 // Pop/Rock → the Rock/Metal group. The frontend picks a random sub-genre from
 // the chosen group and applies it as a nested genre filter. Cached 30 min
 // (sub-genre lists change only on library edits).
-const genreGroupsCache = makeTtlCache(30 * 60 * 1000);
 app.get("/api/home/genre-groups", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   try {
@@ -5366,10 +7009,23 @@ app.get("/api/home/genre-groups", async (req, res) => {
 });
 
 // Available genres (top level of the "genres" hierarchy).
+//
+// Cached for thirty minutes, because it had no cache at all: every Home load
+// fetched it AND /api/home/genre-groups, which walk the same genres root, and
+// the client fires both together — two identical Roon walks, 2 ms apart, on
+// every page load, plus two more whenever the filter sheet is opened.
+//
+// The HTTP 304s these requests return are a red herring: Express computes the
+// ETag from the finished response body, so the handler has already made every
+// Roon call by then. The 304 saves bandwidth and nothing else.
+//
+// Cleared by bumpLibraryMeta, so a newly added genre appears as soon as the
+// library changes rather than waiting out the TTL. The 503 guard stays OUTSIDE
+// the cache — an unpaired answer must never be stored.
 app.get("/api/filters/genres", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   try {
-    const genres = await withBrowseSession(async (sessionKey) => {
+    const genres = await genreListCache.get("genres", () => withBrowseSession(async (sessionKey) => {
       await browse({ hierarchy: "genres", pop_all: true, multi_session_key: sessionKey });
       const lvl = await loadLevel(sessionKey, "genres", 1000);
       // Keep only genres that actually contain albums, biggest first — Roon
@@ -5389,7 +7045,7 @@ app.get("/api/filters/genres", async (req, res) => {
                 .sort((a, b) => b.count - a.count)
         : parsed
       ).map(g => ({ title: g.title, subtitle: g.subtitle }));
-    });
+    }));
     res.json({ genres });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -5514,15 +7170,55 @@ app.post("/api/library/rescan", async (req, res) => {
     // Always re-read the streaming favourites on an explicit Rescan, even when
     // the snapshot itself turns out to be unchanged — this is the user's way to
     // refresh the Qobuz/Tidal badges after adding albums in those services.
-    refreshStreamAlbumKeys("manual rescan").catch(e => {
-      if (DEBUG) console.error("[stream] refresh:", e.message);
-    });
+    // The snapshot check runs FIRST and is awaited, because it is the only part
+    // the user is waiting on — the response tells them whether the library
+    // changed. Everything else is background work kicked afterwards.
     const r = await checkAndMaybeRebuild("manual", true);
+
+    // ...and the background jobs run ONE AT A TIME.
+    //
+    // They used to be three fire-and-forget kicks issued together, so a Rescan
+    // put the art prewarm, the genre walk and the label scan's import probe on
+    // the Core simultaneously — all sharing the single multiplexed websocket
+    // that browse and transport also use. The total number of calls was never
+    // the problem; the burst was. Chaining them costs the user nothing (the
+    // response has already gone) and turns a spike into a queue.
+    //
+    // Deliberately after checkAndMaybeRebuild: if it rebuilt, it has already
+    // kicked its own prewarm and genre harvest, and the guards inside those
+    // make the calls below no-ops rather than a second pass.
+    rescanChain(r).catch(e => {
+      if (DEBUG) console.error("[rescan] background chain:", e.message);
+    });
     res.json(r);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
+
+// The Rescan button's background work, in order, one at a time.
+//
+// Order is by cost to the Core, cheapest first, so the things that can finish
+// quickly do:
+//   1. streaming favourites — no Roon calls at all (Qobuz/TIDAL HTTP), and it
+//      is what refreshes the source badges the user probably pressed this for;
+//   2. genres — a few hundred browse calls;
+//   3. the label scan — a slow file walk plus external lookups, no Roon calls
+//      beyond its own import probe, so it goes last where it can take its time.
+//
+// Each step is caught individually: one failing must not cancel the rest, and
+// a Rescan that silently did two of its three jobs is worse than one that says
+// which part failed.
+async function rescanChain(rebuildResult) {
+  await bgRun("stream favourites", () => refreshStreamAlbumKeys("manual rescan"));
+  // `force` — this is an explicit user action, and it is the button somebody
+  // presses precisely when the Genre facet looks wrong. Deferring it to a
+  // background timer, or letting a fingerprint skip it, would make the button
+  // appear to do nothing at exactly the moment it is needed.
+  await bgRun("genres", () => harvestAlbumGenres("manual rescan", true));
+  await bgRun("labels", () => runLabelsIndexScan(true));
+  if (DEBUG) console.log("[rescan] background chain done (" + (rebuildResult && rebuildResult.status) + ")");
+}
 
 app.post("/api/labels/rescan", (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
@@ -5786,11 +7482,18 @@ app.get("/api/debug/filter", async (req, res) => {
 //   /api/debug/browse-probe                                   → list browse root
 //   /api/debug/browse-probe?path=Qobuz                        → list the Qobuz section
 //   /api/debug/browse-probe?path=Qobuz/New%20Releases         → list those albums (count)
+//   ...&album=0&zone=<zone_id>                                → drill an album, zone-scoped
+//   ...&album=0&action=3&zone=<zone_id>                       → list item 3's ACTION MENU
+//
+// The action drill answers "does Roon offer an extension any playlist action?"
+// — "Add to Library" is known to appear in these menus, so their absence of an
+// "Add to Playlist" is worth confirming on a real Core rather than assuming.
 //   /api/debug/browse-probe?path=Qobuz/New%20Releases&album=0 → dump album 0's actions
 app.get("/api/debug/browse-probe", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   const hierarchy = "browse";
   const segments = (req.query.path || "").toString().split("/").map(s => s.trim()).filter(Boolean);
+  const zone = String(req.query.zone || "") || undefined;
   const albumRaw = req.query.album;
   const albumIdx = albumRaw === undefined ? -1 : parseInt(albumRaw, 10);
   if (albumRaw !== undefined && (!Number.isFinite(albumIdx) || albumIdx < 0)) {
@@ -5834,16 +7537,50 @@ app.get("/api/debug/browse-probe", async (req, res) => {
         } else if (!target.item_key) {
           out.album = { error: 'Item "' + (target.title || "") + '" has no item_key to drill into' };
         } else {
-          // Read-only drill: browse the album item with NO zone, then list its
-          // contents (top-level action_list items + tracks). Nothing is invoked.
-          await browse({ hierarchy, item_key: target.item_key, multi_session_key: sessionKey });
+          // Read-only drill: browse the album item, then list its contents
+          // (top-level action_list items + tracks). Nothing is invoked.
+          //
+          // `zone` matters here: Roon gates some browse items on a zone, so a
+          // probe without one cannot prove an action is absent — only that it is
+          // absent WITHOUT a zone. Pass ?zone=<id> to rule that out.
+          await browse({ hierarchy, item_key: target.item_key, multi_session_key: sessionKey,
+                         zone_or_output_id: zone });
           const inside = await load({ hierarchy, offset: 0, count: 500, multi_session_key: sessionKey });
           out.album = {
             title: target.title || null,
             subtitle: target.subtitle || null,
             list_title: (inside.list && inside.list.title) || null,
-            items: (inside.items || []).map(mapItem)
+            zone_scoped: !!zone,
+            items: (inside.items || []).map((it, idx) => Object.assign({ idx }, mapItem(it)))
           };
+
+          // ?action=<idx> drills ONE level further, into that item's own action
+          // menu — where a per-track "Add to Playlist" would live if Roon
+          // offered one to extensions. Still read-only: the menu is listed, and
+          // nothing in it is invoked.
+          const actionRaw = req.query.action;
+          if (actionRaw !== undefined) {
+            const ai = parseInt(actionRaw, 10);
+            const sub = (inside.items || [])[ai];
+            if (!sub || !sub.item_key) {
+              out.album.action = { error: "No item with an item_key at index " + actionRaw };
+            } else {
+              const d = await browse({ hierarchy, item_key: sub.item_key,
+                                       multi_session_key: sessionKey,
+                                       zone_or_output_id: zone });
+              if (d.action !== "list") {
+                out.album.action = { of: sub.title || null, browse_action: d.action,
+                                     note: "not a list — nothing to enumerate" };
+              } else {
+                const acts = await load({ hierarchy, multi_session_key: sessionKey });
+                out.album.action = {
+                  of: sub.title || null,
+                  zone_scoped: !!zone,
+                  items: (acts.items || []).map(mapItem)
+                };
+              }
+            }
+          }
         }
       }
       res.json(out);
@@ -6058,6 +7795,1031 @@ app.get("/api/image/:image_key", async (req, res) => {
 });
 
 // Album detail: requires ?offset=N
+// Smart playlists — saved library views. No Roon involvement at all, so these
+// answer even while unpaired.
+// One smart playlist, expanded to TRACKS.
+//   ?id=<sp id>&offset=<album offset into the view>&count=<albums to expand>
+//
+// The saved view yields ALBUMS (that is what the snapshot indexes), so tracks
+// only exist by opening each album on the Core. That is the expensive part —
+// roughly half a dozen Roon calls per album — so it is paged by ALBUM and the
+// client asks for more as it scrolls. Nothing is expanded until the playlist is
+// opened, and the album list itself still costs zero Roon calls.
+//
+// Each track carries its own album's `image_key`, so a track row can show the
+// artwork it came from without a second lookup.
+const SMART_ALBUM_PAGE = 8;
+app.get("/api/smart-playlist", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  const id = String(req.query.id || "").trim();
+  if (!id) return res.status(400).json({ error: "id required" });
+  const sp = loadSmartPlaylists().find(p => p.id === id);
+  if (!sp) return res.status(404).json({ error: "No such dynamic playlist" });
+
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+  const count  = Math.max(1, Math.min(SMART_ALBUM_PAGE,
+                                      parseInt(req.query.count, 10) || SMART_ALBUM_PAGE));
+  const zone   = String(req.query.zone || "") || null;
+
+  try {
+    await ensureAlbumIndex();
+    if (!isIndexBuilt()) return res.status(503).json({ error: "Library index is still building" });
+
+    // The saved view, re-evaluated now — that is what makes it "smart".
+    // Sliced to the playlist's own limit BEFORE paging, so "N albums left"
+    // counts down to what will actually play rather than to the query's match
+    // count. Applied here and not inside libraryView(), whose cache signature
+    // has no limit in it — two playlists sharing a query would otherwise share
+    // one cache entry and one limit.
+    const view = smartPlaylistAlbums(sp).slice(0, sp.limit);
+    const slice = view.slice(offset, offset + count);
+    const shuffling = (sp.order || smartOrderDefault()) === "random";
+    const seed = (sp.view && sp.view.seed) || 1;
+
+    const tracks = [];
+    for (const al of slice) {
+      // One album at a time, deliberately: an uncapped Promise.all here would
+      // open half a dozen browse sessions per album against the Core at once.
+      // Same reasoning as /api/play-multi's batching.
+      try {
+        const got = await withBrowseSession(sk => loadAlbumSession(
+          sk, al.offset, null, { title: al.title, subtitle: al.subtitle }, zone));
+        const items = (got.items || []).filter(t => isTrackItem(t, got.playMenu));
+        items.forEach((t, i) => {
+          tracks.push({
+            album_offset: got.offset,
+            album_title:  al.title,
+            album_artist: al.subtitle,
+            image_key:    al.image_key || null,   // the album's art, for the row
+            track_index:  i,
+            title:        stripTrackNumber(t.title),
+            subtitle:     t.subtitle || al.subtitle || "",
+            // Roon's own numbering, recovered from the "N. " title prefix. The
+            // row index above is a position within this page, not a track
+            // number — only this survives being shared.
+            track_no:     trackNumberOf(t.title)
+          });
+        });
+      } catch (e) {
+        // One unreadable album must not empty the whole playlist — skip it and
+        // say so in the log. A stale offset is the usual cause.
+        console.warn(`[smart] "${sp.name}": skipped album "${al.title}" — ${e.message}`);
+      }
+    }
+
+    // Interleave this page's tracks. The album ORDER is already shuffled above;
+    // without this, a random Tracks playlist still marches through one album at
+    // a time, just in a different album order — which is what the user sees and
+    // what they reported.
+    //
+    // Keyed on the track's own identity, so the same page always comes back in
+    // the same order: paging by album means page 2 is a separate request, and a
+    // per-request shuffle would repeat some tracks and drop others.
+    if (shuffling) {
+      tracks.sort((a, b) =>
+        seededRank(a.album_title + "|" + a.title + "|" + a.track_index, seed) -
+        seededRank(b.album_title + "|" + b.title + "|" + b.track_index, seed));
+    }
+
+    res.json({
+      id: sp.id, name: sp.name, view: sp.view,
+      tracks,
+      album_offset: offset,
+      albums_expanded: slice.length,
+      album_total: view.length,
+      done: offset + slice.length >= view.length
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// The ALBUMS a smart playlist resolves to, for play-all / queue-all. Zero Roon
+// calls — the client hands these straight to /api/play-multi, which already
+// batches and carries the stale-offset defense.
+app.get("/api/smart-playlist/albums", async (req, res) => {
+  const id = String(req.query.id || "").trim();
+  if (!id) return res.status(400).json({ error: "id required" });
+  const sp = loadSmartPlaylists().find(p => p.id === id);
+  if (!sp) return res.status(404).json({ error: "No such dynamic playlist" });
+  try {
+    await ensureAlbumIndex();
+    if (!isIndexBuilt()) return res.status(503).json({ error: "Library index is still building" });
+    // The SAME ordering the detail screen lists. Playing a random playlist in
+    // album order would contradict the screen the user is looking at.
+    const view = smartPlaylistAlbums(sp);
+    // Ceiling, not a suggestion: each album costs ~7 Roon browse calls inside
+    // /api/play-multi, and Roon's own queue gives out somewhere around 5,000
+    // tracks (community-reported). 400 albums is ~4,400 tracks and ~2,800 calls
+    // — past that the single HTTP request stops being reasonable. The response
+    // always reports `total`, so a caller can tell the user what it left out.
+    // The caller's ask, the play-time ceiling, and the playlist's own limit —
+    // whichever is smallest wins.
+    const asked = Math.max(1, Math.min(smartLimitMax(), parseInt(req.query.max, 10) || smartLimitDefault()));
+    const max = Math.min(asked, sp.limit);
+    res.json({
+      id: sp.id, name: sp.name,
+      albums: view.slice(0, max).map(a => ({
+        offset: a.offset, title: a.title, subtitle: a.subtitle, image_key: a.image_key
+      })),
+      // `total` is what this playlist delivers; `matched` is what the query
+      // found. Reporting only the second made every capped play read as a
+      // failure to play the whole playlist.
+      total: Math.min(view.length, sp.limit),
+      matched: view.length
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Playlist sharing — export
+//
+// A shared playlist is a DESCRIPTION, never audio: enough identity for the
+// other end to find the same music in their own library or on their own
+// streaming service. See docs/design/playlist-sharing.md for why.
+//
+// The format is JSPF — the JSON serialisation of XSPF, the only formally
+// specified open playlist interchange format — in the dialect ListenBrainz
+// uses, so the MusicBrainz extension namespaces give us real slots for
+// identifiers instead of a bespoke schema. M3U is deliberately not an option:
+// it has nowhere to put an identifier at all, which makes it useless to a
+// streaming-only library.
+//
+// Today we hold no exact identifiers (no MBID, ISRC, UPC or service id — see
+// the design doc's capture order), so the fields below are mostly text. The
+// slots exist anyway and are populated when present: a share file is forever,
+// and a reader written now must keep working when exports start carrying IDs.
+// ---------------------------------------------------------------------------
+// The share vocabulary is functions, not constants, so the tests read the
+// SHIPPING values instead of being handed copies. An injected limit shadows the
+// real one and asserts nothing — the hole that let the v1.6.59 year-source
+// ranking ship untested.
+function shareMagic()      { return "MDRP1"; }
+function shareTrackMax()   { return 2000; }
+// Entries the route will walk. Higher than the output cap so a caller whose
+// list contains untitled rows still gets everything it CAN share encoded,
+// rather than being refused for entries that were never going to count.
+function shareInputMax()   { return 5000; }
+function shareTextMax()    { return 500; }
+function shareNameMax()    { return 200; }
+function shareUriMax()     { return 4; }
+function shareNsTrack()    { return "https://musicbrainz.org/doc/jspf#track"; }
+function shareNsPlaylist() { return "https://musicbrainz.org/doc/jspf#playlist"; }
+
+// Every value below is built into a FRESH object literal from a known field
+// list, never passed through from the caller. Same pattern as sanitizeLibView
+// and smartPlaylistRecord, and for the same reason: this data crosses a trust
+// boundary in the import direction, so the encoder and the decoder must agree
+// on a shape neither of them can be talked out of.
+function shareText(v, max) {
+  if (typeof v !== "string") return "";
+  // Trimmed AFTER the clamp as well as before it: slicing mid-string can leave
+  // a trailing space, and in a file that is never re-issued that is a different
+  // canonical key from the same title without one.
+  return v.replace(/\s+/g, " ").trim().slice(0, max || shareTextMax()).trim();
+}
+function shareInt(v, min, max) {
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) && n >= min && n <= max ? n : null;
+}
+// URIs are the one field a future exporter will fill with service links and
+// MBIDs, so they are validated by shape now rather than when they arrive.
+function shareUriList(v) {
+  if (!Array.isArray(v)) return [];
+  const out = [];
+  for (const item of v) {
+    if (typeof item !== "string") continue;
+    const s = item.trim();
+    // A scheme is what makes it a URI rather than free text that would be
+    // silently mistaken for one by a reader.
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(s)) continue;
+    if (s.length > shareTextMax()) continue;
+    if (!out.includes(s)) out.push(s);
+    if (out.length >= shareUriMax()) break;
+  }
+  return out;
+}
+// Drop keys with nothing in them. JSPF treats absent and empty differently:
+// an empty string is a claim that the value IS empty, which would make a
+// reader stop looking for it.
+function sharePrune(obj) {
+  const out = {};
+  for (const k of Object.keys(obj)) {
+    const v = obj[k];
+    if (v === null || v === undefined || v === "") continue;
+    if (Array.isArray(v) && !v.length) continue;
+    if (typeof v === "object" && !Array.isArray(v) && !Object.keys(v).length) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+// One JSPF track. Returns null for an entry with no title — a track we cannot
+// even name is not resolvable by anyone, and shipping it would inflate the
+// count the user is shown with entries that can never match.
+function shareTrackEntry(t) {
+  if (!t || typeof t !== "object") return null;
+  const title = shareText(t.title, shareTextMax());
+  if (!title) return null;
+
+  // Identifiers a future exporter fills in; harmless and absent until then.
+  const extra = sharePrune({
+    isrc:           shareText(t.isrc, 32),
+    upc:            shareText(t.upc, 32),
+    qobuz_album_id: shareText(t.qobuz_album_id, 64),
+    tidal_album_id: shareText(t.tidal_album_id, 64),
+    year:           shareInt(t.year, 1000, 2999),
+    disc:           shareInt(t.disc, 1, 99),
+  });
+
+  const ext = Object.keys(extra).length
+    ? { [shareNsTrack()]: { additional_metadata: extra } }
+    : null;
+
+  return sharePrune({
+    title,
+    creator:    shareText(t.artist, shareTextMax()),
+    album:      shareText(t.album, shareTextMax()),
+    trackNum:   shareInt(t.track_no, 1, 999),
+    // JSPF durations are milliseconds. We have none today — Roon's browse API
+    // exposes no track length — but the slot is what a duration-gated match
+    // will read, and that gate is the cheapest defence against resolving a
+    // live version in place of the studio take.
+    duration:   shareInt(t.duration_ms, 1, 24 * 60 * 60 * 1000),
+    identifier: shareUriList(t.identifier),
+    location:   shareUriList(t.location),
+    extension:  ext,
+  });
+}
+
+// The whole document. `truncated` is reported rather than silently applied —
+// v1.7.17's lesson was that a cap nobody is told about reads as success.
+function buildShareDoc(meta, entries) {
+  const list = Array.isArray(entries) ? entries : [];
+  const track = [];
+  let skipped = 0;
+  // Set only when the cap actually STOPPED us. Deriving it from the input
+  // length instead was wrong in both directions of honesty: 2,100 entries of
+  // which 300 were untitled encodes 1,800 tracks with nothing dropped for the
+  // cap, yet reported "stopped at the sharing limit" — a false claim of
+  // truncation in the one feature whose whole premise is honest accounting.
+  let truncated = false;
+  for (const e of list) {
+    if (track.length >= shareTrackMax()) { truncated = true; break; }
+    const one = shareTrackEntry(e);
+    if (one) track.push(one);
+    else skipped++;
+  }
+  const playlist = sharePrune({
+    title:      shareText(meta && meta.name, shareNameMax()) || "Shared playlist",
+    annotation: shareText(meta && meta.annotation, shareTextMax()),
+    date:       new Date().toISOString(),
+    extension: {
+      [shareNsPlaylist()]: {
+        additional_metadata: {
+          generator: "MusicD Remote",
+          generator_version: pkg.version,
+        },
+      },
+    },
+  });
+  // Assigned AFTER pruning, because pruning drops empty arrays and JSPF's
+  // trackList is the one key that must always be present: an absent trackList
+  // means "malformed", an empty one means "a playlist with no tracks". Those
+  // are different facts and a reader has to be able to tell them apart.
+  playlist.track = track;
+  return {
+    doc: { playlist },
+    track_count: track.length,
+    skipped,
+    truncated,
+  };
+}
+
+// "MDRP1:<base64url(gzip(json))>". The magic is a version stamp so a reader
+// can reject a blob it does not understand instead of guessing, and so the
+// schema can change without every old file becoming ambiguous.
+function encodeSharePayload(doc) {
+  const gz = zlib.gzipSync(Buffer.from(JSON.stringify(doc), "utf8"), { level: 9 });
+  return shareMagic() + ":" + gz.toString("base64url");
+}
+
+// ---------------------------------------------------------------------------
+// User playlists — an ordered list of specific tracks, stored by this
+// extension.
+//
+// Roon's API cannot create or modify a playlist (verified against a live Core
+// in v1.7.15), so an imported playlist has nowhere else to live. Smart
+// playlists can't hold one either: a smart playlist stores a QUERY, which is
+// what makes it smart, and an imported playlist is a fixed list.
+//
+// This deliberately does NOT go in settings.json. That file is written
+// non-atomically, has no key whitelist, and holds the Qobuz password hash and
+// the TIDAL refresh token. Third-party content — which is exactly what an
+// import is — has no business in the same file.
+// ---------------------------------------------------------------------------
+const USER_PL_FILE = path.join(LABELS_DB_DIR, "playlists.json");
+function userPlVersion()   { return 1; }
+function userPlMax()       { return 50; }    // same ceiling as smart playlists
+function userPlTracksMax() { return 500; }
+function userPlAddMax()    { return 200; }
+// Albums per add. Each costs ~5 Roon browse calls to read its tracklist, so
+// this is a time budget: 30 albums is ~150 calls, a few seconds.
+function userPlAlbumAddMax() { return 30; }
+function userPlNameMax()   { return 60; }
+
+// A stored track. Offsets are HINTS; the titles are the CHECK — the identity
+// contract the whole album path uses. `track_index` is likewise a hint:
+// invokeTrackAction re-matches by title when the index no longer holds, which
+// is what lets these survive a library that has shifted underneath them.
+function userTrackRecord(t) {
+  if (!t || typeof t !== "object") return null;
+  const title = shareText(t.title, shareTextMax());
+  const albumTitle = shareText(t.album_title, shareTextMax());
+  // Without an album we cannot open anything on the Core, so the entry could
+  // never be played. Storing it would inflate the count with dead rows.
+  if (!title || !albumTitle) return null;
+  const off = shareInt(t.album_offset, 0, 5000000);
+  if (off === null) return null;
+  return {
+    album_offset:   off,
+    album_title:    albumTitle,
+    album_subtitle: shareText(t.album_subtitle, shareTextMax()),
+    track_index:    shareInt(t.track_index, 0, 999) || 0,
+    title,
+    subtitle:       shareText(t.subtitle, shareTextMax()),
+    image_key:      shareText(t.image_key, 200) || null,
+    track_no:       shareInt(t.track_no, 1, 999),
+  };
+}
+
+function userPlaylistRecord(p) {
+  if (!p || typeof p !== "object") return null;
+  const name = shareText(p.name, userPlNameMax());
+  const id = shareText(p.id, 64);
+  if (!name || !id) return null;
+  const tracks = [];
+  for (const t of (Array.isArray(p.tracks) ? p.tracks : [])) {
+    if (tracks.length >= userPlTracksMax()) break;
+    const one = userTrackRecord(t);
+    if (one) tracks.push(one);
+  }
+  return {
+    id, name, tracks,
+    created_at: shareInt(p.created_at, 0, 4102444800000) || Date.now(),
+    updated_at: shareInt(p.updated_at, 0, 4102444800000) || Date.now(),
+  };
+}
+
+let userPlaylists = [];
+function loadUserPlaylists() {
+  let raw;
+  try { raw = JSON.parse(fs.readFileSync(USER_PL_FILE, "utf8")); }
+  catch (e) { return []; }   // absent or unreadable — a first run looks like this
+  if (!raw || raw.v !== userPlVersion()) {
+    // The other versioned files on this volume DISCARD on mismatch, because
+    // they are derived caches and the cost is a rescan. This one is the only
+    // copy of something the user made, so it is moved aside instead. Same
+    // stamp, opposite failure mode.
+    const bak = USER_PL_FILE.replace(/\.json$/, `.v${raw && raw.v}.json.bak`);
+    try { fs.renameSync(USER_PL_FILE, bak); console.warn("[uplaylist] version mismatch — kept a copy at " + bak); }
+    catch (e) { console.warn("[uplaylist] version mismatch and could not back up:", e.message); }
+    return [];
+  }
+  const out = [];
+  for (const p of (Array.isArray(raw.playlists) ? raw.playlists : [])) {
+    const one = userPlaylistRecord(p);
+    if (one) out.push(one);
+    if (out.length >= userPlMax()) break;
+  }
+  return out;
+}
+function saveUserPlaylists() {
+  writeJsonAtomic(USER_PL_FILE,
+    { v: userPlVersion(), playlists: userPlaylists.slice(0, userPlMax()) }, "[uplaylist]");
+}
+function newUserPlaylistId() {
+  return "up_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+userPlaylists = loadUserPlaylists();
+
+// Summary rows for the wall: never the tracks themselves, which can be 500 per
+// playlist across 50 playlists.
+function userPlaylistSummary(p) {
+  const keys = [];
+  for (const t of p.tracks) {
+    if (t.image_key && !keys.includes(t.image_key)) keys.push(t.image_key);
+    if (keys.length === 4) break;
+  }
+  return { id: p.id, name: p.name, track_total: p.tracks.length,
+           art_keys: keys, updated_at: p.updated_at };
+}
+
+// ---- Import ---------------------------------------------------------------
+// The counterpart to encodeSharePayload. Deliberately strict: a blob we cannot
+// positively identify is refused rather than guessed at.
+function decodeSharePayload(blob) {
+  // Deliberately forgiving about everything EXCEPT the payload itself.
+  //
+  // A blob makes its way here through clipboards, chat apps, mail clients and
+  // hand-selection on a phone. All of those wrap lines, and mail in particular
+  // inserts newlines mid-string and quote markers at the start of each one. The
+  // first version demanded the magic at character zero of a trimmed string, so
+  // a paste carrying so much as a leading newline — or the words the sender
+  // typed around it — was rejected as "not a MusicD Remote playlist" while
+  // holding a perfectly good playlist.
+  //
+  // So: collapse ALL whitespace, find the magic wherever it sits, and keep only
+  // base64url characters after it. None of that can turn a bad blob into a
+  // good one — the gzip and JSON steps below are still the real check.
+  const compact = String(blob || "").replace(/\s+/g, "");
+  // The marker is matched case-INSENSITIVELY because iOS autocorrect lowercases
+  // it on paste, and a blob that arrives as "mdrp1:…" is otherwise perfectly
+  // good. The payload's own case is left untouched — it is base64url, where
+  // case carries meaning, so nothing after the marker may be normalised.
+  const at = compact.toUpperCase().indexOf(shareMagic().toUpperCase() + ":");
+  if (at < 0) {
+    throw new Error(
+      `That doesn't look like a MusicD Remote playlist — it should contain "${shareMagic()}:"`);
+  }
+  const payload = compact.slice(at + shareMagic().length + 1).replace(/[^A-Za-z0-9_-]/g, "");
+  if (!payload) throw new Error("That playlist is empty — nothing followed the marker");
+
+  // Trailing prose cannot be separated by inspection: "Enjoy" is as valid a
+  // base64url string as the payload is, so stripping non-base64url characters
+  // leaves the sender's own words glued to the end. What CAN separate them is
+  // gzip's checksum — only the exact right byte sequence passes it. So on
+  // failure, shave characters off the end and retry, bounded. A wrong length
+  // fails the CRC rather than yielding plausible garbage, which is what makes
+  // this safe rather than a guess.
+  let json = null;
+  for (let cut = 0; cut <= 40 && cut < payload.length; cut++) {
+    try {
+      json = zlib.gunzipSync(Buffer.from(payload.slice(0, payload.length - cut), "base64url"))
+                 .toString("utf8");
+      break;
+    } catch (e) { /* not this length — try one shorter */ }
+  }
+  if (json === null) {
+    throw new Error("That playlist is damaged — it may have been cut short in transit");
+  }
+  let doc;
+  try { doc = JSON.parse(json); }
+  catch (e) { throw new Error("That playlist is damaged — the contents didn't parse"); }
+  if (!doc || !doc.playlist || !Array.isArray(doc.playlist.track)) {
+    throw new Error("That playlist has no tracks in it");
+  }
+  return doc;
+}
+
+// Match a shared entry against this library's snapshot. ZERO Roon calls: the
+// snapshot already carries normalized title and artist for every album, so the
+// whole resolution is in memory.
+//
+// Deliberately conservative. `ambiguousAlbumKeys` holds identities owned by
+// more than one album — a duplicate rip, or a local copy beside a streaming
+// one — and resolving those would be a coin flip. Better to report an entry
+// as unmatched than to put the wrong record in someone's playlist.
+function resolveSharedTrack(entry) {
+  const title = shareText(entry && entry.title, shareTextMax());
+  if (!title) return null;
+  const albumTitle = shareText(entry && entry.album, shareTextMax());
+  const artist = shareText(entry && entry.creator, shareTextMax());
+  if (!albumTitle) return null;   // no album, nothing to open on the Core
+
+  const nT = normalize(albumTitle);
+  const nA = normalize(artist);
+  if (!nT) return null;
+
+  const keys = albumKeys(albumTitle, artist);
+  if (keys.length && keys.every(k => ambiguousAlbumKeys.has(k))) return null;
+
+  // Artist first, because two records can share a title.
+  let hit = nA ? albumIndex.albums.find(a => a.nTitle === nT && a.nArtist === nA) : null;
+  if (!hit) {
+    const byTitle = albumIndex.albums.filter(a => a.nTitle === nT);
+    // One match on title alone is safe; several is the coin flip again.
+    if (byTitle.length === 1) hit = byTitle[0];
+    else if (nA) hit = byTitle.find(a => creditHasArtist(a.subtitle || "", artist)) || null;
+  }
+  if (!hit) return null;
+
+  return userTrackRecord({
+    album_offset: hit.offset,
+    album_title: hit.title,
+    album_subtitle: hit.subtitle,
+    // A hint only. The share carries no index, and invokeTrackAction re-matches
+    // by title anyway, so 0 costs nothing and the title does the work.
+    track_index: 0,
+    title,
+    subtitle: artist,
+    image_key: hit.image_key,
+    track_no: shareInt(entry && entry.trackNum, 1, 999),
+  });
+}
+
+// Turn a playlist's tracks into a shareable blob.
+// body: { name, annotation?, tracks: [{title, artist, album, track_no, ...}] }
+app.post("/api/share/encode", (req, res) => {
+  const body = req.body || {};
+  if (!Array.isArray(body.tracks) || !body.tracks.length) {
+    return res.status(400).json({ error: "tracks required" });
+  }
+  // The OUTPUT cap bounds what gets encoded; this bounds what gets WALKED.
+  // Without it a 1 MB body of untitled entries is ~65,000 iterations of
+  // synchronous work on an unauthenticated route — the design doc's S2, which
+  // says to clamp server-side rather than trust the client's own ceiling.
+  if (body.tracks.length > shareInputMax()) {
+    return res.status(400).json({
+      error: `Too many entries — ${shareInputMax()} at most`,
+    });
+  }
+  try {
+    const built = buildShareDoc({ name: body.name, annotation: body.annotation }, body.tracks);
+    if (!built.track_count) {
+      return res.status(400).json({ error: "None of those tracks had a title to share" });
+    }
+    const blob = encodeSharePayload(built.doc);
+    res.json({
+      blob,
+      bytes: Buffer.byteLength(blob, "utf8"),
+      track_count: built.track_count,
+      skipped: built.skipped,
+      truncated: built.truncated,
+    });
+  } catch (e) {
+    console.warn("[share] encode failed:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ---- User playlist routes -------------------------------------------------
+// Every one of these costs ZERO Roon calls: a user playlist stores its tracks
+// rather than deriving them, unlike a smart playlist which has to open each
+// album on the Core to find out what is on it.
+
+app.get("/api/user-playlists", (req, res) => {
+  res.json({ playlists: userPlaylists.map(userPlaylistSummary) });
+});
+
+app.get("/api/user-playlist", (req, res) => {
+  const id = String(req.query.id || "").trim();
+  const p = userPlaylists.find(x => x.id === id);
+  if (!p) return res.status(404).json({ error: "No such playlist" });
+  res.json({ id: p.id, name: p.name, tracks: p.tracks, track_total: p.tracks.length });
+});
+
+// Create, or rename an existing one. body: { id?, name }
+app.post("/api/user-playlists", (req, res) => {
+  const body = req.body || {};
+  const name = shareText(body.name, userPlNameMax());
+  if (!name) return res.status(400).json({ error: "name required" });
+  const id = shareText(body.id, 64);
+  if (id) {
+    const p = userPlaylists.find(x => x.id === id);
+    if (!p) return res.status(404).json({ error: "No such playlist" });
+    p.name = name;
+    p.updated_at = Date.now();
+  } else {
+    if (userPlaylists.length >= userPlMax()) {
+      return res.status(400).json({ error: `That's ${userPlMax()} playlists — delete one first` });
+    }
+    userPlaylists.push({ id: newUserPlaylistId(), name, tracks: [],
+                         created_at: Date.now(), updated_at: Date.now() });
+  }
+  saveUserPlaylists();
+  res.json({ ok: true, playlists: userPlaylists.map(userPlaylistSummary) });
+});
+
+app.post("/api/user-playlists/delete", (req, res) => {
+  const id = shareText((req.body || {}).id, 64);
+  const at = userPlaylists.findIndex(x => x.id === id);
+  if (at === -1) return res.status(404).json({ error: "No such playlist" });
+  userPlaylists.splice(at, 1);
+  saveUserPlaylists();
+  res.json({ ok: true, playlists: userPlaylists.map(userPlaylistSummary) });
+});
+
+// Find or create the playlist an add is aimed at. Shared so the track route and
+// the album route cannot disagree about what "a name with no id" means.
+function resolveUserPlaylistTarget(body) {
+  const id = shareText(body.id, 64);
+  if (id) {
+    const p = userPlaylists.find(x => x.id === id);
+    if (!p) return { error: "No such playlist", status: 404 };
+    return { playlist: p };
+  }
+  const name = shareText(body.name, userPlNameMax());
+  if (!name) return { error: "id or name required", status: 400 };
+  if (userPlaylists.length >= userPlMax()) {
+    return { error: `That's ${userPlMax()} playlists — delete one first`, status: 400 };
+  }
+  const p = { id: newUserPlaylistId(), name, tracks: [],
+              created_at: Date.now(), updated_at: Date.now() };
+  userPlaylists.push(p);
+  return { playlist: p };
+}
+
+// Append, clamped, and say what didn't fit. `full` travels so a caller can
+// report a playlist that filled up rather than a clean success for a partial
+// add — v1.7.17's lesson, applied to storage instead of to the queue.
+function appendUserTracks(p, incoming) {
+  let added = 0, skipped = 0, full = false;
+  for (const t of incoming) {
+    if (p.tracks.length >= userPlTracksMax()) { full = true; break; }
+    const one = userTrackRecord(t);
+    if (one) { p.tracks.push(one); added++; }
+    else skipped++;
+  }
+  p.updated_at = Date.now();
+  saveUserPlaylists();
+  return { added, skipped, full };
+}
+
+// Append tracks. body: { id? | name?, tracks: [...] }
+app.post("/api/user-playlists/add", (req, res) => {
+  const body = req.body || {};
+  const incoming = Array.isArray(body.tracks) ? body.tracks : [];
+  if (!incoming.length) return res.status(400).json({ error: "tracks required" });
+  if (incoming.length > userPlAddMax()) {
+    return res.status(400).json({ error: `Too many at once — ${userPlAddMax()} maximum` });
+  }
+  // Same resolver as the album route — two copies of this logic is how the two
+  // routes end up disagreeing about what a name with no id should do.
+  const target = resolveUserPlaylistTarget(body);
+  if (target.error) return res.status(target.status).json({ error: target.error });
+  const p = target.playlist;
+  const r = appendUserTracks(p, incoming);
+  res.json(Object.assign({ ok: true, id: p.id, name: p.name,
+                           track_total: p.tracks.length }, r));
+});
+
+// Add whole ALBUMS. Unlike the track route this costs Roon calls — a stored
+// entry names specific tracks, and an album's tracklist only exists on the
+// Core, so each album has to be opened to find out what is on it (~5 browse
+// calls each). Bounded accordingly, and reported per album.
+// body: { id? | name?, albums: [{offset, title, subtitle, image_key}] }
+app.post("/api/user-playlists/add-albums", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  const body = req.body || {};
+  const albums = Array.isArray(body.albums) ? body.albums : [];
+  if (!albums.length) return res.status(400).json({ error: "albums required" });
+  if (albums.length > userPlAlbumAddMax()) {
+    return res.status(400).json({
+      error: `Too many albums at once — ${userPlAlbumAddMax()} maximum`,
+    });
+  }
+  const target = resolveUserPlaylistTarget(body);
+  if (target.error) return res.status(target.status).json({ error: target.error });
+  const p = target.playlist;
+
+  const tracks = [];
+  const failed = [];
+  for (const al of albums) {
+    const offset = shareInt(al && al.offset, 0, 5000000);
+    const title = shareText(al && al.title, shareTextMax());
+    if (offset === null || !title) { failed.push(String((al && al.title) || "?")); continue; }
+    const subtitle = shareText(al && al.subtitle, shareTextMax());
+    try {
+      // One album at a time, deliberately — the same reasoning as
+      // /api/smart-playlist: a Promise.all here would open a browse session per
+      // album against the Core simultaneously.
+      const got = await withBrowseSession(sk => loadAlbumSession(
+        sk, offset, null, { title, subtitle }, null));
+      const items = (got.items || []).filter(t => isTrackItem(t, got.playMenu));
+      items.forEach((t, i) => {
+        tracks.push({
+          album_offset: got.offset,
+          album_title: title,
+          album_subtitle: subtitle,
+          track_index: i,
+          title: stripTrackNumber(t.title),
+          subtitle: t.subtitle || subtitle,
+          image_key: shareText(al.image_key, 200) || null,
+          track_no: trackNumberOf(t.title),
+        });
+      });
+    } catch (e) {
+      // One unreadable album must not lose the rest of the selection. Named in
+      // the response so the user knows which one didn't make it.
+      console.warn(`[uplaylist] couldn't read album "${title}" — ${e.message}`);
+      failed.push(title);
+    }
+  }
+
+  const r = appendUserTracks(p, tracks);
+  res.json(Object.assign({ ok: true, id: p.id, name: p.name,
+                           albums_read: albums.length - failed.length,
+                           albums_failed: failed,
+                           track_total: p.tracks.length }, r));
+});
+
+// Import a shared blob. Resolution is entirely in memory — no Roon calls — so
+// this answers in milliseconds however long the playlist is.
+app.post("/api/share/import", async (req, res) => {
+  const blob = (req.body || {}).blob;
+  if (typeof blob !== "string" || !blob.trim()) {
+    return res.status(400).json({ error: "blob required" });
+  }
+  let doc;
+  try { doc = decodeSharePayload(blob); }
+  catch (e) { return res.status(400).json({ error: e.message }); }
+
+  try {
+    await ensureAlbumIndex();
+    if (!isIndexBuilt()) {
+      return res.status(503).json({ error: "Library index is still building — try again shortly" });
+    }
+    const entries = doc.playlist.track.slice(0, userPlTracksMax());
+    const resolved = [];
+    const missing = [];
+    for (const e of entries) {
+      const hit = resolveSharedTrack(e);
+      if (hit) resolved.push(hit);
+      else {
+        // Reported, never silently dropped: "38 of 45" is the honest outcome
+        // and the missing 7 are the interesting part.
+        missing.push({
+          title: shareText(e && e.title, 200),
+          artist: shareText(e && e.creator, 200),
+          album: shareText(e && e.album, 200),
+        });
+      }
+    }
+    res.json({
+      ok: true,
+      name: shareText(doc.playlist.title, userPlNameMax()) || "Shared playlist",
+      total: doc.playlist.track.length,
+      truncated: doc.playlist.track.length > userPlTracksMax(),
+      resolved,
+      missing,
+    });
+  } catch (e) {
+    console.warn("[share] import failed:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/smart-playlists", (req, res) => {
+  // Each row carries its album count so the tile can read like a playlist tile
+  // ("48 Albums"). Costs nothing — libraryView is in-memory and cached.
+  const list = loadSmartPlaylists();
+  let counted = list;
+  if (isIndexBuilt()) {
+    counted = list.map(p => {
+      try {
+        const view = libraryView(p.view);
+        // Up to four DISTINCT covers for the tile mosaic, straight from the
+        // snapshot — no Roon calls. Distinct because a playlist that resolves to
+        // one artist would otherwise show the same sleeve four times.
+        const keys = [];
+        for (const al of view) {
+          if (al.image_key && !keys.includes(al.image_key)) keys.push(al.image_key);
+          if (keys.length === 4) break;
+        }
+        // `album_total` is what this playlist DELIVERS; `album_matched` is what
+        // the query found. The tile showed the second and played the first,
+        // which is precisely the mismatch that made the cap misleading.
+        return Object.assign({}, p, {
+          album_total: Math.min(view.length, p.limit),
+          album_matched: view.length,
+          art_keys: keys,
+        });
+      }
+      catch (e) { return p; }   // a bad view must not take the whole list down
+    });
+  }
+  res.json({ playlists: counted });
+});
+
+// Create or rename/update one.  body: { id?, name, view, limit? }
+// An omitted id creates; a known id replaces in place (so "save over" works).
+app.post("/api/smart-playlists", (req, res) => {
+  const body = req.body || {};
+  const name = String(body.name || "").trim().slice(0, SMART_NAME_MAX);
+  if (!name) return res.status(400).json({ error: "name required" });
+
+  const list = loadSmartPlaylists();
+  const id = String(body.id || "").trim();
+  // Built through smartPlaylistRecord so the limit is normalised by the same
+  // function that reads it back off disk — a second, hand-rolled shape here is
+  // how the two drift.
+  const record = smartPlaylistRecord({
+    id: id || ("sp_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7)),
+    name, view: body.view, limit: body.limit, mode: body.mode, order: body.order,
+  });
+  if (!record) return res.status(400).json({ error: "name required" });
+
+  const at = id ? list.findIndex(p => p.id === id) : -1;
+  if (at >= 0) {
+    list[at] = record;
+  } else {
+    // Same name twice is a rename-in-place, not a duplicate — the picker is a
+    // flat list and two identical rows would be indistinguishable.
+    const byName = list.findIndex(p => p.name.toLowerCase() === name.toLowerCase());
+    if (byName >= 0) { record.id = list[byName].id; list[byName] = record; }
+    else {
+      if (list.length >= SMART_MAX) {
+        return res.status(400).json({ error: `That's the limit of ${SMART_MAX} smart playlists` });
+      }
+      list.push(record);
+    }
+  }
+  if (!saveSmartPlaylists(list)) return res.status(500).json({ error: "Couldn't save" });
+  console.log(`[smart] saved "${name}"`);
+  // album_matched travels back so the client can say "plays 100 of the 1,179
+  // that match" at the moment of saving, rather than leaving the user to
+  // discover the limit when a play falls short of the count on the tile.
+  let matched = null;
+  try { if (isIndexBuilt()) matched = libraryView(record.view).length; }
+  catch (e) { /* a bad view must not fail the save that just succeeded */ }
+  res.json({ ok: true, playlist: Object.assign({}, record, { album_matched: matched }),
+             playlists: list });
+});
+
+app.post("/api/smart-playlists/delete", (req, res) => {
+  const id = String((req.body && req.body.id) || "").trim();
+  if (!id) return res.status(400).json({ error: "id required" });
+  const list = loadSmartPlaylists();
+  const next = list.filter(p => p.id !== id);
+  if (next.length === list.length) return res.status(404).json({ error: "No such dynamic playlist" });
+  if (!saveSmartPlaylists(next)) return res.status(500).json({ error: "Couldn't save" });
+  console.log(`[smart] deleted ${id}`);
+  res.json({ ok: true, playlists: next });
+});
+
+// Every Roon playlist. One browse walk, so the client should open this on
+// demand (the side menu) rather than on every Home load.
+app.get("/api/playlists", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  try {
+    const out = await listPlaylists();
+    const cache = loadPlaylistArtCache();
+    out.playlists = out.playlists.map(p => {
+      const k = cache[playlistKeyOf(p.title)];
+      return Array.isArray(k) ? Object.assign({}, p, { art_keys: k }) : p;
+    });
+    res.json(out);
+  } catch (e) {
+    console.warn("[playlists] list failed:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Cover mosaics for Roon playlists.
+//
+// Roon hands us no artwork for a playlist at the LIST level (every tile came
+// back with a null image_key), so a mosaic has to be built from the artwork of
+// the tracks inside — which means opening the playlist. That is a browse walk
+// per playlist, far too expensive to do for a whole grid on every visit, so the
+// result is cached on the data volume and keyed by playlist title. Artwork for a
+// given playlist barely changes, and a wrong-but-stale mosaic is a cosmetic miss
+// on a tile whose name is still correct.
+const PLAYLIST_ART_MAX = 300;   // a cache, not a database
+// Installs the map into the settings object on first use rather than handing
+// back a fresh {}. Mosaics are fetched by two workers at once, and with a
+// throwaway object each of the first two writers would build its own copy and
+// the second save would drop the first's entry. Sharing one reference — the
+// same one savePersistedSettings mutates in place — makes that impossible.
+function loadPlaylistArtCache() {
+  const s = loadPersistedSettings();
+  if (!s.playlistArt || typeof s.playlistArt !== "object" || Array.isArray(s.playlistArt)) {
+    s.playlistArt = {};
+  }
+  return s.playlistArt;
+}
+function savePlaylistArt(title, keys) {
+  const cache = loadPlaylistArtCache();
+  const key = playlistKeyOf(title);
+  if (!key) return;
+  cache[key] = keys;
+  // Bounded: drop the oldest insertions once over the cap. Object key order is
+  // insertion order for string keys, so this is stable.
+  const names = Object.keys(cache);
+  if (names.length > PLAYLIST_ART_MAX) {
+    for (const n of names.slice(0, names.length - PLAYLIST_ART_MAX)) delete cache[n];
+  }
+  savePersistedSettings({ playlistArt: cache });
+}
+
+app.get("/api/playlist/art", async (req, res) => {
+  const title = String(req.query.title || "");
+  const key = playlistKeyOf(title);
+  if (!key) return res.status(400).json({ error: "title required" });
+
+  const cached = loadPlaylistArtCache()[key];
+  if (Array.isArray(cached)) return res.json({ title, art_keys: cached, cached: true });
+
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  const offset = parseInt(req.query.offset, 10);
+  if (!Number.isFinite(offset) || offset < 0) {
+    return res.status(400).json({ error: "Valid offset query parameter required" });
+  }
+  try {
+    const { items, playMenu } =
+      await withBrowseSession(sk => loadPlaylistSession(sk, offset, title, null));
+    const keys = [];
+    for (const t of items) {
+      if (!isTrackItem(t, playMenu)) continue;
+      // Distinct covers only — a playlist of one album would otherwise show the
+      // same sleeve four times, which reads as a rendering bug.
+      if (t.image_key && !keys.includes(t.image_key)) keys.push(t.image_key);
+      if (keys.length === 4) break;
+    }
+    // Cached even when empty, so a playlist with no artwork isn't re-walked on
+    // every visit to the grid.
+    savePlaylistArt(title, keys);
+    res.json({ title, art_keys: keys, cached: false });
+  } catch (e) {
+    if (e.stale) return res.status(409).json({ error: e.message, stale: true });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// One playlist's tracks.  ?offset=<n>&title=<name>
+// `title` is what makes the read safe — see loadPlaylistSession.
+app.get("/api/playlist", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  const offset = parseInt(req.query.offset, 10);
+  const title  = String(req.query.title || "");
+  // Optional, but the client always sends it (see loadPlaylistSession).
+  const zone   = String(req.query.zone || "") || null;
+  if (!Number.isFinite(offset) || offset < 0) {
+    return res.status(400).json({ error: "Valid offset query parameter required" });
+  }
+  try {
+    const { items, playMenu, item, total } =
+      await withBrowseSession(sk => loadPlaylistSession(sk, offset, title, zone));
+    const tracks = items.filter(t => isTrackItem(t, playMenu)).map((t, i) => ({
+      index:    i,
+      title:    stripTrackNumber(t.title),
+      subtitle: t.subtitle || "",
+      image_key: t.image_key || null,
+      // Usually null here — a playlist is not an album, so Roon rarely numbers
+      // its rows. Carried anyway because export reads this shape.
+      track_no: trackNumberOf(t.title)
+    }));
+    res.json({
+      title: item.title || "", subtitle: item.subtitle || "",
+      image_key: item.image_key || null,
+      tracks,
+      // Roon reports the real length; we only read PLAYLIST_ITEMS of it, so say
+      // so rather than letting a long playlist look truncated for no reason.
+      total,
+      // Only truncated if we actually hit the read ceiling. `total` is the
+      // browse LEVEL's row count, which includes the play-menu row that
+      // isTrackItem excludes — comparing the two made every playlist with a
+      // Play action report "showing the first N of N+1".
+      truncated: tracks.length >= PLAYLIST_ITEMS,
+      can_play: !!playMenu
+    });
+  } catch (e) {
+    if (e.stale) return res.status(409).json({ error: e.message, stale: true });
+    console.warn("[playlist] load failed:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Play or queue a whole playlist.
+// body: { offset, title, zone_or_output_id, kind }
+app.post("/api/playlist/play", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  const { title, zone_or_output_id, kind } = req.body || {};
+  const offset = parseInt(req.body && req.body.offset, 10);
+  if (!Number.isFinite(offset) || offset < 0) return res.status(400).json({ error: "offset required" });
+  if (!zone_or_output_id) return res.status(400).json({ error: "zone_or_output_id required" });
+  if (!kind)              return res.status(400).json({ error: "kind required" });
+  try {
+    res.json(await invokePlaylistAction(offset, title, zone_or_output_id, kind));
+  } catch (e) {
+    if (e.stale) return res.status(409).json({ error: e.message, stale: true });
+    console.warn("[playlist] play failed:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Play or queue one track of a playlist.
+// body: { offset, title, track_index, track_title, zone_or_output_id, kind }
+app.post("/api/playlist/play-track", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  const { title, track_title, zone_or_output_id, kind } = req.body || {};
+  const offset = parseInt(req.body && req.body.offset, 10);
+  const idx    = parseInt(req.body && req.body.track_index, 10);
+  if (!Number.isFinite(offset) || offset < 0) return res.status(400).json({ error: "offset required" });
+  if (!Number.isFinite(idx) || idx < 0)       return res.status(400).json({ error: "track_index required" });
+  if (!zone_or_output_id) return res.status(400).json({ error: "zone_or_output_id required" });
+  if (!kind)              return res.status(400).json({ error: "kind required" });
+  try {
+    res.json(await invokePlaylistTrackAction(offset, title, idx, track_title, zone_or_output_id, kind));
+  } catch (e) {
+    if (e.stale) return res.status(409).json({ error: e.message, stale: true });
+    console.warn("[playlist] play-track failed:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get("/api/album", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   const offset = parseInt(req.query.offset, 10);
@@ -6836,6 +9598,936 @@ app.get("/api/tidal/featured", async (req, res) => {
     res.json({ type, albums: normalizeTidalAlbums(items, favIds) });
   } catch (e) {
     res.status(serviceErrorStatus(e)).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Smart Picks — six albums a day by artists NOT in the library.
+//
+// Five "adjacent" picks drawn from the genres the library already lives in, and
+// one "stretch" pick from a genre it barely touches. The set changes daily.
+//
+// WHY THIS IS SHAPED THE WAY IT IS
+//
+// 1. NOTHING HERE TOUCHES THE ROON CORE. Library analysis reads the snapshot
+//    that already exists; similarity comes from ListenBrainz and MusicBrainz
+//    over plain HTTP; albums are resolved against Qobuz/TIDAL. The only Core
+//    cost is the sync that already runs, noticing a newly favourited album.
+//
+// 2. A PICK MUST BE ACTIONABLE. Roon plays only what is in the library — every
+//    play route needs an offset into the albums hierarchy — so an artist name
+//    on its own is useless. Each pick is resolved to a real streaming album the
+//    user can favourite; Roon imports it and it becomes playable on the next
+//    sync. This is exactly the flow the Qobuz/TIDAL browser already uses.
+//
+// 3. SEEDS COME FROM THE OBSCURE END. Similarity quality inverts with seed
+//    popularity: Radiohead returns Nirvana, RHCP and Coldplay, while Bark
+//    Psychosis returns Mogwai, Talk Talk, Tortoise, Slint and Labradford. The
+//    sitewide hub chart (one request for the world's 1000 most-listened
+//    artists) is what makes "never seed from the popular end" computable.
+//
+// 4. RANKING IS BY DISTANCE, NOT SIMILARITY. Every recommender sorts by
+//    similarity descending, which is why they all surface the obvious. Here a
+//    candidate reachable from ONE seed outranks one reachable from twelve: the
+//    latter is somebody the user has had every opportunity to buy and hasn't.
+// ---------------------------------------------------------------------------
+
+const discovery = require("./lib/discovery");
+
+// Vocabulary as functions so the tests read the shipping values rather than
+// asserting against a constant they were handed.
+function smartPickKinds()        { return ["adjacent", "stretch"]; }
+function smartAdjacentCount()    { return 5; }
+function smartStretchCount()     { return 1; }
+function smartSeedCount()        { return 24; }
+function smartPoolCount()        { return 150; }
+// How long a shown artist stays out of the pool. Long enough that the set
+// genuinely turns over, short enough that a big library isn't exhausted.
+function smartSeenDays()         { return 120; }
+// A genre counts as "outside the library" at or below this share of it. The
+// user's Roon genre list only contains genres they own something in, so a
+// true zero is never visible — the bottom band is the outside edge there is.
+function smartStretchShare()     { return 0.02; }
+function smartHubTtlMs()         { return 14 * 24 * 60 * 60 * 1000; }
+function smartSimilarTtlMs()     { return 30 * 24 * 60 * 60 * 1000; }
+function smartTagTtlMs()         { return 30 * 24 * 60 * 60 * 1000; }
+
+// An album's key in the plays table. Title-only, because that is all Roon's
+// now-playing feed gives us to record — two artists' "Greatest Hits" collide,
+// the same limitation the Home "not played" row and the Library play sort
+// already carry.
+function albumPlayKey(al) { return String(al.title || "").toLowerCase().trim(); }
+
+// The library as artists: canonArtist -> { canon, name, albums, plays }.
+//
+// Derived from album CREDITS, not from the plays table's artist column: that
+// column holds the TRACK artist (Roon's three_line.line2), so on any compilation
+// or classical record it names a performer rather than the act whose library
+// entry this is. Credits are the same source linkableArtistSet uses, so
+// membership tests here and artist links elsewhere can never disagree.
+// Deliberately NOT cached. The obvious key is albumIndex.builtAt, and it is
+// wrong: builtAt only moves on a full walk, so on a library that has stopped
+// growing it never advances — while `plays` changes every time something is
+// listened to. A profile cached that way freezes the play counts at whatever
+// they were on the first build, and plays-per-album-owned is the seed policy.
+// One pass over the albums costs a few hundred ms, once a day, in a background
+// job. It has exactly one caller.
+function libraryArtistProfile() {
+  const stats = playStats();
+  const map = new Map();
+  for (const al of albumIndex.albums) {
+    const plays = stats.count.get(albumPlayKey(al)) || 0;
+    for (const name of splitCreditIntoArtists(al.subtitle || "")) {
+      const c = canonArtist(name);
+      // canonArtist returns "" for a punctuation- or CJK-only credit ("!!!").
+      // An empty key would merge every such act into one bogus artist.
+      if (!c) continue;
+      let rec = map.get(c);
+      if (!rec) { rec = { canon: c, name, albums: 0, plays: 0 }; map.set(c, rec); }
+      rec.albums++;
+      rec.plays += plays;
+    }
+  }
+  return map;
+}
+
+// Genre -> how many albums in the library carry it.
+function libraryGenreWeights() {
+  const w = new Map();
+  for (const al of albumIndex.albums) {
+    for (const g of albumGenresOf(al)) w.set(g, (w.get(g) || 0) + 1);
+  }
+  return w;
+}
+
+// Which library artists to walk out from.
+//
+// Two filters and one sort. Hubs are excluded because seeding from them is what
+// makes a recommender boring. What remains is sorted by plays PER ALBUM OWNED:
+// an act with four plays across one album is a stronger statement of taste than
+// one with six plays spread over twelve, and it is the small, deliberate
+// corners of a library that lead somewhere new.
+//
+// A library with no play history yet still has to work, so the list is topped up
+// with the most-owned non-hub artists — owning a lot by an artist the world
+// isn't listening to is itself a taste signal.
+function smartPickSeeds(profile, hubCanons, limit) {
+  const cap = limit || smartSeedCount();
+  const eligible = [];
+  for (const rec of profile.values()) {
+    if (hubCanons.has(rec.canon)) continue;
+    eligible.push(rec);
+  }
+  const byCanon = (a, b) => (a.canon < b.canon ? -1 : a.canon > b.canon ? 1 : 0);
+  const played = eligible.filter(r => r.plays > 0).sort((a, b) =>
+    (b.plays / b.albums) - (a.plays / a.albums) || a.albums - b.albums || byCanon(a, b));
+  const out = played.slice(0, cap);
+  if (out.length < cap) {
+    const have = new Set(out.map(r => r.canon));
+    const rest = eligible.filter(r => !have.has(r.canon))
+      .sort((a, b) => b.albums - a.albums || byCanon(a, b));
+    for (const r of rest) {
+      if (out.length >= cap) break;
+      out.push(r);
+    }
+  }
+  return out;
+}
+
+// Genres the library barely touches, least-owned first.
+function smartStretchGenres(weights, totalAlbums) {
+  const total = totalAlbums || 0;
+  if (!total) return [];
+  const out = [];
+  for (const [genre, albums] of weights) {
+    if (!genre) continue;
+    if ((albums / total) <= smartStretchShare()) out.push({ genre, albums });
+  }
+  out.sort((a, b) => a.albums - b.albums ||
+    (a.genre < b.genre ? -1 : a.genre > b.genre ? 1 : 0));
+  return out;
+}
+
+// Fold similar-artist rows into one entry per candidate, remembering EVERY seed
+// each was reached from — that count is the distance signal, so a candidate
+// arriving twice must not overwrite itself.
+function collectSmartCandidates(rows, seedNameByMbid) {
+  const byMbid = new Map();
+  for (const r of rows || []) {
+    if (!r || !r.mbid || !r.name) continue;
+    const canon = canonArtist(r.name);
+    if (!canon) continue;
+    let rec = byMbid.get(r.mbid);
+    if (!rec) {
+      rec = { mbid: r.mbid, name: r.name, canon, comment: r.comment || "",
+              score: 0, seeds: [], seedNames: [] };
+      byMbid.set(r.mbid, rec);
+    }
+    if (r.score > rec.score) rec.score = r.score;
+    if (r.seed && rec.seeds.indexOf(r.seed) === -1) {
+      rec.seeds.push(r.seed);
+      const sn = seedNameByMbid && seedNameByMbid.get(r.seed);
+      if (sn) rec.seedNames.push(sn);
+    }
+  }
+  return Array.from(byMbid.values());
+}
+
+// Rank by distance from the library rather than by similarity to it.
+//
+// Fewest connections back first. With a couple of dozen seeds most candidates
+// sit in the one-seed bucket, so score decides within it — which is why hub
+// candidates have to be filtered out before this runs, or the strongest score
+// in that bucket is simply the most famous name in it.
+function rankSmartCandidates(cands) {
+  return (cands || []).slice().sort((a, b) =>
+    a.seeds.length - b.seeds.length ||
+    b.score - a.score ||
+    (a.canon < b.canon ? -1 : a.canon > b.canon ? 1 : 0));
+}
+
+// Spread the day's picks across DIFFERENT corners of the library.
+//
+// Ranking alone produces a monoculture, and measurably so: on a test library
+// seeded from Bark Psychosis, Slint, Stars of the Lid, Labradford and Tortoise,
+// the top five candidates were all neighbours of Stars of the Lid — five
+// ambient records that between them said one thing. The distance sort cannot
+// prevent that, because once most candidates sit in the one-seed bucket it
+// decides on score alone, and the loudest seed owns every slot.
+//
+// So the ranked list is dealt round-robin: the best candidate from each seed,
+// then each seed's second, and so on. Rank order is preserved WITHIN a seed,
+// and the seed queues are already in rank order, so the strongest candidate
+// overall still comes first — it just no longer brings four relatives with it.
+function diversifySmartCandidates(ranked) {
+  const bySeed = new Map();
+  for (const c of ranked || []) {
+    // A candidate's first seed is its strongest connection: `seeds` is filled
+    // in arrival order from a list the endpoint returns strongest-first.
+    const key = (c.seeds && c.seeds[0]) || "";
+    if (!bySeed.has(key)) bySeed.set(key, []);
+    bySeed.get(key).push(c);
+  }
+  const queues = Array.from(bySeed.values());
+  const out = [];
+  for (let round = 0; ; round++) {
+    let moved = false;
+    for (const q of queues) {
+      if (round < q.length) { out.push(q[round]); moved = true; }
+    }
+    if (!moved) break;   // every queue exhausted
+  }
+  return out;
+}
+
+// Everything a candidate must not be. Kept as one function so the adjacent and
+// stretch paths cannot drift apart on what counts as "already known".
+function smartPickExcluded(canon, sets) {
+  if (!canon) return true;
+  if (sets.library.has(canon)) return true;   // already owned
+  if (sets.hubs.has(canon)) return true;      // famous is not a discovery
+  if (sets.blocked.has(canon)) return true;   // user said "not for me"
+  if (sets.seen.has(canon)) return true;      // shown recently
+  return false;
+}
+
+// The sentence under a pick. Built from the chain that produced it, so it is
+// always true — an LLM would write a nicer one and would sometimes be wrong,
+// and a recommendation nobody can check is a recommendation nobody trusts.
+function smartPickReason(rec) {
+  if (rec.kind === "stretch") {
+    return rec.genre
+      ? "Nothing like your library — a cornerstone of " + rec.genre
+      : "Nothing like your library";
+  }
+  const names = (rec.seedNames || []).filter(Boolean);
+  if (!names.length) return "Close to what you already listen to";
+  if (names.length === 1) return "Because you play " + names[0];
+  return "Because you play " + names[0] + " and " + names[1];
+}
+
+// ---------------------------------------------------------------------------
+// Smart Picks: cached API reads. Every one of these is persisted, so a rebuild
+// on an unchanged library costs zero network calls as well as zero Roon calls.
+// ---------------------------------------------------------------------------
+
+function smartCacheGet(key, ttlMs) {
+  if (!labelsDb) return null;
+  try {
+    const row = labelsDb.prepare("SELECT body, ts FROM smart_cache WHERE key = ?").get(key);
+    if (!row) return null;
+    if (Date.now() - row.ts > ttlMs) return null;
+    return JSON.parse(row.body);
+  } catch (e) {
+    // A corrupt row must not take the build down — treat it as a miss and let
+    // the next write replace it.
+    if (DEBUG) console.error("[picks] cache read " + key + ": " + e.message);
+    return null;
+  }
+}
+function smartCacheSet(key, value) {
+  if (!labelsDb || !stmtInsertSmartCache) return;
+  try { stmtInsertSmartCache.run(key, JSON.stringify(value), Date.now()); }
+  catch (e) { if (DEBUG) console.error("[picks] cache write " + key + ": " + e.message); }
+}
+// Expired rows are never read again but are never removed either — a row past
+// its TTL is dead weight on the data volume forever. Swept once per build,
+// using the longest TTL any key uses so nothing still-valid is dropped.
+function smartCachePrune() {
+  if (!labelsDb) return;
+  try {
+    const longest = Math.max(smartHubTtlMs(), smartSimilarTtlMs(),
+                             smartTagTtlMs(), smartAlbumTtlMs());
+    const r = labelsDb.prepare("DELETE FROM smart_cache WHERE ts < ?")
+      .run(Date.now() - longest);
+    if (DEBUG && r.changes) console.log("[picks] pruned " + r.changes + " cache rows");
+  } catch (e) { if (DEBUG) console.error("[picks] cache prune: " + e.message); }
+}
+
+// The world's most-listened artists, as a Set of canonArtist keys.
+async function smartHubSet() {
+  let rows = smartCacheGet("hubs", smartHubTtlMs());
+  if (!rows) {
+    rows = await discovery.topArtists({ count: discovery.LB_TOP_MAX });
+    if (rows.length) smartCacheSet("hubs", rows);
+  }
+  const set = new Set();
+  for (const r of rows || []) {
+    const c = canonArtist(r.name);
+    if (c) set.add(c);
+  }
+  return set;
+}
+
+// Similar-artist rows for a set of seed MBIDs, per-seed cached.
+async function smartSimilarRows(seedMbids) {
+  const fresh = [];
+  const out = [];
+  for (const mbid of seedMbids) {
+    const hit = smartCacheGet("sim:" + mbid, smartSimilarTtlMs());
+    if (hit) { for (const r of hit) out.push(r); }
+    else fresh.push(mbid);
+  }
+  if (fresh.length) {
+    const rows = await discovery.similarArtistsBatched(fresh, {
+      onError: (e, batch) =>
+        console.error("[picks] similar-artists failed for " + batch.length +
+                      " seed(s): " + e.message)
+    });
+    const bySeed = new Map();
+    for (const m of fresh) bySeed.set(m, []);
+    for (const r of rows) {
+      if (bySeed.has(r.seed)) bySeed.get(r.seed).push(r);
+      out.push(r);
+    }
+    // Cache per seed, including seeds that came back empty: ListenBrainz
+    // genuinely knows nothing about some artists, and without a negative entry
+    // every build would ask again forever.
+    //
+    // BUT only when the emptiness is real. Rows arrive tagged with the seed
+    // that produced them, and a row the endpoint fails to attribute carries
+    // seed "" — it still reaches `out`, so the CURRENT build looks fine, while
+    // every seed gets an empty array written to its cache. Tomorrow all 24
+    // seeds hit that cache (an empty array is a truthy hit), the build sees
+    // zero rows, and the feature is dead for the full 30-day TTL with nothing
+    // in the log, because the request itself succeeded. So: if the batch
+    // returned rows but none of them could be attributed, write nothing and
+    // let the next build ask again.
+    const attributed = rows.some(r => bySeed.has(r.seed));
+    if (!rows.length || attributed) {
+      for (const [mbid, rs] of bySeed) smartCacheSet("sim:" + mbid, rs);
+    } else {
+      console.error("[picks] similar-artists returned " + rows.length +
+                    " rows that match no seed we asked for — not caching, so " +
+                    "this retries rather than sticking for the TTL");
+    }
+  }
+  return out;
+}
+
+// A genre's canonical artists, cached.
+async function smartTagArtists(genre) {
+  const key = "tag:" + String(genre || "").toLowerCase();
+  let rows = smartCacheGet(key, smartTagTtlMs());
+  if (!rows) {
+    await mbWait();
+    rows = await discovery.artistsByTag(genre, { limit: 60, userAgent: MB_USER_AGENT });
+    smartCacheSet(key, rows);
+  }
+  return rows || [];
+}
+
+// ---------------------------------------------------------------------------
+// Smart Picks: turning a chosen artist into an album the user can actually add.
+// ---------------------------------------------------------------------------
+
+// Is each service usable? One definition each, so the three places that ask
+// cannot drift apart the way the pre-existing gates already have.
+function qobuzReady() { return !!(qobuzToken || (qobuzUsername && qobuzPasswordMd5)); }
+function tidalReady() { return !!(tidalRefreshToken && tidalUserId); }
+
+// Favourite a resolved pick's album on the service it came from.
+//
+// Used for the five adjacent picks at build time so Roon has the whole night to
+// import them: by morning they are in the library and simply play, which is the
+// point of running this at 4am. Idempotent on both services — favouriting an
+// album already favourited is a no-op — so a rebuild cannot double anything.
+//
+// Returns true when the service accepted it. A failure is logged and the pick
+// still ships; the user can add it by hand.
+async function autoAddSmartAlbum(album) {
+  if (!album || !album.id || !album.service) return false;
+  try {
+    if (album.service === "qobuz") {
+      await qobuzWithToken(t => qobuz.favoriteAlbum(t, String(album.id)));
+      qobuzFavIds.add(String(album.id));
+    } else if (album.service === "tidal") {
+      await tidalWithToken((t, cc, uid) => tidal.favoriteAlbum(t, cc, uid, String(album.id)));
+      tidalFavIds.add(String(album.id));
+    } else {
+      return false;
+    }
+    return true;
+  } catch (e) {
+    if (smartRateLimited(e)) throw e;   // let the build stop rather than hammer
+    console.error("[picks] could not auto-add " + JSON.stringify(album.title) +
+                  " to " + album.service + ": " + e.message);
+    return false;
+  }
+}
+
+// Is a streaming service connected at all? Without one a pick can be shown but
+// never added, so the UI needs to say so rather than presenting a dead button —
+// and the build must not run at all, since every resolve would return null.
+function smartPicksServiceReady() { return qobuzReady() || tidalReady(); }
+
+// Thrown to abort a whole build when a service rate-limits us. These are the
+// UNOFFICIAL Qobuz/TIDAL APIs, and the accounts behind them also power the
+// service browser and the source badges — features the user actually uses. The
+// same abort-on-429 shape the Discogs and iTunes passes already use.
+function smartRateLimited(e) { return !!(e && e.code === 429); }
+
+// How long a resolved (or unresolvable) artist->album answer is trusted.
+function smartAlbumTtlMs() { return 7 * 24 * 60 * 60 * 1000; }
+
+// Find a favouritable album by `artistName` on whichever service is connected.
+// Returns a normalized album (plus which service it came from) or null.
+//
+// PERSISTED, INCLUDING MISSES. This is the one call that dominates a build —
+// every candidate TRIED costs a search, not every candidate kept — so caching
+// only the hits would leave the expensive half uncached. A miss is stored as
+// { album: null }, which is truthy, so a cached negative is distinguishable
+// from a cache miss.
+async function resolveSmartAlbum(artistName) {
+  const wantCanon = canonArtist(artistName);
+  if (!wantCanon) return null;
+  const key = "alb:" + wantCanon;
+  const hit = smartCacheGet(key, smartAlbumTtlMs());
+  if (hit) return hit.album;
+
+  let album = null;
+  // Whether a service actually ANSWERED. A negative may only be cached when one
+  // did: caching "no album" after consulting nothing would write up to 150 dead
+  // entries on a machine with no service connected, and the user who then
+  // connects Qobuz would get an empty feature for the next seven days with no
+  // way to tell why. A thrown lookup is the same case — the codebase already
+  // states this discipline for the TTL cache ("the PROMISE is shared, never the
+  // failure"), and a one-minute token blip must not become a week-long hole.
+  let answered = false, errored = false;
+  if (qobuzReady()) {
+    try {
+      const r = await qobuzWithToken(t => qobuz.searchCatalog(t, artistName, 20, 0));
+      answered = true;
+      // favIds is deliberately not fetched: it fills only the `favourited`
+      // field, which persistSmartPicks does not store and the client never
+      // reads. Fetching it cost an extra Qobuz call (and a large paged TIDAL
+      // one) per minute of a build, for a value thrown away.
+      const albums = normalizeQobuzAlbums(r.albums.items, new Set());
+      // Qobuz search matches on title as well as artist, so an unfiltered top
+      // hit is regularly a different act covering the name. Require the credit
+      // to be the artist we asked for. canonArtist rather than namesEqualLoose
+      // (which the artist-bio path uses) because this must agree with the
+      // library/hub/blocked sets, which are all keyed in canonArtist space.
+      const found = albums.find(a => canonArtist(a.artist) === wantCanon);
+      if (found) album = Object.assign({ service: "qobuz" }, found);
+    } catch (e) {
+      if (smartRateLimited(e)) throw e;      // abort the build, do not hammer
+      errored = true;
+      console.error("[picks] Qobuz album lookup for " +
+                    JSON.stringify(artistName) + " failed: " + e.message);
+    }
+  }
+  if (!album && tidalReady()) {
+    try {
+      // searchArtists returns pagedSection(r) — { items, total } — NOT an array.
+      // `(found || []).find` reads as defensive and is not: an object is truthy,
+      // so the fallback never fires and .find is undefined. That threw on every
+      // lookup, and the catch turned it into "no pick resolved" — which on a
+      // TIDAL-only setup meant zero picks, forever. The sibling call at
+      // /api/tidal/search reads .items correctly.
+      const page = await tidalWithToken((t, cc) => tidal.searchArtists(t, cc, artistName, 5));
+      answered = true;
+      const found = ((page && page.items) || []).find(
+        a => a && canonArtist(a.name) === wantCanon);
+      if (found && found.id) {
+        const page2 = await tidalWithToken(
+          (t, cc) => tidal.getArtistAlbums(t, cc, found.id, 20, 0));
+        const albums = normalizeTidalAlbums((page2 && page2.items) || [], new Set());
+        if (albums.length) album = Object.assign({ service: "tidal" }, albums[0]);
+      }
+    } catch (e) {
+      if (smartRateLimited(e)) throw e;
+      errored = true;
+      console.error("[picks] TIDAL album lookup for " +
+                    JSON.stringify(artistName) + " failed: " + e.message);
+    }
+  }
+  if (album || (answered && !errored)) smartCacheSet(key, { album });
+  return album;
+}
+
+// ---------------------------------------------------------------------------
+// Smart Picks: the daily build.
+// ---------------------------------------------------------------------------
+
+// Has Roon imported this album yet? Returns its snapshot record, or null.
+//
+// This is what turns a pick from "Add" into "Play". The user favourites an
+// album on Qobuz, Roon imports it on its own schedule, and it appears in the
+// next snapshot — at which point it has an offset and every ordinary play route
+// works on it. Matching goes through albumKeys, the same tolerant identity the
+// source badges use, because Roon's title for an album routinely differs from
+// Qobuz's by an edition suffix.
+let _smartLibIndex = { builtAt: -1, map: null };
+function smartLibraryRecord(title, artist) {
+  if (!title) return null;
+  if (_smartLibIndex.builtAt !== albumIndex.builtAt || !_smartLibIndex.map) {
+    const map = new Map();
+    for (const al of albumIndex.albums) {
+      for (const k of (al.srcKeys || [])) if (!map.has(k)) map.set(k, al);
+    }
+    _smartLibIndex = { builtAt: albumIndex.builtAt, map };
+  }
+  for (const k of albumKeys(title, artist || "")) {
+    const hit = _smartLibIndex.map.get(k);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function smartDayKey(d) {
+  const t = d || new Date();
+  const p = (n) => (n < 10 ? "0" + n : String(n));
+  return t.getFullYear() + "-" + p(t.getMonth() + 1) + "-" + p(t.getDate());
+}
+
+function smartSeenSet() {
+  const set = new Set();
+  if (!labelsDb) return set;
+  try {
+    const cutoff = Date.now() - smartSeenDays() * 24 * 60 * 60 * 1000;
+    for (const r of labelsDb.prepare(
+      "SELECT canon FROM smart_pick_seen WHERE ts > ?").all(cutoff)) set.add(r.canon);
+  } catch (e) { if (DEBUG) console.error("[picks] seen set: " + e.message); }
+  return set;
+}
+function smartBlockedSet() {
+  const set = new Set();
+  if (!labelsDb) return set;
+  try {
+    for (const r of labelsDb.prepare("SELECT canon FROM smart_pick_blocks").all()) {
+      set.add(r.canon);
+    }
+  } catch (e) { if (DEBUG) console.error("[picks] blocked set: " + e.message); }
+  return set;
+}
+function readSmartPicks(day) {
+  if (!labelsDb) return [];
+  try {
+    return labelsDb.prepare(
+      // Rank IS the display order — persistSmartPicks writes the five adjacent
+      // picks at 0-4 and the stretch pick last. Sorting on kind as well put
+      // "stretch" before "adjacent" (it sorts later, so DESC lifted it), which
+      // led the row with the one pick chosen for being unlike the library.
+      "SELECT * FROM smart_picks WHERE day = ? ORDER BY rank ASC").all(day);
+  } catch (e) {
+    if (DEBUG) console.error("[picks] read " + day + ": " + e.message);
+    return [];
+  }
+}
+
+// How many candidates a build may TRY to resolve before giving up, and how far
+// into the outside genres the stretch pick may look.
+//
+// Every candidate tried costs a streaming search whether or not it becomes a
+// pick, so the pool size is not the bound that matters — this is. Without it a
+// build whose service credentials have expired walks 150 adjacent candidates
+// and then every outside genre × 60 roster artists, several thousand live calls
+// against APIs that are not officially ours to use.
+function smartMaxResolves()      { return 40; }
+function smartMaxStretchGenres() { return 3; }
+function smartMaxStretchRoster() { return 15; }
+
+// Marks a day as attempted, so a build that legitimately produces nothing is
+// not retried on the next request. Without this, "did we build today?" is
+// answered by "are there rows?", and a zero-pick day re-runs the whole pipeline
+// every time anybody opens Home.
+function smartAttemptKey(day) { return "built:" + day; }
+function smartAttemptedToday(day) {
+  return !!smartCacheGet(smartAttemptKey(day), 24 * 60 * 60 * 1000);
+}
+
+// Build today's picks. Called from the maintenance timer and after a sync —
+// never from a request handler, so nothing a user does waits on it.
+async function buildSmartPicks(day) {
+  const t0 = Date.now();
+  smartCachePrune();
+  // Nothing here can produce an addable pick without a service to add it to,
+  // and an unaddable pick is not worth the calls it costs to find.
+  if (!smartPicksServiceReady()) {
+    console.log("[picks] no streaming service connected — skipping today's build");
+    smartCacheSet(smartAttemptKey(day), { at: Date.now(), reason: "no service" });
+    return;
+  }
+  const profile = libraryArtistProfile();
+  if (!profile.size) {
+    console.log("[picks] no library artists yet — nothing to build from");
+    return;   // deliberately NOT marked attempted: the library is still arriving
+  }
+  const hubs = await smartHubSet();
+  // An empty hub chart is not a harmless degradation. It is what the entire
+  // seed policy is built on: with no hubs, smartPickSeeds stops filtering and
+  // seeds from the user's most-played artists — Radiohead, Pink Floyd — which
+  // is the exact inversion this feature exists to avoid, and smartPickExcluded
+  // stops rejecting famous candidates too. Better no picks today than a day of
+  // picks that quietly discredit the feature.
+  if (!hubs.size) {
+    console.error("[picks] the sitewide artist chart came back empty — " +
+                  "skipping today's build rather than seeding from the " +
+                  "library's most famous artists");
+    return;
+  }
+  const sets = {
+    library: linkableArtistSet(),
+    hubs,
+    blocked: smartBlockedSet(),
+    seen:    smartSeenSet()
+  };
+
+  // Seeds, and their MBIDs. fetchArtistMbid rate-limits itself against
+  // MusicBrainz and refuses a fuzzy name match, so a seed it cannot identify is
+  // dropped rather than walked from the wrong artist.
+  const seeds = smartPickSeeds(profile, hubs, smartSeedCount());
+  const seedNameByMbid = new Map();
+  const seedMbids = [];
+  for (const s of seeds) {
+    const mbid = await fetchArtistMbid(s.name);
+    if (!mbid) continue;
+    seedMbids.push(mbid);
+    seedNameByMbid.set(mbid, s.name);
+  }
+  if (!seedMbids.length) {
+    console.log("[picks] no seed artist could be identified on MusicBrainz");
+    return;
+  }
+
+  const rows  = await smartSimilarRows(seedMbids);
+  const cands = collectSmartCandidates(rows, seedNameByMbid)
+    .filter(c => !smartPickExcluded(c.canon, sets));
+  const ranked = diversifySmartCandidates(rankSmartCandidates(cands))
+    .slice(0, smartPoolCount());
+  console.log("[picks] " + seedMbids.length + " seeds -> " + rows.length +
+              " rows -> " + cands.length + " candidates (" + ranked.length + " pooled)");
+
+  const picks = [];
+  const used  = new Set();
+  let tried = 0;
+  try {
+    for (const c of ranked) {
+      if (picks.length >= smartAdjacentCount()) break;
+      if (tried >= smartMaxResolves()) break;
+      // collectSmartCandidates dedupes by MBID, not by canon, so two distinct
+      // MusicBrainz artists can still collide here.
+      if (used.has(c.canon)) continue;
+      tried++;
+      const album = await resolveSmartAlbum(c.name);
+      if (!album) continue;      // nothing addable — a pick nobody can act on
+      used.add(c.canon);
+      // The five adjacent picks go into the streaming library now, so Roon can
+      // import them before anybody looks at the screen. Only these five: the
+      // stretch pick is the one the user is meant to accept or reject.
+      const added = smartPicksAutoAdd ? await autoAddSmartAlbum(album) : false;
+      picks.push({
+        kind: "adjacent", mbid: c.mbid, artist: c.name, canon: c.canon,
+        seedNames: c.seedNames, album, genre: "", autoAdded: added
+      });
+    }
+
+    // The stretch pick: one album from a genre the library barely touches, taken
+    // from MusicBrainz's relevance order so it is that genre's canonical name
+    // rather than a random unknown.
+    const outside = smartStretchGenres(libraryGenreWeights(), albumIndex.albums.length)
+      .slice(0, smartMaxStretchGenres());
+    const adjacentCanons = new Set(ranked.map(c => c.canon));
+    for (const g of outside) {
+      if (picks.filter(p => p.kind === "stretch").length >= smartStretchCount()) break;
+      let roster = [];
+      try { roster = await smartTagArtists(g.genre); }
+      catch (e) {
+        console.error("[picks] tag lookup for " + g.genre + ": " + e.message);
+        continue;
+      }
+      for (const a of roster.slice(0, smartMaxStretchRoster())) {
+        const canon = canonArtist(a.name);
+        if (smartPickExcluded(canon, sets)) continue;
+        if (adjacentCanons.has(canon)) continue;   // reachable from the library
+        const album = await resolveSmartAlbum(a.name);
+        if (!album) continue;
+        used.add(canon);
+        picks.push({ kind: "stretch", mbid: a.mbid, artist: a.name, canon,
+                     seedNames: [], album, genre: g.genre });
+        break;
+      }
+    }
+  } catch (e) {
+    if (!smartRateLimited(e)) throw e;
+    // Rate-limited by Qobuz/TIDAL. Keep whatever resolved before the limit and
+    // stop: continuing would push an unofficial API further into a cooldown
+    // that also breaks the service browser and the source badges.
+    console.error("[picks] rate limited by the streaming service — keeping the " +
+                  picks.length + " pick(s) resolved so far and stopping");
+  }
+
+  persistSmartPicks(day, picks);
+  smartCacheSet(smartAttemptKey(day), { at: Date.now(), picks: picks.length });
+  console.log("[picks] built " + picks.length + " picks for " + day +
+              " (" + tried + " candidates tried) in " + (Date.now() - t0) + "ms");
+}
+
+function persistSmartPicks(day, picks) {
+  if (!labelsDb || !stmtInsertSmartPick) return;
+  try {
+    const wipe = labelsDb.prepare("DELETE FROM smart_picks WHERE day = ?");
+    const tx = labelsDb.transaction(() => {
+      wipe.run(day);
+      let rank = 0;
+      const kinds = smartPickKinds();
+      for (const p of picks) {
+        // The kind is persisted and drives the client's badge and styling. A
+        // third kind added upstream without UI would render as an unlabelled
+        // card, so it is rejected here rather than stored and puzzled over.
+        if (kinds.indexOf(p.kind) === -1) {
+          console.error("[picks] refusing to store unknown pick kind " +
+                        JSON.stringify(p.kind) + " for " + p.artist);
+          continue;
+        }
+        stmtInsertSmartPick.run(
+          day, p.kind, rank++, p.mbid || "", p.artist, p.canon,
+          p.album.title, String(p.album.id), p.album.service, p.album.image || "",
+          smartPickReason(p), p.genre || "", Date.now());
+        stmtInsertSmartSeen.run(p.canon, Date.now());
+      }
+    });
+    tx();
+  } catch (e) {
+    console.error("[picks] persist failed: " + e.message);
+  }
+}
+
+// Kick today's build if it hasn't happened, WITHOUT waiting for it.
+//
+// The build must never be awaited from a request handler. bgRun returns the
+// queue tail AFTER appending, so awaiting it waits for everything already
+// queued — on a fresh pair that is the streaming refresh, the genre harvest and
+// an art prewarm of every album in the library. A user opening Home would have
+// held an open request behind all of it. Nothing here waits: the client already
+// renders an empty set as "building", and the next visit picks the rows up.
+//
+// _smartBuilding still matters even though bgRun serialises: bgRun orders jobs,
+// it does not collapse duplicates, so three devices opening Home would enqueue
+// three identical builds and triple every upstream call.
+let _smartBuilding = null;
+function kickSmartPicks(why, force) {
+  const day = smartDayKey();
+  if (_smartBuilding) return;
+  if (!force) {
+    if (readSmartPicks(day).length) return;
+    if (smartAttemptedToday(day)) return; // already tried today; do not retry per request
+    // ONE place decides whether the schedule has been reached, so the timer,
+    // the post-sync kick and an ordinary page view cannot disagree — the whole
+    // point of the setting is that the build never runs at an unexpected time.
+    if (!smartPicksDue()) return;
+  }
+  _smartBuilding = bgRun("smart picks (" + why + ")", () => buildSmartPicks(day))
+    .finally(() => { _smartBuilding = null; });
+}
+
+// Hourly check, matching the existing index-maintenance and updater timers.
+// A timer rather than the first request of the day, so the cost never lands on
+// somebody's page load and the retry cadence isn't a function of how often
+// anyone taps Back.
+// Should the scheduled build run right now?
+//
+// Only at or after the configured hour, and only on a day that has not been
+// built — so a box that was switched off at 4am still gets its picks when it
+// comes back, rather than skipping the day entirely. That is why this is
+// "hour reached" and not "hour equals".
+function smartPicksDue(now) {
+  return (now || new Date()).getHours() >= smartPicksHour;
+}
+
+let smartPicksTimer = null;
+function startSmartPicksMaintenance() {
+  if (smartPicksTimer) return;
+  // Checked every 10 minutes so the configured hour is honoured closely without
+  // the timer itself being the expensive thing — the work behind it is gated on
+  // "today has no picks", which is a single indexed read.
+  smartPicksTimer = setInterval(() => {
+    if (!core || !albumIndex.count) return;
+    if (!smartPicksDue()) return;
+    kickSmartPicks("scheduled " + smartPicksHour + ":00");
+  }, 10 * 60 * 1000);
+  if (smartPicksTimer.unref) smartPicksTimer.unref();
+}
+
+// One pick as the client sees it.
+//
+// `added` and `offset` are both DERIVED at read time rather than stored, and
+// that is the whole point. The first version latched "Added" on the button and
+// nowhere else, so reopening the app showed "+ Add" for albums that were
+// already sitting in the user's Qobuz library — the state lived in a DOM node
+// that does not survive a reload. Reading it back from the service's own
+// favourites makes it true on every device and after every restart.
+//
+// `offset` is present once Roon has actually imported the album, and it is what
+// lets the card offer Play instead of Add.
+function smartPickJson(row, favs) {
+  const id  = row.album_id || "";
+  const set = row.service === "qobuz" ? favs.qobuz
+            : row.service === "tidal" ? favs.tidal : null;
+  const rec = smartLibraryRecord(row.album, row.artist);
+  return {
+    kind:    row.kind,
+    artist:  row.artist,
+    mbid:    row.mbid || null,
+    album:   row.album || "",
+    album_id: id,
+    service: row.service || "",
+    image:   row.image || "",
+    reason:  row.reason || "",
+    genre:   row.genre || "",
+    // null (not false) when the service could not be asked, so the client can
+    // leave the button alone rather than claiming it is not added.
+    added:   set ? set.has(id) : null,
+    // In the Roon library right now — playable.
+    offset:      rec ? rec.offset : null,
+    library_title:    rec ? rec.title : "",
+    library_subtitle: rec ? rec.subtitle : "",
+    image_key:        rec ? (rec.image_key || null) : null
+  };
+}
+
+// The user's current favourite ids on each connected service. Either side
+// failing is reported as null — "not asked" — rather than as an empty set,
+// which would tell the client that nothing is added.
+async function smartPickFavourites() {
+  const out = { qobuz: null, tidal: null };
+  const jobs = [];
+  if (qobuzReady()) {
+    jobs.push(qobuzFavIds.get().then(s => { out.qobuz = s; })
+      .catch(e => { console.error("[picks] Qobuz favourites unavailable: " + e.message); }));
+  }
+  if (tidalReady()) {
+    jobs.push(tidalFavIds.get().then(s => { out.tidal = s; })
+      .catch(e => { console.error("[picks] TIDAL favourites unavailable: " + e.message); }));
+  }
+  await Promise.all(jobs);
+  return out;
+}
+
+// GET /api/smart-picks — today's six. A pure read: it answers from the table
+// and, if today has not been built yet, kicks the build and returns what it has
+// (nothing, first time). It never waits — see kickSmartPicks.
+app.get("/api/smart-picks", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  try {
+    const day  = smartDayKey();
+    const rows = readSmartPicks(day);
+    if (!rows.length) kickSmartPicks("requested");
+    // The favourites read is a 60s-cached lookup, not a per-request round trip.
+    const favs = rows.length ? await smartPickFavourites() : { qobuz: null, tidal: null };
+    res.json({
+      day,
+      service_ready: smartPicksServiceReady(),
+      auto_add: smartPicksAutoAdd,
+      hour: smartPicksHour,
+      building: !rows.length && !!_smartBuilding,
+      picks: rows.map(r => smartPickJson(r, favs))
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Smart Picks settings: when the daily build runs, and whether the five
+// adjacent picks are added automatically.
+app.get("/api/settings/smart-picks", (req, res) => {
+  res.json({ hour: smartPicksHour, auto_add: smartPicksAutoAdd,
+             service_ready: smartPicksServiceReady() });
+});
+app.post("/api/settings/smart-picks", (req, res) => {
+  const body = req.body || {};
+  if (body.hour !== undefined) {
+    const h = Number(body.hour);
+    if (!Number.isFinite(h) || h < 0 || h > 23) {
+      return res.status(400).json({ error: "hour must be 0-23" });
+    }
+    smartPicksHour = Math.trunc(h);
+  }
+  if (body.auto_add !== undefined) smartPicksAutoAdd = !!body.auto_add;
+  savePersistedSettings({ smartPicksHour, smartPicksAutoAdd });
+  res.json({ ok: true, hour: smartPicksHour, auto_add: smartPicksAutoAdd });
+});
+
+// Rebuild today's picks now, ignoring the schedule and the attempt marker.
+// The button somebody presses when they want to see it work.
+app.post("/api/smart-picks/rebuild", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  const day = smartDayKey();
+  try {
+    if (labelsDb) {
+      labelsDb.prepare("DELETE FROM smart_picks WHERE day = ?").run(day);
+      labelsDb.prepare("DELETE FROM smart_cache WHERE key = ?").run(smartAttemptKey(day));
+    }
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+  kickSmartPicks("manual", true);   // the button means now, schedule or not
+  res.json({ ok: true, building: !!_smartBuilding });
+});
+
+// POST /api/smart-picks/block { artist } — "not for me", permanently.
+//
+// Only an explicit tap blocks an artist. Ignoring a pick must NOT count as a
+// rejection: the whole premise is albums the user would never reach for, so a
+// model that read silence as "no" would suppress the entire feature within a
+// week.
+app.post("/api/smart-picks/block", (req, res) => {
+  const artist = String((req.body && req.body.artist) || "").trim();
+  if (!artist) return res.status(400).json({ error: "artist required" });
+  const canon = canonArtist(artist);
+  if (!canon) return res.status(400).json({ error: "unrecognisable artist name" });
+  if (!labelsDb || !stmtInsertSmartBlock) {
+    return res.status(503).json({ error: "History database unavailable" });
+  }
+  try {
+    stmtInsertSmartBlock.run(canon, artist, Date.now());
+    // Drop it from today's set too, so it disappears on refresh instead of
+    // sitting there until tomorrow's build.
+    labelsDb.prepare("DELETE FROM smart_picks WHERE canon = ?").run(canon);
+    res.json({ ok: true, artist });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -7700,9 +11392,13 @@ app.post("/api/play", async (req, res) => {
 
 // Play or queue a single track of an album.
 // body { offset, track (index into /api/album's tracks), title, zone_or_output_id, kind }
+// album_title / album_subtitle are OPTIONAL and carry the album's own identity,
+// which lets a drifted offset be relocated instead of playing whatever record
+// now sits at that position. Callers that have it should send it.
 app.post("/api/play-track", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
-  const { offset, track, title, zone_or_output_id, kind } = req.body || {};
+  const { offset, track, title, zone_or_output_id, kind,
+          album_title, album_subtitle } = req.body || {};
   const filter = parseFilter(req.body || {});
   if (!Number.isFinite(offset)) return res.status(400).json({ error: "offset required" });
   if (!Number.isInteger(track) || track < 0) return res.status(400).json({ error: "track index required" });
@@ -7711,7 +11407,11 @@ app.post("/api/play-track", async (req, res) => {
     return res.status(400).json({ error: "kind must be play_now, queue or play_next" });
   }
   try {
-    const r = await invokeTrackAction(offset, track, title || "", zone_or_output_id, kind, filter);
+    const expect = album_title
+      ? { title: String(album_title), subtitle: String(album_subtitle || "") }
+      : null;
+    const r = await invokeTrackAction(offset, track, title || "", zone_or_output_id,
+                                      kind, filter, expect);
     res.json({ ok: true, action: r.invoked, track: r.track });
   } catch (e) {
     // stale = the modal's track list no longer matches the library
@@ -7721,6 +11421,13 @@ app.post("/api/play-track", async (req, res) => {
 
 // Play multiple albums: first uses `kind`, subsequent albums are always queued.
 // body { offsets: [N, ...], zone_or_output_id, kind }
+// One play-multi at a time per zone. A 400-album run takes minutes, and the
+// client's fetch has no way to cancel the server side of it — backgrounding
+// the PWA drops the fetch, the button re-enables, and a second tap starts a
+// run whose FIRST album is play_now, wiping the queue the first run is still
+// filling. The two then interleave and the queue order is garbage.
+const playMultiZones = new Set();
+
 app.post("/api/play-multi", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   const { offsets, items, zone_or_output_id, kind } = req.body || {};
@@ -7736,6 +11443,12 @@ app.post("/api/play-multi", async (req, res) => {
   if (!list.length)       return res.status(400).json({ error: "offsets required" });
   if (!zone_or_output_id) return res.status(400).json({ error: "zone_or_output_id required" });
   if (!kind)              return res.status(400).json({ error: "kind required" });
+  if (playMultiZones.has(zone_or_output_id)) {
+    return res.status(409).json({
+      error: "Still filling this zone's queue — let that finish before starting another"
+    });
+  }
+  playMultiZones.add(zone_or_output_id);
   try {
     // First album uses the requested kind (play_now / queue / next).
     // Remaining albums are always "queue", in batches of 4 — each open is
@@ -7761,16 +11474,26 @@ app.post("/api/play-multi", async (req, res) => {
         }
       }
     }
-    if (failed > 0) {
-      return res.status(500).json({
-        error: `Queued ${rest.length - failed} of ${rest.length} albums; ${failed} failed: ${firstError}`
-      });
-    }
-    res.json({ ok: true });
+    // A partial result is a SUCCESS, not a failure: the first album is already
+    // playing and every album that queued is in the queue. Answering 500 threw
+    // all of that away — the caller returned early on !ok and could no longer
+    // tell the user how much of the playlist made it, or that the request had
+    // been truncated at the album cap in the first place. Counts travel instead.
+    res.json({
+      ok: true,
+      queued: list.length - failed,
+      failed,
+      total: list.length,
+      first_error: firstError,
+    });
   } catch (e) {
     // stale = the FIRST album's offset drifted and couldn't be relocated —
     // same 409 contract as /api/album and /api/play.
     res.status(e.stale ? 409 : 500).json({ error: e.message });
+  } finally {
+    // Must release on every path, or one failed run locks the zone out of
+    // multi-album playback until the extension restarts.
+    playMultiZones.delete(zone_or_output_id);
   }
 });
 
@@ -7975,6 +11698,9 @@ app.get("/api/zone-state", (req, res) => {
       is_next_allowed:     !!zone.is_next_allowed,
       is_previous_allowed: !!zone.is_previous_allowed,
       is_seek_allowed:     !!zone.is_seek_allowed,
+      // Shuffle / repeat / Roon Radio, so the now-playing screen can show the
+      // zone's real state instead of guessing from its own last write.
+      settings:            zoneSettings(zone),
       outputs: (zone.outputs || []).map(o => ({
         output_id:    o.output_id,
         display_name: o.display_name,
@@ -8023,6 +11749,326 @@ app.post("/api/control", (req, res) => {
   }
   core.services.RoonApiTransport.control(zone_or_output_id, command, (err) => {
     if (err) return res.status(500).json({ error: typeof err === "string" ? err : JSON.stringify(err) });
+    res.json({ ok: true });
+  });
+});
+
+// Shuffle / repeat / Roon Radio for a zone.
+// body: { zone_or_output_id, shuffle?, loop?, auto_radio? }
+//   shuffle:    boolean
+//   loop:       "disabled" | "loop" (whole queue) | "loop_one" (this track)
+//   auto_radio: boolean — Roon Radio, Roon's own keep-playing feature
+//
+// Roon's change_settings also accepts loop:"next" to cycle server-side; we
+// deliberately don't expose it. The client already knows the current mode from
+// the zone poll, so it sends the concrete state it wants — which means the
+// request says what it does, and a failed call can't leave the UI out of step
+// with the zone.
+const ZONE_LOOP_MODES = ["disabled", "loop", "loop_one"];
+app.post("/api/zone-settings", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  const { zone_or_output_id } = req.body || {};
+  if (!zone_or_output_id) return res.status(400).json({ error: "zone_or_output_id required" });
+
+  const patch = {};
+  if (req.body.shuffle !== undefined) {
+    if (typeof req.body.shuffle !== "boolean") return res.status(400).json({ error: "shuffle must be a boolean" });
+    patch.shuffle = req.body.shuffle;
+  }
+  if (req.body.auto_radio !== undefined) {
+    if (typeof req.body.auto_radio !== "boolean") return res.status(400).json({ error: "auto_radio must be a boolean" });
+    patch.auto_radio = req.body.auto_radio;
+  }
+  if (req.body.loop !== undefined) {
+    if (!ZONE_LOOP_MODES.includes(req.body.loop)) {
+      return res.status(400).json({ error: "invalid loop, allowed: " + ZONE_LOOP_MODES.join(", ") });
+    }
+    patch.loop = req.body.loop;
+  }
+  if (!Object.keys(patch).length) {
+    return res.status(400).json({ error: "one of shuffle, loop, auto_radio required" });
+  }
+
+  // Turning Roon Radio on makes the Random Album Radio stand down for this zone
+  // (lib/radio.js returns null while auto_radio is set), so the two never fight
+  // over the same queue. We don't silently switch the user's own setting off —
+  // we report it so the UI can say what just happened.
+  const zone = zones[zone_or_output_id]
+    || (outputs[zone_or_output_id] && zones[outputs[zone_or_output_id].zone_id])
+    || null;
+  const ownRadioStandsDown = !!(patch.auto_radio === true && zone && radioZones.has(zone.zone_id));
+
+  core.services.RoonApiTransport.change_settings(zone_or_output_id, patch, (err) => {
+    if (err) {
+      const msg = typeof err === "string" ? err : JSON.stringify(err);
+      console.warn(`[zone-settings] failed: ${msg}`);
+      return res.status(500).json({ error: msg });
+    }
+    res.json({ ok: true, random_album_radio_stands_down: ownRadioStandsDown });
+  });
+});
+
+// Group outputs into one synchronised zone.  body: { output_ids: [...] }
+// Roon preserves the FIRST output's zone's queue, so the client sends the zone
+// it wants to keep playing first.
+app.post("/api/group-outputs", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  const ids = req.body && req.body.output_ids;
+  if (!Array.isArray(ids) || ids.length < 2) {
+    return res.status(400).json({ error: "output_ids must be an array of at least 2 output ids" });
+  }
+  if (!ids.every(id => typeof id === "string" && id)) {
+    return res.status(400).json({ error: "output_ids must be non-empty strings" });
+  }
+  if (new Set(ids).size !== ids.length) {
+    return res.status(400).json({ error: "output_ids must not repeat" });
+  }
+  const names = ids.map(id => (outputs[id] && outputs[id].display_name) || id);
+  console.log(`[group-outputs] ${names.join(" + ")}`);
+  core.services.RoonApiTransport.group_outputs(ids, (err) => {
+    if (err) {
+      const msg = typeof err === "string" ? err : JSON.stringify(err);
+      console.warn(`[group-outputs] failed: ${msg}`);
+      return res.status(500).json({ error: msg });
+    }
+    console.log(`[group-outputs] ok`);
+    res.json({ ok: true });
+  });
+});
+
+// Roon's transport errors arrive as bare names ("SourceControlNotFound"). Those
+// are useful in a log and useless in a toast, so the ones a user can actually
+// hit get a sentence that says what it means for them. Anything unmapped falls
+// through unchanged rather than being hidden behind a generic apology.
+// A function rather than a lookup table so the tests exercise THIS mapping
+// instead of a copy injected beside it — the hole that let a v1.6.59 mutation
+// reorder the year-source ranking without a single test noticing.
+function roonErrorText(name) {
+  switch (name) {
+    case "SourceControlNotFound":
+      return "This device didn't accept that from Roon — its source control doesn't offer it.";
+    case "ZoneNotFound":   return "That zone is no longer available.";
+    case "OutputNotFound": return "That output is no longer available.";
+    case "NotAllowed":     return "Roon wouldn't allow that right now.";
+    case "InvalidRequest": return "Roon rejected the request.";
+    case "NetworkError":   return "Lost contact with the Roon Core.";
+    default:               return null;   // unmapped — pass the raw name through
+  }
+}
+// Whether a failed keyed convenience_switch should be retried as the keyless
+// (all-controls) form. Extracted so the rule is testable: only
+// SourceControlNotFound qualifies, and only when we actually addressed a key.
+// Any other error means Roon FOUND the control and refused on its own terms, and
+// retrying as a broadcast would act on outputs the user never tapped.
+function shouldRetryKeyless(roonErrorName, hadControlKey) {
+  return !!hadControlKey && roonErrorName === "SourceControlNotFound";
+}
+
+// The live status of one source control, read from the raw cached Output. Pure
+// so it can be tested; the route passes outputs[output_id] in.
+function controlStatusOf(output, control_key) {
+  const list = (output && Array.isArray(output.source_controls)) ? output.source_controls : [];
+  const sc = list.find(s => s && s.control_key === control_key);
+  return (sc && sc.status) || null;
+}
+
+// `toggle_standby` is the only one of the three transport power calls with NO
+// documented keyless form, so when a keyed toggle is refused with
+// SourceControlNotFound there is no like-for-like retry — we have to pick the
+// keyless call that matches what the user meant by pressing Power:
+//
+//   in standby        -> they meant wake  -> convenience_switch (documented to
+//                                            take a device out of standby)
+//   selected/deselected -> they meant off -> standby
+//
+// Anything else returns null and the error is reported instead. Guessing on an
+// unknown status is how a Power button turns a device the wrong way.
+function keylessStandbyFallback(status) {
+  if (status === "standby") return "wake";
+  if (status === "selected" || status === "deselected") return "standby";
+  return null;
+}
+
+function roonErrorPayload(err) {
+  const name = typeof err === "string" ? err : JSON.stringify(err);
+  const text = roonErrorText(name);
+  // `error` is what the UI shows; `roon_error` keeps the raw name for support.
+  return { error: text || name, roon_error: name };
+}
+
+// Device power for one output's source control.
+// body: { output_id, control_key?, mode? }
+//   mode "toggle"  (default) — flip this control's standby state. Roon defines
+//                   toggle_standby per control, so a control_key is required.
+//   mode "standby" — put every standby-capable control on the output into
+//                    standby. This is the documented behaviour of standby()
+//                    with control_key omitted, and is how "all off" works.
+const STANDBY_MODES = ["toggle", "standby"];
+app.post("/api/output/standby", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  const { output_id, control_key } = req.body || {};
+  const mode = (req.body && req.body.mode) || "toggle";
+  if (!output_id) return res.status(400).json({ error: "output_id required" });
+  if (!STANDBY_MODES.includes(mode)) {
+    return res.status(400).json({ error: "invalid mode, allowed: " + STANDBY_MODES.join(", ") });
+  }
+  if (mode === "toggle" && !control_key) {
+    return res.status(400).json({ error: "control_key required for mode=toggle" });
+  }
+  if (control_key !== undefined && typeof control_key !== "string") {
+    return res.status(400).json({ error: "control_key must be a string" });
+  }
+
+  const t = core.services.RoonApiTransport;
+  const name = (outputs[output_id] && outputs[output_id].display_name) || output_id;
+  const opts = control_key ? { control_key } : {};
+  console.log(`[standby] ${mode} ${name}${control_key ? " (" + control_key + ")" : ""}`);
+  // On a not-found, dump what the Core actually told us about this output's
+  // controls — the only way to see the real key shape, and exactly the moment it
+  // matters. `alreadyDumped` keeps a failure that was dumped before a retry
+  // decision from printing the same block twice.
+  const dumpControls = () => {
+    console.warn("[standby] core reported source_controls:",
+                 JSON.stringify((outputs[output_id] || {}).source_controls || null));
+  };
+  const fail = (err, alreadyDumped) => {
+    const raw = typeof err === "string" ? err : JSON.stringify(err);
+    console.warn(`[standby] failed: ${raw}`);
+    if (!alreadyDumped && raw === "SourceControlNotFound") dumpControls();
+    res.status(500).json(roonErrorPayload(err));
+  };
+
+  if (mode !== "toggle") {
+    return t.standby(output_id, opts, (err) => err ? fail(err) : res.json({ ok: true }));
+  }
+
+  // Keyed toggle first. In production this is the path that works — a WiiM's
+  // device-provided control accepts keyed toggle_standby with the very key it
+  // refuses for convenience_switch, so the two calls resolve differently inside
+  // the Core. The fallback below is cover for devices where it doesn't, not a
+  // workaround for an observed failure on this one.
+  t.toggle_standby(output_id, opts, (err) => {
+    if (!err) return res.json({ ok: true, form: "toggle-keyed" });
+    const raw = typeof err === "string" ? err : JSON.stringify(err);
+    const notFound = raw === "SourceControlNotFound";
+    if (notFound) dumpControls();
+    if (!shouldRetryKeyless(raw, true)) return fail(err, notFound);
+
+    const status = controlStatusOf(outputs[output_id], control_key);
+    const want = keylessStandbyFallback(status);
+    console.warn(`[standby] keyed toggle refused; status=${status || "unknown"} fallback=${want || "none"}`);
+    if (!want) return fail(err, notFound);
+
+    const after = (e2) => e2 ? fail(e2) : res.json({ ok: true, form: "keyless-" + want });
+    if (want === "wake") t.convenience_switch(output_id, {}, after);
+    else                 t.standby(output_id, {}, after);
+  });
+});
+
+// Switch a device's input to Roon, waking it from standby if needed.
+// body: { output_id, control_key? } — control_key omitted switches every
+// control on the output, which is what Roon's own API does.
+app.post("/api/output/convenience-switch", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  const { output_id, control_key } = req.body || {};
+  if (!output_id) return res.status(400).json({ error: "output_id required" });
+  if (control_key !== undefined && typeof control_key !== "string") {
+    return res.status(400).json({ error: "control_key must be a string" });
+  }
+  const name = (outputs[output_id] && outputs[output_id].display_name) || output_id;
+  const t = core.services.RoonApiTransport;
+
+  // Roon defines TWO forms of this call: addressed at one source control by
+  // control_key, or — with the key omitted — at every control on the output.
+  // A real WiiM/Linkplay endpoint answered the keyed form with
+  // SourceControlNotFound while happily reporting that very control_key to us,
+  // so the keyed form is not universally honoured by device-provided source
+  // controls. Rather than pick one and hope, try the keyed form and fall back to
+  // the keyless one, which is the broader request and can only do more.
+  //
+  // The retry rule itself lives in shouldRetryKeyless() so it can be tested.
+  const attempt = (opts, label, onFail) => {
+    console.log(`[convenience-switch] ${name} ${label}`);
+    t.convenience_switch(output_id, opts, (err) => {
+      if (!err) return res.json({ ok: true, form: label });
+      const raw = typeof err === "string" ? err : JSON.stringify(err);
+      console.warn(`[convenience-switch] ${label} failed: ${raw}`);
+      // Dump BEFORE deciding to retry. Behind the retry it never fired at all:
+      // the keyed attempt always retries on a not-found, so the one diagnostic
+      // that explains the failure was unreachable in the only case it existed
+      // for. A recovered failure is still the failure worth recording.
+      if (raw === "SourceControlNotFound") {
+        console.warn("[convenience-switch] core reported source_controls:",
+                     JSON.stringify((outputs[output_id] || {}).source_controls || null));
+      }
+      if (onFail && shouldRetryKeyless(raw, true)) return onFail();
+      res.status(500).json(roonErrorPayload(err));
+    });
+  };
+
+  if (control_key) {
+    attempt({ control_key }, "keyed(" + control_key + ")",
+            () => attempt({}, "keyless-fallback", null));
+  } else {
+    attempt({}, "keyless", null);
+  }
+});
+
+// Pause every zone. No body — Roon's pause_all takes no target.
+app.post("/api/pause-all", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  console.log("[pause-all]");
+  core.services.RoonApiTransport.pause_all((err) => {
+    if (err) {
+      const msg = typeof err === "string" ? err : JSON.stringify(err);
+      console.warn(`[pause-all] failed: ${msg}`);
+      return res.status(500).json({ error: msg });
+    }
+    res.json({ ok: true });
+  });
+});
+
+// Mute or unmute every zone that can be muted.  body: { how: "mute"|"unmute" }
+const MUTE_ALL_MODES = ["mute", "unmute"];
+app.post("/api/mute-all", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  const how = req.body && req.body.how;
+  if (!MUTE_ALL_MODES.includes(how)) {
+    return res.status(400).json({ error: "invalid how, allowed: " + MUTE_ALL_MODES.join(", ") });
+  }
+  console.log(`[mute-all] ${how}`);
+  core.services.RoonApiTransport.mute_all(how, (err) => {
+    if (err) {
+      const msg = typeof err === "string" ? err : JSON.stringify(err);
+      console.warn(`[mute-all] failed: ${msg}`);
+      return res.status(500).json({ error: msg });
+    }
+    res.json({ ok: true });
+  });
+});
+
+// Split outputs back out of their group.  body: { output_ids: [...] }
+app.post("/api/ungroup-outputs", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  const ids = req.body && req.body.output_ids;
+  if (!Array.isArray(ids) || ids.length < 1) {
+    return res.status(400).json({ error: "output_ids must be a non-empty array of output ids" });
+  }
+  if (!ids.every(id => typeof id === "string" && id)) {
+    return res.status(400).json({ error: "output_ids must be non-empty strings" });
+  }
+  if (new Set(ids).size !== ids.length) {
+    return res.status(400).json({ error: "output_ids must not repeat" });
+  }
+  const names = ids.map(id => (outputs[id] && outputs[id].display_name) || id);
+  console.log(`[ungroup-outputs] ${names.join(", ")}`);
+  core.services.RoonApiTransport.ungroup_outputs(ids, (err) => {
+    if (err) {
+      const msg = typeof err === "string" ? err : JSON.stringify(err);
+      console.warn(`[ungroup-outputs] failed: ${msg}`);
+      return res.status(500).json({ error: msg });
+    }
+    console.log(`[ungroup-outputs] ok`);
     res.json({ ok: true });
   });
 });

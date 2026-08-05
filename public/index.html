@@ -88,7 +88,7 @@
         <!-- Qobuz "Q" logomark (Arcticons, CC BY 4.0) — 48-unit viewBox, so the
              3.6 stroke renders at the same visual weight as the 1.8 strokes
              on the neighbouring 24-unit icons. -->
-        <button id="qobuz-toggle" class="icon-btn" aria-label="Qobuz" title="Qobuz">
+        <button id="qobuz-toggle" class="icon-btn hidden" aria-label="Qobuz" title="Qobuz">
           <svg width="20" height="20" viewBox="0 0 48 48" fill="none" stroke="currentColor"
                stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M39.203 39.203A21.43 21.43 0 0 0 45.5 24c0-11.874-9.626-21.5-21.5-21.5S2.5 12.126 2.5 24S12.126 45.5 24 45.5c4.89 0 9.4-1.633 13.012-4.383"/>
@@ -144,6 +144,35 @@
           </svg>
         </button>
       </div>
+      <!-- Multi-select actions. Appears only once something is selected, so it
+           never competes for the right edge with the shuffle button in normal
+           use. `.sel-menu-wrap` is position:relative — the dropdown hangs off
+           it rather than off the topbar, so it stays pinned to the button. -->
+      <div id="select-menu-wrap" class="sel-menu-wrap hidden">
+        <button id="select-menu-btn" class="icon-btn" type="button"
+                aria-haspopup="true" aria-expanded="false" aria-label="Actions for selected items">
+          <span id="select-count" class="sel-count">0</span>
+          <!-- The same three-dots-in-a-circle the playlist screens use (see
+               OVERFLOW_SVG in app.js). This was already an overflow menu — it
+               just wore a chevron, which reads as "expand" rather than "more
+               actions". The count badge stays: it is the only indication of how
+               many items are selected. -->
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.7" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"/>
+            <circle cx="7.6" cy="12" r="1.15" fill="currentColor" stroke="none"/>
+            <circle cx="12" cy="12" r="1.15" fill="currentColor" stroke="none"/>
+            <circle cx="16.4" cy="12" r="1.15" fill="currentColor" stroke="none"/>
+          </svg>
+        </button>
+        <div id="select-menu" class="sel-menu hidden" role="menu">
+          <div class="sel-menu-title" id="select-menu-title"></div>
+          <button class="sel-menu-item" type="button" role="menuitem" data-sel-act="play_now">Play now</button>
+          <button class="sel-menu-item" type="button" role="menuitem" data-sel-act="queue">Add to end of queue</button>
+          <button class="sel-menu-item" type="button" role="menuitem" data-sel-act="add">Add to playlist…</button>
+          <button class="sel-menu-item" type="button" role="menuitem" data-sel-act="clear">Clear selection</button>
+        </div>
+      </div>
       <!-- Reshuffle — shown on the random-album and genre grid screens. -->
       <button id="topbar-refresh" class="icon-btn hidden" aria-label="Shuffle new albums" title="Shuffle">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -185,15 +214,11 @@
           <span>Random albums</span>
         </button>
         <div class="menu-sep"></div>
-        <button class="menu-item" type="button" data-target="filter-toggle">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
-          <span>Filter</span>
-        </button>
         <button class="menu-item" type="button" data-target="labels-toggle">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
           <span>Labels</span>
         </button>
-        <button class="menu-item" type="button" data-target="qobuz-toggle">
+        <button class="menu-item hidden" type="button" data-target="qobuz-toggle" id="menu-item-qobuz">
           <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M39.203 39.203A21.43 21.43 0 0 0 45.5 24c0-11.874-9.626-21.5-21.5-21.5S2.5 12.126 2.5 24S12.126 45.5 24 45.5c4.89 0 9.4-1.633 13.012-4.383"/><circle cx="24" cy="24" r="4.873"/><path d="M32.944 32.944L45.5 45.5"/></svg>
           <span>Qobuz</span>
         </button>
@@ -205,15 +230,28 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5h7a3 3 0 0 1 3 3v11a2.5 2.5 0 0 0-2.5-2.5H2z"/><path d="M22 5h-7a3 3 0 0 0-3 3v11a2.5 2.5 0 0 1 2.5-2.5H22z"/></svg>
           <span>Pitchfork</span>
         </button>
-        <button class="menu-item" type="button" data-target="play-unheard-topbar">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
-          <span>Play something unheard</span>
+        <button class="menu-item" type="button" data-action="smart-picks">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.5-4.5"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>
+          <span>Smart Picks</span>
+        </button>
+        <button class="menu-item" type="button" data-action="smart-playlists">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l2.1 4.6 5 .6-3.7 3.4 1 4.9L12 14.1 7.6 16.5l1-4.9L4.9 8.2l5-.6z"/><line x1="4" y1="20" x2="20" y2="20"/></svg>
+          <span>Dynamic Playlists</span>
+        </button>
+        <button class="menu-item" type="button" data-action="playlists">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="6" x2="14" y2="6"/><line x1="4" y1="12" x2="14" y2="12"/><line x1="4" y1="18" x2="10" y2="18"/><circle cx="17.5" cy="16.5" r="2.5"/><path d="M20 16.5V8l-3 1"/></svg>
+          <span>Playlists</span>
+        </button>
+        <button class="menu-item" type="button" data-action="import-playlist">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          <span>Import a playlist</span>
         </button>
         <div class="menu-sep"></div>
         <button class="menu-item" type="button" data-action="rescan-library">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/></svg>
           <span>Rescan library</span>
         </button>
+        <div class="menu-sep"></div>
         <button class="menu-item" type="button" data-target="settings-toggle">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           <span>Settings</span>
@@ -299,6 +337,13 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
           <h2 class="home-section-title home-section-link" id="home-unplayed-title" role="button" tabindex="0">Not played in 6 months</h2>
           <div id="home-unplayed" class="home-carousel"></div>
         </div>
+        <!-- Smart Picks: six albums a day by artists NOT in the library. Hidden
+             until the first set builds, so a fresh install never shows an empty
+             row. Tapping the header opens the full screen with the reasons. -->
+        <div class="home-section home-section-picks hidden">
+          <h2 class="home-section-title home-section-link" id="home-picks-title" role="button" tabindex="0">Smart Picks</h2>
+          <div id="home-picks" class="home-carousel home-carousel-1row"></div>
+        </div>
         <div class="home-section home-section-random">
           <h2 class="home-section-title home-section-link" id="home-random-title" role="button" tabindex="0">Random albums</h2>
           <div id="home-random" class="home-carousel"></div>
@@ -341,8 +386,6 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
   <div id="album-action-bar" class="label-merge-bar hidden" role="toolbar" aria-label="Album actions">
     <span id="album-action-info" class="label-merge-info"></span>
     <div class="label-merge-actions">
-      <button id="album-play-now-btn" class="action-btn primary" type="button" disabled>Play Now</button>
-      <button id="album-queue-btn" class="action-btn" type="button" disabled>Queue</button>
       <button id="album-action-cancel-btn" class="icon-btn" type="button" aria-label="Cancel selection">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -405,7 +448,8 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
         </div>
         <div class="modal-art">
           <img id="modal-img" alt="">
-          <span id="modal-source" class="album-source local hidden" title="Local files" aria-label="Local files"></span>
+          <span id="modal-source" class="album-source local hidden" title="Local albums" aria-label="Local albums"></span>
+          <span id="modal-quality" class="album-quality hidden"></span>
         </div>
         <div class="modal-info">
           <h2 id="modal-title">—</h2>
@@ -428,6 +472,16 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             </div>
 
             <div class="np-transport">
+              <button class="np-btn np-mode-btn" id="np-shuffle" aria-label="Shuffle" aria-pressed="false">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="16 3 21 3 21 8"/>
+                  <line x1="4" y1="20" x2="21" y2="3"/>
+                  <polyline points="21 16 21 21 16 21"/>
+                  <line x1="15" y1="15" x2="21" y2="21"/>
+                  <line x1="4" y1="4" x2="9" y2="9"/>
+                </svg>
+              </button>
               <button class="np-btn" id="np-prev" aria-label="Previous track" disabled>
                 <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                   <path d="M6 6h2v12H6zM9.5 12l10-6v12z"/>
@@ -446,6 +500,19 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
                   <path d="M16 6h2v12h-2zM4.5 6l10 6-10 6z"/>
                 </svg>
               </button>
+              <!-- Repeat cycles off → whole queue → this track, like Roon.
+                   The "1" badge is DOM text, not an SVG glyph, so it themes and
+                   scales with the rest of the interface. -->
+              <button class="np-btn np-mode-btn" id="np-loop" aria-label="Repeat off">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="17 1 21 5 17 9"/>
+                  <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+                  <polyline points="7 23 3 19 7 15"/>
+                  <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+                </svg>
+                <span class="np-mode-badge hidden" id="np-loop-badge" aria-hidden="true">1</span>
+              </button>
             </div>
 
             <div class="np-secondary">
@@ -461,7 +528,26 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
               <div class="np-popover np-device-popover hidden" id="np-device-popover">
                 <div class="np-popover-title">Play on</div>
                 <div class="np-device-list" id="np-device-list"></div>
+                <button class="np-popover-action" type="button" id="np-group-open">Group zones…</button>
+                <button class="np-popover-action" type="button" id="np-power-open">Device power…</button>
+                <button class="np-popover-action" type="button" id="np-pause-all">Pause all zones</button>
+                <button class="np-popover-action" type="button" id="np-mute-all">Mute all zones</button>
+                <button class="np-popover-action" type="button" id="np-unmute-all">Unmute all zones</button>
               </div>
+
+              <!-- Roon Radio: Roon's own keep-playing-forever feature. Lives
+                   here rather than in the transport row because it changes what
+                   happens to the QUEUE, not how the current queue is played. -->
+              <button class="np-mini-btn" id="np-radio" aria-label="Roon Radio" aria-pressed="false">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="2"/>
+                  <path d="M7.76 16.24a6 6 0 0 1 0-8.49"/>
+                  <path d="M16.24 7.76a6 6 0 0 1 0 8.49"/>
+                  <path d="M4.93 19.07a10 10 0 0 1 0-14.14"/>
+                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                </svg>
+              </button>
 
               <!-- Volume: tap the speaker to reveal the slider (hidden when fixed) -->
               <div class="np-vol">
@@ -582,6 +668,11 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
     <div class="mt-zone-popover hidden" id="mt-zone-popover" role="dialog" aria-label="Play on">
       <div class="np-popover-title">Play on</div>
       <div class="np-device-list" id="mt-zone-list"></div>
+      <button class="np-popover-action" type="button" id="mt-group-open">Group zones…</button>
+      <button class="np-popover-action" type="button" id="mt-power-open">Device power…</button>
+      <button class="np-popover-action" type="button" id="mt-pause-all">Pause all zones</button>
+      <button class="np-popover-action" type="button" id="mt-mute-all">Mute all zones</button>
+      <button class="np-popover-action" type="button" id="mt-unmute-all">Unmute all zones</button>
     </div>
 
     <!-- Roon-style volume sheet: [icon + value] [slider with min/max scale] [− +] -->
@@ -782,6 +873,17 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             <span class="settings-nav-txt">
               <span class="settings-nav-title">Streaming accounts</span>
               <span class="settings-nav-desc">Qobuz &amp; Tidal</span>
+            </span>
+            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+
+          <button class="settings-nav-item" type="button" data-pane="smartpicks">
+            <span class="settings-nav-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.5-4.5"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>
+            </span>
+            <span class="settings-nav-txt">
+              <span class="settings-nav-title">Smart Picks</span>
+              <span class="settings-nav-desc">Daily discoveries &amp; schedule</span>
             </span>
             <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
@@ -1059,6 +1161,53 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             <span id="theme-apply-hint" class="theme-apply-hint"></span>
             <button id="theme-apply" class="action-btn primary" type="button" disabled>Apply</button>
           </div>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Show sample rate on artwork <button class="settings-info-btn" data-info="Puts the bit depth and sample rate on every album tile — 24/96, 16/44.1, or the file type for a lossy one. Read from your own files during the library scan, and for albums you have no file for, from the Qobuz or TIDAL account you've connected in Settings. Qobuz states an exact bit depth and rate; TIDAL states a tier, so those read Hi-Res or Lossless. Hi-res albums are highlighted. An album from neither shows nothing rather than a guess." aria-label="Info">ⓘ</button></span>
+            <label class="switch">
+              <input type="checkbox" id="quality-toggle" aria-label="Show sample rate on artwork">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Smart Picks -->
+      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="smartpicks">
+        <div class="settings-pane-head">
+          <button class="settings-back" type="button" data-settings-back aria-label="Back to settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h2>Smart Picks</h2>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Build the day's picks at <button class="settings-info-btn" data-info="The hour the daily build runs, in this server's local time. It analyses your library, asks ListenBrainz and MusicBrainz for artists you don't own, and adds the five genre-based picks to your streaming library so Roon can import them. Early morning keeps all of that away from Roon's own work and gives Roon the rest of the night to import. If the extension is off at that hour, the build runs the next time it starts." aria-label="Info">ⓘ</button></span>
+            <select id="picks-hour" class="settings-select" aria-label="Smart Picks build hour"></select>
+          </div>
+          <div class="settings-note">Nothing here touches your Roon Core — the analysis reads the library snapshot the extension already keeps.</div>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Add the five genre picks automatically <button class="settings-info-btn" data-info="Favourites the five genre-based picks in your Qobuz or TIDAL library as soon as they are chosen, so Roon imports them overnight and they are ready to play by morning. The stretch pick is never added automatically — that one is always yours to accept or reject. Turn this off and all six become Add / Not for me." aria-label="Info">ⓘ</button></span>
+            <label class="switch">
+              <input type="checkbox" id="picks-autoadd" aria-label="Add the five genre picks automatically">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+          <div class="settings-note" id="picks-service-note"></div>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Rebuild today's picks now</span>
+            <button id="picks-rebuild" class="settings-update-btn" type="button">Rebuild</button>
+          </div>
+          <div class="settings-note">Discards today's set and chooses six again. Takes a minute or two.</div>
         </div>
       </div>
 

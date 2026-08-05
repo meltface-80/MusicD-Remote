@@ -61,42 +61,33 @@ const DRIVER = `
     return { sort: p.get("sort"), dir: p.get("dir"), seed: p.get("seed") };
   }
   var bar = function () { return document.getElementById("library-controls"); };
-  var dirBtn = function () { return bar().querySelector(".lib-dir-btn"); };
-  var sortPill = function () { return bar().querySelectorAll(".lib-pill")[0]; };
-  function pillValue() { return sortPill().querySelector(".lib-pill-value").textContent; }
+  var sortBtn  = function () { return bar().querySelector(".lib-ctl-sort"); };
+  var focusBtn = function () { return bar().querySelector(".lib-ctl-focus"); };
+  function pillValue() { return sortBtn().querySelector(".lib-ctl-text").textContent; }
+  function rowArrow()  { return sortBtn().querySelector(".lib-ctl-arrow").textContent; }
 
   document.getElementById("home-library-title").click();
   await window.__sleep(400);
 
   T("controls_present", !!bar() && !bar().classList.contains("hidden"));
-  T("pill_count", bar().querySelectorAll(".lib-pill").length);
-  T("dir_btn_present", !!dirBtn());
+  T("ctl_count", bar().querySelectorAll(".lib-ctl").length);
+  // v1.7.35: Roon has no separate direction button — direction is a property of
+  // the sort and lives inside the sort menu. A stray arrow BUTTON here is the
+  // non-Roon part of the old row coming back.
+  T("legacy_dir_btn_count", bar().querySelectorAll(".lib-dir-btn").length);
+  T("legacy_pill_count", bar().querySelectorAll(".lib-pill").length);
+  // Focus on the left, Sort on the right — the order Roon uses.
+  T("ctl_order", Array.prototype.map.call(bar().querySelectorAll(".lib-ctl"),
+    function (b) { return b.classList.contains("lib-ctl-focus") ? "focus" : "sort"; }));
+  T("focus_has_chevron", !!focusBtn().querySelector(".lib-ctl-chevron"));
 
   // ---- default state ------------------------------------------------------
   T("default_pill", pillValue());
-  T("default_arrow", dirBtn().textContent);
+  T("default_arrow", rowArrow());
   T("default_query", lastQuery());
 
-  // ---- one tap reverses, another puts it back -----------------------------
-  // Focus it first: the arrow is a repeat-tap control, and the rebuild that
-  // follows each tap replaces the very button that was pressed.
-  dirBtn().focus();
-  T("focus_before_tap", document.activeElement.className);
-  dirBtn().click();
-  await window.__sleep(250);
-  T("after_one_tap_arrow", dirBtn().textContent);
-  T("after_one_tap_query", lastQuery());
-  T("focus_after_tap", document.activeElement.className);
-  T("focus_survives_tap", document.activeElement === dirBtn());
-  T("arrow_aria_after_tap", dirBtn().getAttribute("aria-label"));
-
-  dirBtn().click();
-  await window.__sleep(250);
-  T("after_two_taps_arrow", dirBtn().textContent);
-  T("after_two_taps_query", lastQuery());
-
   // ---- the sheet: only the selected row carries an arrow -------------------
-  function openSort() { sortPill().click(); }
+  function openSort() { sortBtn().click(); }
   function sheetRows() {
     return Array.prototype.slice.call(document.querySelectorAll(".lib-sort-row"));
   }
@@ -148,14 +139,19 @@ const DRIVER = `
   await window.__sleep(300);
   T("year_sheet_closed", !document.querySelector(".lib-sheet"));
   T("year_pill", pillValue());
-  T("year_arrow", dirBtn().textContent);
+  T("year_arrow", rowArrow());
   T("year_query", lastQuery());
-  T("year_arrow_title", dirBtn().title);
+  T("year_row_aria", sortBtn().getAttribute("aria-label"));
 
-  // Newest→oldest and oldest→newest are both reachable from that arrow.
-  dirBtn().click();
-  await window.__sleep(250);
-  T("year_reversed_arrow", dirBtn().textContent);
+  // Both directions are still reachable — through the sheet, by re-tapping the
+  // selected row, which is where Roon puts it.
+  openSort();
+  await window.__sleep(200);
+  rowByLabel("Release year").click();
+  await window.__sleep(300);
+  closeSheet();
+  await window.__sleep(150);
+  T("year_reversed_arrow", rowArrow());
   T("year_reversed_query", lastQuery());
 
   // ---- Most played defaults to descending ---------------------------------
@@ -165,7 +161,7 @@ const DRIVER = `
   rowByLabel("Most played").click();
   await window.__sleep(300);
   T("plays_query", lastQuery());
-  T("plays_arrow", dirBtn().textContent);
+  T("plays_arrow", rowArrow());
 
   // ---- Random has no direction: the slot becomes a reshuffle --------------
   openSort();
@@ -173,10 +169,13 @@ const DRIVER = `
   rowByLabel("Random").click();
   await window.__sleep(300);
   T("random_pill", pillValue());
-  T("random_is_shuffle", dirBtn().classList.contains("is-shuffle"));
-  T("random_btn_label", dirBtn().getAttribute("aria-label"));
+  // Random has no direction, so the row's arrow slot carries the reshuffle
+  // glyph instead of an arrow that would mean nothing.
+  T("random_row_glyph", rowArrow());
   var seedBefore = lastQuery().seed;
-  dirBtn().click();
+  openSort();
+  await window.__sleep(200);
+  rowByLabel("Random").click();
   await window.__sleep(300);
   var seedAfter = lastQuery().seed;
   T("random_reshuffled", !!seedBefore && !!seedAfter && seedBefore !== seedAfter);
@@ -202,10 +201,17 @@ test("Library sort: one arrow drives all four orderings (v1.6.58)",
     });
     harness.assertNoPageError(assert, r);
 
-    await t.test("the controls render as Sort | arrow | Focus", () => {
+    await t.test("the row is Roon's: Focus left, Sort right, nothing between", () => {
       assert.equal(r.controls_present, true);
-      assert.equal(r.pill_count, 2);
-      assert.equal(r.dir_btn_present, true, "the direction arrow never rendered");
+      assert.equal(r.ctl_count, 2, "the row should hold exactly two controls");
+      assert.deepEqual(r.ctl_order, ["focus", "sort"]);
+      assert.equal(r.focus_has_chevron, true,
+        "Focus reads as a way INTO a screen, so it carries a chevron");
+      assert.equal(r.legacy_dir_btn_count, 0,
+        "the separate direction arrow is back — Roon has no such button; " +
+        "direction belongs to the sort and lives in the sort menu");
+      assert.equal(r.legacy_pill_count, 0,
+        "the old boxed pills are back — this row is text controls now");
     });
 
     await t.test("the old wordy direction row is gone", () => {
@@ -217,33 +223,19 @@ test("Library sort: one arrow drives all four orderings (v1.6.58)",
 
     await t.test("it opens on Album name, A→Z", () => {
       assert.equal(r.default_pill, "Album name");
+      // The arrow is still SHOWN — it just isn't a button any more. Dropping it
+      // from the row would leave no way to tell A→Z from Z→A without opening
+      // the sheet.
       assert.equal(r.default_arrow, "↑");
       assert.equal(r.default_query.sort, "album");
       assert.equal(r.default_query.dir, "asc");
     });
 
-    await t.test("one tap reverses and a second tap puts it back", () => {
-      assert.equal(r.after_one_tap_arrow, "↓");
-      assert.equal(r.after_one_tap_query.dir, "desc",
-        "the arrow flipped on screen but the request still asked for the old " +
-        "direction — the control is lying about what it did");
-      assert.equal(r.after_two_taps_arrow, "↑");
-      assert.equal(r.after_two_taps_query.dir, "asc");
-    });
-
-    await t.test("the arrow keeps focus across its own rebuild", () => {
-      assert.equal(r.focus_before_tap, "lib-dir-btn");
-      assert.equal(r.focus_survives_tap, true,
-        "tapping the arrow rebuilds the controls row and replaces the button " +
-        "that was just pressed — without restoring focus, one Enter reverses " +
-        "the order and the next does nothing because focus fell to <body>");
-      assert.equal(r.arrow_aria_after_tap, "Reverse order — currently Z → A",
-        "the refocused button must state the NEW direction — that is what a " +
-        "screen reader announces when focus lands on it");
-    });
-
     await t.test("only the selected row carries an arrow", () => {
-      assert.equal(r.sheet_row_count, 6);
+      // 7 since v1.7.31 added "Recently added". Asserted as a count rather
+      // than a list because this test is about the ARROW, not the vocabulary —
+      // libSortIds() is what pins the ids, in the unit suite.
+      assert.equal(r.sheet_row_count, 7);
       const filled = r.sheet_arrows.filter(Boolean);
       assert.equal(filled.length, 1,
         `expected exactly one arrow in the sheet, got ${JSON.stringify(r.sheet_arrows)}`);
@@ -266,8 +258,9 @@ test("Library sort: one arrow drives all four orderings (v1.6.58)",
       assert.equal(r.year_arrow, "↓");
       assert.equal(r.year_query.sort, "year");
       assert.equal(r.year_query.dir, "desc");
-      assert.equal(r.year_arrow_title, "Newest first",
-        "the arrow's tooltip must say what it means for THIS sort");
+      assert.equal(r.year_row_aria, "Sort — Release year, Newest first",
+        "the control's accessible name must say what the direction means for " +
+        "THIS sort — the arrow glyph alone says nothing to a screen reader");
       assert.equal(r.year_reversed_arrow, "↑");
       assert.equal(r.year_reversed_query.dir, "asc");
     });
@@ -280,11 +273,10 @@ test("Library sort: one arrow drives all four orderings (v1.6.58)",
       assert.equal(r.plays_arrow, "↓");
     });
 
-    await t.test("Random swaps the arrow for a reshuffle", () => {
+    await t.test("Random shows a reshuffle glyph and re-tapping reshuffles", () => {
       assert.equal(r.random_pill, "Random");
-      assert.equal(r.random_is_shuffle, true,
-        "Random has no direction — an arrow there would do nothing");
-      assert.equal(r.random_btn_label, "Shuffle again");
+      assert.equal(r.random_row_glyph, "⟳",
+        "Random has no direction — an arrow there would say something false");
       assert.equal(r.random_reshuffled, true, "the reshuffle sent the same seed again");
     });
 
@@ -319,9 +311,10 @@ const V1_DRIVER = `
 
   var bar = document.getElementById("library-controls");
   T("booted", !!bar);
-  T("pill", bar.querySelectorAll(".lib-pill")[0].querySelector(".lib-pill-value").textContent);
-  T("arrow", bar.querySelector(".lib-dir-btn").textContent);
-  T("focus_pill", bar.querySelectorAll(".lib-pill")[1].querySelector(".lib-pill-value").textContent);
+  T("pill", bar.querySelector(".lib-ctl-sort .lib-ctl-text").textContent);
+  T("arrow", bar.querySelector(".lib-ctl-sort .lib-ctl-arrow").textContent);
+  // The Focus control shows a COUNT of active filters, not their names.
+  T("focus_badge", (bar.querySelector(".lib-ctl-focus .lib-ctl-badge") || {}).textContent);
 
   var hits = window.__calls.filter(function (u) { return u.indexOf("/api/library/albums") > -1; });
   var p = new URLSearchParams((hits[hits.length - 1] || "").split("?")[1] || "");
@@ -363,7 +356,7 @@ test("Library sort: a v1.6.57 saved view migrates without breaking (v1.6.58)",
       assert.deepEqual(r.query.decade, ["1990"]);
       assert.deepEqual(r.query.source, ["local"]);
       assert.equal(r.query.played, "never");
-      assert.equal(r.focus_pill, "3 active");
+      assert.equal(r.focus_badge, "3");
     });
 
     await t.test("the blob is rewritten at the new version, so this runs once", () => {
@@ -387,8 +380,8 @@ function v1Case(name, blob, driverExtra) {
     await window.__sleep(400);
     var bar = document.getElementById("library-controls");
     T("booted", !!bar);
-    T("pill", bar.querySelectorAll(".lib-pill")[0].querySelector(".lib-pill-value").textContent);
-    T("arrow", bar.querySelector(".lib-dir-btn").textContent);
+    T("pill", bar.querySelector(".lib-ctl-sort .lib-ctl-text").textContent);
+    T("arrow", bar.querySelector(".lib-ctl-sort .lib-ctl-arrow").textContent);
     var hits = window.__calls.filter(function (u) { return u.indexOf("/api/library/albums") > -1; });
     var p = new URLSearchParams((hits[hits.length - 1] || "").split("?")[1] || "");
     T("query", { sort: p.get("sort"), dir: p.get("dir"),

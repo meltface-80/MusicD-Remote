@@ -32,19 +32,35 @@
   function setModalSource(album) {
     if (!modalSource) return;
     const kind = album && (album.source || (album.local ? "local" : null));
-    const label = { local: "Local files", qobuz: "Qobuz", tidal: "TIDAL" }[kind];
+    const label = { local: "Local albums", qobuz: "Qobuz", tidal: "TIDAL" }[kind];
     modalSource.className = "album-source" + (label ? " " + kind : " hidden");
     if (label) { modalSource.title = label; modalSource.setAttribute("aria-label", label); }
+    // Same badge as the tiles, on the album's own artwork. Cleared on every
+    // open for the same reason: a previous album's rate lingering on a new
+    // cover would be a confident, wrong statement about the file.
+    const mq = document.getElementById("modal-quality");
+    if (!mq) return;
+    const q = album && album.quality;
+    mq.className = "album-quality" + (q ? (album.hires ? " is-hires" : "") : " hidden");
+    mq.textContent = q || "";
+    if (q) {
+      const words = /\//.test(q) ? q.split("/")[0] + "-bit, " + q.split("/")[1] + " kHz" : q;
+      mq.title = words;
+      mq.setAttribute("aria-label", words);
+    }
   }
   const modalTitle  = document.getElementById("modal-title");
   const modalSub    = document.getElementById("modal-subtitle");
   const modalActs   = document.getElementById("modal-actions");
   const modalTracks = document.getElementById("modal-tracks");
 
+  const selMenuWrap          = document.getElementById("select-menu-wrap");
+  const selMenuBtn           = document.getElementById("select-menu-btn");
+  const selMenu              = document.getElementById("select-menu");
+  const selMenuTitle         = document.getElementById("select-menu-title");
+  const selCount             = document.getElementById("select-count");
   const albumActionBar       = document.getElementById("album-action-bar");
   const albumActionInfo      = document.getElementById("album-action-info");
-  const albumPlayNowBtn      = document.getElementById("album-play-now-btn");
-  const albumQueueBtn        = document.getElementById("album-queue-btn");
   const albumActionCancelBtn = document.getElementById("album-action-cancel-btn");
 
   let currentAlbum = null;         // {offset,title,subtitle,image_key}
@@ -69,6 +85,44 @@
   let labelsActive = false;        // viewing the record-label browser?
   let unplayedWallActive = false;  // viewing the full "Not played in 6 months" grid?
   let libraryWallActive = false;   // viewing the full A-Z library grid?
+  // Declared up here with the other view flags, NOT beside showPlaylists():
+  // showHome() and enterFullWall() read them and both can run during boot,
+  // which with a `let` further down the file is a ReferenceError, not a
+  // harmless undefined (CLAUDE.md: declaration before use).
+  let smartWallActive = false;      // viewing the smart-playlist wall?
+  let smartDetailActive = false;    // viewing one smart playlist's tracks?
+  let smartSeq = 0;                 // orphans in-flight smart-playlist fetches
+  let userPlDetailActive = false;   // viewing one stored playlist?
+  let userPlSeq = 0;                // orphans in-flight stored-playlist fetches
+  let playlistsActive = false;      // viewing the Roon playlist list?
+  let playlistDetailActive = false; // viewing one playlist's tracks?
+  let playlistSeq = 0;              // orphans in-flight playlist fetches
+  let smartPicksActive = false;     // viewing the Smart Picks screen?
+  let smartPicksSeq = 0;            // orphans in-flight Smart Picks fetches
+  // How long a report about a long-running queue fill stays up (vs showToast's
+  // 2.4s default). Declared here rather than beside showToast() for the same
+  // reason as the flags above — a `const` further down the file is a TDZ
+  // ReferenceError to anything that reads it first.
+  const TOAST_REPORT_MS = 9000;
+  // Most albums one Play now / Queue / Send to Roon can take. Matches the
+  // server's ceiling in /api/smart-playlist/albums — asked for explicitly so
+  // the server's 100 default can't silently apply, which is exactly what made
+  // a 1,179-album playlist queue 100 and report success (v1.7.17).
+  const SMART_SEND_MAX = 400;
+  // Most albums a Share will expand before it stops. Each one costs ~5 Roon
+  // browse calls to read its tracks, so this is a time budget, not a taste
+  // judgement: 100 albums is roughly 500 calls. The sheet always reports what
+  // it left out (v1.7.17's lesson — a silent cap reads as success).
+  const SHARE_ALBUM_MAX = 100;
+  // Set by addLongPress and consumed by the very next click, so a long press
+  // doesn't also fire the element's ordinary tap handler.
+  let longPressAte = false;
+  // Track multi-select inside the album view. Declared with the other view
+  // flags rather than beside the album-modal code: closeModal() reads them
+  // during boot-time teardown, and a `let` further down the file is a
+  // ReferenceError there, not a harmless undefined.
+  let trackSelectMode = false;
+  let trackSelected = [];          // [{index,title}] within the open album
   let albumSelectMode = false;
   let albumSelected = [];          // [{offset,title,subtitle}] albums chosen in select mode
   // The filter that the currently-open album modal belongs to. Usually the
@@ -278,6 +332,7 @@
   const homeRandom   = document.getElementById("home-random");
   const homeLibrary  = document.getElementById("home-library");
   const homeLotw     = document.getElementById("home-lotw");
+  const homePicks    = document.getElementById("home-picks");
   const homeGenres   = document.getElementById("home-genres");
   const topbarBack   = document.getElementById("topbar-back");
   const topbarRefresh = document.getElementById("topbar-refresh");
@@ -285,6 +340,10 @@
   let homeSectionsLoaded = false;
   let homeLotwLoaded = false;   // set once the label-of-the-week row populates
   let homeLibraryLoaded = false; // set once the Library row populates
+  // Smart Picks are built once a day on the server. The row is retried on each
+  // Home visit until it populates (the first build runs in the background and
+  // can take a minute), then left alone — the set does not change again today.
+  let homePicksDay = "";
 
   // Topbar chrome per view: Back button (off Home), Refresh button (random /
   // genre grids), and the Search box (Home only, beside the hamburger).
@@ -299,6 +358,7 @@
     { const c = document.getElementById("library-controls"); if (c) c.classList.add("hidden"); }
     unplayedWallActive = false;
     libraryWallActive = false;
+    leavePlaylistScreens();
     if (window.__clearSearchIfActive) window.__clearSearchIfActive();  // drop stale search results
     if (window.__exitLabels) window.__exitLabels();   // leave the labels browser if active
     // Discard, don't restore: this function is establishing its own screen and
@@ -336,6 +396,10 @@
     // ready on the first visit — retry each visit until it populates, then stop.
     if (!homeLotwLoaded) loadHomeLabelOfWeek();
     if (!homeLibraryLoaded) loadHomeLibrary();
+    // Smart Picks change at local midnight. Comparing the day the row was built
+    // for against today is what makes a device left open overnight pick up the
+    // new set — a plain "loaded once" flag would show yesterday's until reload.
+    if (homePicksDay !== localDayKey()) loadHomeSmartPicks();
     if (!homeSectionsLoaded) loadHomeGenres();
   }
   // Reveal the album wall. opts.loadIfEmpty loads a fresh wall only when it has
@@ -343,6 +407,7 @@
   // don't leave an empty grid behind, without racing actions that render their
   // own content, e.g. labels/search).
   function showWall(opts) {
+    leavePlaylistScreens();   // this screen owns the grid now
     { const c = document.getElementById("library-controls"); if (c) c.classList.add("hidden"); }
     unplayedWallActive = false;
     libraryWallActive = false;
@@ -397,7 +462,10 @@
   // A row already carries real content (tiles or genre cards), so a background
   // revalidation can swap fresh data in without first flashing "Loading…" over
   // the cached content the user is already looking at.
-  const rowHasContent = (el) => !!(el && el.querySelector(".album, .home-genre-card"));
+  // Smart Picks tiles are .pick-card, not .album — they carry no offset and are
+  // never ordinary album tiles — so that class has to be named here or a
+  // hydrated picks row reads as empty and gets blanked.
+  const rowHasContent = (el) => !!(el && el.querySelector(".album, .home-genre-card, .pick-card"));
 
   // Build a Home tile that always opens full-library (filter: null) so its
   // offset resolves even when a genre filter was last active.
@@ -405,6 +473,45 @@
     const tile = buildAlbumTile(a, () => openAlbum(a, { source: "home", filter: null }));
     if (extraClass) tile.classList.add(extraClass);
     return tile;
+  }
+
+  // The action that used to live in the side menu, as the first tile of the
+  // "Not played" row. It reuses .album so the grid/carousel sizing, the hover
+  // state and the art aspect ratio all come for free — only the inside of the
+  // art square differs.
+  function buildUnheardTile() {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "album home-unheard-tile";
+    btn.id = "home-unheard-tile";
+    btn.setAttribute("aria-label", "Play something you haven't heard");
+
+    const art = document.createElement("div");
+    art.className = "album-art-wrap unheard-art";
+    const glyph = document.createElement("span");
+    glyph.className = "unheard-glyph";
+    glyph.setAttribute("aria-hidden", "true");
+    glyph.textContent = "✧";
+    art.appendChild(glyph);
+    btn.appendChild(art);
+
+    const meta = document.createElement("div");
+    meta.className = "album-meta";
+    const t = document.createElement("div");
+    t.className = "album-title";
+    t.textContent = "Play something unheard";
+    const s = document.createElement("div");
+    s.className = "album-artist";
+    s.textContent = "Surprise me";
+    meta.appendChild(t); meta.appendChild(s);
+    btn.appendChild(meta);
+
+    // One implementation, two triggers: the request, the zone check and the
+    // spin all live in playUnheard, which spins whichever control was pressed.
+    btn.addEventListener("click", () => {
+      if (window.__playUnheard) window.__playUnheard(btn);
+    });
+    return btn;
   }
 
   // Render helper shared by the live loader and the instant-open cache repaint.
@@ -416,6 +523,12 @@
       return;
     }
     const frag = document.createDocumentFragment();
+    // "Play something unheard" leads the row it belongs to: this carousel IS
+    // the unheard albums, so the action and the row mean the same thing, and
+    // it sits at the top of Home without needing a place of its own. Built as
+    // a tile so it inherits the carousel's sizing on every screen rather than
+    // carrying breakpoints of its own.
+    frag.appendChild(buildUnheardTile());
     if (aotd) {
       const tile = homeTile(aotd, "home-aotd");
       const wrap = tile.querySelector(".album-art-wrap");
@@ -538,6 +651,294 @@
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Smart Picks — six albums a day by artists NOT in the library.
+  //
+  // These albums are NOT in Roon, so they have no offset and cannot be played
+  // or queued. The only action is Add, which favourites the album on the
+  // connected streaming service; Roon imports it and it becomes playable on the
+  // next sync. That is why this uses its own card rather than homeTile(), whose
+  // tap handlers all assume an offset into the albums hierarchy.
+  // -------------------------------------------------------------------------
+
+  // Today, in the viewer's own timezone.
+  //
+  // This is deliberately NOT compared against the server's `day`. The container
+  // sets no TZ and runs UTC, so for anyone east or west of Greenwich the two
+  // strings differ for part of every day — and the guard below would then be
+  // permanently true, refetching and re-rendering the row on every Back tap.
+  // "Has the day rolled over" is a question about the VIEWER's midnight, so the
+  // client answers it with its own clock and stores its own key.
+  function localDayKey() {
+    const d = new Date();
+    const p = (n) => (n < 10 ? "0" + n : String(n));
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+  }
+
+  function smartPickAddLabel(added) { return added ? "✓ Added" : "＋ Add"; }
+
+  // Favourite a pick's album on whichever service it came from. On success the
+  // button latches to Added rather than toggling back off: this is a one-way
+  // "put it in my library" action, and an accidental second tap that silently
+  // un-favourited it would be much worse than a no-op.
+  async function addSmartPick(pick, button) {
+    if (!pick.album_id || !pick.service) {
+      showToast("No streaming album to add", "error");
+      return;
+    }
+    const before = button.textContent;
+    button.disabled = true;
+    button.textContent = "…";
+    try {
+      const r = await fetch("/api/" + pick.service + "/favorite", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ album_id: pick.album_id })
+      });
+      const j = await r.json();
+      if (j && j.ok) {
+        // Deliberately not just "Added": the album is in the streaming library
+        // now, but Roon imports on its own schedule, and the first version's
+        // bare "Added" left people wondering why they still could not play it.
+        button.textContent = "✓ Added — waiting for Roon";
+        button.classList.add("is-done");
+        button.disabled = true;
+        button.dataset.added = "1";
+        showToast("Added to " + (pick.service === "tidal" ? "TIDAL" : "Qobuz") +
+                  " — Roon will import it on its next sync", "ok");
+      } else {
+        button.textContent = before;
+        button.disabled = false;
+        showToast((j && j.error) || "Couldn't add that album", "error");
+      }
+    } catch (e) {
+      button.textContent = before;
+      button.disabled = false;
+      showToast("Failed: " + e.message, "error");
+    }
+  }
+
+  // "Not for me" — permanent, and only ever from an explicit tap. Silence is
+  // never treated as rejection: the whole premise is albums the user would not
+  // otherwise reach for, so a pick they simply ignored has to be allowed back.
+  async function blockSmartPick(pick, card) {
+    try {
+      const r = await fetch("/api/smart-picks/block", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ artist: pick.artist })
+      });
+      const j = await r.json();
+      if (j && j.ok) {
+        if (card && card.parentNode) card.parentNode.removeChild(card);
+        showToast("Won't suggest " + pick.artist + " again", "ok");
+      } else {
+        showToast((j && j.error) || "Couldn't save that", "error");
+      }
+    } catch (e) {
+      showToast("Failed: " + e.message, "error");
+    }
+  }
+
+  // One pick. `full` adds the reason line and the action buttons — the Home
+  // carousel stays a plain tile so it reads like the rows around it.
+  function smartPickCard(pick, full) {
+    const card = document.createElement("div");
+    card.className = "pick-card" + (full ? " pick-card-full" : "") +
+                     (pick.kind === "stretch" ? " pick-card-stretch" : "");
+    const art = document.createElement("div");
+    art.className = "pick-art";
+    if (pick.image) {
+      const img = document.createElement("img");
+      img.loading = "lazy";
+      img.alt = "";
+      img.src = pick.image;
+      art.appendChild(img);
+    }
+    if (pick.kind === "stretch") {
+      const flag = document.createElement("span");
+      flag.className = "pick-flag";
+      flag.textContent = "Stretch";
+      art.appendChild(flag);
+    }
+    card.appendChild(art);
+
+    const meta = document.createElement("div");
+    meta.className = "pick-meta";
+    const artist = document.createElement("div");
+    artist.className = "pick-artist";
+    artist.textContent = pick.artist;
+    meta.appendChild(artist);
+    const album = document.createElement("div");
+    album.className = "pick-album";
+    album.textContent = pick.album || "";
+    meta.appendChild(album);
+    if (full && pick.reason) {
+      const why = document.createElement("div");
+      why.className = "pick-reason";
+      why.textContent = pick.reason;
+      meta.appendChild(why);
+    }
+    card.appendChild(meta);
+
+    if (full) {
+      const actions = document.createElement("div");
+      actions.className = "pick-actions";
+
+      // Three states, and which one a pick is in is entirely about whether Roon
+      // has it yet:
+      //
+      //   PLAY     — Roon has imported it, so it has an offset and every
+      //              ordinary play route works. This is where the five adjacent
+      //              picks should be by morning.
+      //   WAITING  — favourited on the service but not imported yet. Roon
+      //              decides when, so there is nothing to press.
+      //   ADD      — not in the streaming library. The stretch pick lives here
+      //              permanently, because it is the one to accept or reject.
+      if (pick.offset !== null && pick.offset !== undefined) {
+        const play = document.createElement("button");
+        play.type = "button";
+        play.className = "pick-add pick-play";
+        play.textContent = "▶ Play";
+        play.addEventListener("click", () => openAlbum({
+          offset:    pick.offset,
+          // Roon's OWN strings for the album, not Qobuz's — the play routes
+          // check identity against the snapshot, and an edition suffix that
+          // differs would be refused as a stale offset.
+          title:     pick.library_title || pick.album || "",
+          subtitle:  pick.library_subtitle || pick.artist || "",
+          image_key: pick.image_key || null
+        }, { filter: null }));
+        actions.appendChild(play);
+      } else if (pick.added) {
+        const wait = document.createElement("button");
+        wait.type = "button";
+        wait.className = "pick-add is-done";
+        wait.disabled = true;
+        wait.textContent = "✓ Added — waiting for Roon";
+        actions.appendChild(wait);
+      } else {
+        const add = document.createElement("button");
+        add.type = "button";
+        add.className = "pick-add";
+        add.textContent = smartPickAddLabel(false);
+        add.addEventListener("click", () => addSmartPick(pick, add));
+        actions.appendChild(add);
+      }
+
+      const nope = document.createElement("button");
+      nope.type = "button";
+      nope.className = "pick-block";
+      nope.textContent = "Not for me";
+      nope.addEventListener("click", () => blockSmartPick(pick, card));
+      actions.appendChild(nope);
+      card.appendChild(actions);
+    } else {
+      // On Home the whole tile opens the full screen, where the reason and the
+      // actions live. A tile that did nothing on tap would read as broken.
+      card.setAttribute("role", "button");
+      card.tabIndex = 0;
+      // A pick Roon already has behaves like any other album tile; one it does
+      // not opens the Smart Picks screen, where Add and the reason live.
+      const open = () => {
+        if (pick.offset !== null && pick.offset !== undefined) {
+          openAlbum({
+            offset:    pick.offset,
+            title:     pick.library_title || pick.album || "",
+            subtitle:  pick.library_subtitle || pick.artist || "",
+            image_key: pick.image_key || null
+          }, { filter: null });
+        } else {
+          showSmartPicks();
+        }
+      };
+      card.addEventListener("click", open);
+      card.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+      });
+    }
+    return card;
+  }
+
+  function renderHomePicks(picks) {
+    if (!homePicks) return false;
+    const sec = homePicks.closest(".home-section");
+    if (!picks || !picks.length) {
+      // Nothing built yet. Hide the section rather than show an empty row —
+      // the first build runs in the background and may take a minute.
+      if (sec) sec.classList.add("hidden");
+      return false;
+    }
+    if (sec) sec.classList.remove("hidden");
+    homePicks.innerHTML = "";
+    const frag = document.createDocumentFragment();
+    for (const p of picks) frag.appendChild(smartPickCard(p, false));
+    homePicks.appendChild(frag);
+    return true;
+  }
+
+  async function loadHomeSmartPicks() {
+    if (!homePicks) return;
+    try {
+      const r = await fetch("/api/smart-picks");
+      if (!r.ok) return;   // 503 while pairing / 500 — retried on the next visit
+      const j = await r.json();
+      const picks = (j && j.picks) || [];
+      if (picks.length) {
+        renderHomePicks(picks);
+        homePicksDay = localDayKey();   // our own key — see localDayKey
+      } else if (!rowHasContent(homePicks)) {
+        // Genuinely nothing yet (the build runs in the background) and no
+        // cached row to keep — hide the section rather than leave an empty one.
+        renderHomePicks([]);
+      }
+    } catch (e) {
+      // Transient — the row simply stays hidden and is retried next visit.
+      // Silence is safe here because nothing was replaced or lost.
+    }
+  }
+
+  // The full Smart Picks screen: every pick with its reason and its actions.
+  // (smartPicksActive / smartPicksSeq are declared with the other view flags at
+  // the top of the file — leavePlaylistScreens writes them, and that can run
+  // during boot.)
+  async function showSmartPicks() {
+    enterFullWall("Smart Picks");
+    smartPicksActive = true;
+    const mySeq = ++smartPicksSeq;
+    let j = null;
+    try {
+      const r = await fetch("/api/smart-picks");
+      j = await r.json();
+      // A 503 while pairing carries a real explanation ("Not paired with Roon
+      // Core yet"). Dropping it for the generic message throws away the one
+      // thing that tells the user what to do.
+      if (!r.ok && !(j && j.error)) j = { error: "HTTP " + r.status };
+    } catch (e) {
+      j = null;
+    }
+    if (!smartPicksActive || mySeq !== smartPicksSeq) return;   // user moved on
+    grid.innerHTML = "";
+    if (!j || j.error) {
+      setBanner(j && j.error
+        ? ("Couldn't load Smart Picks — " + j.error)
+        : "Couldn't load Smart Picks — the extension didn't answer. Try again.", true);
+      return;
+    }
+    const picks = j.picks || [];
+    if (!picks.length) {
+      setBanner(j.service_ready
+        ? "Building today's picks — this takes a minute the first time. Come back shortly."
+        : "Connect Qobuz or TIDAL in Settings and Smart Picks can suggest albums " +
+          "you can add straight to your library.", false);
+      return;
+    }
+    setBanner(j.service_ready ? null
+      : "Connect Qobuz or TIDAL in Settings to add any of these to your library.", false);
+    const wrap = document.createElement("div");
+    wrap.className = "pick-list";
+    for (const p of picks) wrap.appendChild(smartPickCard(p, true));
+    grid.appendChild(wrap);
+  }
+
   // Label of the week — one label featured for the whole ISO week (backend
   // picks deterministically). Retried each Home visit until it populates (the
   // labels scan runs in the background), then left alone. Tapping the header
@@ -589,6 +990,108 @@
       }
     }
   }
+  // ---------------------------------------------------------------------
+  // Overflow menu — Roon's three-dots-in-a-circle.
+  //
+  // ONE definition, used by every screen that has more secondary actions than
+  // fit on a row. Before this, the playlist screens laid six pill buttons side
+  // by side: .action-btn is `flex: 1 1 0`, so they all shrank together instead
+  // of wrapping and "Send to Roon" rendered as "end to Roo".
+  //
+  // The dropdown reuses .sel-menu / .sel-menu-item — the album view's selection
+  // menu — so there is one dropdown look in the app rather than a second one
+  // that almost matches.
+  // ---------------------------------------------------------------------
+  const OVERFLOW_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" ' +
+    'aria-hidden="true">' +
+    '<circle cx="12" cy="12" r="9"/>' +
+    '<circle cx="7.6" cy="12" r="1.15" fill="currentColor" stroke="none"/>' +
+    '<circle cx="12" cy="12" r="1.15" fill="currentColor" stroke="none"/>' +
+    '<circle cx="16.4" cy="12" r="1.15" fill="currentColor" stroke="none"/>' +
+    "</svg>";
+
+  // Bumped every time iOS backgrounds the app.
+  //
+  // A suspended PWA has its in-flight fetches torn down, and the rejection is
+  // only delivered when the app is reopened. So a request that spanned a
+  // hide/show did not fail in any sense the user should hear about — it was
+  // interrupted by them switching apps, and the server almost certainly carried
+  // it out. Comparing this counter before and after tells the two apart.
+  let hiddenEpoch = 0;
+  document.addEventListener("visibilitychange", () => { if (document.hidden) hiddenEpoch++; });
+
+  // Close whichever overflow menu is open. Module-level rather than per-menu so
+  // opening one closes any other, and so a screen teardown can shut it.
+  let _openOverflow = null;
+  function closeOverflowMenu() {
+    if (!_openOverflow) return;
+    _openOverflow.menu.classList.add("hidden");
+    _openOverflow.btn.setAttribute("aria-expanded", "false");
+    _openOverflow = null;
+  }
+  document.addEventListener("click", (e) => {
+    if (_openOverflow && !e.target.closest(".overflow-wrap")) closeOverflowMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeOverflowMenu();
+  });
+
+  // items: [{ label, onClick, danger, title }]. Returns the wrapper to append.
+  function buildOverflowMenu(items, opts) {
+    opts = opts || {};
+    const wrap = document.createElement("div");
+    wrap.className = "overflow-wrap";
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "overflow-btn";
+    btn.setAttribute("aria-label", opts.label || "More actions");
+    btn.setAttribute("aria-haspopup", "menu");
+    btn.setAttribute("aria-expanded", "false");
+    btn.innerHTML = OVERFLOW_SVG;
+
+    const menu = document.createElement("div");
+    menu.className = "sel-menu overflow-menu hidden";
+    menu.setAttribute("role", "menu");
+    if (opts.title) {
+      const t = document.createElement("div");
+      t.className = "sel-menu-title";
+      t.textContent = opts.title;
+      menu.appendChild(t);
+    }
+    for (const it of items) {
+      if (!it) continue;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "sel-menu-item" + (it.danger ? " is-danger" : "");
+      b.setAttribute("role", "menuitem");
+      b.textContent = it.label;
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        closeOverflowMenu();
+        // The button is passed on so an action can disable it / show progress,
+        // exactly as the pill buttons it replaced did.
+        it.onClick(b);
+      });
+      menu.appendChild(b);
+    }
+
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const wasOpen = _openOverflow && _openOverflow.menu === menu;
+      closeOverflowMenu();
+      if (wasOpen) return;
+      menu.classList.remove("hidden");
+      btn.setAttribute("aria-expanded", "true");
+      _openOverflow = { btn, menu };
+    });
+
+    wrap.appendChild(btn);
+    wrap.appendChild(menu);
+    return wrap;
+  }
+
 
   // Shared entry ritual for the full-screen Home walls (Not played / Library):
   // leave other views, clear the filter, take over the shared grid, set the
@@ -597,6 +1100,9 @@
   function enterFullWall(title) {
     unplayedWallActive = false;
     libraryWallActive = false;
+    // Cleared here as well as by the caller: every other wall's entry point must
+    // orphan an in-flight playlist fetch, or its response paints into this one.
+    leavePlaylistScreens();
     // The library wall's sort/focus row belongs to that wall only.
     { const c = document.getElementById("library-controls"); if (c) c.classList.add("hidden"); }
     exitAlbumSelectMode();   // a stale multi-select bar must not survive into a new wall
@@ -681,6 +1187,12 @@
     { id: "year",       label: "Release year", dir: "desc",
       asc: "Oldest first", desc: "Newest first",
       note: "from years collected during scanning" },
+    { id: "added",      label: "Recently added", dir: "desc",
+      asc: "Oldest first", desc: "Newest first",
+      // Deliberately not "when you added it": Roon publishes no import date,
+      // so this is the extension's own evidence — file timestamps, and albums
+      // turning up between library scans.
+      note: "from dates MusicD Remote could work out" },
     { id: "plays",      label: "Most played",  dir: "desc",
       asc: "Least played first", desc: "Most played first",
       note: "from plays MusicD Remote has seen" },
@@ -720,8 +1232,22 @@
   const LIB_VIEW_VERSION = 2;
   const LIB_V1_INVERTED_SORTS = ["plays", "lastplayed"];
   const libWall = { offset: 0, loading: false, done: false, seq: 0, total: 0 };
-  let libView = { v: LIB_VIEW_VERSION, sort: "album", dir: "asc", seed: 1,
-                  decade: [], source: [], played: "any" };
+  // Every multi-select Focus facet, in the order the sheet lays them out. This
+  // list is the client's half of libFacetDefs() on the server; the SERVER is
+  // what decides which of them actually have values, and the sheet renders
+  // whatever /api/library/facets returns rather than assuming. Keeping the ids
+  // in one array is what stops the query builder, the saved-view snapshot, the
+  // reset and the active-count from drifting apart as facets are added.
+  const LIB_FACET_IDS = ["genre", "source", "decade", "label", "format",
+                         "rate", "bits", "chan", "letter", "added"];
+  const libEmptyFacets = () => {
+    const o = {};
+    for (const id of LIB_FACET_IDS) o[id] = [];
+    return o;
+  };
+  let libView = Object.assign(
+    { v: LIB_VIEW_VERSION, sort: "album", dir: "asc", seed: 1, played: "any" },
+    libEmptyFacets());
   try {
     const saved = JSON.parse(localStorage.getItem(LIB_VIEW_KEY) || "null");
     if (saved && typeof saved === "object") {
@@ -736,10 +1262,9 @@
       // unvalidated `decade: null` throws later, at render time, inside an
       // un-awaited async handler: the wall opens empty with no error and no way
       // out of it short of clearing site data. Coerce instead.
-      if (!Array.isArray(libView.decade)) libView.decade = [];
-      if (!Array.isArray(libView.source)) libView.source = [];
-      libView.decade = libView.decade.map(String);
-      libView.source = libView.source.map(String);
+      for (const id of LIB_FACET_IDS) {
+        libView[id] = Array.isArray(libView[id]) ? libView[id].map(String) : [];
+      }
       if (!LIB_PLAYED_OPTIONS.some(p => p.id === libView.played)) libView.played = "any";
       if (libView.dir !== "asc" && libView.dir !== "desc") libView.dir = libSortDefaultDir(libView.sort);
       if (!Number.isFinite(libView.seed)) libView.seed = 1;
@@ -761,18 +1286,366 @@
     p.set("sort", libView.sort);
     p.set("dir", libView.dir);
     if (libView.sort === "random") p.set("seed", String(libView.seed));
-    for (const d of libView.decade) p.append("decade", d);
-    for (const s of libView.source) p.append("source", s);
+    for (const id of LIB_FACET_IDS) {
+      for (const v of (libView[id] || [])) p.append(id, v);
+    }
     if (libView.played !== "any") p.set("played", libView.played);
     return p.toString();
   }
+  // How many filters are ON. Every selected chip counts — including the
+  // excluded ones, which are as much a filter as the included ones.
   const libFocusCount = () =>
-    libView.decade.length + libView.source.length + (libView.played !== "any" ? 1 : 0);
+    LIB_FACET_IDS.reduce((n, id) => n + (libView[id] || []).length, 0) +
+    (libView.played !== "any" ? 1 : 0);
+  // Chip state, encoding Roon's tap-again-to-invert: a value prefixed with "!"
+  // is EXCLUDED. Kept inside the value so the whole selection stays a plain
+  // string array that saved playlists and the query string round-trip unchanged.
+  const facetState = (sel, value) =>
+    sel.indexOf(value) > -1 ? "on" : (sel.indexOf("!" + value) > -1 ? "not" : "off");
+  // off → on → not → off, which is Roon's cycle (green, then red, then clear).
+  function facetCycle(sel, value) {
+    const i = sel.indexOf(value), j = sel.indexOf("!" + value);
+    if (i > -1)      { sel.splice(i, 1, "!" + value); }
+    else if (j > -1) { sel.splice(j, 1); }
+    else             { sel.push(value); }
+    return sel;
+  }
   // Any view that takes over the shared grid without going through showHome/
   // showWall (labels browser, label deep-link, artist view) must call this so
   // the wall's infinite scroll can't append library tiles into that view.
   // Returns whether the wall WAS active, so a view that only borrows the grid
   // (the artist view, which restores it on Back) can re-arm paging afterwards.
+  // ----- Roon playlists (read + play) --------------------------------------
+  //
+  // Reached from the side menu, not a Home row: listing playlists is a Roon
+  // browse walk, and a Home row would pay for it on every Home load.
+  //
+  // A playlist is identified across requests by (offset, title) — never an
+  // item_key, which is session-scoped server-side. The title is what makes a
+  // drifted offset safe, so every call carries it.
+  // ONE playlist screen. From the user's side a playlist is a playlist; that
+  // some come from Roon and some are stored here is our problem, not something
+  // to make them navigate around. Stored ones lead, because they are the ones
+  // this app can actually change — imports, and anything added from a
+  // selection — and finding a fresh import buried under the Roon list would
+  // read as the import having failed.
+  //
+  // The two sources are fetched together but tolerated separately: Roon being
+  // unreachable must not hide playlists that live on this disk, and vice versa.
+  async function showPlaylists() {
+    enterFullWall("Playlists");
+    playlistsActive = true;
+    const mySeq = ++playlistSeq;
+    grid.innerHTML = "";
+
+    // `null` means "this source did not answer", which is distinct from a
+    // source that answered with an empty list — one is a warning, the other is
+    // just an empty shelf.
+    const read = async (url) => {
+      try {
+        const r = await fetch(url, { cache: "no-store" });
+        if (!r.ok) return null;
+        return await r.json();
+      } catch (e) { return null; }
+    };
+    const [roon, mine] = await Promise.all([
+      read("/api/playlists"), read("/api/user-playlists"),
+    ]);
+    // Re-check after the await: a late response must not paint into a screen
+    // the user has since navigated away from.
+    if (!playlistsActive || mySeq !== playlistSeq) return;
+
+    const roonList = (roon && roon.playlists) || [];
+    const myList   = (mine && mine.playlists) || [];
+    grid.innerHTML = "";
+
+    if (!roonList.length && !myList.length) {
+      setBanner(roon === null
+        ? "Couldn't read playlists from Roon."
+        : "No playlists yet — import one, or select tracks and use Add to playlist.",
+        roon === null);
+      return;
+    }
+    setBanner(roon === null
+      ? "Couldn't reach Roon — showing only the playlists stored here." : null, roon === null);
+
+    const frag = document.createDocumentFragment();
+    for (const p of myList) {
+      const n = p.track_total;
+      frag.appendChild(buildAlbumTile({
+        title: p.name,
+        subtitle: `${n} track${n === 1 ? "" : "s"}`,
+        image_key: null,
+        // Stored tracks carry their album's art, so the mosaic costs nothing.
+        art_keys: p.art_keys || []
+      }, () => openUserPlaylist(p), { selectable: false }));
+    }
+
+    const tiles = new Map();
+    for (const p of roonList) {
+      const tile = buildAlbumTile(p, () => openPlaylist(p), { selectable: false });
+      tiles.set(p.title, tile);
+      frag.appendChild(tile);
+    }
+    grid.appendChild(frag);
+    // Only Roon's need a mosaic walk; the stored ones already have their keys.
+    if (roonList.length) fillPlaylistMosaics(roonList, tiles, mySeq);
+  }
+  window.__showPlaylists = showPlaylists;
+
+  // Roon gives a playlist no cover of its own, so a mosaic has to come from the
+  // tracks inside — one browse walk per playlist. Far too slow to block the grid
+  // on, so the tiles appear immediately and fill in behind, TWO AT A TIME: an
+  // unthrottled sweep would fire a browse walk per playlist at the Core all at
+  // once. The server caches each result, so this only really runs the first time.
+  async function fillPlaylistMosaics(list, tiles, mySeq) {
+    const pending = list.filter(p => !(Array.isArray(p.art_keys) && p.art_keys.length));
+    let i = 0;
+    const worker = async () => {
+      while (i < pending.length) {
+        const p = pending[i++];
+        if (!playlistsActive || mySeq !== playlistSeq) return;   // left the screen
+        try {
+          const r = await fetch(`/api/playlist/art?offset=${encodeURIComponent(p.offset)}` +
+                                `&title=${encodeURIComponent(p.title || "")}`, { cache: "no-store" });
+          if (!r.ok) continue;
+          const j = await r.json();
+          if (!playlistsActive || mySeq !== playlistSeq) return;
+          const keys = (j && j.art_keys) || [];
+          if (!keys.length) continue;
+          const tile = tiles.get(p.title);
+          if (!tile || !tile.isConnected) continue;
+          repaintTileArt(tile, keys);
+        } catch (e) { /* one missing mosaic is cosmetic — keep going */ }
+      }
+    };
+    await Promise.all([worker(), worker()]);
+  }
+
+  // Swap a placeholder tile's artwork for a mosaic in place, without rebuilding
+  // the tile — it carries the click handler that opens the playlist.
+  function repaintTileArt(tile, keys) {
+    const wrap = tile.querySelector(".album-art-wrap");
+    if (!wrap) return;
+    for (const img of Array.from(wrap.querySelectorAll("img"))) img.remove();
+    wrap.classList.remove("no-image");
+    const use = keys.filter(Boolean).slice(0, 4);
+    if (use.length >= 2) {
+      wrap.classList.add("album-art-mosaic");
+      wrap.dataset.mosaic = String(use.length);
+    }
+    wrap.dataset.artKeys = use.join(",");
+    for (const k of use) {
+      const img = document.createElement("img");
+      img.loading = "lazy"; img.alt = "";
+      img.src = `/api/image/${encodeURIComponent(k)}?size=${TILE_IMG_SIZE}`;
+      img.onerror = () => img.remove();
+      wrap.appendChild(img);
+    }
+    if (!use.length) wrap.classList.add("no-image");
+  }
+
+  async function openPlaylist(p) {
+    enterFullWall("");   // the Roon playlist prints its own full-width heading
+    playlistDetailActive = true;
+    const mySeq = ++playlistSeq;
+    let j = null;
+    try {
+      // The zone travels with the read: Roon needs one to resolve a SMART
+      // playlist's contents, and without it the list comes back empty.
+      const zsel = document.getElementById("zone-select");
+      const zid = (zsel && zsel.value) || selectedZoneId || "";
+      const r = await fetch(`/api/playlist?offset=${encodeURIComponent(p.offset)}` +
+                            `&title=${encodeURIComponent(p.title || "")}` +
+                            (zid ? `&zone=${encodeURIComponent(zid)}` : ""),
+                            { cache: "no-store" });
+      if (!playlistDetailActive || mySeq !== playlistSeq) return;
+      j = await r.json().catch(() => ({}));
+      if (!playlistDetailActive || mySeq !== playlistSeq) return;
+      if (!r.ok) {
+        grid.innerHTML = "";
+        setBanner(j.error || "Couldn't open that playlist.", true);
+        return;
+      }
+    } catch (e) {
+      if (!playlistDetailActive || mySeq !== playlistSeq) return;
+      grid.innerHTML = "";
+      setBanner("Couldn't open that playlist.", true);
+      return;
+    }
+
+    setBanner(null);
+    grid.innerHTML = "";
+    clearWallGridSizing();
+
+    const wrap = document.createElement("div");
+    wrap.className = "playlist-detail";
+
+    // Its own Back, because the topbar's Back goes to Home and drilling two
+    // levels deep should not throw the user all the way out.
+    const back = document.createElement("button");
+    back.type = "button"; back.className = "action-btn playlist-back";
+    back.textContent = "← Playlists";
+    back.addEventListener("click", () => { playlistDetailActive = false; showPlaylists(); });
+    wrap.appendChild(back);
+
+    const head = document.createElement("div");
+    head.className = "playlist-head";
+    const h = document.createElement("h2");
+    h.className = "playlist-title";
+    h.textContent = j.title || p.title || "Playlist";
+    head.appendChild(h);
+    if (j.subtitle) {
+      const sub = document.createElement("div");
+      sub.className = "playlist-sub";
+      sub.textContent = j.subtitle;
+      head.appendChild(sub);
+    }
+    wrap.appendChild(head);
+
+    const zoneOf = () => {
+      const sel = document.getElementById("zone-select");
+      return (sel && sel.value) || selectedZoneId || null;
+    };
+    const act = async (url, body, btn) => {
+      const zone = zoneOf();
+      if (!zone) { showToast("Choose a zone first", "error"); return; }
+      btn.disabled = true;
+      try {
+        const r = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(Object.assign({ zone_or_output_id: zone }, body))
+        });
+        const jr = await r.json().catch(() => ({}));
+        if (!r.ok) showToast(jr.error || "Roon refused that", "error");
+        else showToast(jr.invoked ? jr.invoked : "Sent to Roon");
+      } catch (e) {
+        showToast("Couldn't reach the extension", "error");
+      } finally {
+        btn.disabled = false;
+      }
+    };
+
+    const tracks = (j && j.tracks) || [];
+
+    if (j.can_play || tracks.length) {
+      const actions = document.createElement("div");
+      actions.className = "playlist-actions";
+      if (j.can_play) {
+        for (const [label, kind, cls] of [
+          ["Play now", "play_now", "action-btn primary"],
+          ["Queue",    "queue",    "action-btn"],
+        ]) {
+          const b = document.createElement("button");
+          b.type = "button"; b.className = cls;
+          b.textContent = label;
+          b.addEventListener("click", () => act("/api/playlist/play",
+            { offset: p.offset, title: p.title || "", kind }, b));
+          actions.appendChild(b);
+        }
+      }
+      if (tracks.length) {
+        actions.appendChild(buildOverflowMenu([
+          { label: "Share", onClick: (b) => shareTracks(p.title || "Playlist",
+            // A Roon playlist row carries the track and its artist, but no
+            // album — Roon does not put one on the row. The `album` slot is
+            // left empty rather than guessed at, so an importer knows it was
+            // never told.
+            tracks.map(t => ({
+              title: t.title, artist: t.subtitle, track_no: t.track_no
+            })), b,
+            // /api/playlist reads at most PLAYLIST_ITEMS rows, so a longer
+            // playlist arrives already cut short. The screen says so; the share
+            // sheet has to as well, or the file claims to be the whole thing.
+            { sourceTruncated: !!j.truncated }) },
+        ], { title: p.title || "Playlist" }));
+      }
+      wrap.appendChild(actions);
+    }
+
+    if (!tracks.length) {
+      const note = document.createElement("div");
+      note.className = "playlist-empty";
+      note.textContent = "Roon returned no tracks for this playlist.";
+      wrap.appendChild(note);
+    } else {
+      const ol = document.createElement("ol");
+      ol.className = "track-list playlist-tracks";
+      for (const t of tracks) {
+        const li = document.createElement("li");
+        li.className = "track-row track-row-art";
+        li.dataset.index = String(t.index);
+        // Roon gives each playlist track its own image_key; fall back to the
+        // playlist's own art so a row is never a bare gap.
+        const art = document.createElement("span");
+        art.className = "track-art";
+        const key = t.image_key || j.image_key;
+        if (key) art.dataset.artKey = key;
+        if (key) {
+          const img = document.createElement("img");
+          img.loading = "lazy"; img.alt = "";
+          img.src = `/api/image/${encodeURIComponent(key)}?size=80`;
+          img.onerror = () => { art.classList.add("no-image"); img.remove(); };
+          art.appendChild(img);
+        } else {
+          art.classList.add("no-image");
+        }
+        li.appendChild(art);
+        const text = document.createElement("div");
+        text.className = "track-text";
+        const tt = document.createElement("div");
+        tt.className = "track-title";
+        tt.textContent = t.title || "";
+        text.appendChild(tt);
+        if (t.subtitle) {
+          const ts = document.createElement("div");
+          ts.className = "track-artist";
+          ts.textContent = t.subtitle;
+          text.appendChild(ts);
+        }
+        li.appendChild(text);
+        li.addEventListener("click", () => act("/api/playlist/play-track", {
+          offset: p.offset, title: p.title || "",
+          track_index: t.index, track_title: t.title || "", kind: "play_now"
+        }, li));
+        ol.appendChild(li);
+      }
+      wrap.appendChild(ol);
+      if (j.truncated) {
+        const note = document.createElement("div");
+        note.className = "playlist-empty";
+        note.textContent = `Showing the first ${tracks.length} of ${j.total} tracks.`;
+        wrap.appendChild(note);
+      }
+    }
+    grid.appendChild(wrap);
+  }
+
+  // Any screen that takes over the shared grid must orphan in-flight playlist and
+  // smart-playlist work. Two things go wrong otherwise: a late response paints
+  // its tiles over whatever screen is now showing, and fillPlaylistMosaics keeps
+  // firing a browse walk per playlist at the Core long after the user has left.
+  // Centralised so a future screen can call one thing instead of remembering
+  // four flags.
+  function leavePlaylistScreens() {
+    playlistsActive = false;
+    playlistDetailActive = false;
+    smartWallActive = false;
+    smartDetailActive = false;
+    userPlDetailActive = false;
+    // Smart Picks joins the same ritual: every screen entry point must orphan
+    // an in-flight picks fetch, or its response paints into whatever opened
+    // next. enterFullWall and showHome both call this, so adding it here covers
+    // every route out of the screen at once.
+    smartPicksActive = false;
+    playlistSeq++;
+    smartSeq++;
+    userPlSeq++;
+    smartPicksSeq++;
+  }
+  window.__leavePlaylistScreens = leavePlaylistScreens;
+
   function leaveLibraryWall() { const was = libraryWallActive; libraryWallActive = false; return was; }
   window.__leaveLibraryWall = leaveLibraryWall;
   window.__restoreLibraryWall = (was) => { libraryWallActive = !!was; };
@@ -848,6 +1721,15 @@
     fetchLibraryPage(mySeq, true);
   }
 
+  // Roon's own phone layout for this row: Focus on the left behind a chevron,
+  // the current Sort on the right behind a caret, and NOTHING between them.
+  //
+  // The separate direction arrow is gone. It was a third boxed control sitting
+  // between two others, and Roon has no equivalent — direction is a property of
+  // the sort, so it belongs in the sort menu, which has flipped it on a re-tap
+  // since v1.6.59. The row still SHOWS the direction (and the reshuffle glyph
+  // for Random) as part of the sort's own label, so nothing is hidden; it just
+  // isn't its own button any more.
   function renderLibraryControls() {
     let bar = document.getElementById("library-controls");
     if (!bar) {
@@ -856,80 +1738,102 @@
       bar.className = "library-controls";
       grid.parentNode.insertBefore(bar, grid);
     }
-    // The arrow is a REPEAT-tap control, and this rebuild replaces the very
-    // button that was just pressed. Without restoring focus, one Enter on the
-    // arrow reverses the order and then drops focus to <body> — a second Enter
-    // does nothing and the user has to tab back through the row to find it.
+    // Both controls open a sheet rather than mutating the view in place, so a
+    // rebuild can no longer land under the user's finger mid-interaction — but
+    // applyLibView() still rebuilds this row while the sort sheet is open and
+    // focus is inside it, and dropping focus to <body> then would strand a
+    // keyboard user. Restoring by class is enough: there are two controls and
+    // they are rebuilt in a fixed order.
     const refocus = document.activeElement &&
                     bar.contains(document.activeElement) &&
                     document.activeElement.className;
     bar.innerHTML = "";
-    const mk = (text, sub, onClick, active) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = "lib-pill" + (active ? " is-active" : "");
-      b.innerHTML = `<span class="lib-pill-label"></span><span class="lib-pill-value"></span>`;
-      b.querySelector(".lib-pill-label").textContent = text;
-      b.querySelector(".lib-pill-value").textContent = sub;
-      b.addEventListener("click", onClick);
-      return b;
-    };
-    bar.appendChild(mk("Sort", libSortLabel(), openLibSortSheet, false));
-    bar.appendChild(buildLibDirButton());
-    const n = libFocusCount();
-    bar.appendChild(mk("Focus", n ? n + " active" : "None", openLibFocusSheet, n > 0));
+    bar.appendChild(buildLibFocusButton());
+    bar.appendChild(buildLibSortButton());
     bar.classList.toggle("hidden", !libraryWallActive);
-    // Put focus back on the replacement of whatever was focused. The new
-    // button's aria-label already states the new direction, so focusing it is
-    // also what announces the change.
     if (refocus) {
       const again = bar.querySelector("." + String(refocus).split(" ")[0]);
       if (again) again.focus();
     }
   }
 
-  // The direction control: one arrow, always visible beside the Sort pill.
-  // Tap it and the order reverses; tap again and it goes back. That is the
-  // whole interaction — no wording to read, matching Roon ARC.
-  //
-  // Random has no direction, so the slot becomes a reshuffle instead of an
-  // arrow that would do nothing.
-  function buildLibDirButton() {
+  // `› Focus`, with the number of active facets when there are any. The count
+  // is the only state this control carries — what those facets ARE is the
+  // sheet's job, and spelling them out here would wrap onto three lines on a
+  // phone the moment more than one is on.
+  function buildLibFocusButton() {
+    const n = libFocusCount();
     const b = document.createElement("button");
     b.type = "button";
-    b.className = "lib-dir-btn";
-    if (!libSortHasDir(libView.sort)) {
-      b.classList.add("is-shuffle");
-      b.textContent = "⟳";
-      b.title = "Shuffle again";
-      b.setAttribute("aria-label", "Shuffle again");
-      b.addEventListener("click", () => {
-        libView.seed = libNextSeed(libView.seed);
-        applyLibView();
-      });
-      return b;
+    b.className = "lib-ctl lib-ctl-focus" + (n ? " is-active" : "");
+
+    const chev = document.createElement("span");
+    chev.className = "lib-ctl-chevron";
+    chev.setAttribute("aria-hidden", "true");
+    chev.textContent = "›";
+    b.appendChild(chev);
+
+    const text = document.createElement("span");
+    text.className = "lib-ctl-text";
+    text.textContent = "Focus";
+    b.appendChild(text);
+
+    if (n) {
+      const badge = document.createElement("span");
+      badge.className = "lib-ctl-badge";
+      badge.textContent = String(n);
+      b.appendChild(badge);
     }
-    // `desc` is captured at BUILD time and used by the handler below. That is
-    // only safe because every mutation of libView.sort/dir goes through
-    // applyLibView() → renderLibraryControls(), which rebuilds this button. Any
-    // future path that changes them without rebuilding leaves a handler that
-    // flips to the wrong value.
-    const desc = libView.dir === "desc";
-    b.textContent = desc ? "↓" : "↑";
-    // The words live here, not on screen: the tooltip and the accessible name
-    // still say what the arrow means for the current sort.
-    b.title = libDirLabel();
-    b.setAttribute("aria-label", "Reverse order — currently " + libDirLabel());
-    b.addEventListener("click", () => {
-      libView.dir = desc ? "asc" : "desc";
-      applyLibView();
-    });
+    b.setAttribute("aria-label", n
+      ? "Focus — " + n + (n === 1 ? " filter active" : " filters active")
+      : "Focus");
+    // Wrapped, not passed by reference: the listener hands its callback an
+    // event, which would arrive as editTarget and be treated as a playlist to
+    // save over.
+    b.addEventListener("click", () => openLibFocusSheet(null));
+    return b;
+  }
+
+  // `Album name ↑ ⌄`. The arrow is a LABEL here, not a control — it says which
+  // way the current sort runs, and tapping anywhere on the button opens the
+  // sheet where it can be changed.
+  function buildLibSortButton() {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "lib-ctl lib-ctl-sort";
+
+    const text = document.createElement("span");
+    text.className = "lib-ctl-text";
+    text.textContent = libSortLabel();
+    b.appendChild(text);
+
+    const arrow = document.createElement("span");
+    arrow.className = "lib-ctl-arrow";
+    arrow.setAttribute("aria-hidden", "true");
+    // Random has no direction to show, so the slot carries the reshuffle glyph
+    // instead — the same symbol the sort sheet's Random row re-taps to.
+    arrow.textContent = libSortHasDir(libView.sort)
+      ? (libView.dir === "desc" ? "↓" : "↑") : "⟳";
+    b.appendChild(arrow);
+
+    const caret = document.createElement("span");
+    caret.className = "lib-ctl-caret";
+    caret.setAttribute("aria-hidden", "true");
+    caret.textContent = "⌄";
+    b.appendChild(caret);
+
+    b.setAttribute("aria-label", libSortHasDir(libView.sort)
+      ? "Sort — " + libSortLabel() + ", " + libDirLabel()
+      : "Sort — " + libSortLabel());
+    b.addEventListener("click", openLibSortSheet);
     return b;
   }
 
   // One sheet builder for both — same bottom-sheet language as the filter and
   // settings sheets, built as live nodes (never restored from an HTML string).
-  function openLibSheet(title, buildBody, footer) {
+  // `onClose` fires on EVERY dismissal path — X, backdrop, and the footer
+  // buttons — so a caller that mutated shared state on open can undo it.
+  function openLibSheet(title, buildBody, footer, onClose) {
     const back = document.createElement("div");
     back.className = "lib-sheet-backdrop";
     const sheet = document.createElement("div");
@@ -944,7 +1848,7 @@
     const body = document.createElement("div");
     body.className = "lib-sheet-body";
     sheet.appendChild(head); sheet.appendChild(body);
-    const close = () => { back.remove(); };
+    const close = () => { back.remove(); if (onClose) onClose(); };
     buildBody(body, close);
     if (footer) {
       const f = document.createElement("div");
@@ -956,6 +1860,667 @@
     back.addEventListener("click", (e) => { if (e.target === back) close(); });
     back.appendChild(sheet);
     document.body.appendChild(back);
+  }
+
+  // ----- Add a selection to a playlist --------------------------------------
+  // Tracks go in as themselves. ALBUMS cannot: a stored entry names a specific
+  // track, and the album's tracklist only exists on the Core. Rather than
+  // opening every selected album — seconds of Roon calls behind a menu tap —
+  // this says so plainly and leaves the album selection intact.
+  async function addSelectionToPlaylist() {
+    if (selMenuKind === "albums") {
+      if (!albumSelected.length) return;
+      // Every track of every selected album. The album's tracklist only exists
+      // on the Core, so this is the one add that costs Roon calls — bounded
+      // server-side and reported per album.
+      openAddToPlaylistSheet(null, albumSelected.map(a => ({
+        offset: a.offset, title: a.title || "", subtitle: a.subtitle || "",
+        image_key: a.image_key || null,
+      })));
+      return;
+    }
+    if (!currentAlbum) { showToast("No album open", "error"); return; }
+    const picks = trackSelected.slice().sort((a, b) => a.index - b.index);
+    if (!picks.length) return;
+    const entries = picks.map(p => ({
+      album_offset:   currentAlbum.offset,
+      album_title:    currentAlbum.title || "",
+      album_subtitle: currentAlbum.subtitle || "",
+      track_index:    p.index,
+      title:          p.title,
+      subtitle:       currentAlbum.subtitle || "",
+      image_key:      currentAlbum.image_key || null,
+    }));
+    openAddToPlaylistSheet(entries, null);
+  }
+
+  // Exactly one of `entries` (tracks) and `albums` is supplied. They land on
+  // different routes because only the album one has to talk to Roon.
+  async function openAddToPlaylistSheet(entries, albums) {
+    const n = entries ? entries.length : (albums || []).length;
+    if (!n) { showToast("Nothing to add", "error"); return; }
+    let list = [];
+    try {
+      const r = await fetch("/api/user-playlists", { cache: "no-store" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { showToast("Couldn't read your playlists", "error"); return; }
+      list = j.playlists || [];
+    } catch (e) {
+      showToast("Couldn't reach the extension", "error");
+      return;
+    }
+
+    const what = entries
+      ? `${n} track${n === 1 ? "" : "s"}`
+      : `${n} album${n === 1 ? "" : "s"}`;
+    openLibSheet(`Add ${what} to…`,
+      (body, close) => {
+        const row = (label, fn) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "action-btn sheet-row";
+          // textContent, never a template: a playlist name is user text and
+          // this sheet has no business interpreting it as markup.
+          b.textContent = label;
+          b.addEventListener("click", () => { close(); fn(); });
+          body.appendChild(b);
+        };
+        row("＋ New playlist…", () => {
+          const name = window.prompt("Name this playlist", "My playlist");
+          if (name === null) return;
+          const trimmed = String(name).trim();
+          if (!trimmed) { showToast("Give it a name", "error"); return; }
+          addToUserPlaylist({ name: trimmed }, entries, albums).then(ok => {
+            if (ok) clearAfterAdd();
+          });
+        });
+        for (const p of list) {
+          row(`${p.name} · ${p.track_total} track${p.track_total === 1 ? "" : "s"}`, () => {
+            addToUserPlaylist({ id: p.id }, entries, albums).then(ok => {
+              if (ok) clearAfterAdd();
+            });
+          });
+        }
+      });
+  }
+
+  // ----- Playlists stored by this extension ---------------------------------
+  // These share the Playlists wall with Roon's own (see showPlaylists) — there
+  // is no separate screen, so there is no separate list renderer either.
+
+  async function openUserPlaylist(p) {
+    enterFullWall("");   // the stored playlist prints its own full-width heading
+    userPlDetailActive = true;
+    const mySeq = ++userPlSeq;
+    setBanner(null);
+    grid.innerHTML = "";
+    clearWallGridSizing();
+
+    let j = null;
+    try {
+      const r = await fetch(`/api/user-playlist?id=${encodeURIComponent(p.id)}`, { cache: "no-store" });
+      j = await r.json().catch(() => ({}));
+      if (!userPlDetailActive || mySeq !== userPlSeq) return;
+      if (!r.ok) { setBanner(j.error || "Couldn't open that playlist.", true); return; }
+    } catch (e) {
+      if (!userPlDetailActive || mySeq !== userPlSeq) return;
+      setBanner("Couldn't reach the extension.", true);
+      return;
+    }
+
+    const wrap = document.createElement("div");
+    wrap.className = "playlist-detail";
+
+    const back = document.createElement("button");
+    back.type = "button"; back.className = "action-btn playlist-back";
+    back.textContent = "← Playlists";
+    back.addEventListener("click", () => { userPlDetailActive = false; showPlaylists(); });
+    wrap.appendChild(back);
+
+    const head = document.createElement("div");
+    head.className = "playlist-head";
+    const h = document.createElement("h2");
+    h.className = "playlist-title";
+    h.textContent = j.name || "Playlist";
+    head.appendChild(h);
+    const sub = document.createElement("div");
+    sub.className = "playlist-sub";
+    sub.textContent = `${j.track_total} track${j.track_total === 1 ? "" : "s"}`;
+    head.appendChild(sub);
+    wrap.appendChild(head);
+
+    const tracks = j.tracks || [];
+    const actions = document.createElement("div");
+    actions.className = "playlist-actions";
+    const mkBtn = (label, cls, fn) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = cls; b.textContent = label;
+      b.addEventListener("click", () => fn(b));
+      actions.appendChild(b);
+      return b;
+    };
+    mkBtn("Play now", "action-btn primary", (b) => playUserPlaylist(tracks, "play_now", b));
+    mkBtn("Queue",    "action-btn",         (b) => playUserPlaylist(tracks, "queue", b));
+    const shareThisPlaylist = (b) => shareTracks(j.name || "Playlist",
+      tracks.map(t => ({
+        title: t.title, artist: t.subtitle,
+        album: t.album_title, track_no: t.track_no
+      })), b, {});
+    const deleteThisPlaylist = async () => {
+      const ok = await confirmDialog(`Delete "${j.name}"? This can't be undone.`);
+      if (!ok) return;
+      try {
+        const r = await fetch("/api/user-playlists/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: p.id })
+        });
+        if (!r.ok) { showToast("Couldn't delete that", "error"); return; }
+        showToast("Playlist deleted");
+        userPlDetailActive = false;
+        showPlaylists();
+      } catch (e) { showToast("Couldn't reach the extension", "error"); }
+    };
+    actions.appendChild(buildOverflowMenu([
+      { label: "Share",  onClick: (b) => shareThisPlaylist(b) },
+      { label: "Delete", onClick: () => deleteThisPlaylist(), danger: true },
+    ], { title: j.name || "Playlist" }));
+    wrap.appendChild(actions);
+
+    const ol = document.createElement("ol");
+    ol.className = "track-list playlist-tracks";
+    for (const t of tracks) ol.appendChild(userTrackRow(t));
+    wrap.appendChild(ol);
+
+    if (!tracks.length) {
+      const empty = document.createElement("div");
+      empty.className = "playlist-empty";
+      empty.textContent = "Nothing in this playlist yet.";
+      wrap.appendChild(empty);
+    }
+    grid.appendChild(wrap);
+  }
+
+  // Same row shape as the smart-playlist screen — artwork, two lines, tap to
+  // play from its album.
+  function userTrackRow(t) {
+    const li = document.createElement("li");
+    li.className = "track-row track-row-art";
+    li.dataset.albumOffset = String(t.album_offset);
+
+    const art = document.createElement("span");
+    art.className = "track-art";
+    if (t.image_key) {
+      art.dataset.artKey = t.image_key;
+      const img = document.createElement("img");
+      img.loading = "lazy"; img.alt = "";
+      img.src = `/api/image/${encodeURIComponent(t.image_key)}?size=80`;
+      img.onerror = () => { art.classList.add("no-image"); img.remove(); };
+      art.appendChild(img);
+    } else {
+      art.classList.add("no-image");
+    }
+    li.appendChild(art);
+
+    const text = document.createElement("div");
+    text.className = "track-text";
+    const tt = document.createElement("div");
+    tt.className = "track-title";
+    tt.textContent = t.title || "";
+    text.appendChild(tt);
+    const ta = document.createElement("div");
+    ta.className = "track-artist";
+    ta.textContent = [t.subtitle, t.album_title].filter(Boolean).join(" · ");
+    text.appendChild(ta);
+    li.appendChild(text);
+
+    li.addEventListener("click", async () => {
+      const zsel = document.getElementById("zone-select");
+      const zone = (zsel && zsel.value) || selectedZoneId;
+      if (!zone) { showToast("Choose a zone first", "error"); return; }
+      try {
+        const r = await fetch("/api/play-track", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            offset: t.album_offset, track: t.track_index, title: t.title,
+            zone_or_output_id: zone, kind: "play_now",
+            // A stored entry can be months old, so the album identity matters
+            // far more here than it does from a modal opened seconds ago.
+            album_title: t.album_title, album_subtitle: t.album_subtitle
+          })
+        });
+        const j2 = await r.json().catch(() => ({}));
+        if (!r.ok) { showToast(j2.error || "Couldn't play that track", "error"); return; }
+        showToast(`Playing ${t.title}`);
+      } catch (e) { showToast("Couldn't reach the extension", "error"); }
+    });
+    return li;
+  }
+
+  // Sequential by necessity: /api/play-track has no batch form, and firing
+  // these in parallel would interleave into an arbitrary queue order.
+  async function playUserPlaylist(tracks, kind, btn) {
+    const zsel = document.getElementById("zone-select");
+    const zone = (zsel && zsel.value) || selectedZoneId;
+    if (!zone) { showToast("Choose a zone first", "error"); return; }
+    if (!tracks.length) { showToast("Nothing in this playlist", "error"); return; }
+    btn.disabled = true;
+    let queued = 0, failed = 0, firstError = "";
+    try {
+      for (let i = 0; i < tracks.length; i++) {
+        const t = tracks[i];
+        if (tracks.length > 3) showToast(`Adding track ${i + 1} of ${tracks.length}…`);
+        try {
+          const r = await fetch("/api/play-track", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              offset: t.album_offset, track: t.track_index, title: t.title,
+              zone_or_output_id: zone,
+              // Only the first honours the kind; the rest queue behind it.
+              kind: (i === 0 ? kind : "queue"),
+              album_title: t.album_title, album_subtitle: t.album_subtitle
+            })
+          });
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok) { failed++; if (!firstError) firstError = j.error || `HTTP ${r.status}`; }
+          else queued++;
+        } catch (e) {
+          failed++;
+          if (!firstError) firstError = "Couldn't reach the extension";
+        }
+      }
+    } finally {
+      btn.disabled = false;
+    }
+    if (!queued) { showToast(firstError || "Roon refused those tracks", "error", TOAST_REPORT_MS); return; }
+    const verb = kind === "queue" ? "Queued" : "Playing";
+    let msg = `${verb} ${queued} track${queued === 1 ? "" : "s"}`;
+    if (failed) msg += ` (${failed} couldn't be found: ${firstError})`;
+    showToast(msg, failed ? "error" : null, TOAST_REPORT_MS);
+  }
+
+  // ----- Importing a shared playlist ----------------------------------------
+  // The other half of Share. Paste the blob, and every entry is matched against
+  // THIS library — the shared file names music, it does not carry it, so what
+  // you end up with is whatever your own library can answer for.
+  function openImportSheet() {
+    openLibSheet("Import a playlist", (body) => {
+      const note = document.createElement("div");
+      note.className = "share-note";
+      note.textContent =
+        "Paste a playlist someone shared with you. It describes the music, so " +
+        "you'll get the tracks your own library can match — the rest are listed " +
+        "so you know what's missing.";
+      body.appendChild(note);
+
+      const ta = document.createElement("textarea");
+      ta.className = "share-blob";
+      ta.id = "import-blob";
+      ta.rows = 4;
+      ta.placeholder = "MDRP1:…";
+      // iOS autocorrect treats MDRP1 as a word it doesn't know and lowercases
+      // it on paste, which broke the marker while leaving the payload intact.
+      // The payload itself is base64url and case-SENSITIVE, so this must be
+      // off — a "correction" anywhere in it would be unrecoverable.
+      ta.setAttribute("autocapitalize", "none");
+      ta.setAttribute("autocorrect", "off");
+      ta.setAttribute("autocomplete", "off");
+      ta.spellcheck = false;
+      body.appendChild(ta);
+
+      // A downloaded .musicd file is the other half of Share's Download, and
+      // on a phone it is far more reliable than a clipboard: the blob is long
+      // enough that a hand-selection can silently come back short.
+      const pick = document.createElement("label");
+      pick.className = "action-btn import-file";
+      pick.textContent = "Choose a file…";
+      const file = document.createElement("input");
+      file.type = "file";
+      // .musicd is what Share writes; text/plain covers a file renamed or
+      // re-saved by a mail client, and iOS is inconsistent about extensions it
+      // does not recognise.
+      file.accept = ".musicd,text/plain";
+      file.className = "visually-hidden";
+      file.id = "import-file";
+      file.addEventListener("change", () => {
+        const f = file.files && file.files[0];
+        if (!f) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          ta.value = String(reader.result || "");
+          const out = document.getElementById("import-result");
+          if (out) out.textContent = `Loaded ${f.name} — press Import.`;
+        };
+        reader.onerror = () => {
+          const out = document.getElementById("import-result");
+          if (out) out.textContent = "Couldn't read that file.";
+        };
+        reader.readAsText(f);
+      });
+      pick.appendChild(file);
+      body.appendChild(pick);
+
+      const out = document.createElement("div");
+      out.className = "import-result";
+      out.id = "import-result";
+      body.appendChild(out);
+    }, (foot, close) => {
+      const go = document.createElement("button");
+      go.type = "button"; go.className = "action-btn primary";
+      go.textContent = "Import";
+      go.addEventListener("click", () => runImport(go));
+      foot.appendChild(go);
+
+      const done = document.createElement("button");
+      done.type = "button"; done.className = "action-btn";
+      done.textContent = "Close";
+      done.addEventListener("click", close);
+      foot.appendChild(done);
+    });
+  }
+
+  async function runImport(btn) {
+    const ta = document.getElementById("import-blob");
+    const out = document.getElementById("import-result");
+    const blob = ta ? ta.value.trim() : "";
+    if (!blob) { showToast("Paste the playlist first", "error"); return; }
+    btn.disabled = true;
+    if (out) out.textContent = "Matching against your library…";
+    try {
+      const r = await fetch("/api/share/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ blob })
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        if (out) out.textContent = j.error || "Couldn't read that playlist";
+        return;
+      }
+      renderImportResult(out, j, btn);
+    } catch (e) {
+      if (out) out.textContent = "Couldn't reach the extension";
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // The resolution report. Showing what did NOT match is the point: every tool
+  // in this space quietly substitutes the wrong version, and a count that only
+  // celebrates the hits is how you stop trusting it.
+  function renderImportResult(out, j, btn) {
+    if (!out) return;
+    out.textContent = "";
+    const n = (j.resolved || []).length;
+    const miss = j.missing || [];
+
+    const head = document.createElement("div");
+    head.className = "share-sum";
+    head.textContent = `${n} of ${j.total} track${j.total === 1 ? "" : "s"} found in your library`;
+    out.appendChild(head);
+
+    if (j.truncated) {
+      const w = document.createElement("div");
+      w.className = "share-warn";
+      w.textContent = "That playlist is longer than one import can take — the end of it was left out.";
+      out.appendChild(w);
+    }
+
+    if (miss.length) {
+      const w = document.createElement("div");
+      w.className = "share-warn";
+      w.textContent = `${miss.length} couldn't be matched:`;
+      out.appendChild(w);
+      const ul = document.createElement("ul");
+      ul.className = "import-missing";
+      // Bounded: a 500-track import that matched nothing would otherwise
+      // render 500 rows into a bottom sheet.
+      for (const m of miss.slice(0, 25)) {
+        const li = document.createElement("li");
+        li.textContent = [m.title, m.artist, m.album].filter(Boolean).join(" · ");
+        ul.appendChild(li);
+      }
+      if (miss.length > 25) {
+        const li = document.createElement("li");
+        li.textContent = `…and ${miss.length - 25} more`;
+        ul.appendChild(li);
+      }
+      out.appendChild(ul);
+    }
+
+    if (!n) {
+      const w = document.createElement("div");
+      w.className = "share-warn";
+      w.textContent = "Nothing here matched, so there's nothing to save.";
+      out.appendChild(w);
+      return;
+    }
+
+    const save = document.createElement("button");
+    save.type = "button"; save.className = "action-btn primary import-save";
+    save.textContent = `Save ${n} track${n === 1 ? "" : "s"} as a playlist`;
+    save.addEventListener("click", async () => {
+      const name = window.prompt("Name this playlist", j.name || "Shared playlist");
+      if (name === null) return;
+      const trimmed = String(name).trim();
+      if (!trimmed) { showToast("Give it a name", "error"); return; }
+      save.disabled = true;
+      const okAdd = await addToUserPlaylist({ name: trimmed }, j.resolved);
+      save.disabled = false;
+      if (okAdd) {
+        save.textContent = "Saved";
+        save.disabled = true;
+      }
+    });
+    out.appendChild(save);
+  }
+
+  // Whichever selection is live, cleared once it has been filed somewhere.
+  function clearAfterAdd() {
+    if (trackSelectMode) exitTrackSelectMode();
+    if (albumSelectMode) exitAlbumSelectMode();
+  }
+
+  // Shared by import and by "Add to playlist". `target` is {id} for an existing
+  // playlist or {name} to create one. Exactly one of `tracks`/`albums` is set —
+  // albums go to the route that reads their tracklists off the Core.
+  async function addToUserPlaylist(target, tracks, albums) {
+    const url = albums ? "/api/user-playlists/add-albums" : "/api/user-playlists/add";
+    const payload = albums
+      ? { id: target.id, name: target.name, albums }
+      : { id: target.id, name: target.name, tracks };
+    if (albums) showToast(`Reading ${albums.length} album${albums.length === 1 ? "" : "s"}…`);
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { showToast(j.error || "Couldn't save that", "error"); return false; }
+      let msg = `Added ${j.added} track${j.added === 1 ? "" : "s"}`;
+      if (Number.isFinite(j.albums_read)) {
+        msg += ` from ${j.albums_read} album${j.albums_read === 1 ? "" : "s"}`;
+      }
+      msg += ` to "${j.name}"`;
+      if (j.full)    msg += " — the playlist is now full";
+      if (j.skipped) msg += `; ${j.skipped} couldn't be stored`;
+      // Named, not counted: knowing WHICH album Roon wouldn't open is the only
+      // way to do anything about it.
+      if (j.albums_failed && j.albums_failed.length) {
+        msg += `; couldn't read ${j.albums_failed.join(", ")}`;
+      }
+      showToast(msg, (j.albums_failed && j.albums_failed.length) ? "error" : null,
+                TOAST_REPORT_MS);
+      return true;
+    } catch (e) {
+      showToast("Couldn't reach the extension", "error");
+      return false;
+    }
+  }
+
+  window.__openImportSheet = openImportSheet;
+
+  // ----- Sharing a playlist -------------------------------------------------
+  // What leaves the app is a DESCRIPTION of the music, never audio and never
+  // anything else: the entries below are built field-by-field from the rows on
+  // screen. Nothing is forwarded wholesale from a server response, so an export
+  // cannot pick up a field it was never meant to carry.
+  //
+  // See docs/design/playlist-sharing.md.
+
+  // Ask the server to turn entries into a share blob, then show it.
+  //
+  // `caveats` is what the CLIENT knows and the server cannot: that collection
+  // stopped at the album cap, that a page failed part-way, or that the source
+  // playlist was already truncated before we saw it. The server's own
+  // `truncated` only ever describes the list it was handed, so relying on it
+  // alone meant every client-side limit went unreported — the exact shape of
+  // the v1.7.17 bug this feature was written to avoid repeating.
+  async function shareTracks(name, entries, btn, caveats) {
+    if (!entries.length) { showToast("Nothing to share yet", "error"); return; }
+    if (btn) btn.disabled = true;
+    try {
+      const r = await fetch("/api/share/encode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name, tracks: entries })
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { showToast(j.error || "Couldn't build the share file", "error"); return; }
+      openShareSheet(name, j, caveats || {});
+    } catch (e) {
+      showToast("Couldn't reach the extension", "error");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  // The blob, plus the two ways to get it off this device. Everything the user
+  // is told here is a fact from the response — how many tracks went in, and
+  // what was left out — because a share file that quietly dropped half a
+  // playlist is worse than one that refused to build.
+  function openShareSheet(name, j, caveats) {
+    const c = caveats || {};
+    openLibSheet("Share " + name, (body) => {
+      const n = j.track_count || 0;
+      const sum = document.createElement("div");
+      sum.className = "share-sum";
+      sum.textContent = `${n} track${n === 1 ? "" : "s"}`;
+      body.appendChild(sum);
+
+      // Every reason this file might be less than the whole playlist, each on
+      // its own line. One run-on sentence buried the important half.
+      const warnings = [];
+      if (c.incomplete) {
+        warnings.push("Reading stopped early because Roon returned an error — " +
+                      "this file is INCOMPLETE. Try again before sharing it.");
+      }
+      if (c.albumsCapped) {
+        warnings.push(`Only the first ${SHARE_ALBUM_MAX} albums were read — ` +
+                      "that's the limit for one go.");
+      }
+      if (c.sourceTruncated) {
+        warnings.push("The playlist is longer than this app can read from Roon, " +
+                      "so the end of it isn't here.");
+      }
+      if (j.truncated) warnings.push("Stopped at the sharing limit of tracks.");
+      if (j.skipped) {
+        warnings.push(`${j.skipped} entr${j.skipped === 1 ? "y" : "ies"} had no title ` +
+                      `and ${j.skipped === 1 ? "was" : "were"} left out.`);
+      }
+      // Above 40 KB a paste starts getting silently truncated by messaging
+      // apps, which turns into a blob that decodes to nothing on the far end.
+      if (j.bytes > 40000) {
+        warnings.push(`This is ${Math.round(j.bytes / 1024)} KB — too big to paste ` +
+                      "reliably. Use Download and send the file.");
+      }
+      for (const w of warnings) {
+        const el = document.createElement("div");
+        el.className = "share-warn";
+        el.textContent = w;
+        body.appendChild(el);
+      }
+
+      const note = document.createElement("div");
+      note.className = "share-note";
+      note.textContent =
+        "This describes the music, not the music itself. Whoever imports it " +
+        "gets whatever their own library or streaming service can match.";
+      body.appendChild(note);
+
+      // readOnly rather than disabled: the text must stay selectable so a
+      // long-press copy works where the Clipboard API doesn't.
+      const ta = document.createElement("textarea");
+      ta.className = "share-blob";
+      ta.id = "share-blob";
+      ta.readOnly = true;
+      ta.setAttribute("autocapitalize", "none");
+      ta.setAttribute("autocorrect", "off");
+      ta.spellcheck = false;
+      ta.rows = 4;
+      ta.value = j.blob || "";
+      body.appendChild(ta);
+    }, (foot, close) => {
+      const copy = document.createElement("button");
+      copy.type = "button"; copy.className = "action-btn primary";
+      copy.textContent = "Copy";
+      copy.addEventListener("click", async () => {
+        // navigator.clipboard is a SECURE-CONTEXT api and this extension is
+        // served over plain http on the LAN, so on most devices it simply does
+        // not exist — the "modern" path was never once taken in practice, and
+        // every user was silently pushed to hand-selecting the blob. That is
+        // how a copy comes back short. execCommand still works on http, so it
+        // is tried FIRST and the async API is the fallback, not the other way
+        // round.
+        const ta = document.getElementById("share-blob");
+        if (ta) {
+          ta.focus();
+          ta.setSelectionRange(0, (j.blob || "").length);
+          try {
+            if (document.execCommand && document.execCommand("copy")) {
+              showToast("Copied — paste it to whoever you're sharing with");
+              return;
+            }
+          } catch (e) { /* falls through to the async API below */ }
+        }
+        try {
+          await navigator.clipboard.writeText(j.blob || "");
+          showToast("Copied — paste it to whoever you're sharing with");
+        } catch (e) {
+          // Both refused. The text is selected, so a manual copy still works —
+          // say so rather than failing silently.
+          showToast("Couldn't copy automatically — the text is selected, copy it by hand",
+                    "error", TOAST_REPORT_MS);
+        }
+      });
+      foot.appendChild(copy);
+
+      const dl = document.createElement("button");
+      dl.type = "button"; dl.className = "action-btn";
+      dl.textContent = "Download";
+      dl.addEventListener("click", () => {
+        const safe = (name || "playlist").replace(/[^a-z0-9]+/gi, "_").slice(0, 60);
+        const blob = new Blob([j.blob || ""], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = safe + ".musicd";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        // Revoking immediately can race the download on some browsers.
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+      });
+      foot.appendChild(dl);
+
+      const done = document.createElement("button");
+      done.type = "button"; done.className = "action-btn";
+      done.textContent = "Done";
+      done.addEventListener("click", close);
+      foot.appendChild(done);
+    });
   }
 
   // Roon ARC's sort popover, in this app's bottom-sheet language: a plain list
@@ -1037,78 +2602,260 @@
     });
   }
 
-  async function openLibFocusSheet() {
-    if (!libFacets) {
-      try {
-        const r = await fetch("/api/library/facets");
-        if (r.ok) libFacets = await r.json();
-      } catch (e) { /* offline — the sheet still shows the play-history facet */ }
-    }
-    const f = libFacets || { decades: [], sources: [] };
+  // `editTarget` (a smart playlist) makes this sheet's "Save as…" an
+  // update-in-place. Passed in rather than held in a module variable: an
+  // abandoned edit — closing the sheet with X, the backdrop, or Show albums —
+  // would otherwise leave that variable set, and the NEXT save from the Focus
+  // bar would silently overwrite the playlist edited earlier.
+  // Album counts a dynamic playlist can be limited to. The ceiling is the
+  // play-time one: 400 albums is ~3,200 Roon calls and minutes of queueing.
+  const SMART_LIMITS = [25, 50, 100, 200, 400];
+  const SMART_LIMIT_DEFAULT = 100;   // matches smartLimitDefault() on the server
+
+  // What a new playlist is made OF, asked first because it changes what the
+  // playlist DOES rather than which albums it matches — and because it is the
+  // one choice that can't be inferred from the focus.
+  //
+  // Both modes run the same album query. "Albums" queues whole records in
+  // order; "Tracks" expands them and lists the tracks individually. The filter
+  // itself is always album-level: Roon's API publishes no track list without
+  // opening each album one at a time, so a genuinely track-level FILTER would
+  // mean indexing every track in the library — thousands of Roon calls, redone
+  // on every change — which is the traffic the snapshot exists to avoid. This
+  // is stated in the sheet rather than hidden, so the choice is understood.
+  const SMART_MODES = [
+    { id: "albums", label: "Albums",
+      note: "Queues whole albums, in their own running order." },
+    { id: "tracks", label: "Tracks",
+      note: "Lists the tracks from those albums, so you can play or queue them one at a time." }
+  ];
+  const SMART_MODE_DEFAULT = "albums";   // matches smartModeDefault() on the server
+  // What order it comes out in — a separate axis from what it is made of.
+  const SMART_ORDERS = [
+    { id: "album",  label: "Album order" },
+    { id: "random", label: "Random" }
+  ];
+  const SMART_ORDER_DEFAULT = "album";   // matches smartOrderDefault() on the server
+
+  async function openLibFocusSheet(editTarget) {
+    // Snapshot BEFORE the edited view is applied, so abandoning the sheet can
+    // put the user's own Library view back exactly as it was.
+    const viewBefore = editTarget ? currentLibViewSnapshot() : null;
+    // Lives outside the view: two playlists can share a query and differ here,
+    // which is also why the server applies it by slicing rather than inside
+    // libraryView(), whose cache is keyed on the query alone.
+    let editLimit = (editTarget && editTarget.limit) || 100;
+    // Same reasoning as the limit: two playlists can share a query and differ
+    // in what order it comes out in, so this lives beside the view rather than
+    // inside it.
+    let editOrder = (editTarget && editTarget.order) || SMART_ORDER_DEFAULT;
+    if (editTarget) applyViewToLibView(editTarget.view);
+    let committed = false;
+    // Re-read every time the sheet opens. Caching these for the life of the
+    // page meant a rescan changed the library and the Focus sheet went on
+    // reporting the old counts until a full reload — which reads as the rescan
+    // having done nothing.
+    try {
+      const r = await fetch("/api/library/facets", { cache: "no-store" });
+      if (r.ok) libFacets = await r.json();
+    } catch (e) { /* offline — keep whatever we last had rather than blanking */ }
+    const f = libFacets || { facets: [], coverage: {} };
+    // Which sections are expanded. Held across repaints (a chip tap rebuilds
+    // the body) but NOT across openings: a sheet that reopens half-collapsed
+    // hides filters that are still on.
+    const openSections = {};
     openLibSheet("Focus", (body) => {
-      const section = (label) => {
+      // One collapsible category. Roon's own Focus is a row of scrolling
+      // columns; on a phone that becomes a vertical stack, and with ten
+      // categories — some of them hundreds of labels long — every one expanded
+      // is a sheet nobody can find the bottom of. Collapsed by default unless
+      // something in it is selected, so what's ON is always visible.
+      // `openByDefault` is for sections that aren't filters at all — the
+      // playlist's own Order and size. They have no "active count" to open
+      // them, and collapsing the two controls this screen exists to set would
+      // hide them behind a tap for no gain.
+      const section = (id, label, activeCount, openByDefault) => {
+        // Default open when something in here is ON, and REMEMBER that, because
+        // a chip tap repaints the whole body: clearing the last filter in a
+        // category would otherwise drop its active count to zero and collapse
+        // the section under the user's finger, taking the other chips with it.
+        // Once open, a section stays open until the header is tapped or the
+        // sheet is closed.
+        if (openSections[id] === undefined && (activeCount > 0 || openByDefault)) {
+          openSections[id] = true;
+        }
+        const expanded = openSections[id] === undefined ? false : openSections[id];
         const s = document.createElement("div");
-        s.className = "lib-sheet-section";
-        const t = document.createElement("div");
+        s.className = "lib-sheet-section" + (expanded ? " is-open" : "");
+
+        const head = document.createElement("button");
+        head.type = "button";
+        head.className = "lib-sheet-section-head";
+        head.setAttribute("aria-expanded", expanded ? "true" : "false");
+        const t = document.createElement("span");
         t.className = "lib-sheet-section-label";
         t.textContent = label;
-        s.appendChild(t);
+        head.appendChild(t);
+        if (activeCount) {
+          const n = document.createElement("span");
+          n.className = "lib-sheet-section-count";
+          n.textContent = String(activeCount);
+          head.appendChild(n);
+        }
+        const car = document.createElement("span");
+        car.className = "lib-sheet-section-caret";
+        car.setAttribute("aria-hidden", "true");
+        car.textContent = expanded ? "⌃" : "⌄";
+        head.appendChild(car);
+        head.addEventListener("click", () => {
+          openSections[id] = !expanded;
+          renderFocusBody();
+        });
+        s.appendChild(head);
         body.appendChild(s);
-        return s;
+        if (!expanded) return null;   // collapsed: no body to fill
+        const wrap = document.createElement("div");
+        wrap.className = "lib-chips";
+        s.appendChild(wrap);
+        return { section: s, chips: wrap };
       };
-      const chip = (host, label, on, onToggle) => {
+      // state: "on" (included) | "not" (excluded) | "off".
+      const chip = (host, label, state, onTap) => {
         const c = document.createElement("button");
         c.type = "button";
-        c.className = "lib-chip" + (on ? " is-on" : "");
+        c.className = "lib-chip" + (state === "on" ? " is-on" : state === "not" ? " is-not" : "");
         c.textContent = label;
-        c.addEventListener("click", () => { onToggle(); renderFocusBody(); });
+        if (state === "not") c.setAttribute("aria-label", "Excluding " + label);
+        c.addEventListener("click", () => { onTap(); renderFocusBody(); });
         host.appendChild(c);
       };
+      const note = (host, text) => {
+        const n = document.createElement("div");
+        n.className = "lib-facet-note";
+        n.textContent = text;
+        host.appendChild(n);
+      };
+      // Why a facet's chips don't add up to the library. Every one of these
+      // comes from somewhere other than Roon — the browse API publishes none of
+      // it — so the number is stated rather than left to be noticed.
+      const COVERAGE_NOTE = {
+        decade: "Roon doesn't publish release years, so these come from your file tags " +
+                "and from Qobuz/TIDAL. Undated albums aren't in any decade.",
+        genre:  "Genres are read from Roon's own genre lists during a library sync. " +
+                "Anything Roon files under no genre won't appear here.",
+        label:  "Labels are collected during the label scan, which runs in the background " +
+                "and fills in over time.",
+        format: "Read from your own files, and — for albums you have no file for — from " +
+                "the Qobuz or TIDAL account you've connected. Anything from neither has none.",
+        added:  "Roon publishes no date-added, so this is what MusicD Remote could work " +
+                "out for itself — file timestamps, and albums appearing between scans."
+      };
+      // Format, Sample rate, Bit depth and Channels all come from the same file
+      // scan and all carry the same caveat; saying it four times is noise.
+      const COVERAGE_OF = { rate: "format", bits: "format", chan: "format" };
+
       const renderFocusBody = () => {
         body.innerHTML = "";
-        if (f.sources && f.sources.length) {
-          const s = section("Source");
-          const wrap = document.createElement("div"); wrap.className = "lib-chips"; s.appendChild(wrap);
-          for (const src of f.sources) {
-            chip(wrap, src.label + " (" + src.count + ")", libView.source.includes(src.value), () => {
-              const i = libView.source.indexOf(src.value);
-              if (i === -1) libView.source.push(src.value); else libView.source.splice(i, 1);
-            });
+
+        // The playlist's OWN properties lead, ahead of every filter. Order and
+        // size are decisions about the playlist rather than about which albums
+        // match, and burying them under ten collapsed facets meant scrolling
+        // past the whole sheet to reach the two controls this screen exists to
+        // set. Open by default for the same reason.
+        if (editTarget) {
+          const ord = section("order", "Order", 0, true);
+          if (ord) {
+            for (const o of SMART_ORDERS) {
+              chip(ord.chips, o.label, editOrder === o.id ? "on" : "off",
+                   () => { editOrder = o.id; });
+            }
+            note(ord.section,
+              (editTarget.mode === "tracks"
+                ? "Album order plays each record straight through, in the sort you " +
+                  "chose. Random shuffles the albums AND the tracks inside them."
+                : "Album order queues the albums in the sort you chose. Random " +
+                  "shuffles which albums, and what order they play in.") +
+              " The shuffle is fixed per playlist, so it stays put while you scroll " +
+              "rather than reshuffling under you.");
+          }
+
+          const lim = section("limit", "Playlist size", 0, true);
+          if (lim) {
+            for (const n of SMART_LIMITS) {
+              chip(lim.chips, String(n), editLimit === n ? "on" : "off", () => { editLimit = n; });
+            }
+            note(lim.section,
+              "How many albums this playlist actually plays. A query can match your " +
+              "whole library, but every album costs Roon work to queue — 400 albums " +
+              "is thousands of tracks and takes minutes.");
           }
         }
-        if (f.decades && f.decades.length) {
-          const s = section("Decade");
-          const wrap = document.createElement("div"); wrap.className = "lib-chips"; s.appendChild(wrap);
-          for (const d of f.decades) {
-            chip(wrap, d.label + " (" + d.count + ")", libView.decade.includes(String(d.value)), () => {
-              const v = String(d.value);
-              const i = libView.decade.indexOf(v);
-              if (i === -1) libView.decade.push(v); else libView.decade.splice(i, 1);
-            });
+
+        // Listening first — it is the one facet that is always available,
+        // because it runs on this extension's own play history rather than on
+        // anything harvested.
+        const played = libView.played !== "any" ? 1 : 0;
+        const ls = section("played", "Listening", played);
+        if (ls) {
+          for (const p of LIB_PLAYED_OPTIONS) {
+            chip(ls.chips, p.label, libView.played === p.id ? "on" : "off",
+                 () => { libView.played = p.id; });
           }
-          // Roon's API publishes no release year, so every one of these was
-          // found elsewhere and the coverage is never guaranteed to be the
-          // whole library. Say so with the real numbers instead of leaving the
-          // user to notice that the chips don't add up.
-          if (f.dated != null && f.total && f.dated < f.total) {
-            const cov = document.createElement("div");
-            cov.className = "lib-facet-note";
-            cov.textContent = f.dated.toLocaleString() + " of " + f.total.toLocaleString() +
-              " albums have a release year so far — Roon doesn't publish them, so they're " +
-              "collected from your file tags and from Qobuz/TIDAL. Undated albums aren't " +
-              "in any decade.";
-            s.appendChild(cov);
+          if (!f.hasPlays) {
+            note(ls.section, "MusicD Remote hasn't seen anything play yet, so these use an " +
+                             "empty history — everything counts as never played.");
           }
         }
-        const ps = section("Listening");
-        const pw = document.createElement("div"); pw.className = "lib-chips"; ps.appendChild(pw);
-        for (const p of LIB_PLAYED_OPTIONS) {
-          chip(pw, p.label, libView.played === p.id, () => { libView.played = p.id; });
+
+        for (const facet of (f.facets || [])) {
+          const sel = libView[facet.id];
+          if (!Array.isArray(sel)) continue;   // a facet this client doesn't know
+          const s = section(facet.id, facet.label, sel.length);
+          if (!s) continue;
+          for (const v of facet.values) {
+            chip(s.chips, v.label + " (" + v.count + ")",
+                 facetState(sel, v.value), () => facetCycle(sel, v.value));
+          }
+          // Anything SELECTED that the server didn't send back gets a chip of
+          // its own. Genre and Label are truncated to the commonest values, so a
+          // saved playlist — or a filter set before the library changed — can
+          // easily name one that isn't in the list. Without this the filter is
+          // active, invisible, and clearable only by Clear all, which would
+          // take every other filter with it.
+          const listed = facet.values.map(v => v.value);
+          for (const raw of sel) {
+            const value = raw.charAt(0) === "!" ? raw.slice(1) : raw;
+            if (listed.includes(value)) continue;
+            chip(s.chips, value, facetState(sel, value), () => facetCycle(sel, value));
+          }
+          if (facet.total_values > facet.values.length) {
+            note(s.section, "Showing the " + facet.values.length + " most common of " +
+                            facet.total_values.toLocaleString() + ".");
+          }
+          const covId = COVERAGE_OF[facet.id] || facet.id;
+          const have = f.coverage && f.coverage[covId];
+          if (COVERAGE_NOTE[covId] && Number.isFinite(have) && f.total && have < f.total) {
+            note(s.section, have.toLocaleString() + " of " + f.total.toLocaleString() +
+                            " albums. " + COVERAGE_NOTE[covId]);
+          }
+          if (facet.id === "source" && f.sources_derived) {
+            // Say WHERE the number came from. Matching file tags against Roon's
+            // own metadata is lossy — Roon rewrites titles for albums it
+            // identifies — so when nothing else can claim an album, counting by
+            // elimination is both exact and honest, and the user should know
+            // that's the reasoning rather than assume every file was matched.
+            note(s.section, "No streaming service is connected, so every album in your " +
+                            "Roon library came from your own files.");
+          }
         }
-        const note = document.createElement("div");
-        note.className = "lib-sheet-note";
-        note.textContent = "Genre and Tag stay in the main filter — Roon keeps those in separate lists, so they can't be combined with these.";
-        body.appendChild(note);
+
+        const foot = document.createElement("div");
+        foot.className = "lib-sheet-note";
+        foot.textContent =
+          "Tap a filter once to include it, again to exclude it, once more to clear it. " +
+          "Roon can also focus on star ratings, its own favourites and album types — " +
+          "those aren't in the API extensions can read.";
+        body.appendChild(foot);
       };
       renderFocusBody();
     }, (foot, close) => {
@@ -1116,16 +2863,1069 @@
       clear.type = "button"; clear.className = "action-btn";
       clear.textContent = "Clear all";
       clear.addEventListener("click", () => {
-        libView.decade = []; libView.source = []; libView.played = "any";
+        committed = true;
+        Object.assign(libView, libEmptyFacets());
+        libView.played = "any";
         close(); applyLibView();
+      });
+      const save = document.createElement("button");
+      save.type = "button"; save.className = "action-btn";
+      save.textContent = "Save as…";
+      save.addEventListener("click", () => {
+        committed = true;
+        close();
+        // Carry the chosen size into the save — the sheet is the only place it
+        // can be set, so it has to travel with the thing being saved. `mode`
+        // rides along on editTarget from the create sheet (or from the record
+        // being edited); Save-as from the Library bar has no editTarget and
+        // takes the server default.
+        saveSmartPlaylistPrompt(editTarget
+          ? Object.assign({}, editTarget, { limit: editLimit, order: editOrder })
+          : null);
       });
       const show = document.createElement("button");
       show.type = "button"; show.className = "action-btn primary";
       show.textContent = "Show albums";
-      show.addEventListener("click", () => { close(); applyLibView(); });
-      foot.appendChild(clear); foot.appendChild(show);
+      show.addEventListener("click", () => { committed = true; close(); applyLibView(); });
+      foot.appendChild(clear); foot.appendChild(save); foot.appendChild(show);
+    }, () => {
+      // Abandoned (X or backdrop) while editing a saved playlist — put the
+      // user's own Library view back. Never persisted in the first place, so
+      // there is nothing on disk to undo.
+      if (editTarget && !committed && viewBefore) applyViewToLibView(viewBefore);
     });
   }
+
+  // ----- Smart playlists ---------------------------------------------------
+  //
+  // A smart playlist is just a saved library view (sort + focus), re-evaluated
+  // every time it's opened. It runs entirely on the extension's own album
+  // snapshot — the same engine as the Library screen — so it makes NO Roon calls
+  // and adds nothing to the Core's memory. Opening one applies its view and
+  // shows the library wall; there is no separate screen to maintain.
+  // Derived from LIB_FACET_IDS rather than listed again: a facet added to that
+  // array is savable immediately, instead of working on the Library screen and
+  // silently vanishing the moment somebody saves the view as a playlist.
+  const SMART_VIEW_KEYS = ["sort", "dir", "seed", "played"].concat(LIB_FACET_IDS);
+
+  function currentLibViewSnapshot() {
+    const out = {};
+    for (const k of SMART_VIEW_KEYS) {
+      out[k] = Array.isArray(libView[k]) ? libView[k].slice() : libView[k];
+    }
+    return out;
+  }
+
+  // A one-line human description, so the picker says what a saved view DOES
+  // rather than only what it was named.
+  function describeLibView(v) {
+    const bits = [];
+    const sortOpt = LIB_SORT_OPTIONS.find(o => o.id === v.sort);
+    if (sortOpt) bits.push(sortOpt.label + (v.dir === "desc" ? " ↓" : " ↑"));
+    // Decades read as "1980s"; everything else is already a display name, and
+    // an excluded value says so rather than reading as if it were included.
+    const shown = (id, val) => (val.charAt(0) === "!" ? "not " : "") +
+      (id === "decade" ? val.replace("!", "") + "s" : val.replace(/^!/, ""));
+    for (const id of LIB_FACET_IDS) {
+      const sel = v[id];
+      if (Array.isArray(sel) && sel.length) bits.push(sel.map(x => shown(id, x)).join(", "));
+    }
+    if (v.played && v.played !== "any") {
+      const opt = LIB_PLAYED_OPTIONS.find(p => p.id === v.played);
+      bits.push(opt ? opt.label.toLowerCase() : "not played in " + v.played + " months");
+    }
+    return bits.join(" · ");
+  }
+
+  // Returns null on failure, [] for a genuinely empty list. The caller must tell
+  // them apart: rendering "No Dynamic Playlists yet" after a network blip reads as
+  // "your saved playlists are gone".
+  async function fetchSmartPlaylists() {
+    try {
+      const r = await fetch("/api/smart-playlists", { cache: "no-store" });
+      if (!r.ok) return null;
+      const j = await r.json();
+      return Array.isArray(j.playlists) ? j.playlists : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function saveSmartPlaylistPrompt(existing) {
+    // NOT describeLibView(): using the description as the default name printed
+    // the same string as both the row's title and its subtitle.
+    const suggested = (existing && existing.name) || "My Dynamic Playlist";
+    const name = window.prompt("Name this Dynamic Playlist", suggested);
+    if (name === null) return;                 // cancelled
+    const trimmed = String(name).trim();
+    if (!trimmed) { showToast("Give it a name", "error"); return; }
+    (async () => {
+      try {
+        const r = await fetch("/api/smart-playlists", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: existing && existing.id, name: trimmed,
+                                 view: currentLibViewSnapshot(),
+                                 // Editing keeps whatever the playlist already
+                                 // had; a new one takes the server's default.
+                                 limit: existing && existing.limit,
+                                 // Set by the create sheet before the focus
+                                 // screen opens, and preserved through an edit.
+                                 mode:  existing && existing.mode,
+                                 // Set in the focus sheet's Order section.
+                                 order: existing && existing.order })
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { showToast(j.error || "Couldn't save that", "error"); return; }
+        const lim = j.playlist && j.playlist.limit;
+        const matched = j.playlist && j.playlist.album_matched;
+        showToast(Number.isFinite(matched) && Number.isFinite(lim) && matched > lim
+          ? `Saved "${trimmed}" — it plays ${lim} of the ${matched} albums that match. ` +
+            "Change that with Edit."
+          : `Saved "${trimmed}"`, null, TOAST_REPORT_MS);
+        // Editing an existing one lands back on it so the change is visible
+        // immediately; a brand new one goes to the list.
+        if (j.playlist && existing) openSmartPlaylist(j.playlist);
+        else showSmartPlaylists();
+      } catch (e) {
+        showToast("Couldn't save that", "error");
+      }
+    })();
+  }
+
+  // Smart playlists get the same shape as Roon playlists: a wall of tiles, and a
+  // detail screen listing TRACKS with each track's album artwork. They used to
+  // open the library wall with the view applied, which was the query working
+  // correctly but reading as "it just took me to the library".
+  // "New Dynamic Playlist", as the first tile of the wall. Built on .album so it
+  // sizes with the grid at every width — the same approach as Home's unheard
+  // tile, and for the same reason: no breakpoints of its own to get wrong.
+  function buildNewSmartTile() {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "album home-unheard-tile";
+    btn.id = "new-smart-tile";
+    btn.setAttribute("aria-label", "Create a Dynamic Playlist");
+
+    const art = document.createElement("div");
+    art.className = "album-art-wrap unheard-art";
+    const glyph = document.createElement("span");
+    glyph.className = "unheard-glyph";
+    glyph.setAttribute("aria-hidden", "true");
+    glyph.textContent = "＋";
+    art.appendChild(glyph);
+    btn.appendChild(art);
+
+    const meta = document.createElement("div");
+    meta.className = "album-meta";
+    const t = document.createElement("div");
+    t.className = "album-title";
+    t.textContent = "New Dynamic Playlist";
+    const sub = document.createElement("div");
+    sub.className = "album-artist";
+    sub.textContent = "Albums or tracks, then a focus";
+    meta.appendChild(t); meta.appendChild(sub);
+    btn.appendChild(meta);
+
+    btn.addEventListener("click", createSmartPlaylist);
+    return btn;
+  }
+
+
+  // Creating is editing a playlist that doesn't exist yet: same sheet, same
+  // sections, same Playlist size control. Passing a target with no id is what
+  // makes the save create rather than overwrite, so there is one editor rather
+  // than two that have to be kept in step.
+  function createSmartPlaylist() {
+    openLibSheet("New Dynamic Playlist", (body, close) => {
+      const intro = document.createElement("div");
+      intro.className = "lib-facet-note";
+      intro.textContent = "What should this playlist be made of?";
+      body.appendChild(intro);
+
+      for (const m of SMART_MODES) {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "lib-sort-row";
+        row.dataset.mode = m.id;
+
+        const text = document.createElement("span");
+        text.className = "lib-sort-text";
+        const main = document.createElement("span");
+        main.className = "lib-sort-label";
+        main.textContent = m.label;
+        const sub = document.createElement("span");
+        sub.className = "lib-sort-note";
+        sub.textContent = m.note;
+        text.appendChild(main); text.appendChild(sub);
+        row.appendChild(text);
+
+        row.addEventListener("click", () => {
+          close();
+          // Straight into the focus screen, whose options are what fuel the
+          // playlist. A target with no id makes the save create rather than
+          // overwrite.
+          openLibFocusSheet({ id: null, name: "", view: currentLibViewSnapshot(),
+                              limit: SMART_LIMIT_DEFAULT, mode: m.id,
+                              order: SMART_ORDER_DEFAULT });
+        });
+        body.appendChild(row);
+      }
+
+      const note = document.createElement("div");
+      note.className = "lib-sheet-note";
+      note.textContent =
+        "Either way the playlist follows the same focus, and re-runs it every time " +
+        "you open it — it isn't a fixed list. Roon's API only lets an extension " +
+        "filter at album level, so Tracks means the tracks OF the albums that match.";
+      body.appendChild(note);
+    });
+  }
+
+  async function showSmartPlaylists() {
+    enterFullWall("Dynamic Playlists");
+    smartWallActive = true;
+    const mySeq = ++smartSeq;
+    const list = await fetchSmartPlaylists();
+    if (!smartWallActive || mySeq !== smartSeq) return;
+    grid.innerHTML = "";
+    if (list === null) {
+      setBanner("Couldn't read your Dynamic Playlists — the extension didn't answer. " +
+                "They're still saved; try again.", true);
+      return;
+    }
+    setBanner(list.length ? null
+      : "No Dynamic Playlists yet — start one with New, or set a sort and focus on the " +
+        "Library screen and use Focus → Save as…", false);
+    const frag = document.createDocumentFragment();
+    // Leads the wall so an empty one still has something to do. Creating opens
+    // the SAME editor Edit does, rather than sending the user off to the
+    // Library screen to discover Focus → Save as… for themselves.
+    frag.appendChild(buildNewSmartTile());
+    for (const p of list) {
+      const n = p.album_total;
+      const matched = p.album_matched;
+      const tile = buildAlbumTile({
+        title: p.name,
+        subtitle: (n === undefined || n === null)
+          ? describeLibView(p.view)
+          // Says what it PLAYS, and — when the query found more — what it left
+          // out. Showing only the match count while playing a capped subset is
+          // what made the number misleading.
+          : (Number.isFinite(matched) && matched > n
+              ? `${n} of ${matched} Albums`
+              : `${n} Album${n === 1 ? "" : "s"}`),
+        image_key: null,
+        // A smart playlist has no cover either — the mosaic comes from the first
+        // few albums it resolves to, which the server reads straight out of the
+        // snapshot at no cost.
+        art_keys: p.art_keys || []
+      }, () => openSmartPlaylist(p), { selectable: false });
+      frag.appendChild(tile);
+    }
+    grid.appendChild(frag);
+  }
+  window.__showSmartPlaylists = showSmartPlaylists;
+  window.__showSmartPicks = showSmartPicks;
+
+  async function openSmartPlaylist(sp) {
+    enterFullWall("");   // the dynamic playlist prints its own full-width heading
+    smartDetailActive = true;
+    const mySeq = ++smartSeq;
+
+    setBanner(null);
+    grid.innerHTML = "";
+    clearWallGridSizing();
+
+    const wrap = document.createElement("div");
+    wrap.className = "playlist-detail";
+
+    const back = document.createElement("button");
+    back.type = "button"; back.className = "action-btn playlist-back";
+    back.textContent = "← Dynamic Playlists";
+    back.addEventListener("click", () => { smartDetailActive = false; showSmartPlaylists(); });
+    wrap.appendChild(back);
+
+    const head = document.createElement("div");
+    head.className = "playlist-head";
+    const h = document.createElement("h2");
+    h.className = "playlist-title";
+    h.textContent = sp.name || "Dynamic Playlist";
+    head.appendChild(h);
+    const sub = document.createElement("div");
+    sub.className = "playlist-sub";
+    // What it is made of and what order it is in, alongside the query — both
+    // are properties of the playlist that the query description can't carry,
+    // and "why are these shuffled?" is otherwise only answerable from Edit.
+    sub.textContent = [
+      (sp.mode || SMART_MODE_DEFAULT) === "tracks" ? "Tracks" : "Albums",
+      (sp.order || SMART_ORDER_DEFAULT) === "random" ? "random" : "album order",
+      describeLibView(sp.view)
+    ].filter(Boolean).join(" · ");
+    head.appendChild(sub);
+    wrap.appendChild(head);
+
+    const actions = document.createElement("div");
+    actions.className = "playlist-actions";
+    const mkBtn = (label, cls, fn) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = cls; b.textContent = label;
+      b.addEventListener("click", () => fn(b));
+      actions.appendChild(b);
+      return b;
+    };
+    // Two actions on the row; the rest behind the overflow menu. Six pills
+    // shrank together (.action-btn is flex: 1 1 0) rather than wrapping, which
+    // is how "Send to Roon" came out as "end to Roo".
+    mkBtn("Play now", "action-btn primary", (b) => playSmartPlaylist(sp, "play_now", b));
+    mkBtn("Queue",    "action-btn",         (b) => playSmartPlaylist(sp, "queue", b));
+    actions.appendChild(buildOverflowMenu([
+      { label: "Send to Roon", onClick: (b) => sendSmartPlaylistToRoon(sp, b) },
+      { label: "Share",        onClick: (b) => shareThis(b) },
+      { label: "Edit",         onClick: () => editSmartPlaylist(sp) },
+      { label: "Delete",       onClick: () => deleteSmartPlaylist(sp), danger: true },
+    ], { title: sp.name || "Dynamic Playlist" }));
+    wrap.appendChild(actions);
+
+    const ol = document.createElement("ol");
+    ol.className = "track-list playlist-tracks";
+    wrap.appendChild(ol);
+
+    const status = document.createElement("div");
+    status.className = "playlist-empty";
+    status.textContent = "Reading tracks from Roon…";
+    wrap.appendChild(status);
+
+    const more = document.createElement("button");
+    more.type = "button"; more.className = "action-btn playlist-more hidden";
+    more.textContent = "Load more";
+    wrap.appendChild(more);
+    grid.appendChild(wrap);
+
+    // Does the track list own this screen? In "tracks" mode it IS the screen and
+    // reports its own progress. In "albums" mode the screen shows albums, and
+    // the track paging still exists — Share has to expand albums into tracks
+    // whichever mode we are in — but it must not narrate over the album count
+    // that is already there.
+    const trackMode = (sp.mode || SMART_MODE_DEFAULT) === "tracks";
+    if (!trackMode) { ol.remove(); more.remove(); status.textContent = "Reading albums…"; }
+
+    // Tracks are paged by ALBUM: each one has to be opened on the Core, so the
+    // screen fills a batch at a time rather than stalling on a long playlist.
+    let albumOffset = 0, loading = false, done = false, shown = 0;
+    // `done` means "stop paging" — it is set both when the playlist ENDS and
+    // when a page fails. Share has to tell those apart, so failure is recorded
+    // separately rather than inferred from a flag that means two things.
+    let failed = false;
+    // The tracks as data, alongside the rows on screen. Share needs the values,
+    // not the rendered text, and re-reading them out of the DOM would mean
+    // parsing back a string this code already had.
+    const loaded = [];
+    const loadPageOnce = async () => {
+      if (loading || done) return;
+      loading = true;
+      more.disabled = true;
+      try {
+        const zsel = document.getElementById("zone-select");
+        const zid = (zsel && zsel.value) || selectedZoneId || "";
+        const r = await fetch(`/api/smart-playlist?id=${encodeURIComponent(sp.id)}` +
+                              `&offset=${albumOffset}` + (zid ? `&zone=${encodeURIComponent(zid)}` : ""),
+                              { cache: "no-store" });
+        if (!smartDetailActive || mySeq !== smartSeq) return;
+        const j = await r.json().catch(() => ({}));
+        if (!smartDetailActive || mySeq !== smartSeq) return;
+        if (!r.ok) {
+          status.textContent = j.error || "Couldn't read this playlist.";
+          done = true;
+          failed = true;
+          more.classList.add("hidden");   // it would no-op; don't offer it
+          return;
+        }
+
+        for (const t of (j.tracks || [])) { if (trackMode) ol.appendChild(smartTrackRow(t)); loaded.push(t); }
+        shown += (j.tracks || []).length;
+        albumOffset += (j.albums_expanded || 0);
+        done = !!j.done || !(j.albums_expanded > 0);
+        if (trackMode) {
+          status.textContent = done
+            ? (shown ? `${shown} track${shown === 1 ? "" : "s"} from ${j.album_total} album${j.album_total === 1 ? "" : "s"}`
+                     : "Nothing in your library matches this Dynamic Playlist right now.")
+            : `${shown} tracks so far — ${j.album_total - albumOffset} album(s) left`;
+          more.classList.toggle("hidden", done);
+        }
+      } catch (e) {
+        if (!smartDetailActive || mySeq !== smartSeq) return;
+        status.textContent = "Couldn't read this playlist.";
+        done = true;
+        failed = true;
+      } finally {
+        loading = false;
+        more.disabled = false;
+      }
+    };
+
+    // Awaiting a load that is ALREADY running has to mean "wait for it", not
+    // "do nothing" — otherwise Share, tapped while the first page is still in
+    // flight, sees `loading`, returns instantly and finds an empty list.
+    let inflight = null;
+    const loadPage = () => {
+      if (loading) return inflight || Promise.resolve();
+      inflight = loadPageOnce();
+      return inflight;
+    };
+    // Share has to expand the albums it hasn't read yet — a smart playlist is a
+    // query, and until an album is opened on the Core we don't know its tracks.
+    // That is the same paging the "Load more" button drives, run to completion
+    // with the progress visible, because a share that silently covered the
+    // first 40 albums of 300 would be indistinguishable from a complete one.
+    async function shareThis(btn) {
+      btn.disabled = true;
+      try {
+        let stalled = false;
+        while (!done && albumOffset < SHARE_ALBUM_MAX) {
+          const before = albumOffset;
+          // A PROGRESS message, so it must not linger: TOAST_REPORT_MS exists
+          // for reports that land at the END of a long job, and using it here
+          // pinned "Reading album 1…" over the finished share sheet for 9s.
+          showToast(`Reading album ${albumOffset + 1}…`);
+          await loadPage();
+          // Leaving the screen orphans the page; stop rather than keep hammering
+          // the Core for a view the user is no longer looking at.
+          if (!smartDetailActive || mySeq !== smartSeq) return;
+          // No forward progress: looping again would never terminate. It also
+          // means we do NOT know we reached the end.
+          if (albumOffset === before) { stalled = true; break; }
+        }
+        if (!loaded.length) { showToast("Nothing in this playlist to share", "error"); return; }
+        // `failed` is set by loadPageOnce on an error. Without it a timeout on
+        // page 4 of 40 was indistinguishable from finishing: `done` went true
+        // either way, the loop exited, and the sheet announced a complete
+        // share of 10% of the playlist.
+        await shareTracks(sp.name || "Dynamic Playlist", loaded.map(t => ({
+          title: t.title, artist: t.subtitle,
+          album: t.album_title, track_no: t.track_no
+        })), null, {
+          incomplete:   failed || stalled,
+          albumsCapped: !done && albumOffset >= SHARE_ALBUM_MAX,
+        });
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    if (trackMode) {
+      more.addEventListener("click", loadPage);
+      loadPage();
+      return;
+    }
+
+    // Albums mode: one request, straight out of the snapshot. No Roon calls at
+    // all to LOOK at the playlist — expanding tracks is what costs, and that
+    // only happens now if the user shares it.
+    const albumGrid = document.createElement("div");
+    // album-grid, not "grid": that is the class that actually carries the
+    // responsive column layout, and it is the same one the Library wall uses,
+    // so a playlist's albums size exactly like every other wall of tiles.
+    albumGrid.className = "album-grid playlist-albums";
+    wrap.insertBefore(albumGrid, status);
+    try {
+      const r = await fetch("/api/smart-playlist/albums?id=" + encodeURIComponent(sp.id),
+                            { cache: "no-store" });
+      if (!smartDetailActive || mySeq !== smartSeq) return;
+      const j = await r.json().catch(() => ({}));
+      if (!smartDetailActive || mySeq !== smartSeq) return;
+      if (!r.ok) { status.textContent = j.error || "Couldn't read this playlist."; return; }
+      const albums = j.albums || [];
+      const frag = document.createDocumentFragment();
+      for (const a of albums) frag.appendChild(buildAlbumTile(a));
+      albumGrid.appendChild(frag);
+      // Says what it PLAYS and, when the query matched more, what it left out —
+      // the same honesty the tile subtitle carries.
+      status.textContent = albums.length
+        ? (Number.isFinite(j.matched) && j.matched > albums.length
+            ? `${albums.length} of ${j.matched} albums that match`
+            : `${albums.length} album${albums.length === 1 ? "" : "s"}`)
+        : "Nothing in your library matches this Dynamic Playlist right now.";
+    } catch (e) {
+      if (!smartDetailActive || mySeq !== smartSeq) return;
+      status.textContent = "Couldn't read this playlist.";
+    }
+  }
+  window.__openSmartPlaylist = openSmartPlaylist;
+
+  // A track row carrying the artwork of the album it came from. Tapping it plays
+  // that track via the album path already used by the album view.
+  function smartTrackRow(t) {
+    const li = document.createElement("li");
+    li.className = "track-row track-row-art";
+    li.dataset.albumOffset = String(t.album_offset);
+    li.dataset.trackIndex  = String(t.track_index);
+
+    const art = document.createElement("span");
+    art.className = "track-art";
+    // The key stays on the element even if the <img> is removed by onerror, so
+    // "which artwork was this row given" is answerable after the fact.
+    if (t.image_key) art.dataset.artKey = t.image_key;
+    if (t.image_key) {
+      const img = document.createElement("img");
+      img.loading = "lazy"; img.alt = "";
+      img.src = `/api/image/${encodeURIComponent(t.image_key)}?size=80`;
+      img.onerror = () => { art.classList.add("no-image"); img.remove(); };
+      art.appendChild(img);
+    } else {
+      art.classList.add("no-image");
+    }
+    li.appendChild(art);
+
+    const text = document.createElement("div");
+    text.className = "track-text";
+    const tt = document.createElement("div");
+    tt.className = "track-title";
+    tt.textContent = t.title || "";
+    text.appendChild(tt);
+    const ta = document.createElement("div");
+    ta.className = "track-artist";
+    ta.textContent = [t.subtitle, t.album_title].filter(Boolean).join(" · ");
+    text.appendChild(ta);
+    li.appendChild(text);
+
+    li.addEventListener("click", async () => {
+      const zsel = document.getElementById("zone-select");
+      const zone = (zsel && zsel.value) || selectedZoneId;
+      if (!zone) { showToast("Choose a zone first", "error"); return; }
+      try {
+        const r = await fetch("/api/play-track", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          // These are /api/play-track's names — `track`/`title`, NOT the
+          // playlist route's `track_index`/`track_title`. Sending the wrong
+          // pair 400s on every tap.
+          body: JSON.stringify({
+            offset: t.album_offset, track: t.track_index, title: t.title,
+            zone_or_output_id: zone, kind: "play_now"
+          })
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) showToast(j.error || "Couldn't play that track", "error");
+        else showToast(j.action || "Playing");
+      } catch (e) {
+        showToast("Couldn't reach the extension", "error");
+      }
+    });
+    return li;
+  }
+
+  // Play or queue the whole thing. The albums come from the snapshot (no Roon
+  // calls), then /api/play-multi does the work with its existing batching and
+  // stale-offset defense.
+  async function playSmartPlaylist(sp, kind, btn) {
+    const zsel = document.getElementById("zone-select");
+    const zone = (zsel && zsel.value) || selectedZoneId;
+    if (!zone) { showToast("Choose a zone first", "error"); return; }
+    btn.disabled = true;
+    try {
+      const r = await fetch(`/api/smart-playlist/albums?id=${encodeURIComponent(sp.id)}&max=${SMART_SEND_MAX}`,
+                            { cache: "no-store" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { showToast(j.error || "Couldn't read this playlist", "error"); return; }
+      const albums = (j.albums || []);
+      if (!albums.length) { showToast("Nothing matches this Dynamic Playlist", "error"); return; }
+      const pr = await fetch("/api/play-multi", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: albums.map(a => ({ offset: a.offset, title: a.title, subtitle: a.subtitle })),
+          zone_or_output_id: zone, kind
+        })
+      });
+      const pj = await pr.json().catch(() => ({}));
+      if (!pr.ok) { showToast(pj.error || "Roon refused that", "error"); return; }
+      // Say how many of how many. The cap used to be silent, so a 1,179-album
+      // playlist queued 100 and looked like it had queued everything.
+      //
+      // MATCHED, not total: the endpoint returns exactly `total` albums, so
+      // comparing against it makes "capped" permanently false and this whole
+      // message dead code. `matched` is what the query found, which is the
+      // number the playlist was capped AGAINST.
+      showToast(multiOutcome(kind === "queue" ? "Queued" : "Playing",
+                             pj, albums.length, smartMatched(j)), null, TOAST_REPORT_MS);
+    } catch (e) {
+      // The fetch died, but the server keeps going — it has no way to hear
+      // that we left. Saying "couldn't reach" would invite a retry that
+      // restarts the queue from scratch on top of the run still in progress.
+      showToast("Lost contact while filling the queue — check Roon before trying again",
+                "error", TOAST_REPORT_MS);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // Turn a smart playlist into a real Roon playlist.
+  //
+  // Roon's extension API has NO playlist write of any kind — no create, add,
+  // remove or reorder, and no "Add to Playlist" action anywhere in the browse
+  // tree. Roon has left that request unanswered since 2017. What Roon DOES
+  // offer is saving the current queue as a playlist from its own remote, so the
+  // extension does the half it can (assembling the queue in the right order)
+  // and then says exactly which two taps finish the job.
+  async function sendSmartPlaylistToRoon(sp, btn) {
+    const zsel = document.getElementById("zone-select");
+    const zone = (zsel && zsel.value) || selectedZoneId;
+    if (!zone) { showToast("Choose a zone first", "error"); return; }
+
+    // Disclose the cap BEFORE asking, not after: the confirm destroys the
+    // existing queue, and a user agreeing to "send 1,179 albums" would not
+    // necessarily agree to "destroy the queue to send 400 of them".
+    const capNote = (typeof sp.album_total === "number" && sp.album_total > SMART_SEND_MAX)
+      ? `\n\nOnly the first ${SMART_SEND_MAX} of ${sp.album_total} albums fit in one go.`
+      : "";
+    const ok = await confirmDialog(
+      `Queue "${sp.name}" to ${(zsel && zsel.selectedOptions[0] && zsel.selectedOptions[0].textContent) || "this zone"}?\n\n` +
+      "Roon's API can't create playlists, so this fills the queue instead. " +
+      "Then in Roon: open the queue, tap the 3 dots above it, and choose " +
+      "\"Add the queue to a Playlist\".\n\nThis replaces what's in the queue now." +
+      capNote);
+    if (!ok) return;
+
+    btn.disabled = true;
+    try {
+      const r = await fetch(`/api/smart-playlist/albums?id=${encodeURIComponent(sp.id)}&max=${SMART_SEND_MAX}`,
+                            { cache: "no-store" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { showToast(j.error || "Couldn't read this playlist", "error"); return; }
+      const albums = j.albums || [];
+      if (!albums.length) { showToast("Nothing matches this Dynamic Playlist", "error"); return; }
+
+      const pr = await fetch("/api/play-multi", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: albums.map(a => ({ offset: a.offset, title: a.title, subtitle: a.subtitle })),
+          zone_or_output_id: zone,
+          // play_now on the first album, queue for the rest — that is what
+          // play-multi does, and it is what builds an ordered queue.
+          kind: "play_now"
+        })
+      });
+      const pj = await pr.json().catch(() => ({}));
+      if (!pr.ok) { showToast(pj.error || "Roon refused that", "error"); return; }
+      showToast(multiOutcome("Queued", pj, albums.length, smartMatched(j)) +
+                " — now save the queue as a playlist in Roon", null, TOAST_REPORT_MS);
+    } catch (e) {
+      // Same reasoning as playSmartPlaylist: the server run outlives our fetch.
+      showToast("Lost contact while filling the queue — check Roon before trying again",
+                "error", TOAST_REPORT_MS);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // Edit reuses the Focus sheet: load the saved view into the live one, then
+  // open the editor with this playlist as the save target, so "Save as…" writes
+  // back to the same record instead of creating a duplicate.
+  // Copy a saved view into the live one. Decades are normalised to STRINGS: the
+  // server stores them as numbers, while the whole client compares against
+  // String(decade) — the Focus chips would render off for a decade that IS
+  // active, and tapping one would push a duplicate rather than toggle it.
+  function applyViewToLibView(view) {
+    // A facet the saved view doesn't mention is OFF, not "leave whatever the
+    // Library screen happens to have". Skipping it would let a playlist saved
+    // before a facet existed quietly inherit the user's current filters and
+    // then show a different set of albums than the one that was saved.
+    Object.assign(libView, libEmptyFacets());
+    for (const k of SMART_VIEW_KEYS) {
+      if (view[k] === undefined) continue;
+      libView[k] = Array.isArray(view[k]) ? view[k].map(String) : view[k];
+    }
+  }
+
+  // NOT saved here. editSmartPlaylist used to commit the playlist's view to
+  // localStorage immediately, so opening Edit and closing it again silently and
+  // permanently re-sorted the user's Library screen. openLibFocusSheet restores
+  // the previous view if the sheet is abandoned.
+  function editSmartPlaylist(sp) {
+    openLibFocusSheet(sp);
+  }
+
+  async function deleteSmartPlaylist(sp) {
+    const ok = await confirmDialog(`Delete the Dynamic Playlist "${sp.name}"?`);
+    if (!ok) return;
+    try {
+      const r = await fetch("/api/smart-playlists/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: sp.id })
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { showToast(j.error || "Couldn't delete that", "error"); return; }
+      showToast(`Deleted "${sp.name}"`);
+      smartDetailActive = false;
+      showSmartPlaylists();
+    } catch (e) {
+      showToast("Couldn't delete that", "error");
+    }
+  }
+
+  // A zone row's label. Grouped zones get a second line naming their outputs,
+  // as Roon's own remote does — without it a zone called "Kitchen + Study" and
+  // a real Kitchen+Study group look identical.
+  function fillZoneRow(item, z) {
+    const outs = z.outputs || [];
+    const name = document.createElement("span");
+    name.className = "group-name";
+    name.textContent = z.display_name;
+    item.appendChild(name);
+    if (outs.length > 1) {
+      const sub = document.createElement("span");
+      sub.className = "np-device-sub";
+      sub.textContent = outs.map(o => o.display_name).filter(Boolean).join(" + ");
+      item.appendChild(sub);
+    }
+  }
+  window.__fillZoneRow = fillZoneRow;
+
+  // ----- Zone grouping (Roon group_outputs / ungroup_outputs) ---------------
+  //
+  // Roon groups OUTPUTS, not zones: a zone IS whichever outputs currently play
+  // in sync. So this is a checklist of outputs anchored on the zone the app is
+  // driving. Roon preserves the first output's queue, so the anchor's own
+  // output is always sent first and always stays ticked — grouping can never
+  // throw away what you're listening to.
+  async function openGroupSheet() {
+    const anchorZoneId = selectedZoneId;
+    let list = [];
+    try {
+      const r = await fetch("/api/outputs", { cache: "no-store" });
+      if (r.ok) { const j = await r.json(); if (Array.isArray(j.outputs)) list = j.outputs; }
+    } catch (e) { /* leaves `list` empty — the empty state below explains it */ }
+
+    const anchorOutputs = anchorZoneId ? list.filter(o => o.zone_id === anchorZoneId) : [];
+    const anchorIds     = anchorOutputs.map(o => o.output_id);
+    const primary       = anchorOutputs[0] || null;
+
+    // Roon says which outputs an output may join. A Core that doesn't send the
+    // list gives us null, which we read as "unknown" and offer everything —
+    // offering nothing would make the feature look broken rather than limited.
+    const allowed = primary && Array.isArray(primary.can_group_with_output_ids)
+      ? new Set(primary.can_group_with_output_ids)
+      : null;
+    const offerable = list.filter(o =>
+      anchorIds.includes(o.output_id) || !allowed || allowed.has(o.output_id));
+
+    const picked = new Set(anchorIds);
+
+    openLibSheet("Group zones", (body, close) => {
+      const paint = () => {
+        body.innerHTML = "";
+        if (!primary) {
+          const note = document.createElement("div");
+          note.className = "lib-sheet-note";
+          note.textContent = list.length
+            ? "Choose a zone first — grouping needs a zone to build the group around."
+            : "No outputs available. Check that the extension is paired with your Roon Core.";
+          body.appendChild(note);
+          return;
+        }
+        for (const o of offerable) {
+          const isPrimary = o.output_id === primary.output_id;
+          const on = picked.has(o.output_id);
+          const row = document.createElement("button");
+          row.type = "button";
+          row.className = "group-row" + (on ? " is-on" : "") + (isPrimary ? " is-anchor" : "");
+          row.dataset.output = o.output_id;
+          const box = document.createElement("span");
+          box.className = "group-box";
+          box.textContent = "✓";
+          const text = document.createElement("span");
+          text.className = "group-text";
+          const nm = document.createElement("span");
+          nm.className = "group-name";
+          nm.textContent = o.display_name || o.output_id;
+          text.appendChild(nm);
+          // Say why a row can't be unticked, and warn when taking an output
+          // would break up a group it is already in. Outputs already in THIS
+          // zone get nothing — they're ticked, which says it, and naming the
+          // group we're editing back at the user is just noise.
+          const noteText = isPrimary
+            ? "Keeps playing — this group's queue"
+            : (!anchorIds.includes(o.output_id) && o.zone_name && o.zone_name !== o.display_name
+                ? "In " + o.zone_name : "");
+          if (noteText) {
+            const nt = document.createElement("span");
+            nt.className = "group-note";
+            nt.textContent = noteText;
+            text.appendChild(nt);
+          }
+          row.appendChild(box); row.appendChild(text);
+          if (isPrimary) {
+            row.disabled = true;
+            row.setAttribute("aria-pressed", "true");
+          } else {
+            row.setAttribute("aria-pressed", String(on));
+            row.addEventListener("click", () => {
+              if (picked.has(o.output_id)) picked.delete(o.output_id);
+              else picked.add(o.output_id);
+              paint();
+              const again = body.querySelector('[data-output="' + o.output_id + '"]');
+              if (again) again.focus();
+            });
+          }
+          body.appendChild(row);
+        }
+        if (offerable.length < list.length) {
+          const note = document.createElement("div");
+          note.className = "lib-sheet-note";
+          note.textContent = "Outputs your Core can't sync with " + primary.display_name +
+                             " aren't listed — Roon decides which devices can play together.";
+          body.appendChild(note);
+        }
+      };
+      paint();
+    }, (foot, close) => {
+      const cancel = document.createElement("button");
+      cancel.type = "button"; cancel.className = "action-btn";
+      cancel.textContent = "Cancel";
+      cancel.addEventListener("click", close);
+      const apply = document.createElement("button");
+      apply.type = "button"; apply.className = "action-btn primary";
+      apply.textContent = "Apply";
+      apply.addEventListener("click", async () => {
+        if (!primary) { close(); return; }
+        const toRemove = anchorIds.filter(id => !picked.has(id));
+        const toAdd    = [...picked].filter(id => !anchorIds.includes(id));
+        if (!toRemove.length && !toAdd.length) { close(); return; }
+        apply.disabled = true; cancel.disabled = true;
+        const ok = await applyGrouping(anchorIds, toRemove, toAdd, primary);
+        apply.disabled = false; cancel.disabled = false;
+        if (ok) close();
+      });
+      foot.appendChild(cancel); foot.appendChild(apply);
+    });
+  }
+
+  // Split first, then group: ungrouping an output that is also being regrouped
+  // elsewhere would otherwise race, and Roon takes the whole desired set for a
+  // group in one call anyway.
+  async function applyGrouping(anchorIds, toRemove, toAdd, primary) {
+    const post = async (url, output_ids) => {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ output_ids })
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.error || ("HTTP " + r.status));
+      }
+    };
+    try {
+      if (toRemove.length) await post("/api/ungroup-outputs", toRemove);
+      if (toAdd.length) {
+        // primary first — Roon preserves the first output's zone's queue.
+        const kept = anchorIds.filter(id => id !== primary.output_id && !toRemove.includes(id));
+        await post("/api/group-outputs", [primary.output_id, ...kept, ...toAdd]);
+      }
+      showToast("Zones updated");
+    } catch (e) {
+      showToast(e.message || "Could not change grouping", "error");
+      return false;
+    }
+    // Roon has accepted the change, so the sheet's work is done — settling the
+    // app onto the new zone happens in the background rather than holding the
+    // sheet open for it. Detached deliberately: an unresolved settle must not
+    // leave the user staring at a sheet Roon has already acted on.
+    const want = new Set([
+      primary.output_id,
+      ...anchorIds.filter(id => !toRemove.includes(id)),
+      ...toAdd,
+    ]);
+    settleZoneAfterGrouping(primary.output_id, want);
+    return true;
+  }
+
+  // Grouping retires zone ids — Roon mints a zone per set of outputs — so the
+  // app has to be re-pointed at whichever zone now holds the output we anchored
+  // on. Left alone, loadZones() would find the old id gone and fall back to
+  // whichever zone sorts first, quietly moving the user elsewhere.
+  //
+  // The Core's zone update is asynchronous, so a single fixed wait is a guess.
+  // Poll instead: take the best answer available on each attempt and stop as
+  // soon as the topology matches what was asked for. Bounded at ~2s, after which
+  // loadZones() and the 1.5s transport poll resync regardless.
+  async function settleZoneAfterGrouping(anchorOutputId, want) {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await new Promise(r => setTimeout(r, 250));
+      let zs = null;
+      try {
+        const r = await fetch("/api/zones", { cache: "no-store" });
+        if (r.ok) { const j = await r.json(); if (Array.isArray(j.zones)) zs = j.zones; }
+      } catch (e) { /* transient — retry; the loop is bounded and resyncs after */ }
+      if (!zs) continue;
+      const z = zs.find(zz => (zz.outputs || []).some(o => o.output_id === anchorOutputId));
+      if (!z) continue;
+      try { localStorage.setItem("rra-zone", z.zone_id); }
+      catch (e) { /* private mode — loadZones() still selects a zone, just not this one */ }
+      const have = new Set((z.outputs || []).map(o => o.output_id));
+      if (have.size === want.size && [...want].every(id => have.has(id))) break;
+    }
+    await loadZones();
+    if (typeof window.__refreshTransport === "function") window.__refreshTransport();
+  }
+  window.__openGroupSheet = openGroupSheet;
+
+  // ----- Device power (Roon standby / convenience switch) -------------------
+  //
+  // Roon can power the amp or DAC behind an output, but only through a SOURCE
+  // CONTROL the device itself exposes — most outputs have none, and for those
+  // there is nothing to show. So this sheet is a list of source controls, not of
+  // zones, and it is honest about an empty result rather than pretending the
+  // feature is missing.
+  //
+  // Unlike the grouping sheet these actions fire immediately: a power button
+  // that waits for an Apply is a power button people press twice.
+  const SOURCE_STATUS_LABEL = {
+    selected:      "On — Roon input selected",
+    deselected:    "On — another input selected",
+    standby:       "In standby",
+    indeterminate: "",
+  };
+
+  async function openDevicePowerSheet() {
+    let list = [];
+    try {
+      const r = await fetch("/api/outputs", { cache: "no-store" });
+      if (r.ok) { const j = await r.json(); if (Array.isArray(j.outputs)) list = j.outputs; }
+    } catch (e) { /* leaves `list` empty — the empty state below explains it */ }
+
+    openLibSheet("Device power", (body) => {
+      // Re-read after every action so the status lines reflect the device, not
+      // what we asked for — the same rule the mode buttons follow.
+      const refresh = async () => {
+        try {
+          const r = await fetch("/api/outputs", { cache: "no-store" });
+          if (r.ok) { const j = await r.json(); if (Array.isArray(j.outputs)) list = j.outputs; }
+        } catch (e) { /* keep the previous list; paint() still renders something */ }
+        paint();
+      };
+
+      const act = async (url, payload, btn) => {
+        btn.disabled = true;
+        try {
+          const r = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (!r.ok) {
+            const j = await r.json().catch(() => ({}));
+            showToast(j.error || "Roon refused that", "error");
+          }
+        } catch (e) {
+          showToast("Could not reach the extension", "error");
+        } finally {
+          btn.disabled = false;
+        }
+        // Roon reports the new status asynchronously; give it a moment.
+        setTimeout(refresh, 400);
+      };
+
+      const paint = () => {
+        body.innerHTML = "";
+        const withControls = list.filter(o => (o.source_controls || []).length);
+        if (!withControls.length) {
+          const note = document.createElement("div");
+          note.className = "lib-sheet-note";
+          note.textContent = list.length
+            ? "None of your outputs expose a source control, so Roon can't switch them " +
+              "on or off. This works with devices that report power state to Roon — many " +
+              "network streamers and AVRs do, plain audio endpoints don't."
+            : "No outputs available. Check that the extension is paired with your Roon Core.";
+          body.appendChild(note);
+          return;
+        }
+        for (const o of withControls) {
+          const controls = o.source_controls || [];
+          const sec = document.createElement("div");
+          sec.className = "lib-sheet-section";
+          const label = document.createElement("div");
+          label.className = "lib-sheet-section-label";
+          label.textContent = o.display_name;
+          sec.appendChild(label);
+
+          for (const sc of controls) {
+            const row = document.createElement("div");
+            row.className = "dev-row";
+            row.dataset.control = sc.control_key;
+
+            const text = document.createElement("div");
+            text.className = "dev-text";
+            const nm = document.createElement("span");
+            nm.className = "dev-name";
+            nm.textContent = sc.display_name;
+            text.appendChild(nm);
+            const st = SOURCE_STATUS_LABEL[sc.status] || "";
+            if (st) {
+              const stEl = document.createElement("span");
+              stEl.className = "dev-status";
+              stEl.textContent = st;
+              text.appendChild(stEl);
+            }
+            row.appendChild(text);
+
+            const actions = document.createElement("div");
+            actions.className = "dev-actions";
+            if (sc.supports_standby) {
+              const pwr = document.createElement("button");
+              pwr.type = "button";
+              pwr.className = "dev-btn" + (sc.status === "standby" ? "" : " is-on");
+              pwr.dataset.action = "standby";
+              pwr.textContent = "Power";
+              pwr.setAttribute("aria-label",
+                sc.status === "standby" ? "Wake " + sc.display_name
+                                        : "Put " + sc.display_name + " into standby");
+              pwr.addEventListener("click", () => act("/api/output/standby",
+                { output_id: o.output_id, control_key: sc.control_key, mode: "toggle" }, pwr));
+              actions.appendChild(pwr);
+            }
+            const sw = document.createElement("button");
+            sw.type = "button";
+            sw.className = "dev-btn";
+            sw.dataset.action = "switch";
+            sw.textContent = "Roon input";
+            sw.setAttribute("aria-label", "Switch " + sc.display_name + " to its Roon input");
+            sw.addEventListener("click", () => act("/api/output/convenience-switch",
+              { output_id: o.output_id, control_key: sc.control_key }, sw));
+            actions.appendChild(sw);
+            row.appendChild(actions);
+            sec.appendChild(row);
+          }
+
+          // Roon's standby() with no control_key covers every standby-capable
+          // control at once. That is only a distinct action on a device with
+          // more than one, so it appears only there.
+          if (controls.filter(sc => sc.supports_standby).length > 1) {
+            const all = document.createElement("button");
+            all.type = "button";
+            all.className = "dev-btn dev-all-off";
+            all.dataset.action = "all-off";
+            all.textContent = "Put whole device into standby";
+            all.addEventListener("click", () => act("/api/output/standby",
+              { output_id: o.output_id, mode: "standby" }, all));
+            sec.appendChild(all);
+          }
+          body.appendChild(sec);
+        }
+      };
+      paint();
+    }, (foot, close) => {
+      const done = document.createElement("button");
+      done.type = "button"; done.className = "action-btn primary";
+      done.textContent = "Done";
+      done.addEventListener("click", close);
+      foot.appendChild(done);
+    });
+  }
+  window.__openDevicePowerSheet = openDevicePowerSheet;
 
   async function showLibraryWall() {
     const m = enterFullWall("Library");
@@ -1184,6 +3984,7 @@
       const name = homeLotw && homeLotw.dataset.label;
       if (name && window.__showLabelAlbums) window.__showLabelAlbums(name);
     });
+    wireSectionHeader("home-picks-title", showSmartPicks);
   }
 
   // Weighted-random pick from a list of { title, count }.
@@ -1319,7 +4120,10 @@
 
   // ----- Toast / banner -----
   let toastTimer = null;
-  function showToast(msg, kind) {
+  // `ms` overrides the 2.4s default. Anything that lands at the END of a
+  // multi-minute operation needs longer: the user has usually looked away, and
+  // 2.4s of "queued 400 of 1179" is the same as never having said it.
+  function showToast(msg, kind, ms) {
     toast.textContent = msg;
     toast.classList.remove("hidden", "error");
     if (kind === "error") toast.classList.add("error");
@@ -1328,7 +4132,29 @@
     toastTimer = setTimeout(() => {
       toast.classList.remove("show");
       setTimeout(() => toast.classList.add("hidden"), 250);
-    }, 2400);
+    }, ms || 2400);
+  }
+  // One sentence describing what actually reached the queue: how many albums,
+  // how many the cap left behind, and how many Roon refused. `pj` is
+  // /api/play-multi's body, `asked` the albums we sent, `total` the size of the
+  // whole playlist. Shared so Play now, Queue and Send to Roon cannot drift.
+  // How many albums the playlist's query MATCHED, as opposed to how many it
+  // delivers. Older responses carried only the delivered count; falling back to
+  // it makes the comparison a no-op rather than a wrong number.
+  function smartMatched(j) {
+    return Number.isFinite(j.matched) ? j.matched : j.total;
+  }
+  function multiOutcome(verb, pj, asked, total) {
+    const queued = Number.isFinite(pj.queued) ? pj.queued : asked;
+    const failed = Number.isFinite(pj.failed) ? pj.failed : 0;
+    const capped = Number.isFinite(total) && asked < total;
+    let msg = `${verb} ${queued}`;
+    if (capped) msg += ` of ${total}`;
+    // Pluralise off whichever number the noun follows.
+    msg += ` album${(capped ? total : queued) === 1 ? "" : "s"}`;
+    if (failed > 0) msg += ` (Roon refused ${failed})`;
+    if (capped) msg += " — that's the limit per go";
+    return msg;
   }
   function setBanner(msg, isError) {
     if (!msg) { banner.classList.add("hidden"); banner.textContent = ""; return; }
@@ -1368,10 +4194,26 @@
   }
 
   // ----- Long-press utility -----
+  //
+  // The callback fires at 500ms while the finger is STILL DOWN, so the browser
+  // goes on to dispatch a click on release. Without suppression that click ran
+  // the element's normal handler straight after the long-press handler — on an
+  // album tile it selected the album and then immediately deselected it, so a
+  // long press opened select mode with nothing in it. `longPressAte` is set by
+  // the callback and consumed by the very next click, in the capture phase so
+  // it lands before any listener the element itself carries.
   function addLongPress(el, callback) {
     let timer = null;
     let moved = false;
-    const onStart = () => { moved = false; timer = setTimeout(() => { if (!moved) { if (navigator.vibrate) navigator.vibrate(25); callback(); } }, 500); };
+    const onStart = () => {
+      moved = false;
+      timer = setTimeout(() => {
+        if (moved) return;
+        if (navigator.vibrate) navigator.vibrate(25);
+        longPressAte = true;
+        callback();
+      }, 500);
+    };
     const onMove  = () => { moved = true; clearTimeout(timer); timer = null; };
     const onEnd   = () => { clearTimeout(timer); timer = null; };
     el.addEventListener("touchstart",  onStart,  { passive: true });
@@ -1382,6 +4224,12 @@
     el.addEventListener("mousemove",   onMove);
     el.addEventListener("mouseup",     onEnd);
     el.addEventListener("contextmenu", e => e.preventDefault());
+    el.addEventListener("click", (e) => {
+      if (!longPressAte) return;
+      longPressAte = false;
+      e.stopPropagation();
+      e.preventDefault();
+    }, true);
   }
 
   // ----- Render -----
@@ -1395,7 +4243,49 @@
   // Source badge for an album payload: "local" | "qobuz" | "tidal", or null
   // when the server couldn't determine it. `a.local` is still honoured so a
   // tile built from an older cached payload keeps its badge.
-  const SOURCE_LABEL = { local: "Local files", qobuz: "Qobuz", tidal: "TIDAL" };
+  // ----- Quality badge -----------------------------------------------------
+  //
+  // "24/96" on the artwork, off by default and switched on in Appearance. It is
+  // read from your own files, so a streamed album simply has none — the server
+  // sends the field only when it knows, and no badge is drawn otherwise. A
+  // question mark or a guess would be worse than silence.
+  //
+  // A device preference like the theme, so it lives in localStorage rather than
+  // settings.json: one person wanting rates on their phone shouldn't put them
+  // on the wall display too.
+  const QUALITY_KEY = "rra-show-quality";
+  let showQuality = false;
+  try { showQuality = localStorage.getItem(QUALITY_KEY) === "1"; }
+  catch (e) { /* private browsing — the default (off) stands */ }
+  function setShowQuality(on) {
+    showQuality = !!on;
+    try { localStorage.setItem(QUALITY_KEY, showQuality ? "1" : "0"); }
+    catch (e) { /* still applies for this session */ }
+    // Every tile already on screen, without a refetch: the payload always
+    // carries the value, so this is a class flip rather than a reload.
+    document.body.classList.toggle("show-quality", showQuality);
+  }
+  // Applied at boot, not only on change — the stored preference has to survive
+  // a reload, and the class is the only thing that makes the badges visible.
+  document.body.classList.toggle("show-quality", showQuality);
+  window.__showQuality    = () => showQuality;
+  window.__setShowQuality = setShowQuality;
+  function qualityBadge(a) {
+    if (!a.quality) return null;
+    const el = document.createElement("span");
+    el.className = "album-quality" + (a.hires ? " is-hires" : "");
+    el.textContent = a.quality;
+    // The badge is two characters of shorthand; the accessible name says what
+    // they mean, and the tooltip does the same for a mouse.
+    const words = /\//.test(a.quality)
+      ? a.quality.split("/")[0] + "-bit, " + a.quality.split("/")[1] + " kHz"
+      : a.quality;
+    el.title = words;
+    el.setAttribute("aria-label", words);
+    return el;
+  }
+
+  const SOURCE_LABEL = { local: "Local albums", qobuz: "Qobuz", tidal: "TIDAL" };
   function sourceBadge(a) {
     const kind = a.source || (a.local ? "local" : null);
     if (!kind || !SOURCE_LABEL[kind]) return null;
@@ -1408,7 +4298,7 @@
 
   // Build a single album tile. onClick defaults to opening the album modal,
   // but callers (e.g. the label browser) can override it to carry a filter.
-  function buildAlbumTile(a, onClick) {
+  function buildAlbumTile(a, onClick, opts) {
     const btn = document.createElement("button");
     btn.className = "album";
     btn.type = "button";
@@ -1423,10 +4313,34 @@
     // source couldn't be determined, not that it's missing.
     const srcBadge = sourceBadge(a);
     if (srcBadge) artWrap.appendChild(srcBadge);
-    if (a.image_key) {
+    // Always built, shown or hidden by one class on <body>. Rendering it
+    // conditionally would mean every tile already on screen kept its old state
+    // until something rebuilt it, so the toggle would look like it had done
+    // nothing until you navigated away and back.
+    const qBadge = qualityBadge(a);
+    if (qBadge) artWrap.appendChild(qBadge);
+    // A playlist has no cover of its own, so it gets a mosaic of the artwork
+    // from the first few tracks — the way Roon draws them. Two or more distinct
+    // covers make a 2x2; a single one just fills the tile, because a lone
+    // quarter-sized sleeve in an empty square looks broken.
+    const mosaic = Array.isArray(a.art_keys) ? a.art_keys.filter(Boolean) : [];
+    if (mosaic.length >= 2) {
+      artWrap.classList.add("album-art-mosaic");
+      artWrap.dataset.mosaic = String(Math.min(mosaic.length, 4));
+      // Keys recorded on the element so "what artwork was this tile given" is
+      // answerable even after a failed <img> removes itself.
+      artWrap.dataset.artKeys = mosaic.slice(0, 4).join(",");
+      for (const k of mosaic.slice(0, 4)) {
+        const img = document.createElement("img");
+        img.loading = "lazy"; img.alt = "";
+        img.src = `/api/image/${encodeURIComponent(k)}?size=${TILE_IMG_SIZE}`;
+        img.onerror = () => img.remove();
+        artWrap.appendChild(img);
+      }
+    } else if (mosaic.length === 1 || a.image_key) {
       const img = document.createElement("img");
       img.loading = "lazy"; img.alt = "";
-      img.src = `/api/image/${encodeURIComponent(a.image_key)}?size=${TILE_IMG_SIZE}`;
+      img.src = `/api/image/${encodeURIComponent(mosaic[0] || a.image_key)}?size=${TILE_IMG_SIZE}`;
       img.onerror = () => { artWrap.classList.add("no-image"); img.remove(); };
       artWrap.appendChild(img);
     } else {
@@ -1441,37 +4355,120 @@
 
     btn.appendChild(artWrap);
     btn.appendChild(meta);
+
+    // Whether long-press can multi-select this tile. It used to be inferred
+    // from "was a custom opener passed", which quietly disabled selection on
+    // seven of the eleven tile screens — the Library A-Z wall, Not-played,
+    // label albums and the Home carousels all pass an opener for the sole
+    // purpose of forcing `filter: null`, and paid for it with no select mode.
+    // Stating it outright separates "how do I open" from "can I select".
+    // Playlist tiles pass false: a playlist is not an album and cannot be
+    // queued as one.
+    const selectable = opts && "selectable" in opts ? !!opts.selectable : true;
+    if (selectable) btn.dataset.offset = String(a.offset);
+
     btn.addEventListener("click", () => {
-      if (!onClick && albumSelectMode) { handleAlbumTileSelect(btn, a); return; }
+      if (selectable && albumSelectMode) { handleAlbumTileSelect(btn, a); return; }
       (onClick || (() => openAlbum(a)))();
     });
-    if (!onClick) {
+    if (selectable) {
+      // Long press ARMS selection without selecting the tile under the finger.
+      // Pressing something and having it become selected is how you end up
+      // with a selection you didn't ask for when you only wanted the mode.
       addLongPress(btn, () => {
         if (!albumSelectMode) enterAlbumSelectMode();
-        handleAlbumTileSelect(btn, a);
       });
     }
     return btn;
   }
 
+  // ----- The multi-select actions menu -------------------------------------
+  // One menu serves both selections: albums on a grid screen, and tracks inside
+  // the album view. They can never both be live — opening the album view exits
+  // album select mode — so `selMenuKind` says which one the menu is acting on
+  // rather than two menus racing for the same corner of the screen.
+  let selMenuKind = null;   // "albums" | "tracks" | null
+
+  function closeSelectMenu() {
+    if (!selMenu) return;
+    selMenu.classList.add("hidden");
+    if (selMenuBtn) selMenuBtn.setAttribute("aria-expanded", "false");
+  }
+
+  // The album view is a full-viewport modal painted OVER the top bar, so a menu
+  // that lives in the top bar is invisible and untappable while an album is
+  // open — selecting tracks produced ticks and no way to act on them.
+  //
+  // The live node is MOVED rather than duplicated. A second copy in the modal
+  // would need its own listeners and its own count, and the two would drift.
+  let selMenuHome = null;
+  function parkSelectMenu(intoModal) {
+    if (!selMenuWrap) return;
+    if (intoModal) {
+      const panel = modal && modal.querySelector(".modal-panel");
+      if (!panel || selMenuWrap.parentNode === panel) return;
+      // Remember exactly where it came from, so it goes back to the same slot
+      // rather than to the end of the row.
+      selMenuHome = { parent: selMenuWrap.parentNode, next: selMenuWrap.nextSibling };
+      selMenuWrap.classList.add("in-modal");
+      panel.appendChild(selMenuWrap);
+    } else {
+      if (!selMenuHome) return;
+      selMenuWrap.classList.remove("in-modal");
+      selMenuHome.parent.insertBefore(selMenuWrap, selMenuHome.next);
+      selMenuHome = null;
+    }
+  }
+
+  // Show/hide the whole control and keep its count honest. Called after every
+  // change to either selection.
+  function refreshSelectMenu(kind, n) {
+    selMenuKind = n > 0 ? kind : null;
+    if (!selMenuWrap) return;
+    selMenuWrap.classList.toggle("hidden", n === 0);
+    if (n === 0) { closeSelectMenu(); return; }
+    if (selCount) selCount.textContent = String(n);
+    const noun = kind === "tracks" ? "track" : "album";
+    if (selMenuTitle) selMenuTitle.textContent = `${n} ${noun}${n === 1 ? "" : "s"} selected`;
+    const addItem = selMenu && selMenu.querySelector('[data-sel-act="add"]');
+    // Albums are allowed. Adding one stores its tracks, which means reading the
+    // album on the Core first — see /api/user-playlists/add-albums.
+    if (addItem) addItem.classList.remove("hidden");
+    if (selMenuBtn) {
+      selMenuBtn.setAttribute("aria-label",
+        `Actions for ${n} selected ${noun}${n === 1 ? "" : "s"}`);
+    }
+  }
+
   function enterAlbumSelectMode() {
     albumSelectMode = true;
-    if (albumActionBar) { albumActionBar.classList.remove("hidden"); updateAlbumActionBar(); }
+    updateAlbumActionBar();
   }
 
   function exitAlbumSelectMode() {
     albumSelectMode = false;
     albumSelected = [];
     if (albumActionBar) albumActionBar.classList.add("hidden");
-    grid.querySelectorAll(".album.is-selected").forEach(b => b.classList.remove("is-selected"));
+    // Hides the whole control, not just the open dropdown — closeSelectMenu()
+    // alone left a "0" badge sitting in the top bar with nothing behind it.
+    refreshSelectMenu("albums", 0);
+    // Document-wide, not just #album-grid: Home's carousels live outside the
+    // grid and are selectable now, so a grid-scoped clear would leave ticks
+    // behind on rows the user had already scrolled past.
+    document.querySelectorAll(".album.is-selected")
+            .forEach(b => b.classList.remove("is-selected"));
   }
   window.__exitAlbumSelectMode = exitAlbumSelectMode;
 
+  // The bottom bar is kept as the "you are in select mode, nothing chosen yet"
+  // hint — without it, long-pressing produces no visible change at all until
+  // the first tap. Once something IS selected the top-bar menu carries the
+  // actions, so the bar's own buttons are gone.
   function updateAlbumActionBar() {
     const n = albumSelected.length;
-    if (albumActionInfo) albumActionInfo.textContent = n === 0 ? "Tap albums to select" : n + " album" + (n === 1 ? "" : "s") + " selected";
-    if (albumPlayNowBtn) albumPlayNowBtn.disabled = n === 0;
-    if (albumQueueBtn)   albumQueueBtn.disabled   = n === 0;
+    if (albumActionBar) albumActionBar.classList.toggle("hidden", !albumSelectMode || n > 0);
+    if (albumActionInfo) albumActionInfo.textContent = "Tap albums to select";
+    refreshSelectMenu("albums", n);
   }
 
   function handleAlbumTileSelect(btn, a) {
@@ -1509,8 +4506,13 @@
   function setCountText(text) {
     const el = document.getElementById("album-count");
     if (!el) return;
-    el.textContent = text;
-    el.classList.remove("hidden");
+    el.textContent = text || "";
+    // An empty label HIDES the readout rather than showing a blank one. The
+    // playlist detail screens pass "" because they already print the full name
+    // as a heading; the topbar copy only repeated it, truncated to fit
+    // ("My Dynamic Playlist - Electroni…" above "My Dynamic Playlist -
+    // Electronic 100").
+    el.classList.toggle("hidden", !text);
   }
   // Topbar context label: the active filter's value (genre/tag name) with NO
   // count; hidden on the plain wall. Counts were removed from all screens.
@@ -1682,7 +4684,7 @@
       item.type = "button";
       item.className = "np-device-item" + (z.zone_id === selectedZoneId ? " is-current" : "");
       item.dataset.zone = z.zone_id;
-      item.textContent = z.display_name;
+      fillZoneRow(item, z);
       item.addEventListener("click", (e) => {
         e.stopPropagation();
         npDevicePopover.classList.add("hidden");
@@ -1707,6 +4709,41 @@
       if (willShow) await renderDeviceList();
       npDevicePopover.classList.toggle("hidden", !willShow);
       npDeviceBtn.setAttribute("aria-expanded", String(willShow));
+    });
+  }
+
+  const npGroupOpen = document.getElementById("np-group-open");
+  if (npGroupOpen) {
+    npGroupOpen.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (npDevicePopover) npDevicePopover.classList.add("hidden");
+      if (npDeviceBtn) npDeviceBtn.setAttribute("aria-expanded", "false");
+      openGroupSheet();
+    });
+  }
+
+  const npPowerOpen = document.getElementById("np-power-open");
+  if (npPowerOpen) {
+    npPowerOpen.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (npDevicePopover) npDevicePopover.classList.add("hidden");
+      if (npDeviceBtn) npDeviceBtn.setAttribute("aria-expanded", "false");
+      openDevicePowerSheet();
+    });
+  }
+
+  // Roon's all-zone actions, in the sheet that is already about which zones.
+  // Looked up at click time rather than at wiring time: the side menu's
+  // closure defines __allZoneActions, and the two run in either order.
+  for (const act of ["pause-all", "mute-all", "unmute-all"]) {
+    const btn = document.getElementById("np-" + act);
+    if (!btn) continue;
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (npDevicePopover) npDevicePopover.classList.add("hidden");
+      if (npDeviceBtn) npDeviceBtn.setAttribute("aria-expanded", "false");
+      const fn = window.__allZoneActions && window.__allZoneActions[act];
+      if (fn) fn();
     });
   }
 
@@ -1833,6 +4870,12 @@
 
   function openAlbum(album, opts) {
     opts = opts || {};
+    // Album select mode and track select mode both drive the one top-bar menu,
+    // so they must never be live together. Opening an album ends the grid
+    // selection rather than leaving a count behind that the menu would then
+    // act on with the wrong list.
+    if (albumSelectMode) exitAlbumSelectMode();
+    exitTrackSelectMode();
     currentAlbum = album;
     window.__currentAlbum = album;
     currentSource = opts.source || "random";
@@ -1850,6 +4893,7 @@
     } catch (e) { /* ignore */ }
 
     const isNP = currentSource === "now-playing";
+    resetModalScroll();   // a reopened modal must never start mid-scroll
 
     // Tabs visible only in now-playing mode
     const tabsEl = document.getElementById("modal-tabs");
@@ -1892,6 +4936,23 @@
     }
   }
 
+  // Put the modal's scroller back to the top.
+  //
+  // .modal-body is a LONG-LIVED node — the modal is hidden and shown, never
+  // rebuilt — so its scrollTop outlives everything drawn inside it. An album
+  // opened after another one was scrolled halfway down therefore started
+  // halfway down, and switching back from the Queue tab kept the queue's
+  // offset. No caller ever wants to open a screen already scrolled.
+  //
+  // NOT the fix for "now playing is stretched too high above the top of the
+  // screen" — that was the missing status-bar inset (style.css, np-mode
+  // padding-top), and the Now playing tab is `overflow: hidden` anyway, so its
+  // scrollTop cannot be anything but 0 on a phone-sized viewport.
+  function resetModalScroll() {
+    const body = modal ? modal.querySelector(".modal-body") : null;
+    if (body) body.scrollTop = 0;
+  }
+
   function showTab(name) {
     document.querySelectorAll(".modal-tab").forEach(b => {
       b.classList.toggle("is-active", b.dataset.tab === name);
@@ -1911,10 +4972,24 @@
       npScreen.classList.toggle("hidden",
         !(name === "album" && modal.classList.contains("np-mode")));
     }
+    resetModalScroll();
 
     if (name === "queue") loadQueue();
     if (typeof window.__refreshTransport === "function") window.__refreshTransport();
   }
+  // Switching zones with the Queue tab already open has to repaint it — the
+  // fix above makes the FETCH follow the live zone, but nothing was asking it
+  // to fetch again, so the stale list stayed on screen until you left the tab
+  // and came back.
+  {
+    const zs = document.getElementById("zone-select");
+    if (zs) zs.addEventListener("change", () => {
+      if (modal && !modal.classList.contains("hidden") && modal.classList.contains("tab-queue")) {
+        loadQueue();
+      }
+    });
+  }
+
   document.querySelectorAll(".modal-tab").forEach(b => {
     b.addEventListener("click", () => showTab(b.dataset.tab));
   });
@@ -1957,8 +5032,25 @@
     }
   }
 
+  // A queue belongs to a ZONE, and the zone the user is pointed at can change
+  // while this screen stays open. currentSourceZoneId is a snapshot taken in
+  // openAlbum(), so reading it here showed the queue of whichever zone happened
+  // to be selected when the screen was opened — switch from Sonos to WPP
+  // without moving playback and you kept looking at the Sonos queue, and
+  // "Play from here" acted on it too.
+  //
+  // The live zone selector is the single source of truth every other control
+  // already follows (the transport bar and now-playing screen both read it), so
+  // the queue follows it as well. The snapshot stays as a last-resort fallback
+  // for the case where the selector isn't populated yet.
+  function queueZoneId() {
+    const sel = document.getElementById("zone-select");
+    return (sel && sel.value) || selectedZoneId || currentSourceZoneId || null;
+  }
+
   async function loadQueue() {
-    if (!currentSourceZoneId) return;
+    const zoneId = queueZoneId();
+    if (!zoneId) return;
     const summary = document.getElementById("queue-summary");
     const list    = document.getElementById("queue-list");
     const empty   = document.getElementById("queue-empty");
@@ -1966,7 +5058,7 @@
     list.innerHTML = "";
     empty.classList.add("hidden");
     try {
-      const r = await fetch(`/api/queue?zone=${encodeURIComponent(currentSourceZoneId)}`);
+      const r = await fetch(`/api/queue?zone=${encodeURIComponent(zoneId)}`);
       const j = await r.json();
       const items = j.items || [];
       if (!items.length) {
@@ -2009,26 +5101,41 @@
         if (i !== 0) {
           li.addEventListener("click", async () => {
             const trackName = it.title || "this track";
-            if (!window.confirm(`Play from "${trackName}"?`)) return;
+            // confirmDialog, not window.confirm: a native confirm can be left
+            // open when the app is backgrounded and then resolves on reopen,
+            // firing the request into a network stack that is still coming
+            // back up. An in-page sheet cannot be resolved by backgrounding.
+            if (!await confirmDialog(`Play from "${trackName}"?`)) return;
+            const epochAtSend = hiddenEpoch;
             try {
               const r = await fetch("/api/play-from-here", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                  zone_or_output_id: currentSourceZoneId,
+                  // Re-read at click time: the rows on screen belong to
+                  // queueZoneId()'s queue, so the action must target that same
+                  // zone, not the one captured when the screen opened.
+                  zone_or_output_id: queueZoneId(),
                   queue_item_id: it.queue_item_id
                 })
               });
               if (!r.ok) {
                 const j = await r.json().catch(() => ({}));
-                window.alert("Couldn't play from here: " + (j.error || `HTTP ${r.status}`));
+                showToast("Couldn't play from here: " + (j.error || `HTTP ${r.status}`), "error");
                 return;
               }
               // Give Roon a moment, then re-pull the queue so the "now playing"
               // marker moves and earlier-played tracks fall away.
               setTimeout(loadQueue, 600);
             } catch (e) {
-              window.alert("Couldn't play from here: " + e.message);
+              // Backgrounded mid-flight. iOS killed the connection and handed
+              // us the rejection on reopen, so this is not a failure the user
+              // caused or can act on — and Roon has almost certainly already
+              // played the track. Re-pull the queue (the success path's own
+              // follow-up never ran) and say nothing, rather than alerting
+              // about a tap made minutes ago.
+              if (hiddenEpoch !== epochAtSend) { loadQueue(); return; }
+              showToast("Couldn't play from here: " + e.message, "error");
             }
           });
         }
@@ -2049,6 +5156,9 @@
   }
 
   function closeModal() {
+    // Track selection belongs to the album that is closing. Leaving it set
+    // would arm the next album's rows with someone else's picks.
+    exitTrackSelectMode();
     modal.classList.add("hidden");
     modal.classList.remove("np-mode", "tab-album", "tab-queue");
     document.body.style.overflow = "";
@@ -2124,10 +5234,15 @@
       if (!map.has(a.kind)) map.set(a.kind, a);
     }
 
+    // Play Now and Queue stay on the row; Next / Shuffle / Radio go behind the
+    // overflow menu. Five pills hit the same wall the playlist screens did —
+    // .action-btn is `flex: 1 1 0`, so they shrink together instead of
+    // wrapping, and on a phone the labels start clipping.
+    const ROW_ACTIONS = 2;
     modalActs.innerHTML = "";
+    const available = order.filter(k => map.has(k));
     let first = true;
-    for (const k of order) {
-      if (!map.has(k)) continue;
+    for (const k of available.slice(0, ROW_ACTIONS)) {
       const btn = document.createElement("button");
       btn.className = "action-btn" + (first ? " primary" : "");
       btn.type = "button";
@@ -2136,7 +5251,13 @@
       modalActs.appendChild(btn);
       first = false;
     }
-    if (!modalActs.children.length) {
+    const overflow = available.slice(ROW_ACTIONS);
+    if (overflow.length) {
+      modalActs.appendChild(buildOverflowMenu(
+        overflow.map(k => ({ label: labels[k], onClick: (b) => invoke(k, b) })),
+        { label: "More playback actions" }));
+    }
+    if (!available.length) {
       modalActs.innerHTML =
         `<div class="modal-error">No playback actions available for this album.</div>`;
     }
@@ -2163,13 +5284,141 @@
         su.textContent = t.subtitle || "";
         tx.appendChild(ti); tx.appendChild(su);
         li.appendChild(tx);
+
+        // The select target, on the right. Present from the start but hidden
+        // until select mode is armed, so arming it doesn't reflow every row.
+        // A real element rather than a ::after: .album-art-wrap's ♪ placeholder
+        // already taught us what happens when two states share one pseudo.
+        // It stays a sibling BEFORE .t-actions so is-open's flex-wrap still
+        // drops the action row onto its own full-width line beneath it.
+        const mark = document.createElement("button");
+        mark.type = "button";
+        mark.className = "t-mark";
+        mark.setAttribute("aria-label", "Select this track");
+        mark.setAttribute("aria-pressed", "false");
+        mark.addEventListener("click", (e) => {
+          // Selecting must never also expand or collapse the row's actions.
+          e.stopPropagation();
+          toggleTrackSelected(li, t, idx);
+        });
+        li.appendChild(mark);
+
         li.addEventListener("click", (e) => {
           if (e.target.closest(".t-actions")) return;   // taps on the buttons themselves
+          if (e.target.closest(".t-mark")) return;      // handled above
+          // Once the mode is armed the whole row selects. Making the user hunt
+          // for a small circle is the wrong ergonomics for a list you are
+          // deliberately working through.
+          if (trackSelectMode) { toggleTrackSelected(li, t, idx); return; }
           toggleTrackActions(li, t, idx);
         });
+
+        // Long press ARMS selection without selecting this track — same rule
+        // as the album grid.
+        addLongPress(li, () => { if (!trackSelectMode) enterTrackSelectMode(); });
         modalTracks.appendChild(li);
       });
     }
+  }
+
+  // ----- Track multi-select (album view) ------------------------------------
+  // Scoped to one album: every selected track shares `currentAlbum`, so the
+  // album identity travels once rather than per track.
+  function enterTrackSelectMode() {
+    trackSelectMode = true;
+    parkSelectMenu(true);
+    modalTracks.classList.add("is-selecting");
+    // An open action row and a selection are two different intents; leaving
+    // the row expanded under a set of circles reads as both at once.
+    modalTracks.querySelectorAll(".t-row.is-open").forEach(closeTrackRow);
+    updateTrackSelection();
+  }
+
+  function exitTrackSelectMode() {
+    trackSelectMode = false;
+    trackSelected = [];
+    parkSelectMenu(false);
+    if (modalTracks) {
+      modalTracks.classList.remove("is-selecting");
+      modalTracks.querySelectorAll(".t-row.is-picked").forEach(li => {
+        li.classList.remove("is-picked");
+        const m = li.querySelector(".t-mark");
+        if (m) m.setAttribute("aria-pressed", "false");
+      });
+    }
+    refreshSelectMenu("tracks", 0);
+  }
+
+  function toggleTrackSelected(li, track, index) {
+    const at = trackSelected.findIndex(x => x.index === index);
+    if (at === -1) trackSelected.push({ index, title: track.title || "" });
+    else           trackSelected.splice(at, 1);
+    const on = at === -1;
+    li.classList.toggle("is-picked", on);
+    const m = li.querySelector(".t-mark");
+    if (m) m.setAttribute("aria-pressed", String(on));
+    updateTrackSelection();
+  }
+
+  function updateTrackSelection() {
+    refreshSelectMenu("tracks", trackSelected.length);
+  }
+
+  // Play or queue the selected tracks, in the order they appear on the ALBUM —
+  // not the order they were tapped. Someone ticking four tracks expects the
+  // record's running order, not a record of their own clicking.
+  //
+  // These go one at a time on purpose: /api/play-track has no batch form, and
+  // firing them in parallel would interleave into an arbitrary queue order.
+  async function invokeTrackMulti(kind) {
+    const zone = selectedZoneId;
+    if (!zone) { showToast("Pick a zone first", "error"); return; }
+    if (!currentAlbum) { showToast("No album open", "error"); return; }
+    const picks = trackSelected.slice().sort((a, b) => a.index - b.index);
+    if (!picks.length) return;
+
+    let queued = 0, failed = 0, firstError = "";
+    for (let i = 0; i < picks.length; i++) {
+      const p = picks[i];
+      if (picks.length > 3) showToast(`Adding track ${i + 1} of ${picks.length}…`);
+      try {
+        const r = await fetch("/api/play-track", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            offset: currentAlbum.offset,
+            track: p.index,
+            title: p.title,
+            zone_or_output_id: zone,
+            // Only the FIRST track honours the requested kind; the rest queue
+            // behind it. Sending play_now for each would leave the last track
+            // playing alone, having wiped the ones before it.
+            kind: (i === 0 ? kind : "queue"),
+            album_title: currentAlbum.title || "",
+            album_subtitle: currentAlbum.subtitle || "",
+            filter_type:   currentDetailFilter ? currentDetailFilter.type   : "",
+            filter_value:  currentDetailFilter ? currentDetailFilter.value  : "",
+            filter_parent: currentDetailFilter && currentDetailFilter.parent ? currentDetailFilter.parent : ""
+          })
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { failed++; if (!firstError) firstError = j.error || `HTTP ${r.status}`; }
+        else queued++;
+      } catch (e) {
+        failed++;
+        if (!firstError) firstError = "Couldn't reach the extension";
+      }
+    }
+
+    if (!queued) {
+      showToast(firstError || "Roon refused those tracks", "error", TOAST_REPORT_MS);
+      return;
+    }
+    const verb = kind === "queue" ? "Queued" : "Playing";
+    let msg = `${verb} ${queued} track${queued === 1 ? "" : "s"}`;
+    if (failed) msg += ` (${failed} failed: ${firstError})`;
+    showToast(msg, failed ? "error" : null, TOAST_REPORT_MS);
+    exitTrackSelectMode();
   }
 
   // Expand/collapse the per-track action row. Only one row is open at a time.
@@ -2216,6 +5465,10 @@
           title:  track.title || "",
           zone_or_output_id: selectedZoneId,
           kind,
+          // The album's own identity, so a drifted offset is relocated rather
+          // than playing whatever record now sits at that position.
+          album_title:    currentAlbum.title || "",
+          album_subtitle: currentAlbum.subtitle || "",
           filter_type:   currentDetailFilter ? currentDetailFilter.type   : "",
           filter_value:  currentDetailFilter ? currentDetailFilter.value  : "",
           filter_parent: currentDetailFilter && currentDetailFilter.parent ? currentDetailFilter.parent : ""
@@ -3122,6 +6375,7 @@
     }
 
     async function showLabelsList(isRepoll = false) {
+      if (window.__leavePlaylistScreens) window.__leavePlaylistScreens();
       if (!isRepoll) {
         if (window.__clearSearchIfActive) window.__clearSearchIfActive();  // drop stale search results
         exitAlbumSelectMode(); closeLabelLogoSheet(); currentLabelName = null; currentLabelLogoUrl = null;
@@ -3292,6 +6546,7 @@
     }
 
     async function showLabelAlbums(name, fromLabelsList = false) {
+      if (window.__leavePlaylistScreens) window.__leavePlaylistScreens();
       if (window.__clearSearchIfActive) window.__clearSearchIfActive();  // drop stale search results
       if (fromLabelsList) {
         // Came from a tap on the Labels grid — remember the grid scroll position.
@@ -3397,8 +6652,6 @@
   async function invokeAlbumMulti(kind) {
     if (!albumSelected.length) return;
     if (!selectedZoneId) { showToast("Pick a zone first", "error"); return; }
-    if (albumPlayNowBtn) albumPlayNowBtn.disabled = true;
-    if (albumQueueBtn)   albumQueueBtn.disabled   = true;
     try {
       const r = await fetch("/api/play-multi", {
         method: "POST",
@@ -3417,9 +6670,12 @@
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
-      const n = albumSelected.length;
-      const verb = kind === "play_now" ? "Playing" : "Queued";
-      showToast(verb + " " + n + " album" + (n === 1 ? "" : "s") + " → " + zoneName(selectedZoneId));
+      // play-multi now answers 200 with counts when some albums failed, so the
+      // count reported has to come from the response, not from what was asked.
+      // `total` is omitted — a hand-picked selection is never capped.
+      showToast(multiOutcome(kind === "play_now" ? "Playing" : "Queued",
+                             j, albumSelected.length, null) +
+                " → " + zoneName(selectedZoneId));
       exitAlbumSelectMode();
     } catch (e) {
       showToast(e.message, "error");
@@ -3427,9 +6683,46 @@
     }
   }
 
-  if (albumPlayNowBtn)      albumPlayNowBtn.addEventListener("click",      () => invokeAlbumMulti("play_now"));
-  if (albumQueueBtn)        albumQueueBtn.addEventListener("click",        () => invokeAlbumMulti("queue"));
   if (albumActionCancelBtn) albumActionCancelBtn.addEventListener("click", exitAlbumSelectMode);
+
+  // ----- Select-menu wiring -------------------------------------------------
+  if (selMenuBtn) {
+    selMenuBtn.addEventListener("click", (e) => {
+      // The document-level dismisser below would otherwise see this very click
+      // and shut the menu in the same tick it opened.
+      e.stopPropagation();
+      const willShow = selMenu.classList.contains("hidden");
+      selMenu.classList.toggle("hidden", !willShow);
+      selMenuBtn.setAttribute("aria-expanded", String(willShow));
+    });
+  }
+  if (selMenu) {
+    selMenu.addEventListener("click", (e) => {
+      const item = e.target.closest("[data-sel-act]");
+      if (!item) return;
+      e.stopPropagation();
+      closeSelectMenu();
+      const act = item.dataset.selAct;
+      if (act === "clear") {
+        if (selMenuKind === "tracks") exitTrackSelectMode();
+        else exitAlbumSelectMode();
+        return;
+      }
+      if (act === "add") { addSelectionToPlaylist(); return; }
+      if (selMenuKind === "tracks") invokeTrackMulti(act);
+      else invokeAlbumMulti(act);
+    });
+    // Contains-checks rather than a scoped closest(): there are already four
+    // document-level click listeners in this file and every popover trigger
+    // stops propagation on its own button, so a shared container selector
+    // would fight them.
+    document.addEventListener("click", (e) => {
+      if (selMenu.classList.contains("hidden")) return;
+      if (selMenu.contains(e.target)) return;
+      if (selMenuBtn && selMenuBtn.contains(e.target)) return;
+      closeSelectMenu();
+    });
+  }
 
   window.__openAlbum = openAlbum;
   window.__buildAlbumTile = (a) => buildAlbumTile(a);
@@ -3572,6 +6865,10 @@
   const npIconVol   = document.getElementById("np-icon-vol");
   const npIconMute  = document.getElementById("np-icon-mute");
   const npVolSlider = document.getElementById("np-vol-slider");
+  const npShuffle   = document.getElementById("np-shuffle");
+  const npLoop      = document.getElementById("np-loop");
+  const npLoopBadge = document.getElementById("np-loop-badge");
+  const npRadio     = document.getElementById("np-radio");
 
   let currentZone = null;       // server-side zone state
   let pollTimer   = null;
@@ -3835,6 +7132,9 @@
     }
 
     if (!npTrack || !onNowPlayingScreen()) return;
+    // Playback modes belong to the ZONE, not to the track — a stopped zone can
+    // still have shuffle on, and Roon lets you set it before pressing play.
+    paintModeButtons();
     if (!np) { setNpTrack(null); setNpArtists(null); npAlbum.textContent = ""; return; }
 
     setNpTrack(np.line1);
@@ -3938,6 +7238,81 @@
     } catch (e) { /* transport control is best-effort; fetchState() already scheduled above */ }
   }
 
+  // Roon's per-zone playback modes. The server always sends `settings`, but a
+  // page kept alive across an extension update can briefly be talking to the
+  // old one — an absent block reads as everything off rather than throwing.
+  function zoneModes() {
+    const s = (currentZone && currentZone.settings) || {};
+    return {
+      shuffle:    !!s.shuffle,
+      loop:       (s.loop === "loop" || s.loop === "loop_one") ? s.loop : "disabled",
+      auto_radio: !!s.auto_radio
+    };
+  }
+
+  const LOOP_LABEL = { disabled: "Repeat off", loop: "Repeat queue", loop_one: "Repeat track" };
+  // Tapping repeat cycles off → whole queue → this track, as Roon's remote does.
+  const LOOP_NEXT  = { disabled: "loop", loop: "loop_one", loop_one: "disabled" };
+
+  let lastModeSig = "";
+  function paintModeButtons() {
+    const live = !!currentZone;
+    const m = zoneModes();
+    // updateNpScreen() runs on the 1.5s poll, and setAttribute() marks an
+    // attribute dirty even when the value is unchanged — the same reason the
+    // mini bar's repaint is gated by lastBarSig. Nothing below changes unless
+    // the zone's modes do, so skip the whole thing when they haven't.
+    const sig = [live, m.shuffle, m.loop, m.auto_radio].join("|");
+    if (sig === lastModeSig) return;
+    lastModeSig = sig;
+    if (npShuffle) {
+      npShuffle.disabled = !live;
+      npShuffle.classList.toggle("is-on", live && m.shuffle);
+      npShuffle.setAttribute("aria-pressed", String(live && m.shuffle));
+      npShuffle.setAttribute("aria-label", live && m.shuffle ? "Shuffle on" : "Shuffle");
+    }
+    if (npLoop) {
+      const loop = live ? m.loop : "disabled";
+      npLoop.disabled = !live;
+      npLoop.classList.toggle("is-on", loop !== "disabled");
+      npLoop.setAttribute("aria-label", LOOP_LABEL[loop]);
+      if (npLoopBadge) npLoopBadge.classList.toggle("hidden", loop !== "loop_one");
+    }
+    if (npRadio) {
+      npRadio.disabled = !live;
+      npRadio.classList.toggle("is-on", live && m.auto_radio);
+      npRadio.setAttribute("aria-pressed", String(live && m.auto_radio));
+      npRadio.setAttribute("aria-label", live && m.auto_radio ? "Roon Radio on" : "Roon Radio");
+    }
+  }
+
+  // Shuffle / repeat / Roon Radio. Mirrors control(): fire, then re-poll, so the
+  // buttons show what the ZONE reports rather than what we asked for — a change
+  // the Core rejects must not leave a button lit.
+  async function changeZoneSettings(patch) {
+    if (!currentZone) return;
+    try {
+      const r = await fetch("/api/zone-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(Object.assign({ zone_or_output_id: currentZone.zone_id }, patch))
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        console.warn("zone-settings failed:", j.error || r.status);
+        if (window.__showToast) window.__showToast(j.error || "Could not change that", "error");
+      } else if (j.random_album_radio_stands_down && window.__showToast) {
+        // Roon Radio and the app's own Random Album Radio would fight over the
+        // same queue, so ours stands down. Say so instead of looking broken.
+        window.__showToast("Roon Radio on — Random Album Radio stands down for this zone");
+      }
+    } catch (e) {
+      // Network blip. The finally below still re-polls, so the buttons resync.
+    } finally {
+      setTimeout(fetchState, 200);
+    }
+  }
+
   async function setVolume(value) {
     if (!currentZone) return;
     try {
@@ -3969,6 +7344,18 @@
   if (npPrev)      npPrev.addEventListener("click", () => control("previous"));
   if (npNext)      npNext.addEventListener("click", () => control("next"));
 
+  // Playback modes. Each reads the zone's CURRENT value at click time (not a
+  // mirrored local flag) and sends the concrete state it wants.
+  if (npShuffle) npShuffle.addEventListener("click", () => changeZoneSettings({ shuffle: !zoneModes().shuffle }));
+  if (npLoop)    npLoop.addEventListener("click", () => changeZoneSettings({ loop: LOOP_NEXT[zoneModes().loop] }));
+  if (npRadio)   npRadio.addEventListener("click", (e) => {
+    // Radio lives in .np-secondary, whose popovers the document handler leaves
+    // alone — close them here so they don't sit over the row.
+    e.stopPropagation();
+    closeNpPopovers();
+    changeZoneSettings({ auto_radio: !zoneModes().auto_radio });
+  });
+
   // Volume popover: tap the speaker to reveal the slider (or the "fixed" note).
   if (npVolBtn && npVolPopover) {
     npVolBtn.addEventListener("click", (e) => {
@@ -3981,15 +7368,20 @@
     });
   }
 
-  // Close the now-playing popovers when tapping outside the controls row.
-  document.addEventListener("click", (e) => {
-    if (e.target.closest && e.target.closest(".np-secondary")) return;
+  // Shut both now-playing popovers (volume, device) and reset their buttons.
+  function closeNpPopovers() {
     if (npVolPopover) npVolPopover.classList.add("hidden");
     if (npVolBtn) npVolBtn.setAttribute("aria-expanded", "false");
     const dp = document.getElementById("np-device-popover");
     const db = document.getElementById("np-device");
     if (dp) dp.classList.add("hidden");
     if (db) db.setAttribute("aria-expanded", "false");
+  }
+
+  // Close the now-playing popovers when tapping outside the controls row.
+  document.addEventListener("click", (e) => {
+    if (e.target.closest && e.target.closest(".np-secondary")) return;
+    closeNpPopovers();
   });
 
   // Now-playing scrubber: show the dragged time live, seek on release.
@@ -4103,7 +7495,8 @@
       const item = document.createElement("button");
       item.type = "button";
       item.className = "np-device-item" + (z.zone_id === cur ? " is-current" : "");
-      item.textContent = z.display_name;
+      if (window.__fillZoneRow) window.__fillZoneRow(item, z);
+      else item.textContent = z.display_name;
       item.addEventListener("click", (e) => {
         e.stopPropagation();
         zonePop.classList.add("hidden");
@@ -4131,6 +7524,31 @@
       zonePop.classList.add("hidden");
       btnZone.setAttribute("aria-expanded", "false");
     });
+    const popoverAction = (id, open) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        zonePop.classList.add("hidden");
+        btnZone.setAttribute("aria-expanded", "false");
+        const fn = window[open];
+        if (fn) fn();
+      });
+    };
+    popoverAction("mt-group-open", "__openGroupSheet");
+    popoverAction("mt-power-open", "__openDevicePowerSheet");
+    // Same three all-zone actions as the now-playing picker, same source.
+    for (const act of ["pause-all", "mute-all", "unmute-all"]) {
+      const b = document.getElementById("mt-" + act);
+      if (!b) continue;
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        zonePop.classList.add("hidden");
+        btnZone.setAttribute("aria-expanded", "false");
+        const fn = window.__allZoneActions && window.__allZoneActions[act];
+        if (fn) fn();
+      });
+    }
   }
 
   // Tap the info area (art + text) to open the now-playing album in the modal
@@ -4891,7 +8309,14 @@
   const qobuzConnect    = document.getElementById("qobuz-connect");
   const qobuzDisconnect = document.getElementById("qobuz-disconnect");
   const qobuzStatus     = document.getElementById("qobuz-status");
+  const qobuzTopbarBtn  = document.getElementById("qobuz-toggle");
+  const qobuzMenuItem   = document.getElementById("menu-item-qobuz");
 
+  // Gates the Qobuz controls on the connection, exactly as loadTidalStatus
+  // does. This used to toggle the Disconnect button ALONE, so the top-bar
+  // button and the side-menu entry stayed visible after logging out — the
+  // Qobuz browser remained one tap away from an account that no longer
+  // existed, and every catalogue call behind it threw "not connected".
   async function loadQobuzStatus() {
     try {
       const r = await fetch("/api/settings/qobuz");
@@ -4900,6 +8325,12 @@
         ? ("Connected" + (j.displayName ? " as " + j.displayName : ""))
         : "Not connected";
       if (qobuzDisconnect) qobuzDisconnect.classList.toggle("hidden", !j.connected);
+      if (qobuzTopbarBtn) qobuzTopbarBtn.classList.toggle("hidden", !j.connected);
+      if (qobuzMenuItem)  qobuzMenuItem.classList.toggle("hidden", !j.connected);
+      // Deliberately NOT force-closing an open Qobuz browser: hideOverlay() is
+      // reachable only from the popstate handler so viewStack and the history
+      // stack cannot drift, and the overlay already renders its own
+      // not-connected state on the next request.
     } catch (_) { /* display-only status — stale on failure is fine */ }
   }
 
@@ -5109,8 +8540,10 @@
     });
   }
 
-  // Boot-time gate: the topbar Tidal button must appear (when connected)
-  // without the user ever opening Settings.
+  // Boot-time gate: the topbar Qobuz and Tidal buttons — and their side-menu
+  // entries — must reflect the connection without the user ever opening
+  // Settings. Qobuz was missing from this and so was never gated at all.
+  loadQobuzStatus();
   loadTidalStatus();
 
   // Settings is a two-level view: a category home list and one pane per
@@ -5220,7 +8653,110 @@
     });
   }
 
-  const open = () => { showView("home"); pendingThemeId = null; renderThemeList(); loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); loadDisplaySettings(); loadLabelFolderDepth(); loadQobuzStatus(); loadTidalStatus(); overlay.classList.remove("hidden"); };
+  // Sample rate on the artwork. No Apply button and no reload: the value is
+  // already on every tile, so the switch is a class on <body> and takes effect
+  // on the screen behind the settings sheet.
+  const qualityToggle = document.getElementById("quality-toggle");
+  if (qualityToggle) {
+    qualityToggle.checked = window.__showQuality ? window.__showQuality() : false;
+    qualityToggle.addEventListener("change", () => {
+      if (window.__setShowQuality) window.__setShowQuality(qualityToggle.checked);
+    });
+  }
+
+
+  // ----- Smart Picks -----------------------------------------------------
+  // The build reaches three external services and then hands Roon a batch of
+  // albums to import, so WHEN it runs is a real setting rather than a nicety:
+  // 4am costs nothing, the same work at 8pm competes with whatever Roon is
+  // doing while somebody is listening.
+  const picksHour    = document.getElementById("picks-hour");
+  const picksAutoAdd = document.getElementById("picks-autoadd");
+  const picksRebuild = document.getElementById("picks-rebuild");
+  const picksNote    = document.getElementById("picks-service-note");
+
+  if (picksHour && !picksHour.options.length) {
+    for (let h = 0; h < 24; h++) {
+      const o = document.createElement("option");
+      o.value = String(h);
+      o.textContent = (h < 10 ? "0" + h : String(h)) + ":00";
+      picksHour.appendChild(o);
+    }
+  }
+
+  async function saveSmartPicksSettings(patch) {
+    try {
+      const r = await fetch("/api/settings/smart-picks", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch)
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) { showToast(j.error || "Couldn't save", "error"); return false; }
+      return true;
+    } catch (e) {
+      showToast("Couldn't save: " + e.message, "error");
+      return false;
+    }
+  }
+
+  async function loadSmartPicksSettings() {
+    if (!picksHour && !picksAutoAdd) return;
+    try {
+      const r = await fetch("/api/settings/smart-picks");
+      if (!r.ok) return;
+      const j = await r.json();
+      if (picksHour && Number.isFinite(j.hour)) picksHour.value = String(j.hour);
+      if (picksAutoAdd) picksAutoAdd.checked = !!j.auto_add;
+      if (picksNote) {
+        picksNote.textContent = j.service_ready
+          ? "The stretch pick is never added automatically — that one is always yours to accept or reject."
+          : "Connect Qobuz or TIDAL under Streaming accounts first — without one, picks can be shown but not added.";
+      }
+    } catch (e) {
+      // Settings simply show their last values; the pane is not the place to
+      // report a transient fetch failure.
+    }
+  }
+
+  if (picksHour) {
+    picksHour.addEventListener("change", async () => {
+      const h = parseInt(picksHour.value, 10);
+      if (await saveSmartPicksSettings({ hour: h })) {
+        showToast("Smart Picks will build at " + (h < 10 ? "0" + h : h) + ":00");
+      }
+    });
+  }
+  if (picksAutoAdd) {
+    picksAutoAdd.addEventListener("change", async () => {
+      const on = picksAutoAdd.checked;
+      if (await saveSmartPicksSettings({ auto_add: on })) {
+        showToast(on ? "The five genre picks will be added automatically"
+                     : "All six picks will ask before adding");
+      } else {
+        picksAutoAdd.checked = !on;   // the server refused — do not lie about it
+      }
+    });
+  }
+  if (picksRebuild) {
+    picksRebuild.addEventListener("click", async () => {
+      picksRebuild.disabled = true;
+      const orig = picksRebuild.textContent;
+      picksRebuild.textContent = "…";
+      try {
+        const r = await fetch("/api/smart-picks/rebuild", { method: "POST" });
+        const j = await r.json().catch(() => ({}));
+        showToast(r.ok ? "Rebuilding today's picks — check back in a minute"
+                       : (j.error || "Couldn't rebuild"), r.ok ? "ok" : "error");
+      } catch (e) {
+        showToast("Couldn't rebuild: " + e.message, "error");
+      } finally {
+        picksRebuild.disabled = false;
+        picksRebuild.textContent = orig;
+      }
+    });
+  }
+
+  const open = () => { showView("home"); pendingThemeId = null; renderThemeList(); loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); loadDisplaySettings(); loadLabelFolderDepth(); loadQobuzStatus(); loadTidalStatus(); loadSmartPicksSettings(); overlay.classList.remove("hidden"); };
   const close = () => {
     overlay.classList.add("hidden");
     // Closing Settings ends the client side of any pending Tidal device flow
@@ -6444,13 +9980,18 @@ initServiceBrowser({
   const btn        = document.getElementById("play-unheard-topbar");
   const zoneSelect = document.getElementById("zone-select");
   if (!btn) return;
-  btn.addEventListener("click", async () => {
+
+  // `spinEl` is whichever control the user actually pressed — the top-bar
+  // compass or the Home tile. Forwarding a click from one to the other would
+  // have left the pressed control inert for the two seconds it takes.
+  async function playUnheard(spinEl) {
+    const el = spinEl || btn;
     const zone = zoneSelect && zoneSelect.value;
     if (!zone) { if (window.__showToast) window.__showToast("Select a zone first"); return; }
-    if (btn.classList.contains("spinning")) return;
+    if (el.classList.contains("spinning")) return;
 
     // Spin the compass for 2 seconds, then fetch
-    btn.classList.add("spinning");
+    el.classList.add("spinning");
     await new Promise(r => setTimeout(r, 2000));
 
     try {
@@ -6468,9 +10009,11 @@ initServiceBrowser({
     } catch (e) {
       if (window.__showToast) window.__showToast("Request failed", "error");
     } finally {
-      btn.classList.remove("spinning");
+      el.classList.remove("spinning");
     }
-  });
+  }
+  btn.addEventListener("click", () => playUnheard(btn));
+  window.__playUnheard = playUnheard;
 })();
 
 /* ------------------------------------------------------------------ */
@@ -6545,6 +10088,7 @@ initServiceBrowser({
   }
 
   async function showArtistAlbums(artistName) {
+    if (window.__leavePlaylistScreens) window.__leavePlaylistScreens();
     if (!artistName) return;
     // Drop any active/pending search (incl. the delayed external-sources fetch)
     // — reachable from the album-modal artist link with a search still live,
@@ -6790,6 +10334,41 @@ initServiceBrowser({
     }
   }
 
+  // Roon's all-zone actions. They live in the zone picker — the sheet that is
+  // already about "which zones", which is what these act on — and the popover
+  // is closed by the time they run, so a toast is the only feedback channel.
+  // Mute and unmute are separate rows rather than one toggle: the popover is
+  // shut when the state changes, so a single "Mute all" would be wrong half
+  // the time.
+  async function allZones(url, body, pending, okMsg, failMsg) {
+    const toast = window.__showToast || (() => {});
+    toast(pending);
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {})
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return toast(j.error || failMsg, "error");
+      toast(okMsg);
+    } catch (e) {
+      toast(failMsg, "error");
+    }
+  }
+
+  // Exposed for the two zone pickers (now-playing and mini-transport), which
+  // are built in different closures. One implementation, three named actions,
+  // so the two pickers cannot drift apart on wording or endpoint.
+  window.__allZoneActions = {
+    "pause-all":  () => allZones("/api/pause-all", null, "Pausing every zone…",
+                                 "All zones paused", "Could not pause all zones"),
+    "mute-all":   () => allZones("/api/mute-all", { how: "mute" }, "Muting every zone…",
+                                 "All zones muted", "Could not mute all zones"),
+    "unmute-all": () => allZones("/api/mute-all", { how: "unmute" }, "Unmuting every zone…",
+                                 "All zones unmuted", "Could not unmute all zones"),
+  };
+
   const openMenu  = () => overlay.classList.remove("hidden");
   const closeMenu = () => overlay.classList.add("hidden");
 
@@ -6820,6 +10399,22 @@ initServiceBrowser({
       }
       if (action === "rescan-library") {
         rescanLibrary();
+        return;
+      }
+      if (action === "smart-picks") {
+        if (window.__showSmartPicks) window.__showSmartPicks();
+        return;
+      }
+      if (action === "smart-playlists") {
+        if (window.__showSmartPlaylists) window.__showSmartPlaylists();
+        return;
+      }
+      if (action === "playlists") {
+        if (window.__showPlaylists) window.__showPlaylists();
+        return;
+      }
+      if (action === "import-playlist") {
+        if (window.__openImportSheet) window.__openImportSheet();
         return;
       }
 
