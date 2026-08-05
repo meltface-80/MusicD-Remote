@@ -2242,6 +2242,12 @@ input.vol-range::-moz-range-thumb {
    control above it exists, rather than what it is called. */
 .settings-note { font-size: 12px; color: var(--text-faint); margin-top: 6px; line-height: 1.45; }
 
+/* Import: tracks matched under a different album than the share named. Not a
+   warning — the track WAS found — but not silent either, because it is a
+   substitution the user is entitled to see. */
+.share-sub-note { color: var(--text-dim); }
+.import-substituted li { color: var(--text-faint); }
+
 /* ------------------------------------------------------------------ */
 /*  Docker migration banner                                            */
 /* ------------------------------------------------------------------ */

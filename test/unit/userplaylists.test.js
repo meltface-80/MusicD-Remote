@@ -27,20 +27,26 @@ const { loadIndexFunctions } = require("../lib/extract");
 // precomputes, so the resolver sees exactly the shape it sees in production.
 const ALBUMS = [
   { offset: 10, title: "Perfect From Now On", subtitle: "Built to Spill",
-    nTitle: "perfect from now on", nArtist: "built to spill", image_key: "a10", srcKeys: ["k1"] },
+    nTitle: "perfect from now on", nArtist: "built to spill", image_key: "a10" },
   { offset: 20, title: "Goo", subtitle: "Sonic Youth",
-    nTitle: "goo", nArtist: "sonic youth", image_key: "a20", srcKeys: ["k2"] },
+    nTitle: "goo", nArtist: "sonic youth", image_key: "a20" },
   // Two different records with the SAME title — the coin flip.
   { offset: 30, title: "Reunion", subtitle: "Band One",
-    nTitle: "reunion", nArtist: "band one", image_key: "a30", srcKeys: ["k3"] },
+    nTitle: "reunion", nArtist: "band one", image_key: "a30" },
   { offset: 31, title: "Reunion", subtitle: "Band Two",
-    nTitle: "reunion", nArtist: "band two", image_key: "a31", srcKeys: ["k4"] },
+    nTitle: "reunion", nArtist: "band two", image_key: "a31" },
+  // A compilation, exactly as Roon files one: the album is credited to Various
+  // Artists while a shared playlist names the TRACK's artist. No title+artist
+  // identity can bridge that, which is the case the import bug was about.
+  { offset: 40, title: "The Best Of The Cranberries (20th Century Masters)",
+    subtitle: "Various Artists", nTitle: "the best of the cranberries 20th century masters",
+    nArtist: "various artists", image_key: "a40" },
 ];
 
 const {
   userTrackRecord, userPlaylistRecord, decodeSharePayload, resolveSharedTrack,
   encodeSharePayload, buildShareDoc, shareMagic,
-  userPlNameMax, userPlTracksMax,
+  userPlNameMax, userPlTracksMax, albumKeys, resolveSharedEntry, findSharedAlbum,
 } = loadIndexFunctions(
   ["userTrackRecord", "userPlaylistRecord", "decodeSharePayload", "resolveSharedTrack",
    "encodeSharePayload", "buildShareDoc", "shareMagic", "shareText", "shareInt",
@@ -48,15 +54,40 @@ const {
    "shareTextMax", "shareNameMax", "shareTrackMax", "shareUriMax",
    "shareNsTrack", "shareNsPlaylist",
    "userPlNameMax", "userPlTracksMax", "userPlMax", "normalize", "canonText",
-   "canonArtist", "albumKeys", "albumTitleVariants", "creditHasArtist"],
+   "canonArtist", "albumKeys", "albumTitleVariants", "creditHasArtist",
+   // v1.7.44: the resolver reads names the way the rest of index.js does, and
+   // falls back to the play history when the shared album is not this
+   // library's grouping. All of it is EXTRACTED — a stubbed matcher would be
+   // testing the stub's tolerance, which is the whole subject here.
+   "resolveSharedAlbum", "findSharedAlbum", "libraryLookup", "playsForTrack",
+   "resolveSharedEntry", "namesEqualLoose"],
   {
     zlib,
     pkg: { version: "9.9.9" },
-    albumIndex: { albums: ALBUMS },
+    albumIndex: { albums: ALBUMS, builtAt: 1 },
     ambiguousAlbumKeys: new Set(),
     splitCreditIntoArtists: (s) => [String(s || "")],
-    creditIdentities: (s) => [String(s || "").toLowerCase()],
+    // SHAPE-FAITHFUL. The real creditIdentities returns { c, first, names };
+    // a stub returning an array leaves `qId.c` undefined, so creditHasArtist
+    // returns false for everything and the disambiguation tests below pass
+    // without ever reaching the comparison they claim to be about.
+    creditIdentities: (s) => {
+      const c = String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+      return { c, first: c, names: c ? [c] : [] };
+    },
+    // No play history in these cases; the history rung has its own tests.
+    labelsDb: null,
+    DEBUG: false,
+    // libraryLookup's memo. Injected so each load gets its own rather than
+    // sharing one across test files.
+    _libLookup: { builtAt: -1, byKey: null, byTitle: null },
   });
+
+// Production builds srcKeys with albumKeys(title, subtitle) in indexRecord().
+// Computing them the same way here is what lets the identity rung be exercised
+// at all — the previous placeholders ("k1", "k2"…) matched nothing, so every
+// resolution silently fell through to the title rungs.
+for (const al of ALBUMS) al.srcKeys = albumKeys(al.title, al.subtitle);
 
 test("userTrackRecord stores only what can actually be played", async (t) => {
   const good = {
@@ -255,6 +286,70 @@ test("resolveSharedTrack matches this library, or reports a miss", async (t) => 
                    .album_offset, 31);
     assert.equal(resolveSharedTrack({ title: "Song", album: "Reunion", creator: "Band One" })
                    .album_offset, 30);
+  });
+
+  // -------------------------------------------------------------------------
+  // v1.7.44. A playlist shared from another server that indexes THE SAME files
+  // reported tracks as missing. The resolver compared normalize(album) for
+  // exact equality — stricter than anything else in this file — so any
+  // difference in how the two servers title or credit a record was fatal.
+  // Three real examples, all compilations:
+  //   Dreams / Linger · The Cranberries · "The Best Of The Cranberries (20th
+  //   Century Masters)", and All My Life · Foo Fighters · "Greatest Hits".
+  // -------------------------------------------------------------------------
+  await t.test("an edition suffix in the shared title no longer defeats the match", () => {
+    // albumTitleVariants strips a trailing bracketed chunk, and every other
+    // identity path in this file has used it for versions. The import path
+    // simply never did.
+    assert.equal(resolveSharedTrack({
+      title: "Dreams", creator: "The Cranberries",
+      album: "The Best Of The Cranberries",
+    }).album_offset, 40);
+  });
+
+  await t.test("a compilation credited to Various Artists resolves", () => {
+    // THE one. The share names the TRACK's artist; Roon credits the ALBUM to
+    // Various Artists. No title+artist identity can bridge that, so the title
+    // rung has to carry it — and it is safe here precisely because exactly one
+    // album in the library has that title.
+    const r = resolveSharedTrack({
+      title: "Dreams", creator: "The Cranberries",
+      album: "The Best Of The Cranberries (20th Century Masters)",
+    });
+    assert.ok(r, "a compilation the library HAS was still reported as missing");
+    assert.equal(r.album_offset, 40);
+    assert.equal(r.title, "Dreams", "the track title must survive the album substitution");
+  });
+
+  await t.test("a leading The, an ampersand and case are all tolerated", () => {
+    // canonArtist/canonText tolerance, which the old exact-normalize path had
+    // no access to.
+    assert.equal(resolveSharedTrack({
+      title: "x", album: "goo", creator: "The Sonic Youth",
+    }).album_offset, 20);
+  });
+
+  await t.test("the coin flip is STILL refused", () => {
+    // The tolerance must not have become looseness. Two albums share "Reunion"
+    // and the share names neither artist — that is exactly the case this
+    // resolver has always declined, and widening the matching must not have
+    // quietly turned it into a guess.
+    assert.equal(resolveSharedTrack({ title: "Song", album: "Reunion" }), null);
+  });
+
+  await t.test("an album this library genuinely lacks is still a miss", () => {
+    assert.equal(resolveSharedTrack({
+      title: "X", album: "Never Owned This", creator: "Nobody",
+    }), null);
+  });
+
+  await t.test("a match reports WHICH rung found it", () => {
+    // A track found under an album the share did not name is a substitution,
+    // and this project shows substitutions rather than making them quietly.
+    const direct = resolveSharedEntry({
+      title: "Dirty Boots", album: "Goo", creator: "Sonic Youth",
+    });
+    assert.equal(direct.via, "album");
   });
 
   await t.test("matching ignores case and punctuation drift", () => {

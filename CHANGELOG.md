@@ -2,6 +2,54 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.44] — 2026-08-05
+
+### Fixed — imported playlists reported tracks as missing that you actually own
+
+A playlist shared from a Lyrion/LMS instance indexing **the same local files and the same Qobuz
+account** reported tracks as unmatched. Three real examples, all compilations: *Dreams* and *Linger*
+by The Cranberries on "The Best Of The Cranberries (20th Century Masters)", and *All My Life* by Foo
+Fighters on "Greatest Hits".
+
+Two servers indexing the same music do not agree on how to group or title a compilation, and Roon in
+particular credits one to **Various Artists** while a playlist names the *track's* artist. The
+resolver compared `normalize(album)` for exact equality and `normalize(artist)` for exact equality —
+stricter than anything else in this codebase. Every other identity path here (source badges, the file
+join, streaming favourites) matches through `albumKeys`, which strips edition suffixes, folds
+"&"/"and", drops a leading "The" and splits a credit into individual artists. The import path simply
+never used any of it.
+
+It does now, in rungs, and still **zero Roon calls**:
+
+1. **Tolerant identity** — `albumKeys`, so "(20th Century Masters)" and a leading "The" stop mattering.
+2. **Title alone, edition suffixes stripped** — the compilation case, where no title+artist key can
+   ever match because the album is credited to Various Artists. Safe only when exactly one album in
+   the library carries that title.
+3. **The credit decides** among several albums sharing a title, using the same whole-name comparison
+   the artist links use.
+4. **The play history** — `plays` records `line3` from Roon's own now-playing feed, so for any track
+   this household has played it already holds **Roon's** name for the album that track sits on. That
+   is the one fact a share cannot carry and the snapshot cannot infer, and reading it is free.
+
+**The safety rule is unchanged.** A coin flip is still refused: two albums sharing a title with no
+artist to separate them resolves to nothing, exactly as before. What changed is that far fewer
+entries are *genuinely* ambiguous. And because rung 4 can find a track under an album the share never
+named, the import report now lists those separately — *"N found on a different album than the
+playlist named"* — because silently swapping one record for another is what makes these tools
+untrustworthy.
+
+A side effect worth noting: an entry with **no album at all** can now resolve. Shares made from a
+Roon playlist carry no album (Roon does not put one on the row), so those were previously
+unresolvable by construction.
+
+### Fixed — a test fixture that was hiding all of this
+
+`test/unit/userplaylists.test.js` faked every album's `srcKeys` as `"k1"`, `"k2"`… and stubbed
+`creditIdentities` with the wrong shape, which makes `creditHasArtist` return false for everything.
+So the identity rung matched nothing and the artist-disambiguation test passed without ever reaching
+the comparison it claimed to be about. Both are now faithful to production, plus 20 new tests
+covering the compilation case and the history rung against a real SQLite `plays` table.
+
 ## [1.7.43] — 2026-08-05
 
 ### Fixed — "Couldn't play from here: Load failed" when opening the app
