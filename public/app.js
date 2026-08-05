@@ -97,6 +97,8 @@
   let playlistsActive = false;      // viewing the Roon playlist list?
   let playlistDetailActive = false; // viewing one playlist's tracks?
   let playlistSeq = 0;              // orphans in-flight playlist fetches
+  let smartPicksActive = false;     // viewing the Smart Picks screen?
+  let smartPicksSeq = 0;            // orphans in-flight Smart Picks fetches
   // How long a report about a long-running queue fill stays up (vs showToast's
   // 2.4s default). Declared here rather than beside showToast() for the same
   // reason as the flags above — a `const` further down the file is a TDZ
@@ -330,6 +332,7 @@
   const homeRandom   = document.getElementById("home-random");
   const homeLibrary  = document.getElementById("home-library");
   const homeLotw     = document.getElementById("home-lotw");
+  const homePicks    = document.getElementById("home-picks");
   const homeGenres   = document.getElementById("home-genres");
   const topbarBack   = document.getElementById("topbar-back");
   const topbarRefresh = document.getElementById("topbar-refresh");
@@ -337,6 +340,10 @@
   let homeSectionsLoaded = false;
   let homeLotwLoaded = false;   // set once the label-of-the-week row populates
   let homeLibraryLoaded = false; // set once the Library row populates
+  // Smart Picks are built once a day on the server. The row is retried on each
+  // Home visit until it populates (the first build runs in the background and
+  // can take a minute), then left alone — the set does not change again today.
+  let homePicksDay = "";
 
   // Topbar chrome per view: Back button (off Home), Refresh button (random /
   // genre grids), and the Search box (Home only, beside the hamburger).
@@ -389,6 +396,10 @@
     // ready on the first visit — retry each visit until it populates, then stop.
     if (!homeLotwLoaded) loadHomeLabelOfWeek();
     if (!homeLibraryLoaded) loadHomeLibrary();
+    // Smart Picks change at local midnight. Comparing the day the row was built
+    // for against today is what makes a device left open overnight pick up the
+    // new set — a plain "loaded once" flag would show yesterday's until reload.
+    if (homePicksDay !== localDayKey()) loadHomeSmartPicks();
     if (!homeSectionsLoaded) loadHomeGenres();
   }
   // Reveal the album wall. opts.loadIfEmpty loads a fresh wall only when it has
@@ -451,7 +462,10 @@
   // A row already carries real content (tiles or genre cards), so a background
   // revalidation can swap fresh data in without first flashing "Loading…" over
   // the cached content the user is already looking at.
-  const rowHasContent = (el) => !!(el && el.querySelector(".album, .home-genre-card"));
+  // Smart Picks tiles are .pick-card, not .album — they carry no offset and are
+  // never ordinary album tiles — so that class has to be named here or a
+  // hydrated picks row reads as empty and gets blanked.
+  const rowHasContent = (el) => !!(el && el.querySelector(".album, .home-genre-card, .pick-card"));
 
   // Build a Home tile that always opens full-library (filter: null) so its
   // offset resolves even when a genre filter was last active.
@@ -635,6 +649,240 @@
     } catch (e) {
       if (!rowHasContent(homeLibrary)) homeLibrary.innerHTML = '<div class="home-carousel-empty">Couldn’t load.</div>';
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Smart Picks — six albums a day by artists NOT in the library.
+  //
+  // These albums are NOT in Roon, so they have no offset and cannot be played
+  // or queued. The only action is Add, which favourites the album on the
+  // connected streaming service; Roon imports it and it becomes playable on the
+  // next sync. That is why this uses its own card rather than homeTile(), whose
+  // tap handlers all assume an offset into the albums hierarchy.
+  // -------------------------------------------------------------------------
+
+  // Today, in the viewer's own timezone.
+  //
+  // This is deliberately NOT compared against the server's `day`. The container
+  // sets no TZ and runs UTC, so for anyone east or west of Greenwich the two
+  // strings differ for part of every day — and the guard below would then be
+  // permanently true, refetching and re-rendering the row on every Back tap.
+  // "Has the day rolled over" is a question about the VIEWER's midnight, so the
+  // client answers it with its own clock and stores its own key.
+  function localDayKey() {
+    const d = new Date();
+    const p = (n) => (n < 10 ? "0" + n : String(n));
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+  }
+
+  function smartPickAddLabel(added) { return added ? "✓ Added" : "＋ Add"; }
+
+  // Favourite a pick's album on whichever service it came from. On success the
+  // button latches to Added rather than toggling back off: this is a one-way
+  // "put it in my library" action, and an accidental second tap that silently
+  // un-favourited it would be much worse than a no-op.
+  async function addSmartPick(pick, button) {
+    if (!pick.album_id || !pick.service) {
+      showToast("No streaming album to add", "error");
+      return;
+    }
+    const before = button.textContent;
+    button.disabled = true;
+    button.textContent = "…";
+    try {
+      const r = await fetch("/api/" + pick.service + "/favorite", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ album_id: pick.album_id })
+      });
+      const j = await r.json();
+      if (j && j.ok) {
+        button.textContent = smartPickAddLabel(true);
+        button.classList.add("is-done");
+        button.dataset.added = "1";
+        showToast("Added — Roon will import it shortly", "ok");
+      } else {
+        button.textContent = before;
+        button.disabled = false;
+        showToast((j && j.error) || "Couldn't add that album", "error");
+      }
+    } catch (e) {
+      button.textContent = before;
+      button.disabled = false;
+      showToast("Failed: " + e.message, "error");
+    }
+  }
+
+  // "Not for me" — permanent, and only ever from an explicit tap. Silence is
+  // never treated as rejection: the whole premise is albums the user would not
+  // otherwise reach for, so a pick they simply ignored has to be allowed back.
+  async function blockSmartPick(pick, card) {
+    try {
+      const r = await fetch("/api/smart-picks/block", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ artist: pick.artist })
+      });
+      const j = await r.json();
+      if (j && j.ok) {
+        if (card && card.parentNode) card.parentNode.removeChild(card);
+        showToast("Won't suggest " + pick.artist + " again", "ok");
+      } else {
+        showToast((j && j.error) || "Couldn't save that", "error");
+      }
+    } catch (e) {
+      showToast("Failed: " + e.message, "error");
+    }
+  }
+
+  // One pick. `full` adds the reason line and the action buttons — the Home
+  // carousel stays a plain tile so it reads like the rows around it.
+  function smartPickCard(pick, full) {
+    const card = document.createElement("div");
+    card.className = "pick-card" + (full ? " pick-card-full" : "") +
+                     (pick.kind === "stretch" ? " pick-card-stretch" : "");
+    const art = document.createElement("div");
+    art.className = "pick-art";
+    if (pick.image) {
+      const img = document.createElement("img");
+      img.loading = "lazy";
+      img.alt = "";
+      img.src = pick.image;
+      art.appendChild(img);
+    }
+    if (pick.kind === "stretch") {
+      const flag = document.createElement("span");
+      flag.className = "pick-flag";
+      flag.textContent = "Stretch";
+      art.appendChild(flag);
+    }
+    card.appendChild(art);
+
+    const meta = document.createElement("div");
+    meta.className = "pick-meta";
+    const artist = document.createElement("div");
+    artist.className = "pick-artist";
+    artist.textContent = pick.artist;
+    meta.appendChild(artist);
+    const album = document.createElement("div");
+    album.className = "pick-album";
+    album.textContent = pick.album || "";
+    meta.appendChild(album);
+    if (full && pick.reason) {
+      const why = document.createElement("div");
+      why.className = "pick-reason";
+      why.textContent = pick.reason;
+      meta.appendChild(why);
+    }
+    card.appendChild(meta);
+
+    if (full) {
+      const actions = document.createElement("div");
+      actions.className = "pick-actions";
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "pick-add";
+      add.textContent = smartPickAddLabel(false);
+      add.addEventListener("click", () => addSmartPick(pick, add));
+      actions.appendChild(add);
+      const nope = document.createElement("button");
+      nope.type = "button";
+      nope.className = "pick-block";
+      nope.textContent = "Not for me";
+      nope.addEventListener("click", () => blockSmartPick(pick, card));
+      actions.appendChild(nope);
+      card.appendChild(actions);
+    } else {
+      // On Home the whole tile opens the full screen, where the reason and the
+      // actions live. A tile that did nothing on tap would read as broken.
+      card.setAttribute("role", "button");
+      card.tabIndex = 0;
+      const open = () => showSmartPicks();
+      card.addEventListener("click", open);
+      card.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+      });
+    }
+    return card;
+  }
+
+  function renderHomePicks(picks) {
+    if (!homePicks) return false;
+    const sec = homePicks.closest(".home-section");
+    if (!picks || !picks.length) {
+      // Nothing built yet. Hide the section rather than show an empty row —
+      // the first build runs in the background and may take a minute.
+      if (sec) sec.classList.add("hidden");
+      return false;
+    }
+    if (sec) sec.classList.remove("hidden");
+    homePicks.innerHTML = "";
+    const frag = document.createDocumentFragment();
+    for (const p of picks) frag.appendChild(smartPickCard(p, false));
+    homePicks.appendChild(frag);
+    return true;
+  }
+
+  async function loadHomeSmartPicks() {
+    if (!homePicks) return;
+    try {
+      const r = await fetch("/api/smart-picks");
+      if (!r.ok) return;   // 503 while pairing / 500 — retried on the next visit
+      const j = await r.json();
+      const picks = (j && j.picks) || [];
+      if (picks.length) {
+        renderHomePicks(picks);
+        homePicksDay = localDayKey();   // our own key — see localDayKey
+      } else if (!rowHasContent(homePicks)) {
+        // Genuinely nothing yet (the build runs in the background) and no
+        // cached row to keep — hide the section rather than leave an empty one.
+        renderHomePicks([]);
+      }
+    } catch (e) {
+      // Transient — the row simply stays hidden and is retried next visit.
+      // Silence is safe here because nothing was replaced or lost.
+    }
+  }
+
+  // The full Smart Picks screen: every pick with its reason and its actions.
+  // (smartPicksActive / smartPicksSeq are declared with the other view flags at
+  // the top of the file — leavePlaylistScreens writes them, and that can run
+  // during boot.)
+  async function showSmartPicks() {
+    enterFullWall("Smart Picks");
+    smartPicksActive = true;
+    const mySeq = ++smartPicksSeq;
+    let j = null;
+    try {
+      const r = await fetch("/api/smart-picks");
+      j = await r.json();
+      // A 503 while pairing carries a real explanation ("Not paired with Roon
+      // Core yet"). Dropping it for the generic message throws away the one
+      // thing that tells the user what to do.
+      if (!r.ok && !(j && j.error)) j = { error: "HTTP " + r.status };
+    } catch (e) {
+      j = null;
+    }
+    if (!smartPicksActive || mySeq !== smartPicksSeq) return;   // user moved on
+    grid.innerHTML = "";
+    if (!j || j.error) {
+      setBanner(j && j.error
+        ? ("Couldn't load Smart Picks — " + j.error)
+        : "Couldn't load Smart Picks — the extension didn't answer. Try again.", true);
+      return;
+    }
+    const picks = j.picks || [];
+    if (!picks.length) {
+      setBanner(j.service_ready
+        ? "Building today's picks — this takes a minute the first time. Come back shortly."
+        : "Connect Qobuz or TIDAL in Settings and Smart Picks can suggest albums " +
+          "you can add straight to your library.", false);
+      return;
+    }
+    setBanner(j.service_ready ? null
+      : "Connect Qobuz or TIDAL in Settings to add any of these to your library.", false);
+    const wrap = document.createElement("div");
+    wrap.className = "pick-list";
+    for (const p of picks) wrap.appendChild(smartPickCard(p, true));
+    grid.appendChild(wrap);
   }
 
   // Label of the week — one label featured for the whole ISO week (backend
@@ -1230,9 +1478,15 @@
     smartWallActive = false;
     smartDetailActive = false;
     userPlDetailActive = false;
+    // Smart Picks joins the same ritual: every screen entry point must orphan
+    // an in-flight picks fetch, or its response paints into whatever opened
+    // next. enterFullWall and showHome both call this, so adding it here covers
+    // every route out of the screen at once.
+    smartPicksActive = false;
     playlistSeq++;
     smartSeq++;
     userPlSeq++;
+    smartPicksSeq++;
   }
   window.__leavePlaylistScreens = leavePlaylistScreens;
 
@@ -2712,6 +2966,7 @@
     grid.appendChild(frag);
   }
   window.__showSmartPlaylists = showSmartPlaylists;
+  window.__showSmartPicks = showSmartPicks;
 
   async function openSmartPlaylist(sp) {
     enterFullWall(sp.name || "Dynamic Playlist");
@@ -3564,6 +3819,7 @@
       const name = homeLotw && homeLotw.dataset.label;
       if (name && window.__showLabelAlbums) window.__showLabelAlbums(name);
     });
+    wireSectionHeader("home-picks-title", showSmartPicks);
   }
 
   // Weighted-random pick from a list of { title, count }.
@@ -9799,6 +10055,10 @@ initServiceBrowser({
       }
       if (action === "rescan-library") {
         rescanLibrary();
+        return;
+      }
+      if (action === "smart-picks") {
+        if (window.__showSmartPicks) window.__showSmartPicks();
         return;
       }
       if (action === "smart-playlists") {

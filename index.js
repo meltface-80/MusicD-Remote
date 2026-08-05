@@ -265,6 +265,9 @@ const roon = new RoonApi({
     });
     // Build the local search index in the background and keep it fresh.
     startIndexMaintenance();
+    // Smart Picks rebuild once a day, on their own timer. Nothing user-facing
+    // ever waits on that build — see kickSmartPicks.
+    startSmartPicksMaintenance();
   },
   core_unpaired: function () {
     core = null; zones = {}; outputs = {}; outputsFeedLive = false;
@@ -1871,6 +1874,11 @@ function scheduleLibraryMetaBump() {
 let labelsDb = null;
 let stmtInsertName, stmtInsertMbid, stmtInsertLogo, stmtInsertMerge, stmtDeleteMerge, stmtInsertYear;
 let stmtInsertPlay, stmtCompletePlay;
+// Smart Picks. Declared here with the rest so they exist (as undefined) before
+// openLabelsDb runs — a bare assignment below a later `let` is the startup
+// ReferenceError this file has been bitten by before.
+let stmtInsertSmartPick = null, stmtInsertSmartSeen = null;
+let stmtInsertSmartBlock = null, stmtInsertSmartCache = null;
 
 // Non-label filter — must be defined before openLabelsDb() is called.
 const NON_LABEL_RE = /\b(management|agency|agencies|booking|touring|representation|ministry|foundation|fund)\b/i;
@@ -1961,6 +1969,47 @@ function openLabelsDb() {
         ts        INTEGER NOT NULL,
         v         INTEGER NOT NULL
       );
+      -- Smart Picks: the six albums surfaced on a given day. Stored rather than
+      -- recomputed so the set is stable for everyone looking at it, and so a
+      -- restart does not hand somebody a different day's picks.
+      CREATE TABLE IF NOT EXISTS smart_picks (
+        day      TEXT NOT NULL,
+        kind     TEXT NOT NULL,
+        rank     INTEGER NOT NULL,
+        mbid     TEXT,
+        artist   TEXT NOT NULL,
+        canon    TEXT NOT NULL,
+        album    TEXT,
+        album_id TEXT,
+        service  TEXT,
+        image    TEXT,
+        reason   TEXT,
+        genre    TEXT,
+        ts       INTEGER NOT NULL,
+        PRIMARY KEY (day, kind, rank)
+      );
+      -- Artists already shown, so the set turns over instead of repeating.
+      CREATE TABLE IF NOT EXISTS smart_pick_seen (
+        canon TEXT PRIMARY KEY,
+        ts    INTEGER NOT NULL
+      );
+      -- "Not for me" — an EXPLICIT tap only, and permanent. Silence is never
+      -- recorded here: the premise of the feature is albums the user would not
+      -- otherwise reach for, so treating no-response as rejection would empty
+      -- the pool within a week.
+      CREATE TABLE IF NOT EXISTS smart_pick_blocks (
+        canon TEXT PRIMARY KEY,
+        name  TEXT,
+        ts    INTEGER NOT NULL
+      );
+      -- Cached third-party reads (the sitewide hub chart, per-seed similarity,
+      -- per-genre rosters). Persisted so a rebuild on an unchanged library
+      -- costs no network calls at all.
+      CREATE TABLE IF NOT EXISTS smart_cache (
+        key  TEXT PRIMARY KEY,
+        body TEXT NOT NULL,
+        ts   INTEGER NOT NULL
+      );
     `);
     // `src` records WHERE a year came from, so a better source can correct a
     // worse one (see yearSourceRank). Added after the table shipped without
@@ -1987,6 +2036,16 @@ function openLabelsDb() {
       "INSERT OR REPLACE INTO genre_scan (name, subtitle, image_key, total, ts, v) VALUES (?,?,?,?,?,?)");
     stmtInsertFileFacts = labelsDb.prepare(
       "INSERT OR REPLACE INTO album_files (key, container, bits, rate, chan, lossless, src) VALUES (?,?,?,?,?,?,?)");
+    stmtInsertSmartPick = labelsDb.prepare(
+      "INSERT OR REPLACE INTO smart_picks " +
+      "(day, kind, rank, mbid, artist, canon, album, album_id, service, image, reason, genre, ts) " +
+      "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
+    stmtInsertSmartSeen  = labelsDb.prepare(
+      "INSERT OR REPLACE INTO smart_pick_seen (canon, ts) VALUES (?, ?)");
+    stmtInsertSmartBlock = labelsDb.prepare(
+      "INSERT OR REPLACE INTO smart_pick_blocks (canon, name, ts) VALUES (?, ?, ?)");
+    stmtInsertSmartCache = labelsDb.prepare(
+      "INSERT OR REPLACE INTO smart_cache (key, body, ts) VALUES (?, ?, ?)");
     const stmtDeleteName = labelsDb.prepare("DELETE FROM label_names WHERE key = ?");
     for (const r of labelsDb.prepare("SELECT key, label FROM label_names").all()) {
       if (!r.label) continue;
@@ -5178,6 +5237,10 @@ async function syncChain() {
   await bgRun("stream favourites", () => refreshStreamAlbumKeys("library sync"));
   await bgRun("genres",            () => harvestAlbumGenres("library sync"));
   await bgRun("art prewarm",       () => prewarmAlbumArt());
+  // Last, and only if today has none: the picks need the genre harvest above to
+  // have run at least once (the stretch pick reads genre weights), and a fresh
+  // pair should not have to wait up to an hour for the timer's first tick.
+  kickSmartPicks("after sync");
 }
 
 // ---------------------------------------------------------------------------
@@ -6581,7 +6644,7 @@ function libraryView(q) {
   }
 
   const stats = (sort === "plays" || sort === "lastplayed") ? playStats() : null;
-  const playKey = (al) => String(al.title || "").toLowerCase().trim();
+  const playKey = albumPlayKey;   // one definition of the plays-table key
   const cmp = {
     album:  (a, b) => a.sortTitle.localeCompare(b.sortTitle) || a.nArtist.localeCompare(b.nArtist),
     artist: (a, b) => (a.cFirst || a.nArtist).localeCompare(b.cFirst || b.nArtist) ||
@@ -9525,6 +9588,775 @@ app.get("/api/tidal/featured", async (req, res) => {
     res.json({ type, albums: normalizeTidalAlbums(items, favIds) });
   } catch (e) {
     res.status(serviceErrorStatus(e)).json({ error: e.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Smart Picks — six albums a day by artists NOT in the library.
+//
+// Five "adjacent" picks drawn from the genres the library already lives in, and
+// one "stretch" pick from a genre it barely touches. The set changes daily.
+//
+// WHY THIS IS SHAPED THE WAY IT IS
+//
+// 1. NOTHING HERE TOUCHES THE ROON CORE. Library analysis reads the snapshot
+//    that already exists; similarity comes from ListenBrainz and MusicBrainz
+//    over plain HTTP; albums are resolved against Qobuz/TIDAL. The only Core
+//    cost is the sync that already runs, noticing a newly favourited album.
+//
+// 2. A PICK MUST BE ACTIONABLE. Roon plays only what is in the library — every
+//    play route needs an offset into the albums hierarchy — so an artist name
+//    on its own is useless. Each pick is resolved to a real streaming album the
+//    user can favourite; Roon imports it and it becomes playable on the next
+//    sync. This is exactly the flow the Qobuz/TIDAL browser already uses.
+//
+// 3. SEEDS COME FROM THE OBSCURE END. Similarity quality inverts with seed
+//    popularity: Radiohead returns Nirvana, RHCP and Coldplay, while Bark
+//    Psychosis returns Mogwai, Talk Talk, Tortoise, Slint and Labradford. The
+//    sitewide hub chart (one request for the world's 1000 most-listened
+//    artists) is what makes "never seed from the popular end" computable.
+//
+// 4. RANKING IS BY DISTANCE, NOT SIMILARITY. Every recommender sorts by
+//    similarity descending, which is why they all surface the obvious. Here a
+//    candidate reachable from ONE seed outranks one reachable from twelve: the
+//    latter is somebody the user has had every opportunity to buy and hasn't.
+// ---------------------------------------------------------------------------
+
+const discovery = require("./lib/discovery");
+
+// Vocabulary as functions so the tests read the shipping values rather than
+// asserting against a constant they were handed.
+function smartPickKinds()        { return ["adjacent", "stretch"]; }
+function smartAdjacentCount()    { return 5; }
+function smartStretchCount()     { return 1; }
+function smartSeedCount()        { return 24; }
+function smartPoolCount()        { return 150; }
+// How long a shown artist stays out of the pool. Long enough that the set
+// genuinely turns over, short enough that a big library isn't exhausted.
+function smartSeenDays()         { return 120; }
+// A genre counts as "outside the library" at or below this share of it. The
+// user's Roon genre list only contains genres they own something in, so a
+// true zero is never visible — the bottom band is the outside edge there is.
+function smartStretchShare()     { return 0.02; }
+function smartHubTtlMs()         { return 14 * 24 * 60 * 60 * 1000; }
+function smartSimilarTtlMs()     { return 30 * 24 * 60 * 60 * 1000; }
+function smartTagTtlMs()         { return 30 * 24 * 60 * 60 * 1000; }
+
+// An album's key in the plays table. Title-only, because that is all Roon's
+// now-playing feed gives us to record — two artists' "Greatest Hits" collide,
+// the same limitation the Home "not played" row and the Library play sort
+// already carry.
+function albumPlayKey(al) { return String(al.title || "").toLowerCase().trim(); }
+
+// The library as artists: canonArtist -> { canon, name, albums, plays }.
+//
+// Derived from album CREDITS, not from the plays table's artist column: that
+// column holds the TRACK artist (Roon's three_line.line2), so on any compilation
+// or classical record it names a performer rather than the act whose library
+// entry this is. Credits are the same source linkableArtistSet uses, so
+// membership tests here and artist links elsewhere can never disagree.
+// Deliberately NOT cached. The obvious key is albumIndex.builtAt, and it is
+// wrong: builtAt only moves on a full walk, so on a library that has stopped
+// growing it never advances — while `plays` changes every time something is
+// listened to. A profile cached that way freezes the play counts at whatever
+// they were on the first build, and plays-per-album-owned is the seed policy.
+// One pass over the albums costs a few hundred ms, once a day, in a background
+// job. It has exactly one caller.
+function libraryArtistProfile() {
+  const stats = playStats();
+  const map = new Map();
+  for (const al of albumIndex.albums) {
+    const plays = stats.count.get(albumPlayKey(al)) || 0;
+    for (const name of splitCreditIntoArtists(al.subtitle || "")) {
+      const c = canonArtist(name);
+      // canonArtist returns "" for a punctuation- or CJK-only credit ("!!!").
+      // An empty key would merge every such act into one bogus artist.
+      if (!c) continue;
+      let rec = map.get(c);
+      if (!rec) { rec = { canon: c, name, albums: 0, plays: 0 }; map.set(c, rec); }
+      rec.albums++;
+      rec.plays += plays;
+    }
+  }
+  return map;
+}
+
+// Genre -> how many albums in the library carry it.
+function libraryGenreWeights() {
+  const w = new Map();
+  for (const al of albumIndex.albums) {
+    for (const g of albumGenresOf(al)) w.set(g, (w.get(g) || 0) + 1);
+  }
+  return w;
+}
+
+// Which library artists to walk out from.
+//
+// Two filters and one sort. Hubs are excluded because seeding from them is what
+// makes a recommender boring. What remains is sorted by plays PER ALBUM OWNED:
+// an act with four plays across one album is a stronger statement of taste than
+// one with six plays spread over twelve, and it is the small, deliberate
+// corners of a library that lead somewhere new.
+//
+// A library with no play history yet still has to work, so the list is topped up
+// with the most-owned non-hub artists — owning a lot by an artist the world
+// isn't listening to is itself a taste signal.
+function smartPickSeeds(profile, hubCanons, limit) {
+  const cap = limit || smartSeedCount();
+  const eligible = [];
+  for (const rec of profile.values()) {
+    if (hubCanons.has(rec.canon)) continue;
+    eligible.push(rec);
+  }
+  const byCanon = (a, b) => (a.canon < b.canon ? -1 : a.canon > b.canon ? 1 : 0);
+  const played = eligible.filter(r => r.plays > 0).sort((a, b) =>
+    (b.plays / b.albums) - (a.plays / a.albums) || a.albums - b.albums || byCanon(a, b));
+  const out = played.slice(0, cap);
+  if (out.length < cap) {
+    const have = new Set(out.map(r => r.canon));
+    const rest = eligible.filter(r => !have.has(r.canon))
+      .sort((a, b) => b.albums - a.albums || byCanon(a, b));
+    for (const r of rest) {
+      if (out.length >= cap) break;
+      out.push(r);
+    }
+  }
+  return out;
+}
+
+// Genres the library barely touches, least-owned first.
+function smartStretchGenres(weights, totalAlbums) {
+  const total = totalAlbums || 0;
+  if (!total) return [];
+  const out = [];
+  for (const [genre, albums] of weights) {
+    if (!genre) continue;
+    if ((albums / total) <= smartStretchShare()) out.push({ genre, albums });
+  }
+  out.sort((a, b) => a.albums - b.albums ||
+    (a.genre < b.genre ? -1 : a.genre > b.genre ? 1 : 0));
+  return out;
+}
+
+// Fold similar-artist rows into one entry per candidate, remembering EVERY seed
+// each was reached from — that count is the distance signal, so a candidate
+// arriving twice must not overwrite itself.
+function collectSmartCandidates(rows, seedNameByMbid) {
+  const byMbid = new Map();
+  for (const r of rows || []) {
+    if (!r || !r.mbid || !r.name) continue;
+    const canon = canonArtist(r.name);
+    if (!canon) continue;
+    let rec = byMbid.get(r.mbid);
+    if (!rec) {
+      rec = { mbid: r.mbid, name: r.name, canon, comment: r.comment || "",
+              score: 0, seeds: [], seedNames: [] };
+      byMbid.set(r.mbid, rec);
+    }
+    if (r.score > rec.score) rec.score = r.score;
+    if (r.seed && rec.seeds.indexOf(r.seed) === -1) {
+      rec.seeds.push(r.seed);
+      const sn = seedNameByMbid && seedNameByMbid.get(r.seed);
+      if (sn) rec.seedNames.push(sn);
+    }
+  }
+  return Array.from(byMbid.values());
+}
+
+// Rank by distance from the library rather than by similarity to it.
+//
+// Fewest connections back first. With a couple of dozen seeds most candidates
+// sit in the one-seed bucket, so score decides within it — which is why hub
+// candidates have to be filtered out before this runs, or the strongest score
+// in that bucket is simply the most famous name in it.
+function rankSmartCandidates(cands) {
+  return (cands || []).slice().sort((a, b) =>
+    a.seeds.length - b.seeds.length ||
+    b.score - a.score ||
+    (a.canon < b.canon ? -1 : a.canon > b.canon ? 1 : 0));
+}
+
+// Spread the day's picks across DIFFERENT corners of the library.
+//
+// Ranking alone produces a monoculture, and measurably so: on a test library
+// seeded from Bark Psychosis, Slint, Stars of the Lid, Labradford and Tortoise,
+// the top five candidates were all neighbours of Stars of the Lid — five
+// ambient records that between them said one thing. The distance sort cannot
+// prevent that, because once most candidates sit in the one-seed bucket it
+// decides on score alone, and the loudest seed owns every slot.
+//
+// So the ranked list is dealt round-robin: the best candidate from each seed,
+// then each seed's second, and so on. Rank order is preserved WITHIN a seed,
+// and the seed queues are already in rank order, so the strongest candidate
+// overall still comes first — it just no longer brings four relatives with it.
+function diversifySmartCandidates(ranked) {
+  const bySeed = new Map();
+  for (const c of ranked || []) {
+    // A candidate's first seed is its strongest connection: `seeds` is filled
+    // in arrival order from a list the endpoint returns strongest-first.
+    const key = (c.seeds && c.seeds[0]) || "";
+    if (!bySeed.has(key)) bySeed.set(key, []);
+    bySeed.get(key).push(c);
+  }
+  const queues = Array.from(bySeed.values());
+  const out = [];
+  for (let round = 0; ; round++) {
+    let moved = false;
+    for (const q of queues) {
+      if (round < q.length) { out.push(q[round]); moved = true; }
+    }
+    if (!moved) break;   // every queue exhausted
+  }
+  return out;
+}
+
+// Everything a candidate must not be. Kept as one function so the adjacent and
+// stretch paths cannot drift apart on what counts as "already known".
+function smartPickExcluded(canon, sets) {
+  if (!canon) return true;
+  if (sets.library.has(canon)) return true;   // already owned
+  if (sets.hubs.has(canon)) return true;      // famous is not a discovery
+  if (sets.blocked.has(canon)) return true;   // user said "not for me"
+  if (sets.seen.has(canon)) return true;      // shown recently
+  return false;
+}
+
+// The sentence under a pick. Built from the chain that produced it, so it is
+// always true — an LLM would write a nicer one and would sometimes be wrong,
+// and a recommendation nobody can check is a recommendation nobody trusts.
+function smartPickReason(rec) {
+  if (rec.kind === "stretch") {
+    return rec.genre
+      ? "Nothing like your library — a cornerstone of " + rec.genre
+      : "Nothing like your library";
+  }
+  const names = (rec.seedNames || []).filter(Boolean);
+  if (!names.length) return "Close to what you already listen to";
+  if (names.length === 1) return "Because you play " + names[0];
+  return "Because you play " + names[0] + " and " + names[1];
+}
+
+// ---------------------------------------------------------------------------
+// Smart Picks: cached API reads. Every one of these is persisted, so a rebuild
+// on an unchanged library costs zero network calls as well as zero Roon calls.
+// ---------------------------------------------------------------------------
+
+function smartCacheGet(key, ttlMs) {
+  if (!labelsDb) return null;
+  try {
+    const row = labelsDb.prepare("SELECT body, ts FROM smart_cache WHERE key = ?").get(key);
+    if (!row) return null;
+    if (Date.now() - row.ts > ttlMs) return null;
+    return JSON.parse(row.body);
+  } catch (e) {
+    // A corrupt row must not take the build down — treat it as a miss and let
+    // the next write replace it.
+    if (DEBUG) console.error("[picks] cache read " + key + ": " + e.message);
+    return null;
+  }
+}
+function smartCacheSet(key, value) {
+  if (!labelsDb || !stmtInsertSmartCache) return;
+  try { stmtInsertSmartCache.run(key, JSON.stringify(value), Date.now()); }
+  catch (e) { if (DEBUG) console.error("[picks] cache write " + key + ": " + e.message); }
+}
+// Expired rows are never read again but are never removed either — a row past
+// its TTL is dead weight on the data volume forever. Swept once per build,
+// using the longest TTL any key uses so nothing still-valid is dropped.
+function smartCachePrune() {
+  if (!labelsDb) return;
+  try {
+    const longest = Math.max(smartHubTtlMs(), smartSimilarTtlMs(),
+                             smartTagTtlMs(), smartAlbumTtlMs());
+    const r = labelsDb.prepare("DELETE FROM smart_cache WHERE ts < ?")
+      .run(Date.now() - longest);
+    if (DEBUG && r.changes) console.log("[picks] pruned " + r.changes + " cache rows");
+  } catch (e) { if (DEBUG) console.error("[picks] cache prune: " + e.message); }
+}
+
+// The world's most-listened artists, as a Set of canonArtist keys.
+async function smartHubSet() {
+  let rows = smartCacheGet("hubs", smartHubTtlMs());
+  if (!rows) {
+    rows = await discovery.topArtists({ count: discovery.LB_TOP_MAX });
+    if (rows.length) smartCacheSet("hubs", rows);
+  }
+  const set = new Set();
+  for (const r of rows || []) {
+    const c = canonArtist(r.name);
+    if (c) set.add(c);
+  }
+  return set;
+}
+
+// Similar-artist rows for a set of seed MBIDs, per-seed cached.
+async function smartSimilarRows(seedMbids) {
+  const fresh = [];
+  const out = [];
+  for (const mbid of seedMbids) {
+    const hit = smartCacheGet("sim:" + mbid, smartSimilarTtlMs());
+    if (hit) { for (const r of hit) out.push(r); }
+    else fresh.push(mbid);
+  }
+  if (fresh.length) {
+    const rows = await discovery.similarArtistsBatched(fresh, {
+      onError: (e, batch) =>
+        console.error("[picks] similar-artists failed for " + batch.length +
+                      " seed(s): " + e.message)
+    });
+    const bySeed = new Map();
+    for (const m of fresh) bySeed.set(m, []);
+    for (const r of rows) {
+      if (bySeed.has(r.seed)) bySeed.get(r.seed).push(r);
+      out.push(r);
+    }
+    // Cache per seed, including seeds that came back empty: ListenBrainz
+    // genuinely knows nothing about some artists, and without a negative entry
+    // every build would ask again forever.
+    //
+    // BUT only when the emptiness is real. Rows arrive tagged with the seed
+    // that produced them, and a row the endpoint fails to attribute carries
+    // seed "" — it still reaches `out`, so the CURRENT build looks fine, while
+    // every seed gets an empty array written to its cache. Tomorrow all 24
+    // seeds hit that cache (an empty array is a truthy hit), the build sees
+    // zero rows, and the feature is dead for the full 30-day TTL with nothing
+    // in the log, because the request itself succeeded. So: if the batch
+    // returned rows but none of them could be attributed, write nothing and
+    // let the next build ask again.
+    const attributed = rows.some(r => bySeed.has(r.seed));
+    if (!rows.length || attributed) {
+      for (const [mbid, rs] of bySeed) smartCacheSet("sim:" + mbid, rs);
+    } else {
+      console.error("[picks] similar-artists returned " + rows.length +
+                    " rows that match no seed we asked for — not caching, so " +
+                    "this retries rather than sticking for the TTL");
+    }
+  }
+  return out;
+}
+
+// A genre's canonical artists, cached.
+async function smartTagArtists(genre) {
+  const key = "tag:" + String(genre || "").toLowerCase();
+  let rows = smartCacheGet(key, smartTagTtlMs());
+  if (!rows) {
+    await mbWait();
+    rows = await discovery.artistsByTag(genre, { limit: 60, userAgent: MB_USER_AGENT });
+    smartCacheSet(key, rows);
+  }
+  return rows || [];
+}
+
+// ---------------------------------------------------------------------------
+// Smart Picks: turning a chosen artist into an album the user can actually add.
+// ---------------------------------------------------------------------------
+
+// Is each service usable? One definition each, so the three places that ask
+// cannot drift apart the way the pre-existing gates already have.
+function qobuzReady() { return !!(qobuzToken || (qobuzUsername && qobuzPasswordMd5)); }
+function tidalReady() { return !!(tidalRefreshToken && tidalUserId); }
+
+// Is a streaming service connected at all? Without one a pick can be shown but
+// never added, so the UI needs to say so rather than presenting a dead button —
+// and the build must not run at all, since every resolve would return null.
+function smartPicksServiceReady() { return qobuzReady() || tidalReady(); }
+
+// Thrown to abort a whole build when a service rate-limits us. These are the
+// UNOFFICIAL Qobuz/TIDAL APIs, and the accounts behind them also power the
+// service browser and the source badges — features the user actually uses. The
+// same abort-on-429 shape the Discogs and iTunes passes already use.
+function smartRateLimited(e) { return !!(e && e.code === 429); }
+
+// How long a resolved (or unresolvable) artist->album answer is trusted.
+function smartAlbumTtlMs() { return 7 * 24 * 60 * 60 * 1000; }
+
+// Find a favouritable album by `artistName` on whichever service is connected.
+// Returns a normalized album (plus which service it came from) or null.
+//
+// PERSISTED, INCLUDING MISSES. This is the one call that dominates a build —
+// every candidate TRIED costs a search, not every candidate kept — so caching
+// only the hits would leave the expensive half uncached. A miss is stored as
+// { album: null }, which is truthy, so a cached negative is distinguishable
+// from a cache miss.
+async function resolveSmartAlbum(artistName) {
+  const wantCanon = canonArtist(artistName);
+  if (!wantCanon) return null;
+  const key = "alb:" + wantCanon;
+  const hit = smartCacheGet(key, smartAlbumTtlMs());
+  if (hit) return hit.album;
+
+  let album = null;
+  // Whether a service actually ANSWERED. A negative may only be cached when one
+  // did: caching "no album" after consulting nothing would write up to 150 dead
+  // entries on a machine with no service connected, and the user who then
+  // connects Qobuz would get an empty feature for the next seven days with no
+  // way to tell why. A thrown lookup is the same case — the codebase already
+  // states this discipline for the TTL cache ("the PROMISE is shared, never the
+  // failure"), and a one-minute token blip must not become a week-long hole.
+  let answered = false, errored = false;
+  if (qobuzReady()) {
+    try {
+      const r = await qobuzWithToken(t => qobuz.searchCatalog(t, artistName, 20, 0));
+      answered = true;
+      // favIds is deliberately not fetched: it fills only the `favourited`
+      // field, which persistSmartPicks does not store and the client never
+      // reads. Fetching it cost an extra Qobuz call (and a large paged TIDAL
+      // one) per minute of a build, for a value thrown away.
+      const albums = normalizeQobuzAlbums(r.albums.items, new Set());
+      // Qobuz search matches on title as well as artist, so an unfiltered top
+      // hit is regularly a different act covering the name. Require the credit
+      // to be the artist we asked for. canonArtist rather than namesEqualLoose
+      // (which the artist-bio path uses) because this must agree with the
+      // library/hub/blocked sets, which are all keyed in canonArtist space.
+      const found = albums.find(a => canonArtist(a.artist) === wantCanon);
+      if (found) album = Object.assign({ service: "qobuz" }, found);
+    } catch (e) {
+      if (smartRateLimited(e)) throw e;      // abort the build, do not hammer
+      errored = true;
+      console.error("[picks] Qobuz album lookup for " +
+                    JSON.stringify(artistName) + " failed: " + e.message);
+    }
+  }
+  if (!album && tidalReady()) {
+    try {
+      // searchArtists returns pagedSection(r) — { items, total } — NOT an array.
+      // `(found || []).find` reads as defensive and is not: an object is truthy,
+      // so the fallback never fires and .find is undefined. That threw on every
+      // lookup, and the catch turned it into "no pick resolved" — which on a
+      // TIDAL-only setup meant zero picks, forever. The sibling call at
+      // /api/tidal/search reads .items correctly.
+      const page = await tidalWithToken((t, cc) => tidal.searchArtists(t, cc, artistName, 5));
+      answered = true;
+      const found = ((page && page.items) || []).find(
+        a => a && canonArtist(a.name) === wantCanon);
+      if (found && found.id) {
+        const page2 = await tidalWithToken(
+          (t, cc) => tidal.getArtistAlbums(t, cc, found.id, 20, 0));
+        const albums = normalizeTidalAlbums((page2 && page2.items) || [], new Set());
+        if (albums.length) album = Object.assign({ service: "tidal" }, albums[0]);
+      }
+    } catch (e) {
+      if (smartRateLimited(e)) throw e;
+      errored = true;
+      console.error("[picks] TIDAL album lookup for " +
+                    JSON.stringify(artistName) + " failed: " + e.message);
+    }
+  }
+  if (album || (answered && !errored)) smartCacheSet(key, { album });
+  return album;
+}
+
+// ---------------------------------------------------------------------------
+// Smart Picks: the daily build.
+// ---------------------------------------------------------------------------
+
+function smartDayKey(d) {
+  const t = d || new Date();
+  const p = (n) => (n < 10 ? "0" + n : String(n));
+  return t.getFullYear() + "-" + p(t.getMonth() + 1) + "-" + p(t.getDate());
+}
+
+function smartSeenSet() {
+  const set = new Set();
+  if (!labelsDb) return set;
+  try {
+    const cutoff = Date.now() - smartSeenDays() * 24 * 60 * 60 * 1000;
+    for (const r of labelsDb.prepare(
+      "SELECT canon FROM smart_pick_seen WHERE ts > ?").all(cutoff)) set.add(r.canon);
+  } catch (e) { if (DEBUG) console.error("[picks] seen set: " + e.message); }
+  return set;
+}
+function smartBlockedSet() {
+  const set = new Set();
+  if (!labelsDb) return set;
+  try {
+    for (const r of labelsDb.prepare("SELECT canon FROM smart_pick_blocks").all()) {
+      set.add(r.canon);
+    }
+  } catch (e) { if (DEBUG) console.error("[picks] blocked set: " + e.message); }
+  return set;
+}
+function readSmartPicks(day) {
+  if (!labelsDb) return [];
+  try {
+    return labelsDb.prepare(
+      // Rank IS the display order — persistSmartPicks writes the five adjacent
+      // picks at 0-4 and the stretch pick last. Sorting on kind as well put
+      // "stretch" before "adjacent" (it sorts later, so DESC lifted it), which
+      // led the row with the one pick chosen for being unlike the library.
+      "SELECT * FROM smart_picks WHERE day = ? ORDER BY rank ASC").all(day);
+  } catch (e) {
+    if (DEBUG) console.error("[picks] read " + day + ": " + e.message);
+    return [];
+  }
+}
+
+// How many candidates a build may TRY to resolve before giving up, and how far
+// into the outside genres the stretch pick may look.
+//
+// Every candidate tried costs a streaming search whether or not it becomes a
+// pick, so the pool size is not the bound that matters — this is. Without it a
+// build whose service credentials have expired walks 150 adjacent candidates
+// and then every outside genre × 60 roster artists, several thousand live calls
+// against APIs that are not officially ours to use.
+function smartMaxResolves()      { return 40; }
+function smartMaxStretchGenres() { return 3; }
+function smartMaxStretchRoster() { return 15; }
+
+// Marks a day as attempted, so a build that legitimately produces nothing is
+// not retried on the next request. Without this, "did we build today?" is
+// answered by "are there rows?", and a zero-pick day re-runs the whole pipeline
+// every time anybody opens Home.
+function smartAttemptKey(day) { return "built:" + day; }
+function smartAttemptedToday(day) {
+  return !!smartCacheGet(smartAttemptKey(day), 24 * 60 * 60 * 1000);
+}
+
+// Build today's picks. Called from the maintenance timer and after a sync —
+// never from a request handler, so nothing a user does waits on it.
+async function buildSmartPicks(day) {
+  const t0 = Date.now();
+  smartCachePrune();
+  // Nothing here can produce an addable pick without a service to add it to,
+  // and an unaddable pick is not worth the calls it costs to find.
+  if (!smartPicksServiceReady()) {
+    console.log("[picks] no streaming service connected — skipping today's build");
+    smartCacheSet(smartAttemptKey(day), { at: Date.now(), reason: "no service" });
+    return;
+  }
+  const profile = libraryArtistProfile();
+  if (!profile.size) {
+    console.log("[picks] no library artists yet — nothing to build from");
+    return;   // deliberately NOT marked attempted: the library is still arriving
+  }
+  const hubs = await smartHubSet();
+  // An empty hub chart is not a harmless degradation. It is what the entire
+  // seed policy is built on: with no hubs, smartPickSeeds stops filtering and
+  // seeds from the user's most-played artists — Radiohead, Pink Floyd — which
+  // is the exact inversion this feature exists to avoid, and smartPickExcluded
+  // stops rejecting famous candidates too. Better no picks today than a day of
+  // picks that quietly discredit the feature.
+  if (!hubs.size) {
+    console.error("[picks] the sitewide artist chart came back empty — " +
+                  "skipping today's build rather than seeding from the " +
+                  "library's most famous artists");
+    return;
+  }
+  const sets = {
+    library: linkableArtistSet(),
+    hubs,
+    blocked: smartBlockedSet(),
+    seen:    smartSeenSet()
+  };
+
+  // Seeds, and their MBIDs. fetchArtistMbid rate-limits itself against
+  // MusicBrainz and refuses a fuzzy name match, so a seed it cannot identify is
+  // dropped rather than walked from the wrong artist.
+  const seeds = smartPickSeeds(profile, hubs, smartSeedCount());
+  const seedNameByMbid = new Map();
+  const seedMbids = [];
+  for (const s of seeds) {
+    const mbid = await fetchArtistMbid(s.name);
+    if (!mbid) continue;
+    seedMbids.push(mbid);
+    seedNameByMbid.set(mbid, s.name);
+  }
+  if (!seedMbids.length) {
+    console.log("[picks] no seed artist could be identified on MusicBrainz");
+    return;
+  }
+
+  const rows  = await smartSimilarRows(seedMbids);
+  const cands = collectSmartCandidates(rows, seedNameByMbid)
+    .filter(c => !smartPickExcluded(c.canon, sets));
+  const ranked = diversifySmartCandidates(rankSmartCandidates(cands))
+    .slice(0, smartPoolCount());
+  console.log("[picks] " + seedMbids.length + " seeds -> " + rows.length +
+              " rows -> " + cands.length + " candidates (" + ranked.length + " pooled)");
+
+  const picks = [];
+  const used  = new Set();
+  let tried = 0;
+  try {
+    for (const c of ranked) {
+      if (picks.length >= smartAdjacentCount()) break;
+      if (tried >= smartMaxResolves()) break;
+      // collectSmartCandidates dedupes by MBID, not by canon, so two distinct
+      // MusicBrainz artists can still collide here.
+      if (used.has(c.canon)) continue;
+      tried++;
+      const album = await resolveSmartAlbum(c.name);
+      if (!album) continue;      // nothing addable — a pick nobody can act on
+      used.add(c.canon);
+      picks.push({
+        kind: "adjacent", mbid: c.mbid, artist: c.name, canon: c.canon,
+        seedNames: c.seedNames, album, genre: ""
+      });
+    }
+
+    // The stretch pick: one album from a genre the library barely touches, taken
+    // from MusicBrainz's relevance order so it is that genre's canonical name
+    // rather than a random unknown.
+    const outside = smartStretchGenres(libraryGenreWeights(), albumIndex.albums.length)
+      .slice(0, smartMaxStretchGenres());
+    const adjacentCanons = new Set(ranked.map(c => c.canon));
+    for (const g of outside) {
+      if (picks.filter(p => p.kind === "stretch").length >= smartStretchCount()) break;
+      let roster = [];
+      try { roster = await smartTagArtists(g.genre); }
+      catch (e) {
+        console.error("[picks] tag lookup for " + g.genre + ": " + e.message);
+        continue;
+      }
+      for (const a of roster.slice(0, smartMaxStretchRoster())) {
+        const canon = canonArtist(a.name);
+        if (smartPickExcluded(canon, sets)) continue;
+        if (adjacentCanons.has(canon)) continue;   // reachable from the library
+        const album = await resolveSmartAlbum(a.name);
+        if (!album) continue;
+        used.add(canon);
+        picks.push({ kind: "stretch", mbid: a.mbid, artist: a.name, canon,
+                     seedNames: [], album, genre: g.genre });
+        break;
+      }
+    }
+  } catch (e) {
+    if (!smartRateLimited(e)) throw e;
+    // Rate-limited by Qobuz/TIDAL. Keep whatever resolved before the limit and
+    // stop: continuing would push an unofficial API further into a cooldown
+    // that also breaks the service browser and the source badges.
+    console.error("[picks] rate limited by the streaming service — keeping the " +
+                  picks.length + " pick(s) resolved so far and stopping");
+  }
+
+  persistSmartPicks(day, picks);
+  smartCacheSet(smartAttemptKey(day), { at: Date.now(), picks: picks.length });
+  console.log("[picks] built " + picks.length + " picks for " + day +
+              " (" + tried + " candidates tried) in " + (Date.now() - t0) + "ms");
+}
+
+function persistSmartPicks(day, picks) {
+  if (!labelsDb || !stmtInsertSmartPick) return;
+  try {
+    const wipe = labelsDb.prepare("DELETE FROM smart_picks WHERE day = ?");
+    const tx = labelsDb.transaction(() => {
+      wipe.run(day);
+      let rank = 0;
+      const kinds = smartPickKinds();
+      for (const p of picks) {
+        // The kind is persisted and drives the client's badge and styling. A
+        // third kind added upstream without UI would render as an unlabelled
+        // card, so it is rejected here rather than stored and puzzled over.
+        if (kinds.indexOf(p.kind) === -1) {
+          console.error("[picks] refusing to store unknown pick kind " +
+                        JSON.stringify(p.kind) + " for " + p.artist);
+          continue;
+        }
+        stmtInsertSmartPick.run(
+          day, p.kind, rank++, p.mbid || "", p.artist, p.canon,
+          p.album.title, String(p.album.id), p.album.service, p.album.image || "",
+          smartPickReason(p), p.genre || "", Date.now());
+        stmtInsertSmartSeen.run(p.canon, Date.now());
+      }
+    });
+    tx();
+  } catch (e) {
+    console.error("[picks] persist failed: " + e.message);
+  }
+}
+
+// Kick today's build if it hasn't happened, WITHOUT waiting for it.
+//
+// The build must never be awaited from a request handler. bgRun returns the
+// queue tail AFTER appending, so awaiting it waits for everything already
+// queued — on a fresh pair that is the streaming refresh, the genre harvest and
+// an art prewarm of every album in the library. A user opening Home would have
+// held an open request behind all of it. Nothing here waits: the client already
+// renders an empty set as "building", and the next visit picks the rows up.
+//
+// _smartBuilding still matters even though bgRun serialises: bgRun orders jobs,
+// it does not collapse duplicates, so three devices opening Home would enqueue
+// three identical builds and triple every upstream call.
+let _smartBuilding = null;
+function kickSmartPicks(why) {
+  const day = smartDayKey();
+  if (_smartBuilding) return;
+  if (readSmartPicks(day).length) return;
+  if (smartAttemptedToday(day)) return;   // already tried today; do not retry per request
+  _smartBuilding = bgRun("smart picks (" + why + ")", () => buildSmartPicks(day))
+    .finally(() => { _smartBuilding = null; });
+}
+
+// Hourly check, matching the existing index-maintenance and updater timers.
+// A timer rather than the first request of the day, so the cost never lands on
+// somebody's page load and the retry cadence isn't a function of how often
+// anyone taps Back.
+let smartPicksTimer = null;
+function startSmartPicksMaintenance() {
+  if (smartPicksTimer) return;
+  smartPicksTimer = setInterval(() => {
+    if (!core || !albumIndex.count) return;
+    kickSmartPicks("daily");
+  }, 60 * 60 * 1000);
+  if (smartPicksTimer.unref) smartPicksTimer.unref();
+}
+
+function smartPickJson(row) {
+  return {
+    kind:    row.kind,
+    artist:  row.artist,
+    mbid:    row.mbid || null,
+    album:   row.album || "",
+    album_id: row.album_id || "",
+    service: row.service || "",
+    image:   row.image || "",
+    reason:  row.reason || "",
+    genre:   row.genre || ""
+  };
+}
+
+// GET /api/smart-picks — today's six. A pure read: it answers from the table
+// and, if today has not been built yet, kicks the build and returns what it has
+// (nothing, first time). It never waits — see kickSmartPicks.
+app.get("/api/smart-picks", (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  try {
+    const day  = smartDayKey();
+    const rows = readSmartPicks(day);
+    if (!rows.length) kickSmartPicks("requested");
+    res.json({
+      day,
+      service_ready: smartPicksServiceReady(),
+      building: !rows.length && !!_smartBuilding,
+      picks: rows.map(smartPickJson)
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/smart-picks/block { artist } — "not for me", permanently.
+//
+// Only an explicit tap blocks an artist. Ignoring a pick must NOT count as a
+// rejection: the whole premise is albums the user would never reach for, so a
+// model that read silence as "no" would suppress the entire feature within a
+// week.
+app.post("/api/smart-picks/block", (req, res) => {
+  const artist = String((req.body && req.body.artist) || "").trim();
+  if (!artist) return res.status(400).json({ error: "artist required" });
+  const canon = canonArtist(artist);
+  if (!canon) return res.status(400).json({ error: "unrecognisable artist name" });
+  if (!labelsDb || !stmtInsertSmartBlock) {
+    return res.status(503).json({ error: "History database unavailable" });
+  }
+  try {
+    stmtInsertSmartBlock.run(canon, artist, Date.now());
+    // Drop it from today's set too, so it disappears on refresh instead of
+    // sitting there until tomorrow's build.
+    labelsDb.prepare("DELETE FROM smart_picks WHERE canon = ?").run(canon);
+    res.json({ ok: true, artist });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 

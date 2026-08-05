@@ -62,7 +62,7 @@ function build(opts) {
   }));
 
   return loadIndexFunctions(
-    ["libraryView", "libFacetDefs", "facetMatch", "albumGenresOf", "albumFileFactsOf",
+    ["libraryView", "albumPlayKey", "libFacetDefs", "facetMatch", "albumGenresOf", "albumFileFactsOf",
      "albumYearOf", "albumAddedOf", "seededRank", "rateLabel", "channelLabel",
      "libAddedWindows", "countWithAny", "smartPlaylistAlbums", "smartOrderDefault",
      "smartOrders", "albumFileFacts", "albumQualityLabel", "albumIsHiRes", "rateShort",

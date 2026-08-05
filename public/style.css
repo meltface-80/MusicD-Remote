@@ -3099,6 +3099,79 @@ input.vol-range::-moz-range-thumb {
    source order — media queries add no specificity — so it never wraps. */
 .home-carousel.home-carousel-1row { grid-template-rows: 1fr; }
 .home-carousel-empty { color: var(--text-faint); font-size: 13px; padding: 8px 2px; }
+
+/* --------------------------------------------------------------------------
+   Smart Picks — albums by artists NOT in the library.
+   Two presentations of one card: a plain tile in the Home carousel (so the row
+   reads like the ones around it) and a full row on the Smart Picks screen with
+   the reason line and the actions. Every colour is a theme token, so both light
+   and dark palettes come out right without a second rule set.
+   -------------------------------------------------------------------------- */
+.pick-card { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.home-carousel .pick-card { width: 150px; cursor: pointer; }
+.pick-art {
+  position: relative; width: 100%; aspect-ratio: 1 / 1; border-radius: 8px;
+  overflow: hidden; background: var(--bg-elev); border: 1px solid var(--border);
+}
+.pick-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Marks the one pick a day that is deliberately unlike the library, so it is
+   not mistaken for a bad adjacent recommendation. */
+.pick-flag {
+  position: absolute; left: 6px; bottom: 6px;
+  padding: 2px 7px; border-radius: 999px;
+  background: var(--accent); color: var(--on-accent);
+  font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+}
+.pick-meta { min-width: 0; }
+.pick-artist {
+  font-size: 13px; font-weight: 600; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pick-album {
+  font-size: 12px; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pick-reason {
+  font-size: 12px; color: var(--text-faint); margin-top: 4px;
+  white-space: normal;              /* the reason is the point — never clip it */
+}
+
+/* The full screen: one card per row, art beside the text.
+   Rendered into the shared #album-grid container, so it must span every column
+   rather than sitting in one cell — without this the whole screen renders at
+   1/3 of the viewport on a phone and 1/9 on desktop (~110px), inside which the
+   96px art block and the two pill buttons cannot fit. Same rule, and the same
+   reason, as .playlist-detail above. */
+.pick-list { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 14px; }
+.pick-card-full {
+  flex-direction: row; align-items: flex-start; gap: 14px;
+  padding: 12px; border-radius: 12px;
+  background: var(--bg-elev); border: 1px solid var(--border);
+}
+/* The one pick a day chosen for being UNLIKE the library gets an accent edge,
+   so it reads as deliberate rather than as the recommender misfiring. */
+.pick-card-full.pick-card-stretch { border-left: 3px solid var(--accent); }
+.pick-card-full .pick-art { width: 96px; flex: 0 0 96px; }
+.pick-card-full .pick-meta { flex: 1 1 auto; }
+.pick-card-full .pick-artist { font-size: 15px; white-space: normal; }
+.pick-card-full .pick-album  { font-size: 13px; white-space: normal; }
+.pick-actions { display: flex; flex-direction: column; gap: 8px; flex: 0 0 auto; }
+.pick-add, .pick-block {
+  padding: 8px 12px; border-radius: 999px; font-size: 13px; font-weight: 600;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  cursor: pointer; white-space: nowrap;
+}
+.pick-add { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+.pick-add.is-done { background: var(--bg); color: var(--text-dim); border-color: var(--border); }
+.pick-add:disabled, .pick-block:disabled { opacity: .6; cursor: default; }
+.pick-block { color: var(--text-dim); }
+/* On a phone the two buttons sit under the text rather than beside it — a
+   96px art block plus two stacked pill buttons does not fit a 360px screen. */
+@media (max-width: 520px) {
+  .pick-card-full { flex-wrap: wrap; }
+  .pick-actions { flex-direction: row; width: 100%; }
+  .pick-add, .pick-block { flex: 1 1 0; text-align: center; }
+}
 /* 12 genre buttons divide evenly into 2 / 3 / 4 / 6 columns, so every screen
    width shows full rows with no lone trailing card. */
 .home-genre-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }

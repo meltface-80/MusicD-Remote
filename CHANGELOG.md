@@ -2,6 +2,108 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.41] — 2026-08-05
+
+### Added — Smart Picks: six albums a day by artists you don't own
+
+A discovery feature rather than a playlist generator. Every day it surfaces **five "adjacent" picks**
+— artists absent from your library but rooted in genres it already lives in — and **one "stretch"
+pick** from a genre your library barely touches. There is a Smart Picks row on Home and a full
+screen from the side menu carrying each pick's reason and its actions.
+
+**Nothing here touches the Roon Core.** Library analysis reads the existing snapshot; similarity
+comes from ListenBrainz and MusicBrainz over plain HTTP; albums are resolved against Qobuz/TIDAL.
+The only Core cost is the sync that already runs, noticing a newly favourited album. The build runs
+on the v1.7.38 global background queue, so it can never burst alongside a genre walk or an art
+prewarm.
+
+**Picks are addable, not playable.** Roon plays only what is in the library, so an artist name alone
+is useless — every pick is resolved to a real streaming album, and Add favourites it so Roon imports
+it and it becomes playable on the next sync. Add is deliberately one-way: unlike the Qobuz browser's
+toggle, a second tap cannot silently un-favourite what you just asked for.
+
+Three decisions do the actual work, and each was made against measured output rather than intuition:
+
+- **Seeds come from the obscure end of your library.** Similarity quality *inverts* with seed
+  popularity — Radiohead returns Nirvana, RHCP and Coldplay, while Bark Psychosis returns Mogwai,
+  Talk Talk, Tortoise, Slint and Labradford. One request for ListenBrainz's sitewide top 1000 gives
+  a hub list, and no artist on it is ever used as a seed or offered as a pick.
+- **Ranking is by distance from your library, not similarity to it.** An artist reachable from one
+  seed outranks one reachable from twelve: the latter is somebody you have had every opportunity to
+  buy and haven't. Every other recommender sorts the other way, which is why they all return the
+  obvious.
+- **The picks are dealt round-robin across seeds.** Caught by running the real pipeline against the
+  live APIs: ranking alone returned Loscil, Harold Budd, Hammock, Helios and Biosphere — five
+  ambient records that were all neighbours of one album, saying one thing between them. Once most
+  candidates sit in the one-seed bucket the sort decides on score alone and the loudest seed takes
+  every slot. Dealing one candidate per seed per round turns that into Loscil, Do Make Say Think,
+  Galaxie 500, Benoît Pioulard and The White Birch.
+
+The stretch pick draws from MusicBrainz's relevance order for a genre, so it is that genre's
+canonical name (Flamenco → Camarón de la Isla) rather than a random unknown — a stretch worth
+listening to, not just an unfamiliar one. Its reason line never claims similarity to anything,
+because it was chosen for the opposite.
+
+Every reason line is derived from the chain that produced the pick, so it is always true. **No LLM
+is involved.** A generated sentence would read better and would sometimes be wrong, and a
+hallucinated album cannot be favourited — it just looks broken.
+
+**"Not for me" is permanent and explicit; silence is never rejection.** The premise is albums you
+would not otherwise reach for, so treating an ignored pick as a no would empty the pool within a
+week. Shown artists rotate out for 120 days and come back.
+
+### Added
+- `lib/discovery.js` — keyless clients for ListenBrainz similar-artists (batched, one request per
+  ten seeds, each result attributed to the seed that reached it), the sitewide hub chart, and
+  MusicBrainz genre rosters.
+- New tables on the data volume: `smart_picks`, `smart_pick_seen`, `smart_pick_blocks`, and
+  `smart_cache` — every third-party read is persisted, so a rebuild on an unchanged library costs no
+  network calls either. Expired cache rows are swept once per build.
+- 114 new tests (97 unit, 17 DOM), with all 20 policy and safety mutations verified to fail the
+  suite.
+
+### Fixed — the 8-angle review, before this ever shipped
+
+The review found nine defects in the new code. Six would have been visible to a user:
+
+- **The TIDAL path could never succeed.** `searchArtists` returns `{items, total}`, not an array,
+  so `(found || []).find(...)` threw on every lookup — the `|| []` never fires because an object is
+  truthy. For a TIDAL-only setup that meant zero picks, permanently.
+- **The whole Smart Picks screen rendered in one grid cell** — 110px on a phone, 125px on desktop.
+  A container appended into the shared `#album-grid` must carry `grid-column: 1 / -1`, exactly as
+  `.playlist-detail` does. Every element was present and every count correct, so only a measurement
+  could see it; the DOM test now takes one.
+- **The stretch pick led the row every day.** The read sorted `ORDER BY kind DESC` and "stretch"
+  sorts after "adjacent", inverting the rank the writer had just assigned. Now covered by a test
+  that builds the real schema out of index.js and exercises the real query.
+- **An unbounded build.** Every candidate *tried* costs a streaming search, so the pool size was not
+  the bound. A day with expired credentials would walk 150 candidates and then every outside genre
+  times its 60-artist roster — thousands of live calls against the unofficial Qobuz/TIDAL APIs.
+  Capped, plus a 429 abort matching the existing Discogs/iTunes precedent.
+- **A zero-pick day was retried on every request**, because "did we build today?" was answered by
+  "are there rows?". Now marked. The build is also skipped outright with no service connected, since
+  every resolve would return null.
+- **`/api/smart-picks` awaited the whole background queue.** `bgRun` returns the tail *after*
+  appending, so awaiting it waits for everything already queued — on a fresh pair, an art prewarm of
+  the entire library. The build is now timer-driven and the route is a pure read.
+
+Three more were latent but would have been very hard to diagnose:
+
+- An empty hub chart would have **silently disabled the seed policy** — no hubs means no filtering,
+  so the feature would seed from the library's most famous artists, the exact inversion it exists to
+  avoid. It now refuses to build rather than produce a day of picks that discredit it.
+- A negative album lookup was cached for seven days **even when no service had been consulted**, so
+  a user who connected Qobuz would have got an empty feature for a week. A transient failure was
+  cached the same way.
+- Rows the similarity endpoint failed to attribute to a seed would have **poisoned every seed's
+  cache with an empty array for 30 days**, with nothing in the log, because the request succeeded.
+
+### Changed
+- `libraryArtistProfile` is deliberately uncached: the obvious key (`albumIndex.builtAt`) only moves
+  on a full walk, so on a library that has stopped growing it would freeze the play counts forever —
+  and plays-per-album-owned *is* the seed policy.
+- `albumPlayKey` replaces the duplicated plays-table key expression in `libraryView`.
+
 ## [1.7.40] — 2026-08-04
 
 An agent audit of the duplicate genre walk visible in a production log. Every Home load was making

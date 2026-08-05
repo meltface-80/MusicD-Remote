@@ -60,7 +60,7 @@ function build(opts) {
     // libFacetDefs and facetMatch are EXTRACTED, not stubbed: they are the
     // shipping facet vocabulary, and a stub beside them would let a facet's
     // predicate change without a single test noticing.
-    ["libraryView", "albumYearOf", "albumAddedOf", "seededRank",
+    ["libraryView", "albumPlayKey", "albumYearOf", "albumAddedOf", "seededRank",
      "libFacetDefs", "facetMatch", "albumGenresOf", "albumFileFactsOf", "albumFileFacts",
      "rateLabel", "channelLabel", "libAddedWindows"],
     {

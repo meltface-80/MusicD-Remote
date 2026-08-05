@@ -222,6 +222,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5h7a3 3 0 0 1 3 3v11a2.5 2.5 0 0 0-2.5-2.5H2z"/><path d="M22 5h-7a3 3 0 0 0-3 3v11a2.5 2.5 0 0 1 2.5-2.5H22z"/></svg>
           <span>Pitchfork</span>
         </button>
+        <button class="menu-item" type="button" data-action="smart-picks">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.5-4.5"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>
+          <span>Smart Picks</span>
+        </button>
         <button class="menu-item" type="button" data-action="smart-playlists">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l2.1 4.6 5 .6-3.7 3.4 1 4.9L12 14.1 7.6 16.5l1-4.9L4.9 8.2l5-.6z"/><line x1="4" y1="20" x2="20" y2="20"/></svg>
           <span>Dynamic Playlists</span>
@@ -337,6 +341,13 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
         <div class="home-section home-section-unplayed">
           <h2 class="home-section-title home-section-link" id="home-unplayed-title" role="button" tabindex="0">Not played in 6 months</h2>
           <div id="home-unplayed" class="home-carousel"></div>
+        </div>
+        <!-- Smart Picks: six albums a day by artists NOT in the library. Hidden
+             until the first set builds, so a fresh install never shows an empty
+             row. Tapping the header opens the full screen with the reasons. -->
+        <div class="home-section home-section-picks hidden">
+          <h2 class="home-section-title home-section-link" id="home-picks-title" role="button" tabindex="0">Smart Picks</h2>
+          <div id="home-picks" class="home-carousel home-carousel-1row"></div>
         </div>
         <div class="home-section home-section-random">
           <h2 class="home-section-title home-section-link" id="home-random-title" role="button" tabindex="0">Random albums</h2>

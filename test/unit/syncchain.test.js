@@ -53,6 +53,7 @@ function build(t) {
     DEBUG: false,
     console: { error: () => {}, log: () => {} },
     _bgTail: Promise.resolve(),
+    kickSmartPicks: () => {},
     refreshStreamAlbumKeys: t.job("stream"),
     harvestAlbumGenres:     t.job("genres"),
     prewarmAlbumArt:        t.job("art"),
@@ -79,6 +80,34 @@ test("syncChain runs the post-rebuild jobs one at a time", async (t) => {
     ]);
   });
 
+  await t.test("the Smart Picks build is kicked LAST, and is not awaited", async () => {
+    // v1.7.41. Two properties, both easy to lose.
+    //
+    // Last, because the stretch pick reads the genre weights the harvest above
+    // produces — kicked first, a fresh pair would build its picks against an
+    // empty genre table and have no outside band to draw from.
+    //
+    // Not awaited, because kickSmartPicks enqueues onto this same queue. An
+    // `await` here would make syncChain wait for a job queued behind itself,
+    // which never resolves.
+    const tr = tracker();
+    const kicks = [];
+    const F = loadIndexFunctions(["syncChain", "bgRun"], {
+      DEBUG: false,
+      console: { error: () => {}, log: () => {} },
+      _bgTail: Promise.resolve(),
+      kickSmartPicks: (why) => { kicks.push({ why, after: tr.log.slice() }); },
+      refreshStreamAlbumKeys: tr.job("stream"),
+      harvestAlbumGenres:     tr.job("genres"),
+      prewarmAlbumArt:        tr.job("art"),
+    });
+    await F.syncChain();
+    assert.equal(kicks.length, 1, "the picks build was never kicked after a sync");
+    assert.ok(kicks[0].after.includes("end:genres"),
+      "picks were kicked before the genre harvest finished — the stretch pick " +
+      "would have no genre weights to choose an outside band from");
+  });
+
   await t.test("the order is cheapest-to-the-Core first", async () => {
     // Streaming favourites cost the Core nothing at all (Qobuz/TIDAL HTTP) and
     // decide the source badges, so they finish first. The art prewarm is the
@@ -100,6 +129,7 @@ test("one failing job does not cancel the others", async (t) => {
       // queue — bgRun assigns to this binding, and a shared one would let a
       // previous test's jobs order the next one's.
       _bgTail: Promise.resolve(),
+      kickSmartPicks: () => {},
       refreshStreamAlbumKeys: tr.job("stream", { throws: true }),
       harvestAlbumGenres:     tr.job("genres"),
       prewarmAlbumArt:        tr.job("art"),
@@ -118,6 +148,7 @@ test("one failing job does not cancel the others", async (t) => {
       // queue — bgRun assigns to this binding, and a shared one would let a
       // previous test's jobs order the next one's.
       _bgTail: Promise.resolve(),
+      kickSmartPicks: () => {},
       refreshStreamAlbumKeys: tr.job("stream"),
       harvestAlbumGenres:     tr.job("genres", { throws: true }),
       prewarmAlbumArt:        tr.job("art"),
@@ -138,6 +169,7 @@ test("one failing job does not cancel the others", async (t) => {
       // queue — bgRun assigns to this binding, and a shared one would let a
       // previous test's jobs order the next one's.
       _bgTail: Promise.resolve(),
+      kickSmartPicks: () => {},
       refreshStreamAlbumKeys: tr.job("stream", { throws: true }),
       harvestAlbumGenres:     tr.job("genres", { throws: true }),
       prewarmAlbumArt:        tr.job("art",    { throws: true }),
@@ -158,6 +190,7 @@ test("rescanChain serialises the Rescan button's background work", async (t) => 
       // queue — bgRun assigns to this binding, and a shared one would let a
       // previous test's jobs order the next one's.
       _bgTail: Promise.resolve(),
+      kickSmartPicks: () => {},
       refreshStreamAlbumKeys: tr.job("stream"),
       harvestAlbumGenres: async (reason, force) => {
         if (capture) capture.push({ reason, force });
@@ -203,6 +236,7 @@ test("rescanChain serialises the Rescan button's background work", async (t) => 
       // queue — bgRun assigns to this binding, and a shared one would let a
       // previous test's jobs order the next one's.
       _bgTail: Promise.resolve(),
+      kickSmartPicks: () => {},
       refreshStreamAlbumKeys: tr.job("stream", { throws: true }),
       harvestAlbumGenres:     tr.job("genres"),
       runLabelsIndexScan:     tr.job("labels"),
@@ -231,6 +265,7 @@ test("two chains at once still means one job at a time", async (t) => {
     const F = loadIndexFunctions(["syncChain", "rescanChain", "bgRun"], Object.assign({
       DEBUG: false,
       console: { error: () => {}, log: () => {} },
+      kickSmartPicks: () => {},
       refreshStreamAlbumKeys: tr.job("stream"),
       harvestAlbumGenres:     tr.job("genres"),
       prewarmAlbumArt:        tr.job("art"),
@@ -264,6 +299,7 @@ test("two chains at once still means one job at a time", async (t) => {
     const F = loadIndexFunctions(["syncChain", "bgRun"], Object.assign({
       DEBUG: false,
       console: { error: () => {}, log: () => {} },
+      kickSmartPicks: () => {},
       refreshStreamAlbumKeys: tr.job("stream"),
       harvestAlbumGenres:     tr.job("genres"),
       prewarmAlbumArt:        tr.job("art"),
