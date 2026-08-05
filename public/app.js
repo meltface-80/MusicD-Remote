@@ -990,6 +990,108 @@
       }
     }
   }
+  // ---------------------------------------------------------------------
+  // Overflow menu — Roon's three-dots-in-a-circle.
+  //
+  // ONE definition, used by every screen that has more secondary actions than
+  // fit on a row. Before this, the playlist screens laid six pill buttons side
+  // by side: .action-btn is `flex: 1 1 0`, so they all shrank together instead
+  // of wrapping and "Send to Roon" rendered as "end to Roo".
+  //
+  // The dropdown reuses .sel-menu / .sel-menu-item — the album view's selection
+  // menu — so there is one dropdown look in the app rather than a second one
+  // that almost matches.
+  // ---------------------------------------------------------------------
+  const OVERFLOW_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" ' +
+    'aria-hidden="true">' +
+    '<circle cx="12" cy="12" r="9"/>' +
+    '<circle cx="7.6" cy="12" r="1.15" fill="currentColor" stroke="none"/>' +
+    '<circle cx="12" cy="12" r="1.15" fill="currentColor" stroke="none"/>' +
+    '<circle cx="16.4" cy="12" r="1.15" fill="currentColor" stroke="none"/>' +
+    "</svg>";
+
+  // Bumped every time iOS backgrounds the app.
+  //
+  // A suspended PWA has its in-flight fetches torn down, and the rejection is
+  // only delivered when the app is reopened. So a request that spanned a
+  // hide/show did not fail in any sense the user should hear about — it was
+  // interrupted by them switching apps, and the server almost certainly carried
+  // it out. Comparing this counter before and after tells the two apart.
+  let hiddenEpoch = 0;
+  document.addEventListener("visibilitychange", () => { if (document.hidden) hiddenEpoch++; });
+
+  // Close whichever overflow menu is open. Module-level rather than per-menu so
+  // opening one closes any other, and so a screen teardown can shut it.
+  let _openOverflow = null;
+  function closeOverflowMenu() {
+    if (!_openOverflow) return;
+    _openOverflow.menu.classList.add("hidden");
+    _openOverflow.btn.setAttribute("aria-expanded", "false");
+    _openOverflow = null;
+  }
+  document.addEventListener("click", (e) => {
+    if (_openOverflow && !e.target.closest(".overflow-wrap")) closeOverflowMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeOverflowMenu();
+  });
+
+  // items: [{ label, onClick, danger, title }]. Returns the wrapper to append.
+  function buildOverflowMenu(items, opts) {
+    opts = opts || {};
+    const wrap = document.createElement("div");
+    wrap.className = "overflow-wrap";
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "overflow-btn";
+    btn.setAttribute("aria-label", opts.label || "More actions");
+    btn.setAttribute("aria-haspopup", "menu");
+    btn.setAttribute("aria-expanded", "false");
+    btn.innerHTML = OVERFLOW_SVG;
+
+    const menu = document.createElement("div");
+    menu.className = "sel-menu overflow-menu hidden";
+    menu.setAttribute("role", "menu");
+    if (opts.title) {
+      const t = document.createElement("div");
+      t.className = "sel-menu-title";
+      t.textContent = opts.title;
+      menu.appendChild(t);
+    }
+    for (const it of items) {
+      if (!it) continue;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "sel-menu-item" + (it.danger ? " is-danger" : "");
+      b.setAttribute("role", "menuitem");
+      b.textContent = it.label;
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        closeOverflowMenu();
+        // The button is passed on so an action can disable it / show progress,
+        // exactly as the pill buttons it replaced did.
+        it.onClick(b);
+      });
+      menu.appendChild(b);
+    }
+
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const wasOpen = _openOverflow && _openOverflow.menu === menu;
+      closeOverflowMenu();
+      if (wasOpen) return;
+      menu.classList.remove("hidden");
+      btn.setAttribute("aria-expanded", "true");
+      _openOverflow = { btn, menu };
+    });
+
+    wrap.appendChild(btn);
+    wrap.appendChild(menu);
+    return wrap;
+  }
+
 
   // Shared entry ritual for the full-screen Home walls (Not played / Library):
   // leave other views, clear the filter, take over the shared grid, set the
@@ -1344,7 +1446,7 @@
   }
 
   async function openPlaylist(p) {
-    enterFullWall(p.title || "Playlist");
+    enterFullWall("");   // the Roon playlist prints its own full-width heading
     playlistDetailActive = true;
     const mySeq = ++playlistSeq;
     let j = null;
@@ -1444,20 +1546,20 @@
         }
       }
       if (tracks.length) {
-        const s = document.createElement("button");
-        s.type = "button"; s.className = "action-btn"; s.textContent = "Share";
-        s.addEventListener("click", () => shareTracks(p.title || "Playlist",
-          // A Roon playlist row carries the track and its artist, but no album
-          // — Roon does not put one on the row. The `album` slot is left empty
-          // rather than guessed at, so an importer knows it was never told.
-          tracks.map(t => ({
-            title: t.title, artist: t.subtitle, track_no: t.track_no
-          })), s,
-          // /api/playlist reads at most PLAYLIST_ITEMS rows, so a longer
-          // playlist arrives already cut short. The screen says so; the share
-          // sheet has to as well, or the file claims to be the whole thing.
-          { sourceTruncated: !!j.truncated }));
-        actions.appendChild(s);
+        actions.appendChild(buildOverflowMenu([
+          { label: "Share", onClick: (b) => shareTracks(p.title || "Playlist",
+            // A Roon playlist row carries the track and its artist, but no
+            // album — Roon does not put one on the row. The `album` slot is
+            // left empty rather than guessed at, so an importer knows it was
+            // never told.
+            tracks.map(t => ({
+              title: t.title, artist: t.subtitle, track_no: t.track_no
+            })), b,
+            // /api/playlist reads at most PLAYLIST_ITEMS rows, so a longer
+            // playlist arrives already cut short. The screen says so; the share
+            // sheet has to as well, or the file claims to be the whole thing.
+            { sourceTruncated: !!j.truncated }) },
+        ], { title: p.title || "Playlist" }));
       }
       wrap.appendChild(actions);
     }
@@ -1847,7 +1949,7 @@
   // is no separate screen, so there is no separate list renderer either.
 
   async function openUserPlaylist(p) {
-    enterFullWall(p.name || "Playlist");
+    enterFullWall("");   // the stored playlist prints its own full-width heading
     userPlDetailActive = true;
     const mySeq = ++userPlSeq;
     setBanner(null);
@@ -1899,12 +2001,12 @@
     };
     mkBtn("Play now", "action-btn primary", (b) => playUserPlaylist(tracks, "play_now", b));
     mkBtn("Queue",    "action-btn",         (b) => playUserPlaylist(tracks, "queue", b));
-    mkBtn("Share",    "action-btn",         (b) => shareTracks(j.name || "Playlist",
+    const shareThisPlaylist = (b) => shareTracks(j.name || "Playlist",
       tracks.map(t => ({
         title: t.title, artist: t.subtitle,
         album: t.album_title, track_no: t.track_no
-      })), b, {}));
-    mkBtn("Delete",   "action-btn",         async () => {
+      })), b, {});
+    const deleteThisPlaylist = async () => {
       const ok = await confirmDialog(`Delete "${j.name}"? This can't be undone.`);
       if (!ok) return;
       try {
@@ -1918,7 +2020,11 @@
         userPlDetailActive = false;
         showPlaylists();
       } catch (e) { showToast("Couldn't reach the extension", "error"); }
-    });
+    };
+    actions.appendChild(buildOverflowMenu([
+      { label: "Share",  onClick: (b) => shareThisPlaylist(b) },
+      { label: "Delete", onClick: () => deleteThisPlaylist(), danger: true },
+    ], { title: j.name || "Playlist" }));
     wrap.appendChild(actions);
 
     const ol = document.createElement("ol");
@@ -3023,7 +3129,7 @@
   window.__showSmartPicks = showSmartPicks;
 
   async function openSmartPlaylist(sp) {
-    enterFullWall(sp.name || "Dynamic Playlist");
+    enterFullWall("");   // the dynamic playlist prints its own full-width heading
     smartDetailActive = true;
     const mySeq = ++smartSeq;
 
@@ -3068,12 +3174,17 @@
       actions.appendChild(b);
       return b;
     };
+    // Two actions on the row; the rest behind the overflow menu. Six pills
+    // shrank together (.action-btn is flex: 1 1 0) rather than wrapping, which
+    // is how "Send to Roon" came out as "end to Roo".
     mkBtn("Play now", "action-btn primary", (b) => playSmartPlaylist(sp, "play_now", b));
     mkBtn("Queue",    "action-btn",         (b) => playSmartPlaylist(sp, "queue", b));
-    mkBtn("Send to Roon", "action-btn",     (b) => sendSmartPlaylistToRoon(sp, b));
-    mkBtn("Share",    "action-btn",         (b) => shareThis(b));
-    mkBtn("Edit",     "action-btn",         () => editSmartPlaylist(sp));
-    mkBtn("Delete",   "action-btn",         () => deleteSmartPlaylist(sp));
+    actions.appendChild(buildOverflowMenu([
+      { label: "Send to Roon", onClick: (b) => sendSmartPlaylistToRoon(sp, b) },
+      { label: "Share",        onClick: (b) => shareThis(b) },
+      { label: "Edit",         onClick: () => editSmartPlaylist(sp) },
+      { label: "Delete",       onClick: () => deleteSmartPlaylist(sp), danger: true },
+    ], { title: sp.name || "Dynamic Playlist" }));
     wrap.appendChild(actions);
 
     const ol = document.createElement("ol");
@@ -4395,8 +4506,13 @@
   function setCountText(text) {
     const el = document.getElementById("album-count");
     if (!el) return;
-    el.textContent = text;
-    el.classList.remove("hidden");
+    el.textContent = text || "";
+    // An empty label HIDES the readout rather than showing a blank one. The
+    // playlist detail screens pass "" because they already print the full name
+    // as a heading; the topbar copy only repeated it, truncated to fit
+    // ("My Dynamic Playlist - Electroni…" above "My Dynamic Playlist -
+    // Electronic 100").
+    el.classList.toggle("hidden", !text);
   }
   // Topbar context label: the active filter's value (genre/tag name) with NO
   // count; hidden on the plain wall. Counts were removed from all screens.
@@ -4985,7 +5101,12 @@
         if (i !== 0) {
           li.addEventListener("click", async () => {
             const trackName = it.title || "this track";
-            if (!window.confirm(`Play from "${trackName}"?`)) return;
+            // confirmDialog, not window.confirm: a native confirm can be left
+            // open when the app is backgrounded and then resolves on reopen,
+            // firing the request into a network stack that is still coming
+            // back up. An in-page sheet cannot be resolved by backgrounding.
+            if (!await confirmDialog(`Play from "${trackName}"?`)) return;
+            const epochAtSend = hiddenEpoch;
             try {
               const r = await fetch("/api/play-from-here", {
                 method: "POST",
@@ -5000,14 +5121,21 @@
               });
               if (!r.ok) {
                 const j = await r.json().catch(() => ({}));
-                window.alert("Couldn't play from here: " + (j.error || `HTTP ${r.status}`));
+                showToast("Couldn't play from here: " + (j.error || `HTTP ${r.status}`), "error");
                 return;
               }
               // Give Roon a moment, then re-pull the queue so the "now playing"
               // marker moves and earlier-played tracks fall away.
               setTimeout(loadQueue, 600);
             } catch (e) {
-              window.alert("Couldn't play from here: " + e.message);
+              // Backgrounded mid-flight. iOS killed the connection and handed
+              // us the rejection on reopen, so this is not a failure the user
+              // caused or can act on — and Roon has almost certainly already
+              // played the track. Re-pull the queue (the success path's own
+              // follow-up never ran) and say nothing, rather than alerting
+              // about a tap made minutes ago.
+              if (hiddenEpoch !== epochAtSend) { loadQueue(); return; }
+              showToast("Couldn't play from here: " + e.message, "error");
             }
           });
         }
@@ -5106,10 +5234,15 @@
       if (!map.has(a.kind)) map.set(a.kind, a);
     }
 
+    // Play Now and Queue stay on the row; Next / Shuffle / Radio go behind the
+    // overflow menu. Five pills hit the same wall the playlist screens did —
+    // .action-btn is `flex: 1 1 0`, so they shrink together instead of
+    // wrapping, and on a phone the labels start clipping.
+    const ROW_ACTIONS = 2;
     modalActs.innerHTML = "";
+    const available = order.filter(k => map.has(k));
     let first = true;
-    for (const k of order) {
-      if (!map.has(k)) continue;
+    for (const k of available.slice(0, ROW_ACTIONS)) {
       const btn = document.createElement("button");
       btn.className = "action-btn" + (first ? " primary" : "");
       btn.type = "button";
@@ -5118,7 +5251,13 @@
       modalActs.appendChild(btn);
       first = false;
     }
-    if (!modalActs.children.length) {
+    const overflow = available.slice(ROW_ACTIONS);
+    if (overflow.length) {
+      modalActs.appendChild(buildOverflowMenu(
+        overflow.map(k => ({ label: labels[k], onClick: (b) => invoke(k, b) })),
+        { label: "More playback actions" }));
+    }
+    if (!available.length) {
       modalActs.innerHTML =
         `<div class="modal-error">No playback actions available for this album.</div>`;
     }

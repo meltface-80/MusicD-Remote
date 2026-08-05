@@ -189,12 +189,34 @@ const DRIVER_MAIN = OPEN_WALL + `
   T("more_hidden_after", document.querySelector(".playlist-more").classList.contains("hidden"));
   T("page_calls_after", window.__pageCalls.slice());
 
-  var btns = Array.prototype.map.call(document.querySelectorAll(".playlist-actions button"),
+  // v1.7.42: only the two primary actions stay on the row; the rest live in the
+  // overflow menu. Captured separately so both halves are pinned.
+  var rowBtns = Array.prototype.map.call(
+    document.querySelectorAll(".playlist-actions > button"),
     function (b) { return b.textContent; });
-  T("action_buttons", btns);
+  T("action_buttons", rowBtns);
+  T("overflow_present", !!document.querySelector(".playlist-actions .overflow-btn"));
+
+  // MEASURED: the bug was six pills shrinking together instead of wrapping, so
+  // "Send to Roon" rendered as "end to Roo". Nothing on the row may be clipped.
+  T("row_clipped", Array.prototype.filter.call(
+    document.querySelectorAll(".playlist-actions > button"),
+    function (b) { return b.scrollWidth > b.clientWidth + 1; }).length);
+
+  document.querySelector(".playlist-actions .overflow-btn").click();
+  await window.__sleep(200);
+  T("overflow_items", Array.prototype.map.call(
+    document.querySelectorAll(".playlist-actions .overflow-menu .sel-menu-item"),
+    function (b) { return b.textContent; }));
+  T("overflow_open", !document.querySelector(".playlist-actions .overflow-menu").classList.contains("hidden"));
+  // Tapping outside closes it.
+  document.body.click();
+  await window.__sleep(150);
+  T("overflow_closed_on_outside_click",
+    document.querySelector(".playlist-actions .overflow-menu").classList.contains("hidden"));
 
   // Play now -> play-multi with the resolved albums.
-  Array.prototype.filter.call(document.querySelectorAll(".playlist-actions button"),
+  Array.prototype.filter.call(document.querySelectorAll(".playlist-actions > button"),
     function (b) { return b.textContent === "Play now"; })[0].click();
   await window.__sleep(600);
   T("toast_after_play", (document.querySelector(".toast") || {}).textContent || "");
@@ -437,9 +459,24 @@ test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concur
     assert.match(r.page_calls_after[1], /offset=2/, "the next page resumes after the albums already expanded");
   });
 
-  await t.test("it offers the same actions an album does, plus edit and delete", () => {
-    assert.deepEqual(r.action_buttons,
-      ["Play now", "Queue", "Send to Roon", "Share", "Edit", "Delete"]);
+  await t.test("the row keeps two actions and hides the rest behind ⋯", () => {
+    // Six pills on one row shrank together — .action-btn is flex: 1 1 0, so
+    // they never wrapped — and "Send to Roon" was drawn as "end to Roo".
+    assert.deepEqual(r.action_buttons, ["Play now", "Queue"]);
+    assert.equal(r.overflow_present, true, "no overflow button was rendered");
+    assert.equal(r.row_clipped, 0,
+      r.row_clipped + " button(s) on the action row are clipped");
+  });
+
+  await t.test("the overflow menu holds the other four, Delete last", () => {
+    assert.deepEqual(r.overflow_items, ["Send to Roon", "Share", "Edit", "Delete"]);
+    assert.equal(r.overflow_open, true);
+  });
+
+  await t.test("tapping outside closes the overflow menu", () => {
+    // A dropdown that can only be closed by choosing something is a trap on a
+    // phone, where there is no Escape key.
+    assert.equal(r.overflow_closed_on_outside_click, true);
   });
 
   await t.test("Send to Roon queues the albums and says what to do next", () => {

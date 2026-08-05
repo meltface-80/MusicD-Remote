@@ -2,6 +2,60 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.43] — 2026-08-05
+
+### Fixed — "Couldn't play from here: Load failed" when opening the app
+
+A native dialog appeared over Now playing on reopening the installed PWA, while the music was
+playing perfectly well.
+
+"Load failed" is WebKit's message for a fetch that never completed. The chain: you tap a queue row
+and confirm, `/api/play-from-here` goes out, Roon answers from inside a Core callback (which this
+project has already measured at seconds under import congestion), iOS backgrounds the app before the
+response arrives and tears the connection down. The rejection is delivered **when you reopen the
+app**, and the catch reported a failure for a tap you made minutes earlier. The server had already
+carried the command out — which is exactly why the music was playing.
+
+A request interrupted by the app being suspended is no longer reported: the queue is quietly
+re-pulled instead (the success path's own follow-up never ran). A request that fails while the app
+is in the *foreground* still reports, so nothing real is swallowed.
+
+While in there: these were the app's last two `window.alert` / `window.confirm` calls. They now use
+the app's own confirm sheet and toast like everything else — which also closes a second route to the
+same bug, since a native confirm left open while the app is backgrounded resolves on reopen and
+fires the request into a network stack that is still coming back up.
+
+### Changed — one overflow menu, Roon's three-dots-in-a-circle
+
+The playlist action row ran six pill buttons across one line. `.action-btn` is `flex: 1 1 0`, so they
+shrank together instead of wrapping and "Send to Roon" rendered as "end to Roo".
+
+**Play now** and **Queue** stay on the row; everything else moves behind a ⋯ button:
+
+- Dynamic Playlist — Send to Roon, Share, Edit, Delete
+- Roon playlist — Share
+- Stored playlist — Share, Delete
+- Album view — Next, Shuffle, Radio (five pills had the same problem)
+
+The multi-select menu already *was* an overflow menu; it wore a chevron, which reads as "expand"
+rather than "more actions", so it now wears the same glyph. Its count badge stays — it is the only
+indication of how many items are selected.
+
+One SVG and one `buildOverflowMenu()` for all of it, and the dropdown reuses the existing
+`.sel-menu` styling rather than introducing a second dropdown that almost matches.
+
+Deliberately **not** converted, after a survey of every candidate: tab bars, the side menu, the
+Settings list, the zone pickers (the trigger is a picker for where the music plays — hiding that
+behind ⋯ would bury the most-used control in the app), the Library Sort/Focus row (its labels are a
+state readout, not a name), and the wall display (a 10-foot screen where a small circular glyph is
+the wrong ergonomics, and which cannot reach the shared helper without copying it).
+
+### Fixed — the playlist name was shown twice
+
+The topbar printed a truncated copy ("My Dynamic Playlist - Electroni…") directly above the full
+heading. All three playlist detail screens already print their own name, so the topbar copy is gone;
+an empty title now hides the readout rather than showing a blank one.
+
 ## [1.7.42] — 2026-08-05
 
 ### Fixed — Now playing sat under the status bar

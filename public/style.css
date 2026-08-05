@@ -3587,6 +3587,24 @@ body.show-quality .album-quality { display: block; }
 .sel-menu-item:hover { background: var(--bg-elev); }
 .sel-menu-item[data-sel-act="clear"] { color: var(--text-dim); }
 .sel-menu-item.hidden { display: none; }
+.sel-menu-item.is-danger { color: var(--danger); }
+
+/* Overflow menu — the three-dots-in-a-circle affordance, used wherever a screen
+   has more secondary actions than belong on a row. The dropdown reuses
+   .sel-menu above so there is one dropdown look in the app. */
+.overflow-wrap { position: relative; flex: 0 0 auto; }
+.overflow-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; padding: 0;
+  border-radius: 999px; border: 0; background: transparent;
+  color: var(--text); cursor: pointer;
+}
+.overflow-btn svg { width: 26px; height: 26px; }
+.overflow-btn:hover { filter: brightness(1.2); }
+.overflow-btn:active { transform: scale(.94); }
+/* The menu is anchored to the button, and on a narrow screen the button is at
+   the right-hand end of its row — so it opens leftwards to stay on screen. */
+.overflow-menu { top: calc(100% + 6px); right: 0; }
 
 /* Parked inside the album view. The modal paints over the top bar, so the menu
    moves into the modal's own header band — to the LEFT of Share and ×, which

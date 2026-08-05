@@ -152,9 +152,17 @@
         <button id="select-menu-btn" class="icon-btn" type="button"
                 aria-haspopup="true" aria-expanded="false" aria-label="Actions for selected items">
           <span id="select-count" class="sel-count">0</span>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M6 9l6 6 6-6"/>
+          <!-- The same three-dots-in-a-circle the playlist screens use (see
+               OVERFLOW_SVG in app.js). This was already an overflow menu — it
+               just wore a chevron, which reads as "expand" rather than "more
+               actions". The count badge stays: it is the only indication of how
+               many items are selected. -->
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.7" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"/>
+            <circle cx="7.6" cy="12" r="1.15" fill="currentColor" stroke="none"/>
+            <circle cx="12" cy="12" r="1.15" fill="currentColor" stroke="none"/>
+            <circle cx="16.4" cy="12" r="1.15" fill="currentColor" stroke="none"/>
           </svg>
         </button>
         <div id="select-menu" class="sel-menu hidden" role="menu">
