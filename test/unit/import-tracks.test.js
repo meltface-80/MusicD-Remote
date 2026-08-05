@@ -65,7 +65,7 @@ const EXTRACT = [
   "isCompilationCredit", "sharedCreditAgrees", "titleContainsPhrase",
   "findSharedAlbumByContainment", "sharedContainmentMinWords",
   "trackTitleKeys", "albumKeysForTrack", "resolveSharedByTrackIndex",
-  "rememberAlbumTracks", "indexedAlbumKeys",
+  "rememberAlbumTracks", "indexedAlbumKeys", "shareTrackAlbumMax", "playsDigest",
 ];
 
 // Build a library + database from plain descriptions. `albums` are
@@ -88,6 +88,11 @@ function build(albums, opts) {
     albumIndex: { albums: list, builtAt: 1 },
     ambiguousAlbumKeys: ambiguous,
     _libLookup: { builtAt: -1, byKey: null, byTitle: null, byAkey: null, canon: null },
+    // playsDigest memoises for a minute; each fixture needs its own.
+    _playsDigest: { at: 0, rows: null },
+    playsDigestTtlMs: () => 60000,
+    applyCreditIdentities: () => {},
+    canonArtistOf: null,
     splitCreditIntoArtists: (s) => [String(s || "")],
     creditIdentities: (s) => {
       // Faithful to the real one's SHAPE — {c, first, names} — because a stub
@@ -230,7 +235,10 @@ test("Roon's name for a record can be a superset of the share's", { concurrency:
     });
     assert.ok(got, "no rung could reach Roon's longer name for the same record");
     assert.equal(got.track.album_offset, 0);
-    assert.equal(got.via, "album");
+    // NOT "album": the name the user ends up with is not the one the share
+    // carried, so it belongs in the substitution list rather than passing as
+    // an exact match.
+    assert.equal(got.via, "contains");
     db.close();
   });
 
@@ -537,5 +545,154 @@ test("the two Roon-reading caps are real numbers, not comments", async (t) => {
     assert.ok(F.shareDeepPerEntryMax() >= 1);
     assert.ok(F.shareDeepPerEntryMax() <= F.shareDeepAlbumMax(),
       "one entry may consume the whole import's budget");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Findings from the review of this very change. Each one is a defect that was
+// live in the first cut and is now pinned so it cannot come back quietly.
+// ---------------------------------------------------------------------------
+
+test("review regressions: the wrong-album match must stay dead", { concurrency: 1 }, async (t) => {
+  if (!Database) { t.skip("better-sqlite3 unavailable"); return; }
+
+  await t.test("THE one it nearly got back: the tiebreak must not re-admit uncredited albums", () => {
+    // The first cut of the edition-twin tiebreak fell back to the FULL set
+    // when no album was credited to the share's artist:
+    //     (named.length ? named : arr).filter(exact title)
+    // With Queen's and ABBA's "Greatest Hits" in the library and no Foo
+    // Fighters one, `named` is empty, only Queen's title matches exactly, and
+    // a Foo Fighters track resolved to QUEEN — returning via:"album", so not
+    // even flagged. That is the precise bug this version was written to kill,
+    // walking straight around the credit check one rung above.
+    const { F, db } = build([
+      { offset: 0, title: "Greatest Hits", subtitle: "Queen" },
+      { offset: 1, title: "Greatest Hits (Deluxe Edition)", subtitle: "ABBA" },
+    ]);
+    assert.equal(F.resolveSharedEntry({
+      title: "All My Life", creator: "Foo Fighters", album: "Greatest Hits",
+    }), null, "a Foo Fighters track resolved to Queen via the edition tiebreak");
+    db.close();
+  });
+
+  await t.test("the tiebreak still works when the artist IS credited", () => {
+    const { F, db } = build([
+      { offset: 0, title: "Greatest Hits", subtitle: "Foo Fighters" },
+      { offset: 1, title: "Greatest Hits (Deluxe Edition)", subtitle: "Foo Fighters" },
+      { offset: 2, title: "Greatest Hits", subtitle: "Queen" },
+    ]);
+    const got = F.resolveSharedEntry({
+      title: "All My Life", creator: "Foo Fighters", album: "Greatest Hits",
+    });
+    assert.ok(got);
+    assert.equal(got.track.album_offset, 0);
+    db.close();
+  });
+});
+
+test("review regressions: containment is one-directional", { concurrency: 1 }, async (t) => {
+  if (!Database) { t.skip("better-sqlite3 unavailable"); return; }
+
+  await t.test("the share's title being the LONGER one is a different record", () => {
+    // The rung exists because ROON's name can be the superset. The reverse —
+    // the share naming something longer than the library album — means the
+    // library holds a shorter, different record. "20 Golden Greats Volume 2"
+    // is not "20 Golden Greats".
+    const { F, db } = build([
+      { offset: 0, title: "20 Golden Greats", subtitle: "The Beach Boys" },
+    ]);
+    assert.equal(F.resolveSharedEntry({
+      title: "Good Vibrations", creator: "The Beach Boys",
+      album: "20 Golden Greats Volume 2",
+    }), null, "a share for Volume 2 resolved onto the original");
+    db.close();
+  });
+
+  await t.test("a live album does not resolve onto the studio one", () => {
+    const { F, db } = build([
+      { offset: 0, title: "The Dark Side of the Moon", subtitle: "Pink Floyd" },
+    ]);
+    assert.equal(F.resolveSharedEntry({
+      title: "Time", creator: "Pink Floyd", album: "The Dark Side of the Moon Live",
+    }), null, "a live record resolved onto the studio album");
+    db.close();
+  });
+});
+
+test("review regressions: the track index must prove uniqueness, not assume it",
+  { concurrency: 1 }, async (t) => {
+    if (!Database) { t.skip("better-sqlite3 unavailable"); return; }
+
+    await t.test("a title on more albums than the window can hold declines", () => {
+      // The first cut read a fixed window ordered by the track's position on
+      // its album, so a generic title ("Intro", "Untitled") on many albums
+      // could have the real one truncated out — and the caller, seeing one
+      // survivor, resolved confidently to the wrong record. If the whole set
+      // cannot be seen, uniqueness cannot be shown.
+      const n = F0m().shareTrackAlbumMax() + 3;
+      const albums = [], tracks = [];
+      for (let i = 0; i < n; i++) {
+        albums.push({ offset: i, title: "Record " + i, subtitle: "One Band" });
+        tracks.push({ album: "Record " + i, artist: "One Band", titles: ["Intro"] });
+      }
+      const { F, db } = build(albums, { tracks });
+      assert.equal(F.albumKeysForTrack("Intro").length, 0,
+        "a truncated window was returned as if it were the whole set");
+      assert.equal(F.resolveSharedEntry({
+        title: "Intro", creator: "One Band", album: "Not In This Library",
+      }), null);
+      db.close();
+    });
+
+    await t.test("just under the ceiling still resolves when it is genuinely unique", () => {
+      const { F, db } = build(
+        [{ offset: 0, title: "One by One", subtitle: "Foo Fighters" }],
+        { tracks: [{ album: "One by One", artist: "Foo Fighters", titles: ["All My Life"] }] });
+      assert.equal(F.albumKeysForTrack("All My Life").length, 1);
+      db.close();
+    });
+  });
+
+test("review regressions: the play digest is computed once, not per entry",
+  { concurrency: 1 }, async (t) => {
+    if (!Database) { t.skip("better-sqlite3 unavailable"); return; }
+
+    await t.test("repeated canonical lookups do not re-run the aggregate", () => {
+      // Unparameterised, so the result is identical every call — but it was
+      // being re-run for every entry that reached the rung, which is every
+      // entry that gets there by construction. On a large history that is tens
+      // of seconds of FULLY BLOCKED event loop per import: better-sqlite3 is
+      // synchronous, so nothing else in the process runs meanwhile.
+      const { F, db } = build(
+        [{ offset: 0, title: "Rumours", subtitle: "Fleetwood Mac" }],
+        { plays: [{ track: "Dreams (Remastered 2020)", artist: "Fleetwood Mac",
+                    album: "Rumours", n: 2 }] });
+      let ran = 0;
+      const realPrepare = db.prepare.bind(db);
+      db.prepare = (sql) => { if (/GROUP BY lower\(trim\(track\)\)/.test(sql)) ran++; return realPrepare(sql); };
+      for (let i = 0; i < 12; i++) F.playsForTrack("Dreams");
+      assert.equal(ran, 1, "the full-table aggregate ran " + ran + " times for 12 lookups");
+      db.close();
+    });
+  });
+
+// Handle for the pure caps, no database.
+let _f0m = null;
+function F0m() {
+  if (!_f0m) {
+    _f0m = loadIndexFunctions(["shareTrackAlbumMax", "shareDeepAlbumMax",
+                               "shareDeepPerEntryMax", "shareDeepBudgetMs"],
+      { labelsDb: null, DEBUG: false });
+  }
+  return _f0m;
+}
+
+test("the deep pass is bounded by a clock as well as a count", async (t) => {
+  await t.test("a count is not a time limit", () => {
+    // Each album open is up to 7 Roon calls and each may take up to 90s
+    // against a wedged Core, so an album budget alone could hold an
+    // unauthenticated HTTP request open for many minutes.
+    const F = F0m();
+    assert.ok(F.shareDeepBudgetMs() >= 5000 && F.shareDeepBudgetMs() <= 120000);
   });
 });

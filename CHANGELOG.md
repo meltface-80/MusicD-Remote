@@ -92,12 +92,57 @@ test and every comparison against it is false, so the same value read as "not em
 full" — it slipped through the new resume guard during development and was caught by a mutation
 check.
 
+### Fixed — nine defects the review of this change found in it, before release
+
+The parallel review pass caught two that re-opened the very bug above, and they are recorded here
+rather than quietly patched, because both were introduced by the fix itself:
+
+- **The edition-twin tiebreak re-admitted uncredited albums.** It fell back to the full set when
+  *no* album was credited to the share's artist — walking straight around the credit check one rung
+  above. With Queen's and ABBA's "Greatest Hits" in the library and no Foo Fighters one, a Foo
+  Fighters track resolved to **Queen** again, returned as a clean match. The tiebreak now only ever
+  looks at albums that credit the artist.
+- **Containment was bidirectional.** The rung exists because *Roon's* name can be the longer one;
+  accepting the reverse resolved "20 Golden Greats Volume 2" onto "20 Golden Greats", and "The Dark
+  Side of the Moon Live" onto the studio album. Those are different records. It is one-directional
+  now, and a containment match reports as `contains`, so it lands in the substitution list instead
+  of passing as an exact match.
+
+Also from the review:
+
+- The track-index lookup read a fixed window ordered by a track's position on its album, so a
+  generic title ("Intro", "Untitled") could have the real album truncated out — and the caller,
+  seeing one survivor, would resolve confidently to the wrong record. It now reads distinct albums
+  and declines outright when it cannot see the whole set: uniqueness has to be *shown*, not assumed.
+- The play-history canonical retry ran an unparameterised full-table aggregate **per unmatched
+  entry**, though its result is identical every time. On a large history that measured tens of
+  seconds of fully blocked event loop per import — better-sqlite3 is synchronous, so nothing else in
+  the process runs meanwhile. Memoised for a minute.
+- The deep pass re-derived credit identities for every (album × entry) instead of using the ones
+  already on each record, and since the entries reaching it are precisely those whose artist is
+  absent from the library, the loop never broke early.
+- The write-through was hooked at one of four places that hold a track list. It now sits in
+  `loadAlbumSession`, which all four go through — so the album view, per-track actions,
+  dynamic-playlist materialisation and add-albums all contribute — and it is deferred off the tick
+  so a cache fill never sits in front of the music.
+- The Save button stayed live during the second pass; saving there created a playlist from the
+  smaller set, and a second tap made a *second* playlist with the same name. Disabled until the
+  count is final.
+- The deep pass had an album budget but no clock, on an unauthenticated route where each open can
+  take up to 90s against a wedged Core. It now has a 45s wall-clock budget too.
+- `radioResumeDecision` did not stand down for Roon Radio, which would have made the "the two never
+  fight" guarantee false; the episode could be latched from a top-up that finished long ago,
+  which would have restarted music a user deliberately stopped; a resume Roon refused was terminal;
+  and radio state survived unpair and zone removal, so a stranding latched before a Core reboot could
+  resume a queue on reconnect. All closed, with the resume capped at three attempts.
+
 ### Tests
-- `test/unit/import-tracks.test.js` — 38 tests over the resolver's rungs and the track index,
-  including the Queen mis-match as a named regression. 12/12 mutations caught.
-- `test/unit/radio.test.js` — extended to 32; 8/9 mutations caught (the ninth is a
+- `test/unit/import-tracks.test.js` — 51 tests over the resolver's rungs and the track index,
+  including the Queen mis-match and both review regressions as named cases. 12/12 + 5/5 mutations
+  caught.
+- `test/unit/radio.test.js` — extended to 34; 8/9 mutations caught (the ninth is a
   consistency-only change with no behavioural difference, and is not claimed as covered).
-- Suite: 37 static / 642 unit / 274 dom.
+- Suite: 37 static / 657 unit / 274 dom.
 
 ## [1.7.45] — 2026-08-05
 

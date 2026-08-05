@@ -2242,13 +2242,24 @@
       // thing this is meant to replace — but it runs SECOND, so the fast
       // answer is on screen while it works.
       if (j.deep_available) {
+        // Saving DURING the second pass would create a playlist from the
+        // smaller set, and the second render then replaces the "Saved" state
+        // on a detached node — so a second tap makes a second playlist with
+        // the same name (the server creates by name, it never finds one).
+        // Nothing to save until the count is final.
+        const save = out.querySelector(".import-save");
+        if (save) { save.disabled = true; save.textContent = "Searching your library…"; }
         const note = document.createElement("div");
         note.className = "share-sum share-sub-note";
         note.textContent = `Looking inside your albums for the other ${j.missing.length}…`;
         out.appendChild(note);
         const deep = await postImport(blob, true);
-        if (deep.ok) renderImportResult(out, deep, btn);
-        else note.textContent = "Couldn't finish the deeper search — the matches above still stand.";
+        if (deep.ok) {
+          renderImportResult(out, deep, btn);
+        } else {
+          note.textContent = "Couldn't finish the deeper search — the matches above still stand.";
+          if (save) { save.disabled = false; save.textContent = `Save ${(j.resolved || []).length} tracks as a playlist`; }
+        }
       }
     } catch (e) {
       if (out) out.textContent = "Couldn't reach the extension";

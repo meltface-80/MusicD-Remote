@@ -240,7 +240,10 @@ const roon = new RoonApi({
           delete zones[zid];
           delete zonePrevState[zid]; // zone offline — reset so it won't auto-start if it returns
           delete zoneLogPrev[zid];   // and so its return reads as a first sighting, not a transition
-          cancelRadioRecheck(zid);   // nothing to re-examine on a zone that is gone
+          // A zone_id can come back (regrouping, a Core reboot). It must not
+          // inherit an episode from before, or a stranding latched then would
+          // resume a queue nobody is listening to now.
+          forgetRadioZone(zid);
         });
       }
     });
@@ -277,6 +280,11 @@ const roon = new RoonApi({
   core_unpaired: function () {
     core = null; zones = {}; outputs = {}; outputsFeedLive = false;
     Object.keys(zonePrevState).forEach(k => delete zonePrevState[k]);
+    // Radio working state goes with it. A stranding latched before the drop
+    // would otherwise survive the reconnect and press play on a queue Roon
+    // has persisted but nobody is sitting in front of any more.
+    Object.keys(radioBusy).forEach(forgetRadioZone);
+    Object.keys(zoneLogPrev).forEach(k => delete zoneLogPrev[k]);
     stopIndexMaintenance();
     // The album index is deliberately KEPT across an unpair: it's plain
     // offset/title data (no session-scoped item_keys), so it stays usable for
@@ -500,6 +508,11 @@ function browse(opts) {
     if (DEBUG) console.log("[browse]", JSON.stringify(opts));
     const guard = withRoonDeadline("browse",
       (opts.multi_session_key || "-") + " " + (opts.hierarchy || "-"), reject);
+    // The SDK call itself can throw synchronously when the Core is torn down
+    // mid-flight (core = null races with in-flight callers). Without this the
+    // promise rejects but the deadline timer stays armed, and 90s later the
+    // log claims a hung Core that never existed.
+    try {
     core.services.RoonApiBrowse.browse(opts, (err, body) => guard.settle(() => {
       const ms = Date.now() - t0;
       // Concurrent operations interleave in the log, so the :res line carries
@@ -517,6 +530,7 @@ function browse(opts) {
                              "count:", body && body.list ? body.list.count : "-");
       resolve(body);
     }));
+    } catch (e) { guard.settle(() => reject(e)); }
   });
 }
 function load(opts) {
@@ -526,6 +540,7 @@ function load(opts) {
     if (DEBUG) console.log("[load]", JSON.stringify(opts));
     const guard = withRoonDeadline("load",
       (opts.multi_session_key || "-") + " " + (opts.hierarchy || "-"), reject);
+    try {
     core.services.RoonApiBrowse.load(opts, (err, body) => guard.settle(() => {
       const ms = Date.now() - t0;
       // Same attribution as [browse:res]: key + hierarchy + offset/count.
@@ -541,6 +556,7 @@ function load(opts) {
                             "total:", body && body.list ? body.list.count : "-");
       resolve(body);
     }));
+    } catch (e) { guard.settle(() => reject(e)); }
   });
 }
 function getImage(image_key, opts) {
@@ -1128,6 +1144,30 @@ async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
        i.hint === "action_list" && !i.subtitle
   );
 
+  // Roon's own contents for this album, recorded under the album's identity.
+  //
+  // Hooked HERE rather than in the callers because all four paths that ever
+  // hold a track list come through this function — the album view, per-track
+  // actions, dynamic-playlist materialisation and add-albums — so the index
+  // fills itself from ordinary use, at no extra Roon cost, from every one of
+  // them. Nothing in this extension otherwise learns which tracks Roon puts on
+  // a record, and playlist import reads it back to answer the question no name
+  // comparison can.
+  //
+  // Deferred: this is a synchronous SQLite write, and the caller may be on its
+  // way to invoking Play. A cache fill must never sit in front of the music.
+  setImmediate(() => {
+    try {
+      rememberAlbumTracks(albumItem.title || "", albumItem.subtitle || "",
+        items.filter(t => isTrackItem(t, playMenu))
+             .map(t => ({ title: stripTrackNumber(t.title) })));
+    } catch (e) {
+      // Best-effort cache fill on a detached tick — there is no caller left to
+      // return an error to, and a failure costs a slower import, nothing else.
+      if (DEBUG) console.warn("[tracks] deferred remember failed: " + e.message);
+    }
+  });
+
   // `offset` may have been corrected by the stale-offset relocation above —
   // callers pass it back to the client so follow-up plays use the fresh one.
   return { hierarchy, albumItem, items, playMenu, offset };
@@ -1204,12 +1244,6 @@ async function openAlbumByOffset(offset, zoneOrOutputId, invokeKind, filter, exp
         title:    stripTrackNumber(t.title),
         subtitle: t.subtitle || ""
       }));
-
-    // Roon's own contents for this album, recorded under the album's identity.
-    // Free: the list is already in hand, and this is the only place in the
-    // extension that ever learns which tracks Roon puts on a record. Playlist
-    // import reads it back to answer the question no name comparison can.
-    rememberAlbumTracks(albumInfo.title, albumInfo.subtitle, tracks);
 
     let actions = [];
     if (playMenu) {
@@ -8379,10 +8413,7 @@ function playsForTrack(trackTitle) {
     // found nothing.
     const want = trackTitleKeys(trackTitle);
     if (!want.length) return [];
-    const rows = labelsDb.prepare(
-      "SELECT track, album, artist, COUNT(*) n FROM plays WHERE album != '' " +
-      "GROUP BY lower(trim(track)), lower(trim(album)), lower(trim(artist)) " +
-      "ORDER BY n DESC LIMIT 5000").all();
+    const rows = playsDigest();
     const out = [];
     for (const r of rows) {
       if (trackTitleKeys(r.track).some(k => want.includes(k))) out.push(r);
@@ -8392,6 +8423,33 @@ function playsForTrack(trackTitle) {
   } catch (e) {
     return [];   // DB unavailable — this rung simply does not fire
   }
+}
+
+// The whole play history, grouped, for the canonical retry above.
+//
+// The query takes NO parameters, so its result is identical on every call —
+// but it was being re-prepared and re-run for every entry an import could not
+// place, which is by construction every entry that reaches that rung. On a
+// 120,000-row history that measured ~175ms each: about 87 seconds of FULLY
+// BLOCKED event loop for a 500-track import, since better-sqlite3 is
+// synchronous. No zone updates, no transport control, nothing, for a minute
+// and a half.
+//
+// Memoised for a minute, which covers a whole import (both passes) while
+// staying fresh enough that a play recorded during one is picked up by the
+// next.
+function playsDigestTtlMs() { return 60000; }
+let _playsDigest = { at: 0, rows: null };
+function playsDigest() {
+  if (_playsDigest.rows && (Date.now() - _playsDigest.at) < playsDigestTtlMs()) {
+    return _playsDigest.rows;
+  }
+  const rows = labelsDb.prepare(
+    "SELECT track, album, artist, COUNT(*) n FROM plays WHERE album != '' " +
+    "GROUP BY lower(trim(track)), lower(trim(album)), lower(trim(artist)) " +
+    "ORDER BY n DESC LIMIT 5000").all();
+  _playsDigest = { at: Date.now(), rows };
+  return rows;
 }
 
 // Every canonical form a track title could be known by. Track titles carry the
@@ -8408,24 +8466,35 @@ function trackTitleKeys(title) {
 // Roon's album contents, recorded by rememberAlbumTracks whenever this
 // extension has had an album open for any reason. Returns album identity keys,
 // most specific first; the caller maps them back to the snapshot.
+// The window has to be big enough to PROVE uniqueness, not merely to find a
+// candidate. An earlier version took 24 rows ordered by the track's position
+// on its album, which for a title like "Intro" or "Untitled" could truncate
+// the real album out of the result — and the caller, seeing one survivor,
+// would then resolve confidently to the wrong record. Now: distinct albums
+// only, and a full window means "this title is too common to be evidence",
+// which declines.
+function shareTrackAlbumMax() { return 25; }
+
 function albumKeysForTrack(trackTitle) {
   if (!labelsDb) return [];
   const keys = trackTitleKeys(trackTitle);
   if (!keys.length) return [];
   try {
     const qs = keys.map(() => "?").join(",");
-    return labelsDb.prepare(
-      "SELECT akey, tkey, title, n FROM album_tracks WHERE tkey IN (" + qs + ") " +
-      "ORDER BY n ASC LIMIT 24").all(...keys);
+    const rows = labelsDb.prepare(
+      "SELECT DISTINCT akey FROM album_tracks WHERE tkey IN (" + qs + ") " +
+      "LIMIT " + shareTrackAlbumMax()).all(...keys);
+    // Hit the ceiling: we cannot see the whole set, so we cannot show it is
+    // unique. Declining is the honest answer.
+    return rows.length >= shareTrackAlbumMax() ? [] : rows;
   } catch (e) {
     return [];   // table missing (pre-migration DB) — this rung does not fire
   }
 }
 
-// Record an album's track list under the album's identity. Called from every
-// place that already HAS a track list in hand, so the index fills itself from
-// ordinary use — opening an album in the app, adding albums to a playlist —
-// and costs not one extra Roon call to build.
+// Record an album's track list under the album's identity. The single caller
+// is loadAlbumSession, which every path holding a track list goes through, so
+// the index fills itself from ordinary use and costs not one extra Roon call.
 function rememberAlbumTracks(albumTitle, albumSubtitle, tracks) {
   if (!labelsDb || !Array.isArray(tracks) || !tracks.length) return 0;
   const akey = albumKey(albumTitle, albumSubtitle);
@@ -8581,31 +8650,46 @@ function findSharedAlbum(albumTitle, artist) {
       if (!arr || arr.length < 2) continue;
       const named = arr.filter(a => creditHasArtist(a.subtitle || "", artist));
       if (named.length === 1) return named[0];
-      // Still several, all by this artist: the EDITION-TWIN shape. v1.7.44
+      // Still several, ALL BY THIS ARTIST: the EDITION-TWIN shape. v1.7.44
       // began stripping edition suffixes to build identities, so "Greatest
       // Hits" and "Greatest Hits (Deluxe Edition)" both claim the same key and
       // are ambiguous by construction — which made rung 1 skip them and every
       // later rung decline, so owning both editions resolved worse than owning
       // neither. When exactly one of them is titled precisely what the share
       // named, there was never anything ambiguous about it.
-      const exact = (named.length ? named : arr).filter(a => canonText(a.title || "") === exactT);
-      if (exact.length === 1) return exact[0];
+      //
+      // `named`, never `arr`. An earlier version fell back to the full set
+      // when NO album was credited to the artist, which walked straight around
+      // rung 2's credit check and re-created the wrong-album match this whole
+      // version exists to kill: with Queen's and ABBA's "Greatest Hits" in the
+      // library and no Foo Fighters one, a Foo Fighters track resolved to
+      // Queen — and, because it returns here, was not even flagged as a
+      // substitution.
+      if (named.length >= 2) {
+        const exact = named.filter(a => canonText(a.title || "") === exactT);
+        if (exact.length === 1) return exact[0];
+      }
     }
   }
-
-  // 4. Roon's name for a record is routinely a SUPERSET of the one on disk:
-  //    "20th Century Masters - The Millennium Collection: The Best of The
-  //    Cranberries" for a share's "The Best Of The Cranberries (20th Century
-  //    Masters)". No amount of suffix-stripping bridges that, because the
-  //    extra words are on the front.
-  //
-  //    Guarded hard, because containment is the loosest thing in this file:
-  //    whole words only, at least three of them, the credit must NAME the
-  //    artist (the compilation escape from rung 3 is deliberately not allowed
-  //    here), and exactly one album may qualify.
-  return findSharedAlbumByContainment(titles, artist, lut);
+  return null;
 }
 
+// Roon's name for a record is routinely a SUPERSET of the one on disk: "20th
+// Century Masters - The Millennium Collection: The Best of The Cranberries"
+// for a share's "The Best Of The Cranberries (20th Century Masters)". No
+// amount of suffix-stripping bridges that, because the extra words are on the
+// front.
+//
+// Guarded hard, because containment is the loosest comparison in this file:
+// whole words only, at least three of them, the credit must NAME the artist
+// (the compilation escape used by the title rung is deliberately not allowed
+// here), and exactly one album may qualify.
+//
+// ONE-DIRECTIONAL, and that is the whole point. Only the LIBRARY title may be
+// the longer one. Accepting the reverse — the share's title being the superset
+// — resolves "20 Golden Greats Volume 2" onto "20 Golden Greats", and "The
+// Dark Side of the Moon Live" onto the studio album. Those are different
+// records, not longer names for the same one.
 function sharedContainmentMinWords() { return 3; }
 
 function findSharedAlbumByContainment(titles, artist, lut) {
@@ -8617,7 +8701,7 @@ function findSharedAlbumByContainment(titles, artist, lut) {
     if (entry.words < sharedContainmentMinWords()) continue;
     let touches = false;
     for (const t of probes) {
-      if (titleContainsPhrase(entry.c, t) || titleContainsPhrase(t, entry.c)) { touches = true; break; }
+      if (titleContainsPhrase(entry.c, t)) { touches = true; break; }
     }
     if (!touches) continue;
     if (!creditHasArtist(entry.al.subtitle || "", artist)) continue;
@@ -8636,6 +8720,14 @@ function resolveSharedAlbum(albumTitle, artist, trackTitle) {
   if (albumTitle && canonText(albumTitle)) {
     const direct = findSharedAlbum(albumTitle, artist);
     if (direct) return { album: direct, via: "album" };
+
+    // A longer library name for what looks like the same record. Reported as
+    // "contains", NOT as "album": the name the user ends up with differs from
+    // the one the share carried, and this file's rule is that a substitution
+    // is shown, never made quietly.
+    const near = findSharedAlbumByContainment(
+      albumTitleVariants(albumTitle), artist, libraryLookup());
+    if (near) return { album: near, via: "contains" };
   }
 
   // The share's album is not in this library under any reading of its NAME.
@@ -8686,19 +8778,6 @@ function resolveSharedByTrackIndex(trackTitle, artist) {
   return hit;
 }
 
-// Match a shared entry against this library's snapshot. ZERO Roon calls.
-//
-// Deliberately conservative, and unchanged in that: `ambiguousAlbumKeys` holds
-// identities owned by more than one album — a duplicate rip, or a local copy
-// beside a streaming one — and resolving those would be a coin flip. Better to
-// report an entry as unmatched than to put the wrong record in someone's
-// playlist. What changed in v1.7.44 is that far fewer entries are genuinely
-// ambiguous: the resolver now reads names the way the rest of this file does.
-//
-// Returns the storable record with a non-persisted `_via` describing which rung
-// matched, so the report can show a substitution rather than make one quietly.
-// The album title is no longer required — the play-history rung finds a track
-// without one.
 // Build the storable record from an album this entry has ALREADY resolved to.
 // Split out because resolveSharedEntry used to resolve twice — once for the
 // record and once for the `via` — which doubled the SQL on the history rung
@@ -8728,6 +8807,12 @@ function shareTrackRecord(entry, hit) {
 // turn into 2,500 browse calls.
 function shareDeepAlbumMax()    { return 25; }
 function shareDeepPerEntryMax() { return 8; }
+// A count is not a time limit. Each album open is up to 7 Roon calls, and each
+// of those may now take up to 90s against a wedged Core — so a budget of 25
+// albums alone could hold an HTTP request open for a very long time. This is
+// the same clamp-server-side rule the encode route applies two hundred lines
+// up, on the sibling of this route.
+function shareDeepBudgetMs()    { return 45000; }
 
 // Album identities whose contents are already recorded. Read once per deep
 // pass so the candidate loop never re-opens an album this extension has
@@ -8753,28 +8838,40 @@ async function deepResolveSharedEntries(pending) {
   if (!core || !pending.length) return;
   const indexed = indexedAlbumKeys();
   const tried = new Set();
+  const deadline = Date.now() + shareDeepBudgetMs();
   let budget = shareDeepAlbumMax();
 
   for (const p of pending) {
-    if (budget <= 0) break;
-    if (p.found || !p.artist) continue;   // no artist, no candidate list
+    if (budget <= 0 || Date.now() > deadline) break;
+    if (!p.artist) continue;   // no artist, no candidate list
 
     // An earlier entry may already have opened the album this one needs —
     // Dreams and Linger come off the same record — so ask before spending.
     let hit = resolveSharedByTrackIndex(p.title, p.artist);
     if (hit) { p.found = { album: hit, via: "tracks" }; continue; }
 
+    // The candidate scan uses the credit identities ALREADY on each record —
+    // the same way /api/artist-albums asks this question. Calling
+    // creditHasArtist here instead re-derived both sides for every album:
+    // the entries that reach this pass are precisely the ones whose artist is
+    // absent from the library, so the loop never breaks early and runs the
+    // full snapshot, per entry, synchronously, before a single Roon call.
+    const q = canonArtist(p.artist);
     const cands = [];
-    for (const al of albumIndex.albums) {
-      if (cands.length >= shareDeepPerEntryMax()) break;
-      if (!creditHasArtist(al.subtitle || "", p.artist)) continue;
-      const k = albumKey(al.title || "", al.subtitle || "");
-      if (!k || indexed.has(k) || tried.has(k)) continue;
-      cands.push({ al, k });
+    if (q) {
+      for (const al of albumIndex.albums) {
+        if (cands.length >= shareDeepPerEntryMax()) break;
+        if (al.cArtist === undefined) applyCreditIdentities(al);
+        const names = al.cCredits;
+        if (names ? !names.includes(q) : al.cArtist !== q) continue;
+        const k = albumKey(al.title || "", al.subtitle || "");
+        if (!k || indexed.has(k) || tried.has(k)) continue;
+        cands.push({ al, k });
+      }
     }
 
     for (const c of cands) {
-      if (budget <= 0) break;
+      if (budget <= 0 || Date.now() > deadline) break;
       tried.add(c.k);
       budget--;
       try {
@@ -9005,8 +9102,11 @@ app.post("/api/user-playlists/add-albums", async (req, res) => {
                            track_total: p.tracks.length }, r));
 });
 
-// Import a shared blob. Resolution is entirely in memory — no Roon calls — so
-// this answers in milliseconds however long the playlist is.
+// Import a shared blob. Pass 1 is entirely in memory — no Roon calls — and
+// answers in milliseconds however long the playlist is. Pass 2 runs only when
+// the caller asks (`deep`), and only for what pass 1 could not place: it opens
+// candidate albums on the Core, bounded by shareDeepAlbumMax and a wall-clock
+// budget.
 app.post("/api/share/import", async (req, res) => {
   const blob = (req.body || {}).blob;
   if (typeof blob !== "string" || !blob.trim()) {
@@ -9089,10 +9189,9 @@ app.post("/api/share/import", async (req, res) => {
       missing,
       substituted,
       // Whether a second, Core-reading pass could still find some of the
-      // misses. The client uses it to decide whether to offer one — never
-      // guessing from `missing.length`, because a deep pass that has already
-      // run must not be offered again.
-      deep: !!(req.body && req.body.deep),
+      // misses. The client uses it to decide whether to run one — never
+      // guessing from missing.length, because a deep pass that has already run
+      // must not be run again.
       deep_available: !!core && !!missing.length && !(req.body && req.body.deep),
     });
   } catch (e) {
@@ -11212,12 +11311,41 @@ function persistRadio() {
   try { roon.save_config && roon.save_config("rra_settings", { radioZones: zones }); } catch (e) {} // optional Roon config API — savePersistedSettings below is the primary store
   savePersistedSettings({ radioZones: zones });
 }
-const radioBusy = {}; // zone_id -> { active: bool, ts: number }
-// Per-zone previous state — used to detect genuine playing→stopped transitions.
-// "play" is only triggered when we observed a zone go from playing/loading
-// to stopped (queue ran out naturally). A zone that is already stopped when
-// we first see it (restart / reconnect) never gets a "play" command.
+// Per-zone radio working state.
+//
+//   inFlight       a top-up is executing RIGHT NOW. Absolute re-entry guard —
+//                  no time bound needed, because every browse/load underneath
+//                  it now carries a deadline, so it always terminates.
+//   appendedAt     when an append last landed. Suppresses a second one until
+//                  the queue visibly grows or the hold lapses.
+//   strandedAt     this zone stopped WHILE our own append was in flight.
+//   resumed        a resume has been issued and accepted for this episode.
+//   resumeTries    attempts so far, so a zone that cannot start is not asked
+//                  forever.
+//   playAuthorized we witnessed this zone run out naturally, so starting
+//                  something fresh is authorised. A LATCH, not a reading of
+//                  zonePrevState: the transition is a single event, and the
+//                  action it authorises may not be able to run until several
+//                  events later.
+const radioBusy = {};
+// Per-zone previous state — used to detect genuine playing→stopped
+// transitions, which is what sets playAuthorized above.
 const zonePrevState = {};
+
+function radioState(zoneId) {
+  return radioBusy[zoneId] || (radioBusy[zoneId] = {
+    inFlight: false, appendedAt: 0, strandedAt: 0,
+    resumed: false, resumeTries: 0, playAuthorized: false,
+  });
+}
+// Everything a zone remembers, dropped. Called when the zone goes away and
+// when the Core unpairs: a zone_id can come back (regrouping, a Core reboot)
+// and must not inherit an episode from before, or it would resume a queue
+// nobody is listening to.
+function forgetRadioZone(zoneId) {
+  delete radioBusy[zoneId];
+  cancelRadioRecheck(zoneId);
+}
 
 // Log every genuine zone state change, ALWAYS — not behind DEBUG.
 //
@@ -11240,11 +11368,14 @@ function logZoneTransition(z) {
   zoneLogPrev[z.zone_id] = state;
   if (prev === undefined) return;   // first sighting is not a transition
   const np = z.now_playing && z.now_playing.two_line;
-  const remaining = (typeof z.queue_items_remaining === "number")
+  // Absent is not zero. Saying so in the log is the point: this is the field
+  // Roon may simply omit, and a reader must not mistake it for an empty queue.
+  // Number.isFinite and String(), not typeof and "absent", so that a value the
+  // decisions themselves reject — NaN passes typeof "number" — is printed as
+  // what it is rather than quietly relabelled.
+  const remaining = Number.isFinite(z.queue_items_remaining)
     ? z.queue_items_remaining
-    // Absent is not zero. Saying so in the log is the point: this is the field
-    // Roon may simply omit, and a reader must not mistake it for an empty queue.
-    : "absent";
+    : (z.queue_items_remaining === undefined ? "absent" : String(z.queue_items_remaining));
   console.log("[zone] " + JSON.stringify(z.display_name || z.zone_id) + " " +
               prev + "\u2192" + state +
               " remaining=" + remaining +
@@ -11253,25 +11384,39 @@ function logZoneTransition(z) {
               (np ? " np=" + JSON.stringify((np.line1 || "") + " / " + (np.line2 || "")) : ""));
 }
 
-function radioBusyMs() { return 30000; }
+// How long an append suppresses the next one, when the queue has not visibly
+// grown to confirm it landed.
+function radioAppendHoldMs() { return 30000; }
 
-// Is a top-up already in flight for this zone? Split out of radioTopUp so the
-// caller can tell "I acted" from "I was dropped" WITHOUT awaiting — which
-// matters because it must not spend the playing→stopped transition on an
-// action that never ran. See handleRadioZone.
+// Is a top-up already in flight, or too soon after the last one?
+//
+// The two are deliberately separate. The old single "active + 30s" flag
+// conflated them, and once browse/load gained a 90s deadline a genuinely slow
+// top-up could exceed 30s — at which point the guard let a SECOND one start
+// concurrently. Given the recovery path issues a queue-REPLACING Play Now,
+// two overlapping top-ups is the one combination that can destroy a queue.
 function radioTopUpBlocked(zoneId) {
   const st = radioBusy[zoneId];
-  return !!(st && st.active && (Date.now() - st.ts) < radioBusyMs());
+  if (!st) return false;
+  if (st.inFlight) return true;
+  return !!(st.appendedAt && (Date.now() - st.appendedAt) < radioAppendHoldMs());
 }
 
 async function radioTopUp(zoneId, mode) {
-  const st = radioBusy[zoneId] || (radioBusy[zoneId] = { active: false, ts: 0 });
-  if (radioTopUpBlocked(zoneId)) return; // already working
-  st.active = true; st.ts = Date.now();
-  st.strandedAt = 0; st.resumed = false;   // a fresh episode
+  const st = radioState(zoneId);
+  if (radioTopUpBlocked(zoneId)) return; // already working, or just worked
+  st.inFlight = true;
+  st.strandedAt = 0; st.resumed = false; st.resumeTries = 0;   // a fresh episode
   try {
     const pick = await pickSmartAlbum();
-    if (!pick) { st.active = false; return; }
+    if (!pick) {
+      // No pick means no index yet, or an empty library. A stopped zone emits
+      // no further events, so without a re-check this zone is never
+      // reconsidered — the exact shape of the bug this version is fixing.
+      console.error("[radio] " + mode + " -> " + zoneId + ": nothing to pick");
+      scheduleRadioRecheck(zoneId);
+      return;
+    }
     // Logged BEFORE the invoke as well as after, and unconditionally: a top-up
     // that hangs inside the Core call is otherwise completely silent, and
     // "play" REPLACES the queue, so it is the one automatic action in this
@@ -11280,87 +11425,106 @@ async function radioTopUp(zoneId, mode) {
     await openAlbumByOffset(pick.offset, zoneId, mode === "play" ? "play_now" : "queue", null,
                             { title: pick.title || "", subtitle: pick.subtitle || "" });
     console.log("[radio] " + mode + " done -> " + zoneId);
-    // st.active clears when the queue grows (handleRadioZone sees remaining > 1)
-    // or via the 30s timeout above if the queue never reflects the add.
+    st.appendedAt = Date.now();
+    // The start we were authorised to make has happened; the authorisation is
+    // spent. (An append is not a start, so "queue" leaves it alone.)
+    if (mode === "play") st.playAuthorized = false;
   } catch (e) {
     console.error("[radio] top-up failed: " + e.message);
     if (e && e.stale) {
       // The pick's offset drifted mid-library-change (import/rescan). Zone
-      // events fire ~1/sec while a queue drains, so releasing the guard here
-      // would hammer the Core with a failing browse session per event for the
-      // whole import. Keep the 30s throttle armed; the retry after it lapses
-      // re-picks against the (by then likely rebuilt) index.
-      st.ts = Date.now();   // st.active stays true
-    } else {
-      st.active = false; // allow a retry on the next zone update
+      // events fire ~1/sec while a queue drains, so retrying immediately would
+      // hammer the Core with a failing browse session per event for the whole
+      // import. Hold as if an append had landed; the re-check below re-picks
+      // against the (by then likely rebuilt) index.
+      st.appendedAt = Date.now();
     }
+    // Either way this zone still needs something, and nothing else will ask.
+    scheduleRadioRecheck(zoneId);
+  } finally {
+    st.inFlight = false;
   }
 }
 
 function handleRadioZone(z, isInitial, allowPlay) {
   if (!z || !radioZones.has(z.zone_id)) return;
   const zid = z.zone_id;
-  const st  = radioBusy[zid] || (radioBusy[zid] = { active: false, ts: 0 });
+  const st  = radioState(zid);
+  const playing = z.state === "playing" || z.state === "loading";
 
-  // Clear the "working" guard once the queue is healthy again — and with it
-  // the stranded episode, because a zone that is playing was never stranded.
-  if ((z.state === "playing" || z.state === "loading") &&
-      typeof z.queue_items_remaining === "number" && z.queue_items_remaining > radioQueueFloor()) {
-    st.active = false;
-    st.strandedAt = 0;
-    st.resumed = false;
+  // The append is visibly in the queue — a later one may legitimately be
+  // needed, so stop suppressing it.
+  if (playing && Number.isFinite(z.queue_items_remaining) &&
+      z.queue_items_remaining > radioQueueFloor()) {
+    st.appendedAt = 0;
   }
 
-  // Latch the stranding HERE, at the moment it happens, while our own append
-  // is still in flight. It cannot be re-derived later: by the time the append
-  // lands the zone has been stopped for a while and every trace of the
-  // transition is gone.
-  if (z.state === "stopped" && st.active && !st.strandedAt) st.strandedAt = Date.now();
+  // ANY state but stopped ends an episode. A playing zone was never stranded,
+  // and a paused one is under the user's hand. This must not be narrowed to
+  // "playing with a healthy queue": an episode that outlives the moment it
+  // describes is one that fires against something the user did later.
+  if (z.state !== "stopped") {
+    st.strandedAt = 0; st.resumed = false; st.resumeTries = 0;
+    if (playing) st.playAuthorized = false;
+  }
 
-  // Did the append land in a queue Roon had already stopped? Then finish what
-  // we started — resume the queue, never replace it.
-  if (radioResumeDecision(z, true, st)) {
+  // Latch the stranding HERE, at the moment it happens, and ONLY while our own
+  // append is genuinely executing. It cannot be re-derived later: by the time
+  // the append lands the zone has been stopped for a while and every trace of
+  // the transition is gone. `inFlight` and not a timestamp comparison, because
+  // "a top-up ran recently" also describes a zone the user stopped by hand
+  // moments after one finished.
+  if (z.state === "stopped" && st.inFlight && !st.strandedAt) st.strandedAt = Date.now();
+
+  // Witnessing a zone run out naturally authorises starting something fresh.
+  // Latched rather than read back from zonePrevState at the point of use: the
+  // transition is one event, and the action may not be able to run for several
+  // more. Reading it late is what left zones permanently silent.
+  if (z.state === "stopped" && !isInitial &&
+      (zonePrevState[zid] === "playing" || zonePrevState[zid] === "loading")) {
+    st.playAuthorized = true;
+  }
+
+  // Did our append land in a queue Roon had already stopped? Then finish what
+  // we started — resume the queue, never replace it. Never on a reconnect
+  // snapshot: `isInitial` means these are zones as they already were, and
+  // starting music on the strength of a state we did not witness happen is
+  // exactly what that flag exists to prevent.
+  if (!isInitial && radioResumeDecision(z, true, st)) {
     st.resumed = true;
+    st.resumeTries++;
     console.log("[radio] resume -> " + zid + " (our append landed on a stopped zone, remaining=" +
-                z.queue_items_remaining + ")");
+                z.queue_items_remaining + ", try " + st.resumeTries + ")");
+    const failed = (why) => {
+      console.error("[radio] resume failed -> " + zid + ": " + why);
+      // A transient refusal must not be terminal — that would leave exactly
+      // the silent-zone-with-a-full-queue this verb exists to clear.
+      // radioResumeMaxTries bounds the retries.
+      st.resumed = false;
+      scheduleRadioRecheck(zid);
+    };
     try {
       core.services.RoonApiTransport.control(zid, "play", (err) => {
-        if (err) console.error("[radio] resume failed -> " + zid + ": " +
-                               (typeof err === "string" ? err : JSON.stringify(err)));
+        if (err) failed(typeof err === "string" ? err : JSON.stringify(err));
       });
     } catch (e) {
-      console.error("[radio] resume threw -> " + zid + ": " + e.message);
+      failed(e.message);
     }
   }
 
   const decision = radioDecision(z, true);
-  // Whether the decision was actually CARRIED OUT. A decision the busy guard
-  // dropped must not consume the transition below: doing so spent the one
-  // piece of evidence that authorises "play" on an action that never ran, so
-  // a slow or failed top-up left the zone silent for good.
-  let acted = true;
   if (decision === "queue") {
-    if (radioTopUpBlocked(zid)) acted = false;
+    if (radioTopUpBlocked(zid)) scheduleRadioRecheck(zid);
     else radioTopUp(zid, "queue");
-  } else if (decision === "play" && !isInitial) {
-    // Only start playback when we witnessed this zone transition from
-    // playing/loading → stopped (queue ran out naturally), OR when the caller
-    // explicitly requested it (user just enabled radio on an idle zone).
-    const wasPlaying = zonePrevState[zid] === "playing" || zonePrevState[zid] === "loading";
-    if (wasPlaying || allowPlay) {
-      if (radioTopUpBlocked(zid)) acted = false;
-      else radioTopUp(zid, "play");
-    }
+  } else if (decision === "play" && !isInitial && (st.playAuthorized || allowPlay)) {
+    if (radioTopUpBlocked(zid)) scheduleRadioRecheck(zid);
+    else radioTopUp(zid, "play");
   }
 
-  // A stopped zone emits no further events on its own, so a dropped decision
-  // would otherwise never be reconsidered. Re-examine it once the guard has
-  // lapsed, with whatever the zone looks like then.
-  if (!acted) scheduleRadioRecheck(zid);
-
-  // Record state AFTER the decision so the next event sees a real transition —
-  // but only when the decision was acted on, for the reason above.
-  if (acted) zonePrevState[zid] = z.state;
+  // Record state AFTER the decision so the next event sees a real transition.
+  // Unconditional again: nothing downstream depends on this surviving now that
+  // the authorisation above is a latch of its own.
+  zonePrevState[zid] = z.state;
 }
 
 // One pending re-examination per zone, at most. Cleared when it fires, when
@@ -11371,8 +11535,14 @@ function scheduleRadioRecheck(zid) {
   const t = setTimeout(() => {
     delete radioRecheckTimers[zid];
     const z = zones[zid];
-    if (z && radioZones.has(zid)) handleRadioZone(z);
-  }, radioBusyMs() + 2000);
+    if (!z || !radioZones.has(zid)) return;
+    // Still working? Re-arm rather than acting: a top-up can legitimately run
+    // longer than this interval now that each Roon call may take up to 90s,
+    // and re-entering here while one is in flight is how two albums end up
+    // racing into one queue.
+    if (radioBusy[zid] && radioBusy[zid].inFlight) { scheduleRadioRecheck(zid); return; }
+    handleRadioZone(z);
+  }, radioAppendHoldMs() + 2000);
   if (t.unref) t.unref();   // a pending recheck must never hold the process open
   radioRecheckTimers[zid] = t;
 }
@@ -11451,11 +11621,7 @@ app.post("/api/radio", (req, res) => {
     radioZones.add(zoneId);
   } else {
     radioZones.delete(zoneId);
-    if (radioBusy[zoneId]) {
-      radioBusy[zoneId].active = false;
-      radioBusy[zoneId].strandedAt = 0;   // radio off means no episode to finish
-    }
-    cancelRadioRecheck(zoneId);
+    forgetRadioZone(zoneId);   // radio off means no episode to finish
   }
   persistRadio();
   res.json({ ok: true, enabled });

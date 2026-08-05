@@ -22,7 +22,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { radioDecision, radioResumeDecision, radioQueueFloor } = require("../../lib/radio");
+const { radioDecision, radioResumeDecision, radioQueueFloor,
+        radioResumeMaxTries } = require("../../lib/radio");
 
 // A zone, with only the fields the decision reads.
 function zone(over) {
@@ -210,6 +211,31 @@ test("resuming a queue the radio stranded", async (t) => {
     assert.equal(radioResumeDecision(
       zone({ state: "stopped", queue_items_remaining: 12, is_play_allowed: undefined }), true, ep()),
       true);
+  });
+
+  await t.test("it stands down for Roon's own radio, like every other verb", () => {
+    // /api/zone-settings tells the user our radio stands down when Roon Radio
+    // is on. If this verb did not, that statement would simply be false — and
+    // the two would be filling and starting one queue against each other.
+    assert.equal(radioResumeDecision(
+      zone({ state: "stopped", queue_items_remaining: 12,
+             settings: { auto_radio: true } }), true, ep()), false);
+    assert.equal(radioResumeDecision(
+      zone({ state: "stopped", queue_items_remaining: 12,
+             settings: { auto_radio: false } }), true, ep()), true);
+  });
+
+  await t.test("a refusal is allowed to be transient, but not forever", () => {
+    // A resume Roon rejects (output momentarily unavailable, zone mid-regroup)
+    // must not be terminal — that leaves exactly the silent-zone-with-a-full-
+    // queue this verb exists to clear. But a zone that will not start must not
+    // be asked once a second for the rest of the day either.
+    const z = zone({ state: "stopped", queue_items_remaining: 12 });
+    assert.equal(radioResumeDecision(z, true, ep({ resumeTries: 1 })), true);
+    assert.equal(radioResumeDecision(
+      z, true, ep({ resumeTries: radioResumeMaxTries() })), false);
+    assert.equal(radioResumeDecision(
+      z, true, ep({ resumeTries: radioResumeMaxTries() + 5 })), false);
   });
 
   await t.test("radio off, or no zone, decides nothing", () => {
