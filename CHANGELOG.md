@@ -2,6 +2,115 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.45] — 2026-08-05
+
+### Investigated — "playback stops at the end of an album even when another track is queued"
+
+**With Random Album Radio off for a zone (the default), this extension cannot stop that zone or
+empty its queue.** There is no code path. Every playback command — play/pause/stop/next, pause_all,
+transfer_zone, grouping, play_from_here, standby — lives inside an HTTP handler reached only from a
+click. Every `setInterval` in the server and the client was checked; none issues a transport command.
+The zone poll is a pure read, and nothing anywhere reacts to `state === "stopped"`.
+
+With radio **on**, the extension makes exactly one automatic queue write, and its timing coincides
+exactly with the reported failure: during the final track of every album it invokes Roon's own Queue
+action to append the next one. That is an append — `matchAction` will only return an action whose
+title matches `/queue/`, and the loose "starts with play" fallback is gated to `kind === "play_now"`
+— so it cannot replace a queue. Whether an append during the last track can make Roon stop is not
+observable from this code, and this changelog will not pretend otherwise. What is now possible is
+telling the two apart from the log.
+
+### Added — always-on zone transition logging
+
+The one fact that settles this — *did the queue still have items at the instant Roon stopped?* — was
+read in exactly one place (`radioDecision`) and recorded nowhere: not in the zone poll, not in
+`/api/zones`, not in any log line. So the question could not be answered even in principle.
+
+Every genuine zone state change now logs one unconditional line:
+
+```
+[zone] "Kitchen" playing→stopped remaining=3 radio=off auto_radio=false np="Track / Artist"
+```
+
+`remaining=absent` is printed as such rather than as `0`, because those are different facts. The
+`[radio]` lines are unconditional too now, and one is emitted **before** the Core call as well as
+after, so a top-up that hangs inside Roon is visible instead of silent.
+
+### Fixed — an absent queue count was read as an empty queue
+
+Found while investigating. `radioDecision` treated a **missing** `queue_items_remaining` on a stopped
+zone as "the queue is empty" and returned `"play"` — which is Roon's Play Now, and **replaces the
+queue**. `queue_items_remaining` is optional in Roon's transport payload, so a Core that simply did
+not mention the field could have had a user's queue wiped and a random album started over it.
+
+This is the third appearance of one error class in this project, and v1.7.1 already named it:
+*"Unknown" read as "none"*. Absent is not zero. The asymmetry that makes the fix correct is that
+`"queue"` only appends, so thin evidence costs an extra album, while `"play"` destroys something and
+may only fire on positive evidence.
+
+It does **not** explain the reported symptom — if that path fired, music would start, not stop — and
+it is not presented as the fix for it.
+
+### Tests
+- `test/unit/radio.test.js` — 21 tests, the first this feature has ever had, which is how the above
+  survived. Pins the append/replace asymmetry, that only a stopped zone can produce the destructive
+  verb, and that absent, `null`, `"0"` and `NaN` are none of them an empty queue.
+- 593 unit + 274 DOM + 37 static.
+
+### How to check your own case
+`GET http://<host>:3399/api/radio` lists the zones radio is enabled for. If the affected zone is not
+in that list, this extension made no automatic queue writes and the cause is elsewhere. Note radio
+can also be switched on from **Roon's** Settings → Extensions, per zone, so never having touched the
+toggle in the app is not conclusive.
+
+## [1.7.44] — 2026-08-05
+
+### Fixed — imported playlists reported tracks as missing that you actually own
+
+A playlist shared from a Lyrion/LMS instance indexing **the same local files and the same Qobuz
+account** reported tracks as unmatched. Three real examples, all compilations: *Dreams* and *Linger*
+by The Cranberries on "The Best Of The Cranberries (20th Century Masters)", and *All My Life* by Foo
+Fighters on "Greatest Hits".
+
+Two servers indexing the same music do not agree on how to group or title a compilation, and Roon in
+particular credits one to **Various Artists** while a playlist names the *track's* artist. The
+resolver compared `normalize(album)` for exact equality and `normalize(artist)` for exact equality —
+stricter than anything else in this codebase. Every other identity path here (source badges, the file
+join, streaming favourites) matches through `albumKeys`, which strips edition suffixes, folds
+"&"/"and", drops a leading "The" and splits a credit into individual artists. The import path simply
+never used any of it.
+
+It does now, in rungs, and still **zero Roon calls**:
+
+1. **Tolerant identity** — `albumKeys`, so "(20th Century Masters)" and a leading "The" stop mattering.
+2. **Title alone, edition suffixes stripped** — the compilation case, where no title+artist key can
+   ever match because the album is credited to Various Artists. Safe only when exactly one album in
+   the library carries that title.
+3. **The credit decides** among several albums sharing a title, using the same whole-name comparison
+   the artist links use.
+4. **The play history** — `plays` records `line3` from Roon's own now-playing feed, so for any track
+   this household has played it already holds **Roon's** name for the album that track sits on. That
+   is the one fact a share cannot carry and the snapshot cannot infer, and reading it is free.
+
+**The safety rule is unchanged.** A coin flip is still refused: two albums sharing a title with no
+artist to separate them resolves to nothing, exactly as before. What changed is that far fewer
+entries are *genuinely* ambiguous. And because rung 4 can find a track under an album the share never
+named, the import report now lists those separately — *"N found on a different album than the
+playlist named"* — because silently swapping one record for another is what makes these tools
+untrustworthy.
+
+A side effect worth noting: an entry with **no album at all** can now resolve. Shares made from a
+Roon playlist carry no album (Roon does not put one on the row), so those were previously
+unresolvable by construction.
+
+### Fixed — a test fixture that was hiding all of this
+
+`test/unit/userplaylists.test.js` faked every album's `srcKeys` as `"k1"`, `"k2"`… and stubbed
+`creditIdentities` with the wrong shape, which makes `creditHasArtist` return false for everything.
+So the identity rung matched nothing and the artist-disambiguation test passed without ever reaching
+the comparison it claimed to be about. Both are now faithful to production, plus 20 new tests
+covering the compilation case and the history rung against a real SQLite `plays` table.
+
 ## [1.7.43] — 2026-08-05
 
 ### Fixed — "Couldn't play from here: Load failed" when opening the app

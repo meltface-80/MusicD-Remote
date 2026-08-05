@@ -2290,6 +2290,33 @@
       out.appendChild(ul);
     }
 
+    // Tracks found under an album the share did not name. Shown, not hidden:
+    // this is a SUBSTITUTION, and the whole reason the import report exists is
+    // that quietly swapping one record for another is what makes these tools
+    // untrustworthy. Two servers indexing the same files group compilations
+    // differently, so this is the normal case rather than an odd one.
+    const sub = j.substituted || [];
+    if (sub.length) {
+      const w = document.createElement("div");
+      w.className = "share-sum share-sub-note";
+      w.textContent = `${sub.length} found on a different album than the playlist named:`;
+      out.appendChild(w);
+      const ul = document.createElement("ul");
+      ul.className = "import-missing import-substituted";
+      for (const m of sub.slice(0, 25)) {
+        const li = document.createElement("li");
+        li.textContent = [m.title, m.artist].filter(Boolean).join(" · ") +
+                         " — " + (m.found_album || "your library");
+        ul.appendChild(li);
+      }
+      if (sub.length > 25) {
+        const li = document.createElement("li");
+        li.textContent = `…and ${sub.length - 25} more`;
+        ul.appendChild(li);
+      }
+      out.appendChild(ul);
+    }
+
     if (!n) {
       const w = document.createElement("div");
       w.className = "share-warn";

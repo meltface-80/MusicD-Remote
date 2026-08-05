@@ -228,7 +228,10 @@ const roon = new RoonApi({
         (data.zones_added   || []).forEach(z => { zones[z.zone_id] = z;
           (z.outputs || []).forEach(o => { outputs[o.output_id] = o; }); handleRadioZone(z, true); scrobbleUpdate(z); });
         (data.zones_changed || []).forEach(z => { zones[z.zone_id] = z;
-          (z.outputs || []).forEach(o => { outputs[o.output_id] = o; }); handleRadioZone(z); scrobbleUpdate(z); });
+          (z.outputs || []).forEach(o => { outputs[o.output_id] = o; });
+          // Before the radio decision, so the log shows the state that drove it.
+          logZoneTransition(z);
+          handleRadioZone(z); scrobbleUpdate(z); });
         (data.zones_removed || []).forEach(zid => {
           const z = zones[zid];
           // Only when the outputs feed isn't live — see outputsFeedLive above:
@@ -236,6 +239,7 @@ const roon = new RoonApi({
           if (z && !outputsFeedLive) (z.outputs || []).forEach(o => delete outputs[o.output_id]);
           delete zones[zid];
           delete zonePrevState[zid]; // zone offline — reset so it won't auto-start if it returns
+          delete zoneLogPrev[zid];   // and so its return reads as a first sighting, not a transition
         });
       }
     });
@@ -8274,37 +8278,150 @@ function decodeSharePayload(blob) {
   return doc;
 }
 
-// Match a shared entry against this library's snapshot. ZERO Roon calls: the
-// snapshot already carries normalized title and artist for every album, so the
-// whole resolution is in memory.
+// The play history as a track -> album lookup. ZERO Roon calls.
 //
-// Deliberately conservative. `ambiguousAlbumKeys` holds identities owned by
-// more than one album — a duplicate rip, or a local copy beside a streaming
-// one — and resolving those would be a coin flip. Better to report an entry
-// as unmatched than to put the wrong record in someone's playlist.
+// The single most useful thing about this table is WHOSE album name it holds:
+// `line3` is Roon's own, recorded from the now-playing feed. So when a shared
+// playlist names a compilation this library groups differently, the history
+// already knows what Roon calls the record that track actually sits on — which
+// is the one fact the share cannot carry and the snapshot cannot infer.
+//
+// Coverage is only what this household has played, so it is a rung, not a
+// solution. Returns [{ album, artist }] most-played first.
+function playsForTrack(trackTitle) {
+  if (!labelsDb) return [];
+  const t = String(trackTitle || "").toLowerCase().trim();
+  if (!t) return [];
+  try {
+    return labelsDb.prepare(
+      "SELECT album, artist, COUNT(*) n FROM plays " +
+      "WHERE lower(trim(track)) = ? AND album != '' " +
+      "GROUP BY lower(trim(album)) ORDER BY n DESC LIMIT 8").all(t);
+  } catch (e) {
+    return [];   // DB unavailable — this rung simply does not fire
+  }
+}
+
+// Two lookup tables over the snapshot, both rebuilt only when the library is.
+//
+// The import resolver used to compare `normalize(albumTitle)` for exact
+// equality against `a.nTitle`, and `normalize(artist)` against `a.nArtist`.
+// That is stricter than anything else in this file: the badges, the file join
+// and the streaming favourites all match through `albumKeys`, which strips
+// edition suffixes, folds "&"/"and", drops a leading "The" and splits a credit
+// into individual artists. A playlist shared from another server — where the
+// same files are grouped and titled differently — fails the strict comparison
+// and passes the tolerant one.
+//
+// `byKey` is the tolerant identity; `byTitle` exists because a compilation is
+// the case where the artist CANNOT agree: the share names the track's artist
+// ("The Cranberries") and Roon credits the album to "Various Artists", so no
+// title+artist key can ever intersect. Matching on the title alone is safe
+// only when exactly one album has it, which is why the arrays are kept rather
+// than a first-wins map.
+let _libLookup = { builtAt: -1, byKey: null, byTitle: null };
+function libraryLookup() {
+  if (_libLookup.builtAt === albumIndex.builtAt && _libLookup.byKey) return _libLookup;
+  const byKey = new Map(), byTitle = new Map();
+  const push = (map, k, al) => {
+    if (!k) return;
+    let arr = map.get(k);
+    if (!arr) { arr = []; map.set(k, arr); }
+    if (arr.indexOf(al) === -1) arr.push(al);
+  };
+  for (const al of albumIndex.albums) {
+    for (const k of (al.srcKeys || [])) push(byKey, k, al);
+    for (const t of albumTitleVariants(al.title || "")) push(byTitle, t, al);
+  }
+  _libLookup = { builtAt: albumIndex.builtAt, byKey, byTitle };
+  return _libLookup;
+}
+
+// Find the one album in the library that a shared entry names, or null.
+//
+// Never guesses. Every rung either identifies exactly one album or declines —
+// two albums sharing a title is a coin flip, and a coin flip that silently puts
+// the wrong record in someone's playlist is worse than a miss they can see.
+function findSharedAlbum(albumTitle, artist) {
+  const lut = libraryLookup();
+
+  // 1. Full identity, the tolerant one. Ambiguous identities are skipped
+  //    outright: those are owned by more than one album by construction.
+  for (const k of albumKeys(albumTitle, artist)) {
+    if (ambiguousAlbumKeys.has(k)) continue;
+    const arr = lut.byKey.get(k);
+    if (arr && arr.length === 1) return arr[0];
+  }
+
+  // 2. Title alone, edition suffixes stripped. The compilation case: the album
+  //    is credited to "Various Artists" here and to the track's own artist in
+  //    the share, so no identity key can match — but if precisely one album in
+  //    the library carries that title, there is nothing to be ambiguous about.
+  const titles = albumTitleVariants(albumTitle);
+  for (const t of titles) {
+    const arr = lut.byTitle.get(t);
+    if (arr && arr.length === 1) return arr[0];
+  }
+
+  // 3. Several albums share the title — let the credit choose, using the same
+  //    whole-name comparison the artist links use (never a substring).
+  if (artist) {
+    for (const t of titles) {
+      const arr = lut.byTitle.get(t);
+      if (!arr || arr.length < 2) continue;
+      const named = arr.filter(a => creditHasArtist(a.subtitle || "", artist));
+      if (named.length === 1) return named[0];
+    }
+  }
+  return null;
+}
+
+// The whole resolution, in rungs. Returns { album, via } or null.
+//
+// `via` is not decoration: a track found under an album the share did not name
+// is a SUBSTITUTION, and this project's rule is that substitutions are shown,
+// never made quietly. The import report uses it to say so.
+function resolveSharedAlbum(albumTitle, artist, trackTitle) {
+  if (albumTitle && canonText(albumTitle)) {
+    const direct = findSharedAlbum(albumTitle, artist);
+    if (direct) return { album: direct, via: "album" };
+  }
+
+  // The share's album is not in this library under any tolerant reading of its
+  // name — the compilation case. Ask the play history what Roon calls the
+  // record this track actually sits on, then resolve THAT name normally.
+  for (const row of playsForTrack(trackTitle)) {
+    // The history's artist column is the TRACK artist, which is exactly what a
+    // share carries, so it is the right thing to compare against here.
+    if (artist && row.artist && !namesEqualLoose(row.artist, artist)) continue;
+    const hit = findSharedAlbum(row.album, row.artist || artist);
+    if (hit) return { album: hit, via: "history" };
+  }
+  return null;
+}
+
+// Match a shared entry against this library's snapshot. ZERO Roon calls.
+//
+// Deliberately conservative, and unchanged in that: `ambiguousAlbumKeys` holds
+// identities owned by more than one album — a duplicate rip, or a local copy
+// beside a streaming one — and resolving those would be a coin flip. Better to
+// report an entry as unmatched than to put the wrong record in someone's
+// playlist. What changed in v1.7.44 is that far fewer entries are genuinely
+// ambiguous: the resolver now reads names the way the rest of this file does.
+//
+// Returns the storable record with a non-persisted `_via` describing which rung
+// matched, so the report can show a substitution rather than make one quietly.
+// The album title is no longer required — the play-history rung finds a track
+// without one.
 function resolveSharedTrack(entry) {
   const title = shareText(entry && entry.title, shareTextMax());
   if (!title) return null;
   const albumTitle = shareText(entry && entry.album, shareTextMax());
   const artist = shareText(entry && entry.creator, shareTextMax());
-  if (!albumTitle) return null;   // no album, nothing to open on the Core
 
-  const nT = normalize(albumTitle);
-  const nA = normalize(artist);
-  if (!nT) return null;
-
-  const keys = albumKeys(albumTitle, artist);
-  if (keys.length && keys.every(k => ambiguousAlbumKeys.has(k))) return null;
-
-  // Artist first, because two records can share a title.
-  let hit = nA ? albumIndex.albums.find(a => a.nTitle === nT && a.nArtist === nA) : null;
-  if (!hit) {
-    const byTitle = albumIndex.albums.filter(a => a.nTitle === nT);
-    // One match on title alone is safe; several is the coin flip again.
-    if (byTitle.length === 1) hit = byTitle[0];
-    else if (nA) hit = byTitle.find(a => creditHasArtist(a.subtitle || "", artist)) || null;
-  }
-  if (!hit) return null;
+  const found = resolveSharedAlbum(albumTitle, artist, title);
+  if (!found) return null;
+  const hit = found.album;
 
   return userTrackRecord({
     album_offset: hit.offset,
@@ -8318,6 +8435,21 @@ function resolveSharedTrack(entry) {
     image_key: hit.image_key,
     track_no: shareInt(entry && entry.trackNum, 1, 999),
   });
+}
+
+// The same resolution, plus how it got there. Kept separate so the storable
+// record stays exactly the named-field literal it has always been — nothing
+// from a shared file may reach storage by any other route.
+function resolveSharedEntry(entry) {
+  const title = shareText(entry && entry.title, shareTextMax());
+  if (!title) return null;
+  const albumTitle = shareText(entry && entry.album, shareTextMax());
+  const artist = shareText(entry && entry.creator, shareTextMax());
+  const found = resolveSharedAlbum(albumTitle, artist, title);
+  if (!found) return null;
+  const track = resolveSharedTrack(entry);
+  if (!track) return null;
+  return { track, via: found.via, album: found.album };
 }
 
 // Turn a playlist's tracks into a shareable blob.
@@ -8535,10 +8667,24 @@ app.post("/api/share/import", async (req, res) => {
     const entries = doc.playlist.track.slice(0, userPlTracksMax());
     const resolved = [];
     const missing = [];
+    const substituted = [];
     for (const e of entries) {
-      const hit = resolveSharedTrack(e);
-      if (hit) resolved.push(hit);
-      else {
+      const found = resolveSharedEntry(e);
+      if (found) {
+        resolved.push(found.track);
+        // Matched, but not on the album the share named — the play history
+        // knew what Roon calls the record this track actually sits on. Listed
+        // so the user sees the substitution instead of wondering later why a
+        // track's album reads differently from the playlist they were sent.
+        if (found.via !== "album") {
+          substituted.push({
+            title: shareText(e && e.title, 200),
+            artist: shareText(e && e.creator, 200),
+            shared_album: shareText(e && e.album, 200),
+            found_album: found.album.title || "",
+          });
+        }
+      } else {
         // Reported, never silently dropped: "38 of 45" is the honest outcome
         // and the missing 7 are the interesting part.
         missing.push({
@@ -8555,6 +8701,7 @@ app.post("/api/share/import", async (req, res) => {
       truncated: doc.playlist.track.length > userPlTracksMax(),
       resolved,
       missing,
+      substituted,
     });
   } catch (e) {
     console.warn("[share] import failed:", e.message);
@@ -10680,6 +10827,40 @@ const radioBusy = {}; // zone_id -> { active: bool, ts: number }
 // we first see it (restart / reconnect) never gets a "play" command.
 const zonePrevState = {};
 
+// Log every genuine zone state change, ALWAYS — not behind DEBUG.
+//
+// Added because a report of "playback stops at the end of an album even when
+// another track is queued" could not be investigated at all: the one fact that
+// settles it — did the queue still have items at the instant Roon stopped? —
+// was read in exactly one place (radioDecision) and recorded nowhere. It is not
+// in the zone poll, not in /api/zones, not in any log line.
+//
+// One line per transition per zone is a handful of lines an hour on a busy
+// system, which is why it can afford to be unconditional. `radio` and
+// `auto_radio` are included because the first question about any unexpected
+// stop is which of the two radios, if either, was in play.
+const zoneLogPrev = {};
+function logZoneTransition(z) {
+  if (!z || !z.zone_id) return;
+  const prev = zoneLogPrev[z.zone_id];
+  const state = z.state || "unknown";
+  if (prev === state) return;
+  zoneLogPrev[z.zone_id] = state;
+  if (prev === undefined) return;   // first sighting is not a transition
+  const np = z.now_playing && z.now_playing.two_line;
+  const remaining = (typeof z.queue_items_remaining === "number")
+    ? z.queue_items_remaining
+    // Absent is not zero. Saying so in the log is the point: this is the field
+    // Roon may simply omit, and a reader must not mistake it for an empty queue.
+    : "absent";
+  console.log("[zone] " + JSON.stringify(z.display_name || z.zone_id) + " " +
+              prev + "\u2192" + state +
+              " remaining=" + remaining +
+              " radio=" + (radioZones.has(z.zone_id) ? "on" : "off") +
+              " auto_radio=" + !!(z.settings && z.settings.auto_radio) +
+              (np ? " np=" + JSON.stringify((np.line1 || "") + " / " + (np.line2 || "")) : ""));
+}
+
 async function radioTopUp(zoneId, mode) {
   const st = radioBusy[zoneId] || (radioBusy[zoneId] = { active: false, ts: 0 });
   if (st.active && (Date.now() - st.ts) < 30000) return; // already working; 30s safety
@@ -10687,13 +10868,18 @@ async function radioTopUp(zoneId, mode) {
   try {
     const pick = await pickSmartAlbum();
     if (!pick) { st.active = false; return; }
+    // Logged BEFORE the invoke as well as after, and unconditionally: a top-up
+    // that hangs inside the Core call is otherwise completely silent, and
+    // "play" REPLACES the queue, so it is the one automatic action in this
+    // extension that can destroy something the user set up.
+    console.log("[radio] " + mode + " -> " + zoneId + " : " + JSON.stringify(pick.title || ""));
     await openAlbumByOffset(pick.offset, zoneId, mode === "play" ? "play_now" : "queue", null,
                             { title: pick.title || "", subtitle: pick.subtitle || "" });
-    if (DEBUG) console.log("[radio] " + mode + " '" + pick.title + "' -> " + zoneId);
+    console.log("[radio] " + mode + " done -> " + zoneId);
     // st.active clears when the queue grows (handleRadioZone sees remaining > 1)
     // or via the 30s timeout above if the queue never reflects the add.
   } catch (e) {
-    if (DEBUG) console.error("[radio] top-up failed:", e.message);
+    console.error("[radio] top-up failed: " + e.message);
     if (e && e.stale) {
       // The pick's offset drifted mid-library-change (import/rescan). Zone
       // events fire ~1/sec while a queue drains, so releasing the guard here
