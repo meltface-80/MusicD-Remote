@@ -2229,22 +2229,56 @@
     btn.disabled = true;
     if (out) out.textContent = "Matching against your library…";
     try {
-      const r = await fetch("/api/share/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ blob })
-      });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) {
+      const j = await postImport(blob, false);
+      if (!j.ok) {
         if (out) out.textContent = j.error || "Couldn't read that playlist";
         return;
       }
       renderImportResult(out, j, btn);
+
+      // Anything names alone couldn't place gets a second pass that reads what
+      // is actually ON the library's albums. It runs automatically because the
+      // alternative is asking the user to do a manual search, which is the
+      // thing this is meant to replace — but it runs SECOND, so the fast
+      // answer is on screen while it works.
+      if (j.deep_available) {
+        // Saving DURING the second pass would create a playlist from the
+        // smaller set, and the second render then replaces the "Saved" state
+        // on a detached node — so a second tap makes a second playlist with
+        // the same name (the server creates by name, it never finds one).
+        // Nothing to save until the count is final.
+        const save = out.querySelector(".import-save");
+        if (save) { save.disabled = true; save.textContent = "Searching your library…"; }
+        const note = document.createElement("div");
+        note.className = "share-sum share-sub-note";
+        note.textContent = `Looking inside your albums for the other ${j.missing.length}…`;
+        out.appendChild(note);
+        const deep = await postImport(blob, true);
+        if (deep.ok) {
+          renderImportResult(out, deep, btn);
+        } else {
+          note.textContent = "Couldn't finish the deeper search — the matches above still stand.";
+          if (save) { save.disabled = false; save.textContent = `Save ${(j.resolved || []).length} tracks as a playlist`; }
+        }
+      }
     } catch (e) {
       if (out) out.textContent = "Couldn't reach the extension";
     } finally {
       btn.disabled = false;
     }
+  }
+
+  // Returns the parsed body with `ok` reflecting the HTTP status, so callers
+  // never have to hold both.
+  async function postImport(blob, deep) {
+    const r = await fetch("/api/share/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ blob, deep: !!deep })
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) return { ok: false, error: j.error };
+    return j;
   }
 
   // The resolution report. Showing what did NOT match is the point: every tool
