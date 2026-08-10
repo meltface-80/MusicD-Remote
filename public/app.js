@@ -388,14 +388,30 @@
   // and all. Rebuilding this from an HTML string would silently drop every
   // handler on every tile, which is the v1.6.52 "albums untappable after Back"
   // bug (CLAUDE.md pre-flight step 4).
+  // Rows that legitimately hide themselves when they have nothing to show. A
+  // fresh install has no history and no picks, and an empty labelled shelf
+  // reads as a fault rather than an absence.
+  function rowHidesWhenEmpty(id) {
+    return id === "history" || id === "picks" || id === "lotw";
+  }
+  function rowHasAnyContent(sectionEl) {
+    return !!(sectionEl && sectionEl.querySelector(".album, .pick-card, .home-genre-tile"));
+  }
+
   function applyHomeLayout() {
     if (!homeSections) return;
     for (const row of homeLayout) {
       const el = homeRowEl(row.id);
       if (!el) continue;
       homeSections.appendChild(el);
-      el.dataset.rowOff = row.on ? "" : "1";
-      if (!row.on) el.classList.add("hidden");
+      // toggle, not add. Only ever adding meant a row switched off stayed off
+      // for the rest of the session: nothing removed the class, and the
+      // renderers write into the carousel div rather than the section wrapper.
+      //
+      // Rows that hide themselves when empty (History, Smart Picks, Label of
+      // the week) get their emptiness respected: re-showing a row the layout
+      // enables must not un-hide one that simply has nothing in it.
+      el.classList.toggle("hidden", !row.on || (row.on && rowHidesWhenEmpty(row.id) && !rowHasAnyContent(el)));
     }
   }
   async function loadHomeLayout() {
@@ -958,7 +974,7 @@
       if (sec) sec.classList.add("hidden");
       return false;
     }
-    if (sec) sec.classList.remove("hidden");
+    if (sec) sec.classList.toggle("hidden", !homeRowOn("picks"));   // never un-hide a row the layout switched off
     homePicks.innerHTML = "";
     const frag = document.createDocumentFragment();
     for (const p of picks) frag.appendChild(smartPickCard(p, false));
@@ -1047,7 +1063,7 @@
     }
     if (titleEl) titleEl.textContent = "Label of the week: " + label;
     homeLotw.dataset.label = label;
-    if (sec) sec.classList.remove("hidden");   // un-hide if a prior attempt hid it
+    if (sec) sec.classList.toggle("hidden", !homeRowOn("lotw"));   // never un-hide a row the layout switched off   // un-hide if a prior attempt hid it
     homeLotw.innerHTML = "";
     const frag = document.createDocumentFragment();
     for (const a of albums) frag.appendChild(homeTile(a));   // full-hierarchy offsets → filter:null
@@ -1336,8 +1352,12 @@
     for (const id of LIB_FACET_IDS) o[id] = [];
     return o;
   };
+  // `prefix` is deliberately NOT persisted with the rest of the view: it is a
+  // momentary narrowing, and restoring one on next launch would look like a
+  // library that had lost most of its albums. It is stripped after the restore
+  // below for the same reason.
   let libView = Object.assign(
-    { v: LIB_VIEW_VERSION, sort: "album", dir: "asc", seed: 1, played: "any" },
+    { v: LIB_VIEW_VERSION, sort: "album", dir: "asc", seed: 1, played: "any", prefix: "" },
     libEmptyFacets());
   try {
     const saved = JSON.parse(localStorage.getItem(LIB_VIEW_KEY) || "null");
@@ -1345,7 +1365,7 @@
       const stale = saved.v !== LIB_VIEW_VERSION;
       const dirChangedMeaning = stale && LIB_V1_INVERTED_SORTS.indexOf(saved.sort) > -1;
       if (dirChangedMeaning) delete saved.dir;
-      libView = Object.assign(libView, saved, { v: LIB_VIEW_VERSION });
+      libView = Object.assign(libView, saved, { v: LIB_VIEW_VERSION, prefix: "" });
       if (dirChangedMeaning) libView.dir = libSortDefaultDir(libView.sort);
       // A blob is JSON, so it can be well-formed and still the wrong SHAPE —
       // a partial write or a synced/hand-edited value. Object.assign copies it
@@ -1381,6 +1401,7 @@
       for (const v of (libView[id] || [])) p.append(id, v);
     }
     if (libView.played !== "any") p.set("played", libView.played);
+    if (libView.prefix) p.set("prefix", libView.prefix);
     return p.toString();
   }
   // How many filters are ON. Every selected chip counts — including the
@@ -1821,6 +1842,11 @@
   // since v1.6.59. The row still SHOWS the direction (and the reshuffle glyph
   // for Random) as part of the sort's own label, so nothing is hidden; it just
   // isn't its own button any more.
+  // Whether the funnel's field is showing. Declared before renderLibraryControls
+  // reads it: a `let` used above its declaration is a ReferenceError, which is
+  // the v1.5.66 startup-crash class this project pre-flights for.
+  let libFilterOpen = false;
+
   function renderLibraryControls() {
     let bar = document.getElementById("library-controls");
     if (!bar) {
@@ -1835,18 +1861,102 @@
     // focus is inside it, and dropping focus to <body> then would strand a
     // keyboard user. Restoring by class is enough: there are two controls and
     // they are rebuilt in a fixed order.
-    const refocus = document.activeElement &&
-                    bar.contains(document.activeElement) &&
-                    document.activeElement.className;
+    // Restored by the control's OWN class, not its first one. Every control
+    // here starts with `lib-ctl`, so splitting on the first token matched
+    // whichever came first in the DOM — focus on Sort came back on Focus.
+    const act = document.activeElement;
+    const refocus = act && bar.contains(act) && act.className
+      ? (String(act.className).split(" ").find(c => c !== "lib-ctl" && c) || "lib-ctl")
+      : null;
+    // Typing survives the rebuild applyLibView() does after every keystroke.
+    // `libFilterOpen` is the truth; the live node is only consulted for where
+    // the caret was.
+    const typing = bar.querySelector(".lib-filter-input");
+    const caret = typing ? typing.selectionStart : 0;
+
     bar.innerHTML = "";
+    bar.appendChild(buildLibFilterControl(libFilterOpen));
     bar.appendChild(buildLibFocusButton());
     bar.appendChild(buildLibSortButton());
     bar.classList.toggle("hidden", !libraryWallActive);
-    if (refocus) {
-      const again = bar.querySelector("." + String(refocus).split(" ")[0]);
+
+    if (libFilterOpen) {
+      const again = bar.querySelector(".lib-filter-input");
+      if (again) {
+        again.focus();
+        try { again.setSelectionRange(caret, caret); }
+        catch (e) { /* type="search" refuses setSelectionRange on some engines */ }
+      }
+    } else if (refocus) {
+      const again = bar.querySelector("." + refocus);
       if (again) again.focus();
     }
   }
+
+  // The funnel: a text filter that narrows the wall by the first letters of an
+  // album title OR an artist name.
+  //
+  // A user asked for an A-Z rail down the edge of the screen. That works only
+  // while the wall is sorted alphabetically, which is why it broke under the
+  // other sorts — a letter index means nothing when the order is by year or
+  // play count. Filtering is orthogonal to sorting, so this works under all of
+  // them, and it reaches artists as well as titles, which a rail cannot.
+  function buildLibFilterControl(open) {
+    const wrap = document.createElement("div");
+    wrap.className = "lib-filter-wrap";
+
+    if (!open) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "lib-filter-btn lib-ctl" + (libView.prefix ? " is-active" : "");
+      btn.setAttribute("aria-label", "Filter by name");
+      btn.innerHTML = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" ' +
+        'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ' +
+        'aria-hidden="true"><path d="M3 4h18l-7 8v6l-4 2v-8z"/></svg>';
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        libFilterOpen = true;
+        renderLibraryControls();
+      });
+      wrap.appendChild(btn);
+      return wrap;
+    }
+
+    const input = document.createElement("input");
+    input.type = "search";
+    input.className = "lib-filter-input";
+    input.value = libView.prefix || "";
+    input.placeholder = "Starts with…";
+    input.setAttribute("aria-label", "Filter albums and artists by first letters");
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.addEventListener("click", (e) => e.stopPropagation());
+    input.addEventListener("input", () => {
+      libView.prefix = input.value.trim();
+      applyLibView();
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeLibFilter();
+    });
+    wrap.appendChild(input);
+    return wrap;
+  }
+
+  // Tap away closes AND clears, the same contract the topbar search follows.
+  // A filter left applied behind a closed funnel is a wall that looks broken.
+  function closeLibFilter() {
+    if (!libFilterOpen) return;
+    libFilterOpen = false;
+    const had = !!libView.prefix;
+    libView.prefix = "";
+    if (had) applyLibView();
+    else renderLibraryControls();
+  }
+  document.addEventListener("click", (e) => {
+    if (!libFilterOpen) return;
+    if (e.target.closest && e.target.closest(".lib-filter-wrap")) return;
+    closeLibFilter();
+  });
 
   // `› Focus`, with the number of active facets when there are any. The count
   // is the only state this control carries — what those facets ARE is the
@@ -6104,24 +6214,78 @@
     input.addEventListener("input",  onInput);
     input.addEventListener("search", onInput);
     input.addEventListener("keydown", (e) => {
-      // The search box is always present on Home; Escape just clears it.
-      if (e.key === "Escape") { input.value = ""; stopSearch(); input.blur(); }
+      if (e.key === "Escape") closeSearch();
     });
 
-    // The X has two stages: 1st tap clears the text (bar stays open), 2nd tap
-    // (now empty) closes the bar.
+    // The X clears the text and keeps the field open, so a retype needs no
+    // second tap on the glass. Closing is the tap-away gesture.
     clear.addEventListener("click", () => {
-      // The box stays present on Home; clearing empties it and restores the
-      // Home sections, keeping focus so the user can retype.
       input.value = "";
       stopSearch();
       input.focus();
     });
 
-    window.__runSearch = (q) => { input.value = q; onInput(); };
+    // ---- Open / close --------------------------------------------------
+    //
+    // The field is no longer permanently in the top bar: the glass is the
+    // resting state and the field opens from it. This follows the overflow
+    // menu's pattern exactly (module-level "what is open", stopPropagation on
+    // the trigger, a `closest()` containment test on the document) rather than
+    // inventing a second idiom for the same gesture.
+    //
+    // Closing always CLEARS. A field that reopens holding last week's query,
+    // with the results gone, is a worse state than an empty one.
+    const openBtn = document.getElementById("search-open");
+
+    const searchWrap = document.getElementById("topbar-search");
+    function openSearch() {
+      row.classList.add("open");
+      if (searchWrap) searchWrap.classList.add("is-open");
+      if (openBtn) {
+        openBtn.classList.add("hidden");
+        openBtn.setAttribute("aria-expanded", "true");
+      }
+      input.focus();
+    }
+    function closeSearch() {
+      if (!row.classList.contains("open")) return;
+      input.value = "";
+      stopSearch();
+      input.blur();
+      row.classList.remove("open");
+      if (searchWrap) searchWrap.classList.remove("is-open");
+      if (openBtn) {
+        openBtn.classList.remove("hidden");
+        openBtn.setAttribute("aria-expanded", "false");
+      }
+    }
+
+    if (openBtn) {
+      openBtn.addEventListener("click", (e) => {
+        e.stopPropagation();   // must not reach the document listener below
+        openSearch();
+      });
+    }
+    // Tap anywhere outside the search container closes it. `closest()` on the
+    // container, not `contains()` on the input, so a tap on the X or the
+    // status text is inside rather than a dismissal.
+    document.addEventListener("click", (e) => {
+      if (!row.classList.contains("open")) return;
+      if (e.target.closest && e.target.closest("#topbar-search")) return;
+      closeSearch();
+    });
+
+    // Seed and open in one step. Used by anything that wants to hand the user
+    // a started search rather than an empty box.
+    window.__runSearch = (q) => { openSearch(); input.value = q; onInput(); };
     // Called when leaving Home for the wall/labels so stale search results
-    // don't linger in the shared grid. No-op unless a search is active.
-    window.__clearSearchIfActive = () => { if (active) { input.value = ""; stopSearch(); } };
+    // don't linger in the shared grid. Closes the field too: the glass is the
+    // resting state, and every one of these call sites is a navigation away
+    // from Home.
+    window.__clearSearchIfActive = () => {
+      if (active) { input.value = ""; stopSearch(); }
+      closeSearch();
+    };
     window.__searchActive = () => active;
   })();
 
@@ -9163,7 +9327,15 @@
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || j.error) throw new Error(j.error || "Couldn't save");
-      if (Array.isArray(j.rows)) homeRowsDraft = j.rows;
+      if (Array.isArray(j.rows)) {
+        homeRowsDraft = j.rows;
+        // REDRAW. The server answers with freshly built {id,on} objects, so
+        // replacing the array orphaned every checkbox handler still closing
+        // over the previous one — after one save, every further toggle
+        // mutated a discarded object and was silently dropped, and after a
+        // drag the whole list went dead. The list is cheap; rebuild it.
+        renderHomeRowsList();
+      }
       // Apply immediately — the Home screen is behind this sheet, and a layout
       // that only takes effect on the next launch reads as a broken control.
       if (window.__applyHomeLayout) window.__applyHomeLayout(homeRowsDraft);

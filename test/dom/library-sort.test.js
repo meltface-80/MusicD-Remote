@@ -76,9 +76,16 @@ const DRIVER = `
   // non-Roon part of the old row coming back.
   T("legacy_dir_btn_count", bar().querySelectorAll(".lib-dir-btn").length);
   T("legacy_pill_count", bar().querySelectorAll(".lib-pill").length);
-  // Focus on the left, Sort on the right — the order Roon uses.
+  // Funnel, then Focus, then Sort. Classified explicitly rather than
+  // "anything that is not focus is sort" — that assumption silently relabelled
+  // the funnel as a second Sort button when it was added.
   T("ctl_order", Array.prototype.map.call(bar().querySelectorAll(".lib-ctl"),
-    function (b) { return b.classList.contains("lib-ctl-focus") ? "focus" : "sort"; }));
+    function (b) {
+      if (b.classList.contains("lib-filter-btn")) return "filter";
+      if (b.classList.contains("lib-ctl-focus"))  return "focus";
+      if (b.classList.contains("lib-ctl-sort"))   return "sort";
+      return "unknown";
+    }));
   T("focus_has_chevron", !!focusBtn().querySelector(".lib-ctl-chevron"));
 
   // ---- default state ------------------------------------------------------
@@ -201,10 +208,12 @@ test("Library sort: one arrow drives all four orderings (v1.6.58)",
     });
     harness.assertNoPageError(assert, r);
 
-    await t.test("the row is Roon's: Focus left, Sort right, nothing between", () => {
+    await t.test("the row is Roon's: funnel, Focus, Sort — nothing else", () => {
       assert.equal(r.controls_present, true);
-      assert.equal(r.ctl_count, 2, "the row should hold exactly two controls");
-      assert.deepEqual(r.ctl_order, ["focus", "sort"]);
+      // Three since v1.7.50: the funnel text filter joined Focus and Sort. It
+      // is first because it narrows what the other two then order and facet.
+      assert.equal(r.ctl_count, 3, "the row should hold exactly three controls");
+      assert.deepEqual(r.ctl_order, ["filter", "focus", "sort"]);
       assert.equal(r.focus_has_chevron, true,
         "Focus reads as a way INTO a screen, so it carries a chevron");
       assert.equal(r.legacy_dir_btn_count, 0,

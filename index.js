@@ -1062,7 +1062,8 @@ async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
   // not show an import is running now, and this must not claim otherwise.
   // Only for full-library offsets: a genre or tag list has its own count.
   const libraryMoved = !navFilter && Number.isFinite(nav.total) &&
-                       albumIndex.count > 0 && nav.total !== albumIndex.count;
+                       albumIndex.count > 0 &&
+                       nav.total !== (albumIndex.declared || albumIndex.count);
   if (libraryMoved) scheduleLibraryRecheck("album open saw " + nav.total +
                                            " albums, snapshot has " + albumIndex.count);
 
@@ -2508,6 +2509,15 @@ function featureHasHistory(table, column) {
   }
 }
 function applyFeatureDefaults() {
+  // No database means the evidence cannot be READ, which is not the same as
+  // there being none. Writing an inference down here would switch an existing
+  // user's features off permanently on one bad boot — a corrupt file, a locked
+  // DB, a native module that failed to load — and repairing the database would
+  // not bring them back, because the setting is explicit by then.
+  if (!labelsDb) {
+    console.warn("[settings] feature defaults deferred — no database to read use from");
+    return;
+  }
   const patch = {};
   if (!_labelsEnabledSet) {
     labelsEnabled = featureHasHistory("label_names", "key");
@@ -2518,9 +2528,12 @@ function applyFeatureDefaults() {
     patch.smartPicksEnabled = smartPicksEnabled;
   }
   if (Object.keys(patch).length) {
-    savePersistedSettings(patch);
-    console.log("[settings] feature defaults applied: " +
-                Object.entries(patch).map(([k, v]) => k + "=" + v).join(" "));
+    // The write is what makes the inference permanent, so an unwritten
+    // inference must not be reported as applied — it will be re-derived on the
+    // next boot, which is the correct outcome.
+    const saved = savePersistedSettings(patch);
+    console.log("[settings] feature defaults " + (saved ? "applied" : "inferred but NOT saved") +
+                ": " + Object.entries(patch).map(([k, v]) => k + "=" + v).join(" "));
   }
 }
 applyFeatureDefaults();
@@ -2531,6 +2544,7 @@ applyFeatureDefaults();
 const labelsIndex = {
   map:      new Map(),   // groupKey → { display, image_key, albums: [{offset,title,subtitle,image_key}] }
   count:    0,
+  declared: 0,     // Roon's own album count when this snapshot was taken
   builtAt:  0,
   progress: 0,           // 0..1 while scanning
   building: false
@@ -4421,6 +4435,12 @@ async function fetchFanArtLogo(groupKey, mbid) {
 // Kick off Fan Art TV logo fetches for all labels that have an MBID but no cached logo result.
 // Runs in batches of 5 concurrent requests — Fan Art TV has no strict rate limit.
 async function kickFanArtFetches() {
+  // Labels off means no label network traffic. This is reachable from
+  // seedLabelsFromCache(), which runs before runLabelsIndexScan's own gate (it
+  // seeds the in-memory map from cache, which is free) — so the gate has to be
+  // here as well, or a box with a FanArt key kept fetching logos every 12 hours
+  // for a feature its owner had switched off.
+  if (!labelsEnabled) return;
   if (!fanartKey) return;
   const pending = [];
   for (const [groupKey, entry] of labelsIndex.map) {
@@ -4485,6 +4505,7 @@ async function fetchLogoFromDiscogs(labelName) {
 }
 
 async function kickDiscogsLogoFetches() {
+  if (!labelsEnabled) return;   // see kickFanArtFetches
   if (!discogsToken) return;
   const pending = [];
   for (const [groupKey, entry] of labelsIndex.map) {
@@ -5445,6 +5466,12 @@ async function buildAlbumIndex() {
 
     albumIndex.albums   = albums.filter(Boolean);  // drop any holes
     albumIndex.count    = albumIndex.albums.length;
+    // What Roon SAID the library held when this snapshot was taken, which is
+    // not always what arrived: a short page leaves holes, and the filter above
+    // drops them. Comparing a live count against the filtered one would then
+    // report "the library moved" forever on a library that never changed —
+    // and every album open would arm another full re-walk.
+    albumIndex.declared = total || albumIndex.count;
     rebuildAmbiguousAlbumKeys();   // identities shared by >1 album get no badge
     recordFirstSeenAlbums();       // anything new since the last rebuild
     albumIndex.builtAt  = Date.now();
@@ -5900,10 +5927,16 @@ function scheduleLibraryRecheck(why) {
     _libraryRecheckTimer = null;
     checkAndMaybeRebuild("auto", false)
       .then(r => {
-        // Settled and rebuilt, or nothing had changed after all — either way
-        // the episode is over and the counter resets, so the NEXT import gets
-        // a full budget of its own.
-        if (r && (r.status === "rebuilt" || r.status === "fresh")) _libraryRecheckCount = 0;
+        const st = r && r.status;
+        // Only "fresh" — the library genuinely matches — ends the episode and
+        // returns a full budget. Resetting on "rebuilt" too meant the cap
+        // could never engage: any rebuild refilled it, so a library whose
+        // count never settles could re-walk itself every five minutes forever.
+        if (st === "fresh") { _libraryRecheckCount = 0; return; }
+        // Dropped because something else was already working, or the probe
+        // failed. Neither is an answer, so the question has to be asked again
+        // rather than silently abandoned until the 12-hour tick.
+        if (st === "busy" || st === "error") scheduleLibraryRecheck("previous check returned " + st);
       })
       .catch(e => console.error("[index] auto recheck failed: " + e.message));
   }, libraryRecheckMs());
@@ -6945,6 +6978,38 @@ function playStats() {
   return out;
 }
 
+// The funnel's text, normalised the one way this file normalises anything.
+// Bounded because it arrives on a query string: a megabyte of "a" would
+// otherwise be compared against every album.
+function libraryPrefixMax() { return 40; }
+function libraryPrefix(raw) {
+  return normalize(String(raw || "")).slice(0, libraryPrefixMax());
+}
+
+// Does this album start with the typed text, by TITLE or by ARTIST?
+//
+// Title uses `sortTitle` — the article-stripped key the A-Z wall, the "Starts
+// with" facet and every sort tiebreak already use — so typing W finds "The
+// Wall" exactly where the wall files it, rather than under T.
+//
+// Artist matches each credited name separately via `artistNames`, so F finds
+// "Fela Kuti" inside "Tony Allen / Fela Kuti". A whole-credit test would miss
+// every collaboration where the searched-for artist is not billed first.
+//
+// startsWith throughout, never includes(): v1.6.56 was spent eradicating
+// substring artist matching from thirteen call sites, and re-introducing it
+// here would put "Prince" back in front of Bonnie "Prince" Billy.
+function albumMatchesPrefix(al, prefix) {
+  if (!prefix) return true;
+  if (String(al.sortTitle || "").startsWith(prefix)) return true;
+  if (String(al.nTitle || "").startsWith(prefix)) return true;
+  const names = al.artistNames;
+  if (names && names.length) {
+    for (const a of names) if (String(a.n || "").startsWith(prefix)) return true;
+  }
+  return String(al.nArtist || "").startsWith(prefix);
+}
+
 function libraryView(q) {
   const sort   = LIB_SORTS.has(String(q.sort || "")) ? String(q.sort) : "album";
   const desc   = String(q.dir || "asc") === "desc";
@@ -6956,9 +7021,20 @@ function libraryView(q) {
   const defs = libFacetDefs();
   const picked = defs.map(d => ({ def: d, sel: asList(q[d.id]) }))
                      .filter(x => x.sel.length);
-  const sig = [albumIndex.builtAt, libraryMetaVersion, sort, desc, seed, played]
+  // Free-text "starts with", from the funnel on the Library wall.
+  //
+  // Deliberately part of the FILTER chain rather than a sort mode: it runs
+  // before the comparator, so it narrows identically under Album name, Artist,
+  // Release year, Recently added, Most played, Last played and Random. That is
+  // the whole reason it replaced the A-Z scroll rail — a letter index is
+  // meaningless the moment the wall is ordered by anything but the alphabet.
+  const prefix = libraryPrefix(q.prefix);
+  const sig = [albumIndex.builtAt, libraryMetaVersion, sort, desc, seed, played, "p=" + prefix]
     .concat(picked.map(x => x.def.id + "=" + x.sel.slice().sort().join(","))).join("|");
-  const hit = libraryViewCache.get(sig);
+  // A free-text param is unbounded, so it must not be allowed to fill a
+  // fixed-size cache with one-hit entries — every keystroke is a new key.
+  // Cached only when empty, which is the common case the cache exists for.
+  const hit = prefix ? null : libraryViewCache.get(sig);
   if (hit) return hit;
 
   let list = albumIndex.albums;
@@ -6966,6 +7042,7 @@ function libraryView(q) {
   for (const { def, sel } of picked) {
     list = list.filter(al => facetMatch(sel, def.values(al)));
   }
+  if (prefix) list = list.filter(al => albumMatchesPrefix(al, prefix));
   if (played !== "any") {
     // "never" uses the whole history; "played" is its complement; "6"/"12"
     // mean "not in the last N months".
@@ -7195,11 +7272,25 @@ app.get("/api/home/unplayed", async (req, res) => {
 // deterministically from today's date so it's stable all day and changes each
 // day. Once it has been played today (a play row with that title since local
 // midnight) it's withheld ({ album: null, played: true }) until tomorrow.
-// How far back the History row looks, and how many tiles it can hold. Older
-// plays are deleted outright rather than merely hidden — a history row that
-// only ever grows is a table that only ever grows.
+// How far back the History ROW looks, and how many tiles it can hold.
 function historyDays()     { return 30; }
 function historyMaxTiles() { return 60; }
+
+// How far back the plays TABLE is kept — which is a completely different
+// question, and conflating the two in v1.7.48 destroyed real listening history.
+//
+// The History row shows 30 days. Four other features read further back:
+//   "Play something unheard"        12 months (UNHEARD_MONTHS)
+//   the "Not played in 6 months" row 6 months — it is in the row's title
+//   Library sort by plays / last played   all time
+//   Focus -> Listening -> "Never played"  all time
+//
+// Pruning to the row's display window silently turned "not played in 6 months"
+// into "not played in 30 days" and reset the play leaderboard, irreversibly:
+// Roon exposes no last-played date, so nothing can rebuild it. The retention
+// horizon has to be the WIDEST consumer's window, and the row simply queries a
+// narrower slice of it.
+function playsRetentionDays() { return 400; }
 
 // Delete plays older than the window. Called from the History route rather
 // than on a timer: the window only matters when somebody looks, and a box that
@@ -7212,10 +7303,10 @@ function pruneOldPlays() {
   if (Date.now() - _historyPrunedAt < 60 * 60 * 1000) return;
   _historyPrunedAt = Date.now();
   try {
-    const cutoff = Date.now() - historyDays() * 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - playsRetentionDays() * 24 * 60 * 60 * 1000;
     const r = labelsDb.prepare("DELETE FROM plays WHERE ts < ?").run(cutoff);
     if (r.changes) console.log("[history] pruned " + r.changes + " plays older than " +
-                               historyDays() + " days");
+                               playsRetentionDays() + " days");
   } catch (e) {
     // Best effort. A failed prune costs disk, not correctness.
     if (DEBUG) console.warn("[history] prune failed: " + e.message);

@@ -2,6 +2,120 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.50] — 2026-08-10
+
+### Changed — search lives behind a magnifying glass
+
+The field is no longer permanently in the top bar. Tap the glass to open it; tap anywhere away from
+it, or press Escape, to close it. **Closing always clears.** A field that reopens holding an old
+query, with the results gone and the Home rows back, reads as a search that has silently stopped
+working.
+
+It follows the overflow menu's pattern exactly — one module-level "what is open", `stopPropagation`
+on the trigger, a `closest()` containment test on the document — rather than inventing a second
+idiom for the same gesture. A tap on the X or the status text counts as inside, so clearing does not
+also dismiss.
+
+This fixes a layout inconsistency too: the search box measured 48px against 40px icon buttons, so
+the top bar was 48px tall on Home and 40px everywhere else and visibly jumped on every navigation.
+The collapsed state is measured in a test rather than assumed.
+
+The search bar previously had **no test coverage at all** — the largest untested surface in the
+client, which mattered here because almost everything this change touches is invisible in a
+screenshot.
+
+### Added — a text filter on the Library wall, behind a funnel
+
+Type "F" to narrow the wall to albums and artists starting with F. Tap away to close and clear.
+
+**On the request.** The ask was an A-Z rail down the edge of the screen, which worked under Album
+name and Artist and did nothing under the others. That is not a bug to fix: a letter is a *position
+in an alphabetical list*, and there is no such position when the wall is ordered by year, play count
+or random. A filter is orthogonal to sort order, so it works under all seven — and it reaches
+artists as well as titles, which a rail down the side of an album grid structurally cannot.
+
+Two matcher rules worth stating:
+
+- **Titles match on the article-stripped key** the wall already sorts by, so "The Wall" narrows
+  under W exactly where the wall files it. Typing "the w" still finds it, so somebody typing what
+  they see is not told the album is missing.
+- **Artists match per credited name**, so "F" finds Fela Kuti inside "Tony Allen / Fela Kuti". It is
+  `startsWith`, never `includes` — v1.6.56 was spent removing substring artist matching from
+  thirteen call sites, and a filter is exactly where it would creep back.
+
+It runs in the filter chain *before* the comparator, which is what makes it sort-independent; a test
+asserts that ordering. The typed text is bounded (it arrives on a query string), and a filtered view
+is deliberately not cached — every keystroke is a new key, and a fixed-size cache would be evicted
+down to nothing by one session of typing.
+
+### Changed — button sizing and placement
+
+The stylesheet had **no sizing tokens at all**: every height, padding and min-width was a one-off.
+That is how one shared `.action-btn` class came to render at four different heights — 37px on the
+playlist screens, 40px in the album modal, 38px on a track row, 38px in the label merge sheet —
+because each container re-declared its own padding. There is now one control height, and
+`.action-btn` uses it everywhere.
+
+- `.icon-btn`'s phone size tiers were scoped to the top bar only, so the album modal's corner
+  buttons never shrank on a small screen. It now uses the shared token.
+- Tap targets raised: the settings info button (18×14px, the smallest in the app by a wide margin),
+  the artist-view Back button (27px, and the only way out of that screen), the settings Back button,
+  the search clear, the dev and update buttons, and the Smart Picks card actions.
+- The modal's corner buttons were positioned by hand-computed arithmetic (`12`, `60`, `108`), so
+  changing the icon size silently mis-spaced all three. They now derive from the token. The overflow
+  menu was also missing the `env(safe-area-inset-top)` its two neighbours had, so on a notched phone
+  it sat higher than the × and Share it lines up with.
+- Deleted three dead rule sets (`.filter-pill`, `.filter-pills`, `.active-filter-chip`) with no
+  references anywhere in the client.
+
+### Fixed — the Library control row restored focus to the wrong button
+
+`renderLibraryControls` restored focus by an element's *first* class name, and every control there
+begins with `lib-ctl` — so focus on Sort came back on Focus after any view change. It now restores
+by the control's own class.
+
+### Fixed — three defects the review of v1.7.48/v1.7.49 found, one of them destructive
+
+The independent review pass ran late (a usage limit), and it caught a bug that had already shipped:
+
+- **`pruneOldPlays` was deleting listening history four other features depend on.** The horizon was
+  set to the History row's 30-day *display* window, but `plays` is not that row's private table:
+  "Play something unheard" reads 12 months, the "Not played in 6 months" row reads 6, and the
+  Library's play-count sort and Focus → Never played read all of it. The row is on by default, so
+  one visit to Home after upgrading silently deleted everything older than 30 days — irreversibly,
+  since Roon exposes no last-played date and nothing can rebuild it. Retention is now 400 days and
+  the row simply queries a narrower slice. **If you have already run v1.7.48 or v1.7.49, history
+  older than 30 days at that moment is gone; this stops any further loss.**
+- **A Home row switched off could not be switched back on.** `applyHomeLayout` only ever *added*
+  `.hidden` — nothing removed it, and the row renderers write into the carousel rather than the
+  section wrapper, so the row stayed gone until a full reload.
+- **After the first save, every switch on the Home Screen page was a no-op.** The server's reply
+  replaced the draft array with freshly-built objects, orphaning every checkbox handler that closed
+  over the old ones; the second toggle in a session mutated a discarded object and the request went
+  out with the previous value. After a drag, the whole list went dead.
+
+Also from that review: Labels switched **off** was still fetching logos from FanArt.tv and Discogs
+every twelve hours (the logo kick hangs off `seedLabelsFromCache`, which runs before the scan's own
+gate); a boot where the database could not be opened wrote "no evidence of use" down as a permanent
+*off* for both opt-in features, which repairing the database would not undo; and the new library
+re-check could loop indefinitely, because the snapshot's count is taken *after* dropping holes from
+a short page while the live count is not — so a library that never changed could report as moved
+forever. The snapshot now records what Roon declared, and only a genuinely unchanged library resets
+the re-check budget.
+
+Both client bugs shipped because `homerows.test.js` covers only the server's layout repair; nothing
+exercised the page itself, and neither failure is visible in a screenshot of it.
+
+### Tests
+- `test/dom/search-toggle.test.js` — also covers the Home Screen settings page, with both of the
+  above as named regressions.
+- `test/unit/libraryfilter.test.js` — 18 tests over the prefix matcher, including substring matching
+  as a named regression, plus structural assertions that the filter precedes the comparator and that
+  filtered views bypass the cache.
+- `test/dom/search-toggle.test.js` — 8 tests, the first coverage the search bar has ever had, with
+  the collapsed top-bar height measured rather than assumed.
+- 13/13 mutations caught. Suite: 41 static / 699 unit / 285 dom.
+
 ## [1.7.49] — 2026-08-10
 
 ### Fixed — the real reason a library change kept breaking playback for hours
