@@ -182,7 +182,8 @@ test("one failing job does not cancel the others", async (t) => {
 // The Rescan button's chain — same shape, different order and one forced flag.
 // ---------------------------------------------------------------------------
 test("rescanChain serialises the Rescan button's background work", async (t) => {
-  function buildRescan(tr, capture) {
+  function buildRescan(tr, capture, opts) {
+    const o = opts || {};
     return loadIndexFunctions(["rescanChain", "bgRun"], {
       DEBUG: false,
       console: { error: () => {}, log: () => {} },
@@ -196,6 +197,8 @@ test("rescanChain serialises the Rescan button's background work", async (t) => 
         if (capture) capture.push({ reason, force });
         return tr.job("genres")();
       },
+      labelsEnabled: o.labelsEnabled !== false,
+      runFileMetadataScan: tr.job("file tags"),
       runLabelsIndexScan: async (force) => {
         if (capture) capture.push({ labelsForce: force });
         return tr.job("labels")();
@@ -204,14 +207,32 @@ test("rescanChain serialises the Rescan button's background work", async (t) => 
   }
 
   await t.test("nothing overlaps, and the label scan goes last", async () => {
+    // v1.7.50 split the /music tag walk out of the label scan: it is where the
+    // Decade and quality filters come from, so a Rescan runs it whether or not
+    // Labels is switched on, and the label pass follows only when it is.
     const tr = tracker();
     await buildRescan(tr).rescanChain({ status: "fresh" });
     assert.equal(tr.maxLive(), 1);
     assert.deepEqual(tr.log, [
       "start:stream", "end:stream",
       "start:genres", "end:genres",
+      "start:file tags", "end:file tags",
       "start:labels", "end:labels",
     ]);
+  });
+
+  await t.test("with Labels off, the walk still runs and the label pass does not", async () => {
+    // THE one this version is about. The tag walk is not label work; stopping
+    // it would take the Decade, Format, Sample rate, Bit depth and Channels
+    // filters and the local-files badge down with the labels.
+    const tr = tracker();
+    const chain = buildRescan(tr, null, { labelsEnabled: false });
+    await chain.rescanChain({ status: "fresh" });
+    assert.ok(tr.log.includes("end:file tags"),
+      "the /music tag walk stopped when Labels was switched off — that is four " +
+      "Library filters and a badge, none of which are label features");
+    assert.ok(!tr.log.includes("start:labels"),
+      "the label scan ran with Labels switched off");
   });
 
   await t.test("the genre harvest is FORCED from the button", async () => {
@@ -239,6 +260,8 @@ test("rescanChain serialises the Rescan button's background work", async (t) => 
       kickSmartPicks: () => {},
       refreshStreamAlbumKeys: tr.job("stream", { throws: true }),
       harvestAlbumGenres:     tr.job("genres"),
+      labelsEnabled: true,
+      runFileMetadataScan:    tr.job("file tags"),
       runLabelsIndexScan:     tr.job("labels"),
     });
     await assert.doesNotReject(() => F.rescanChain({ status: "fresh" }));
@@ -269,6 +292,8 @@ test("two chains at once still means one job at a time", async (t) => {
       refreshStreamAlbumKeys: tr.job("stream"),
       harvestAlbumGenres:     tr.job("genres"),
       prewarmAlbumArt:        tr.job("art"),
+      labelsEnabled: true,
+      runFileMetadataScan:    tr.job("file tags"),
       runLabelsIndexScan:     tr.job("labels"),
     }, shared));
 
@@ -279,8 +304,9 @@ test("two chains at once still means one job at a time", async (t) => {
     assert.equal(tr.maxLive(), 1,
       "two jobs overlapped across the two chains — per-chain serialising is " +
       "not enough, which is the bug this test exists for");
-    // All six jobs ran; none was lost to the interleaving.
-    assert.equal(tr.log.filter(x => x.startsWith("start:")).length, 6);
+    // Every job ran; none was lost to the interleaving. Seven since v1.7.50
+    // added the /music tag walk to the rescan chain as its own step.
+    assert.equal(tr.log.filter(x => x.startsWith("start:")).length, 7);
     // …and every start is immediately followed by its own end.
     for (let i = 0; i < tr.log.length; i += 2) {
       assert.equal(tr.log[i].replace("start:", ""), tr.log[i + 1].replace("end:", ""),

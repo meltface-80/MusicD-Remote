@@ -3891,7 +3891,55 @@ async function buildFileLabelMap(onProgress) {
 // Errors are logged to data/labels-scan.log. On excessive errors in a pass
 // the scan finishes early; the next 12-hour auto-rescan will retry.
 // ---------------------------------------------------------------------------
+// The /music tag walk, on its own.
+//
+// This is NOT label work, and keeping it inside runLabelsIndexScan was the
+// reason "Labels off" still looked like label scanning: it entered a function
+// named for labels, flipped labelsIndex.building, seeded the label map and
+// wrote "[labels] …" into the labels scan log.
+//
+// What this pass actually produces, and what breaks if it stops:
+//   release years          -> the Decade filter
+//   local album keys       -> the "local files" badge
+//   container/bits/rate/
+//     channels/lossless    -> the Format, Sample rate, Bit depth and Channels
+//                             filters
+//   label names from tags  -> handed to the label scan, but only when it runs
+//
+// So it runs whether or not Labels is switched on. Its label output is simply
+// kept for whoever wants it, and nothing consumes it while Labels is off.
+let _lastFileLabelMap = null;
+let _fileScanRunning = false;
+
+async function runFileMetadataScan(reason) {
+  if (_fileScanRunning) return;
+  if (!musicDirMounted()) return;    // nothing to walk
+  if (albumIndex.count === 0) return;
+  _fileScanRunning = true;
+  try {
+    const estimate = albumIndex.albums.length || 1000;
+    const { labelMap, localKeys } = await buildFileLabelMap((n) => {
+      labelsIndex.progress = Math.min(0.15, n / estimate);
+    });
+    _lastFileLabelMap = labelMap || new Map();
+    // Only replace the known-local set when the scan actually saw the mount —
+    // an unmounted /music must not wipe badges earned by a previous scan.
+    if (localKeys && localKeys.size) setLocalAlbumKeys(localKeys);
+    // The walk just re-read every album's tags, so join its years on now.
+    harvestAlbumYears("file tags");
+    console.log("[files] tag scan complete (" + (reason || "scheduled") + ")");
+  } catch (e) {
+    console.error("[files] tag scan failed: " + e.message);
+  } finally {
+    _fileScanRunning = false;
+  }
+}
+
 async function runLabelsIndexScan(force) {
+  // At the very top, before any label state is touched, any label log line is
+  // written, and any cache is seeded. Off means this function does nothing at
+  // all — not "does the harmless half".
+  if (!labelsEnabled) return;
   if (labelsIndex.building) return;
   // Never scan while Roon is importing — offsets are still moving and it piles
   // external fetches onto the churn. `force` (an explicit user "Rescan") skips
@@ -3912,42 +3960,10 @@ async function runLabelsIndexScan(force) {
 
   seedLabelsFromCache();
 
-  // Pass 0: File metadata — runs unconditionally (before the early-return check)
-  // so corrected file tags override stale API-derived cache entries on every scan,
-  // including 12-hour auto-rescans where all albums are already cached.
-  const estimate = albumIndex.albums.length || 1000;
-  const { labelMap: fileLabelMap, bandcampMap, localKeys } = musicDirMounted()
-    ? await buildFileLabelMap((n) => {
-        labelsIndex.progress = Math.min(0.15, n / estimate);
-      })
-    : { labelMap: new Map(), bandcampMap: new Map(), localKeys: new Set() };
-  // Only replace the known-local set when the scan actually saw the mount —
-  // an unmounted /music must not wipe badges earned by a previous scan.
-  if (localKeys && localKeys.size) setLocalAlbumKeys(localKeys);
-  // Pass 0 just re-read every album's tags, so join its years on now. This runs
-  // BEFORE the "all albums already cached" early return below, which is the
-  // whole point: that return is what used to stop years being collected on an
-  // established install.
-  harvestAlbumYears("file tags");
-
-  // Labels switched off — stop here, at the boundary between the FILE WALK and
-  // the LABEL work.
-  //
-  // Everything above this line is the /music tag read, and it is not really a
-  // label job at all: it is where release years (the Decade facet), the "local
-  // files" badge, and the Format / Sample rate / Bit depth / Channels facets
-  // come from. Gating the whole scan would take four facets and two badges
-  // down with it, which is not what "turn labels off" asks for.
-  //
-  // Everything below is: label names from tags, then the metadata cascade
-  // (iTunes, Qobuz, TheAudioDB, MusicBrainz, Discogs) and the FanArt/Discogs
-  // logo fetches. That is the network traffic, and off means none of it.
-  if (!labelsEnabled) {
-    labelsIndex.building = false;
-    labelsIndex.builtAt  = Date.now();
-    appendLabelsLog("[labels] file tags read; label lookups skipped — Labels is off in Settings");
-    return;
-  }
+  // The tag walk has already run (runFileMetadataScan, above this call). Its
+  // label names are handed over here so the cascade below only has to chase
+  // what the files could not answer.
+  const fileLabelMap = _lastFileLabelMap || new Map();
 
   if (fileLabelMap.size) {
     let overrideCount = 0;
@@ -4388,12 +4404,18 @@ async function runLabelsIndexScan(force) {
 const LABELS_RESCAN_MS = 12 * 60 * 60 * 1000;
 setInterval(() => {
   if (!core) return;
-  if (labelsIndex.building) return;
-  appendLabelsLog("[labels] 12-hour auto-rescan triggered");
-  runLabelsIndexScan().catch(e => {
-    const msg = "[labels] auto-rescan error: " + e.message;
-    console.error(msg);
-    appendLabelsLog(msg);
+  // The tag walk keeps its schedule whatever Labels is set to — the Decade,
+  // Format, Sample rate, Bit depth and Channels filters and the local-files
+  // badge are all downstream of it, and none of them is a label feature.
+  runFileMetadataScan("12-hour auto-rescan").then(() => {
+    if (!labelsEnabled) return;   // nothing further, and nothing logged
+    if (labelsIndex.building) return;
+    appendLabelsLog("[labels] 12-hour auto-rescan triggered");
+    return runLabelsIndexScan().catch(e => {
+      const msg = "[labels] auto-rescan error: " + e.message;
+      console.error(msg);
+      appendLabelsLog(msg);
+    });
   });
 }, LABELS_RESCAN_MS);
 
@@ -5873,7 +5895,9 @@ async function checkAndMaybeRebuild(reason, force) {
     }
     console.log("[index] " + reason + " check: library changed and settled — rebuilding snapshot once");
     clearBrowseOffsetCache();
-    await buildAlbumIndex().then(() => rebuildLabelsMap()).catch(() => { /* build error logged in buildAlbumIndex */ });
+    await buildAlbumIndex()
+      .then(() => { if (labelsEnabled) rebuildLabelsMap(); })
+      .catch(() => { /* build error logged in buildAlbumIndex */ });
     if (_statusSync) { _statusSync = ""; pushStatus(); }
     return { status: "rebuilt", count: albumIndex.count };
   } finally {
@@ -5893,7 +5917,8 @@ function startIndexMaintenance() {
   // handle refreshes. Build only when there's no snapshot yet (first pair).
   if (!isIndexBuilt()) {
     buildAlbumIndex()
-      .then(() => seedLabelsFromCache())
+      .then(() => runFileMetadataScan("first pair"))
+      .then(() => { if (labelsEnabled) seedLabelsFromCache(); })
       .catch(e => { if (DEBUG) console.error("[index] initial build:", e.message); });
   }
   indexMaintTimer = setInterval(() => { checkAndMaybeRebuild("12h", false); }, INDEX_CHECK_MS);
@@ -7414,6 +7439,10 @@ function isoWeekKey(d = new Date()) {
 }
 let lotwCache = { weekKey: "", at: 0, count: -1, data: null };
 app.get("/api/home/label-of-the-week", (req, res) => {
+  // Labels off means the row has nothing to build from and must not try:
+  // reaching into labelsIndex here would be the one path still doing label
+  // work, and the Home row is switched off alongside the side-menu entry.
+  if (!labelsEnabled) return res.json({ label: null, albums: [] });
   try {
     const wk = isoWeekKey();
     // Reuse the cached pick within the same week/hour unless the index grew
@@ -7580,7 +7609,7 @@ app.get("/api/filters/tags", async (req, res) => {
 app.get("/api/filters/labels", (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   // Seed from cache so the first response includes labels even on a fresh restart.
-  if (labelsIndex.map.size === 0 && albumIndex.count > 0) {
+  if (labelsEnabled && labelsIndex.map.size === 0 && albumIndex.count > 0) {
     seedLabelsFromCache();
   }
   // Kick off a scan if never done, or if the last scan is older than the rescan
@@ -7720,11 +7749,15 @@ async function rescanChain(rebuildResult) {
   // background timer, or letting a fingerprint skip it, would make the button
   // appear to do nothing at exactly the moment it is needed.
   await bgRun("genres", () => harvestAlbumGenres("manual rescan", true));
-  await bgRun("labels", () => runLabelsIndexScan(true));
+  // The walk is part of a Rescan regardless — it is what refreshes the Decade
+  // and quality filters — and the label pass follows only when Labels is on.
+  await bgRun("file tags", () => runFileMetadataScan("manual rescan"));
+  if (labelsEnabled) await bgRun("labels", () => runLabelsIndexScan(true));
   if (DEBUG) console.log("[rescan] background chain done (" + (rebuildResult && rebuildResult.status) + ")");
 }
 
 app.post("/api/labels/rescan", (req, res) => {
+  if (!labelsEnabled) return res.status(409).json({ error: "Labels is off in Settings" });
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   if (labelsIndex.building) return res.json({ ok: false, reason: "scan already running" });
   labelsIndex.builtAt = 0;
@@ -7740,6 +7773,7 @@ app.post("/api/labels/rescan", (req, res) => {
 // Force a FULL rescan — wipes label name cache so ALL albums are re-queried
 // from sources. Logo, MBID and merge data are preserved.
 app.post("/api/labels/rescan-force", (req, res) => {
+  if (!labelsEnabled) return res.status(409).json({ error: "Labels is off in Settings" });
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   if (labelsIndex.building) return res.json({ ok: false, reason: "scan already running" });
   // Clear label name cache only (logos and MBIDs are expensive to re-fetch).

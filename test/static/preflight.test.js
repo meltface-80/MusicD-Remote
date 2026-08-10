@@ -327,49 +327,75 @@ test("checklist — POST bodies carry the fields their route requires", async (t
 });
 
 // ---------------------------------------------------------------------------
-// v1.7.48: Labels became opt-in, and the gate's POSITION is the whole design.
+// v1.7.50: Labels off means the label scan does NOTHING, and the /music tag
+// walk is a separate job that keeps running.
 //
-// The label scan does two unrelated jobs in one function. Pass 0 reads /music
-// tags — and that is where release years (the Decade facet), the "local files"
-// badge, and the Format / Sample rate / Bit depth / Channels facets come from.
-// Everything after it is label names, the five-API metadata cascade and the
-// logo fetches: the network traffic the switch is actually about.
+// v1.7.48 put the gate in the middle of runLabelsIndexScan, which was the
+// right boundary but the wrong shape: "off" still entered a function named for
+// labels, flipped labelsIndex.building, seeded the label map (which writes
+// label names and kicks logo fetches) and wrote "[labels] …" into the labels
+// scan log. From the outside that is label scanning, whatever the gate did
+// afterwards.
 //
-// Gate too early and four Library facets plus two badge systems go dark with
-// the labels. Gate too late and "off" still walks MusicBrainz and Discogs.
-// Neither failure is visible in an ordinary read of the diff, and neither is
-// reachable from a unit test — runLabelsIndexScan is 400 lines of async I/O.
-// So the ordering is asserted here, on the source text.
+// The walk is now its own function. What still depends on it, and why it must
+// not be gated:
+//   release years        -> the Decade filter
+//   local album keys     -> the "local files" badge
+//   container/bits/rate  -> the Format, Sample rate, Bit depth, Channels filters
+//
+// Neither half is reachable from a unit test — one is 400 lines of async I/O,
+// the other walks a filesystem — so the separation is asserted on the source.
 // ---------------------------------------------------------------------------
-test("the Labels opt-in gate sits between the file walk and the label lookups", async (t) => {
-  // Via the extractor's indexSource(), NOT a direct read: it honours
-  // MUSICD_INDEX_JS, which is what lets a mutation run point this at a
-  // modified copy. Reading index.js directly here would make these assertions
-  // untestable — they would pass against every mutant.
+test("Labels off stops label work, and only label work", async (t) => {
   const src = require("../lib/extract").indexSource();
 
-  await t.test("the gate exists", () => {
-    assert.ok(src.includes("if (!labelsEnabled) {"),
-      "runLabelsIndexScan has no opt-in gate — Labels off would still scan");
-  });
-
-  await t.test("it is AFTER the file-tag harvest", () => {
-    const harvest = src.indexOf('harvestAlbumYears("file tags")');
-    const gate = src.indexOf("if (!labelsEnabled) {");
-    assert.ok(harvest > 0 && gate > 0, "one of the two anchors moved");
-    assert.ok(gate > harvest,
-      "the gate returns before the /music tags are read — that takes the " +
-      "Decade, Format, Sample rate, Bit depth and Channels facets and the " +
-      "local-files badge down with the labels");
-  });
-
-  await t.test("it is BEFORE the metadata cascade and the logo fetches", () => {
-    const gate = src.indexOf("if (!labelsEnabled) {");
-    for (const marker of ['pass 2 (TheAudioDB)', 'pass 3 (MusicBrainz)',
-                          'pass 4 (Discogs)', 'kickFanArtFetches()']) {
-      const at = src.indexOf(marker, gate);
-      assert.ok(at > gate,
-        "'" + marker + "' is not after the gate — Labels off would still run it");
+  await t.test("the gate is the FIRST thing the label scan does", () => {
+    const fn = src.slice(src.indexOf("async function runLabelsIndexScan(force) {"));
+    const head = fn.slice(0, 400);
+    assert.ok(/if \(!labelsEnabled\) return;/.test(head),
+      "runLabelsIndexScan does not bail on the flag before doing anything else");
+    // Nothing label-shaped may precede it.
+    const gateAt = head.indexOf("if (!labelsEnabled) return;");
+    const before = head.slice(0, gateAt);
+    for (const forbidden of ["labelsIndex.building = true", "seedLabelsFromCache",
+                             "appendLabelsLog", "buildFileLabelMap"]) {
+      assert.ok(!before.includes(forbidden),
+        "'" + forbidden + "' runs before the gate — with Labels off that is " +
+        "still label work, and still looks like a scan from the log");
     }
+  });
+
+  await t.test("the /music walk is a separate job, not part of the label scan", () => {
+    assert.ok(src.includes("async function runFileMetadataScan("),
+      "the tag walk is not separable — gating the label scan would take the " +
+      "Decade, Format, Sample rate, Bit depth and Channels filters with it");
+    const walk = src.slice(src.indexOf("async function runFileMetadataScan("));
+    const body = walk.slice(0, walk.indexOf("\nasync function ", 10));
+    assert.ok(!/if \(!labelsEnabled\)/.test(body),
+      "the tag walk is gated on the Labels switch — it is not label work");
+    assert.ok(body.includes("buildFileLabelMap"), "the walk stopped reading tags");
+    assert.ok(body.includes("harvestAlbumYears"), "the walk stopped collecting years");
+    assert.ok(body.includes("setLocalAlbumKeys"), "the walk stopped recording local albums");
+  });
+
+  await t.test("the logo fetches are gated too", () => {
+    // They hang off seedLabelsFromCache, which has callers of its own, so the
+    // gate has to be on the fetchers rather than only on the scan.
+    for (const fn of ["kickFanArtFetches", "kickDiscogsLogoFetches"]) {
+      const at = src.indexOf("async function " + fn + "(");
+      assert.ok(at > 0, fn + " moved");
+      assert.ok(/if \(!labelsEnabled\) return;/.test(src.slice(at, at + 700)),
+        fn + " can still reach the network with Labels switched off");
+    }
+  });
+
+  await t.test("the 12-hour timer runs the walk but not the labels", () => {
+    const at = src.indexOf("}, LABELS_RESCAN_MS);");
+    const block = src.slice(Math.max(0, at - 900), at);
+    assert.ok(block.includes("runFileMetadataScan("),
+      "the timer no longer refreshes the tag-derived filters");
+    assert.ok(/if \(!labelsEnabled\) return;/.test(block),
+      "the timer still enters the label scan with Labels off — this is the " +
+      "line that wrote '[labels] 12-hour auto-rescan triggered' to the log");
   });
 });

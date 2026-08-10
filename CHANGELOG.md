@@ -2,6 +2,39 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.51] — 2026-08-10
+
+### Fixed — Labels off now genuinely stops label scanning
+
+v1.7.48 put the on/off gate in the *middle* of the label scan. The boundary was right — everything
+before it was the `/music` tag read, which four Library filters and a badge depend on — but the
+shape was wrong. With Labels off the extension still entered a function named for labels, set
+`labelsIndex.building`, seeded the label map (which writes label names **and** kicks logo fetches),
+and wrote `[labels] 12-hour auto-rescan triggered` into the labels scan log. From outside, that is
+label scanning, whatever the gate did afterwards.
+
+**The tag walk is now its own job.** `runFileMetadataScan` reads `/music` and produces release years
+(the Decade filter), the local-files badge, and the Format / Sample rate / Bit depth / Channels
+filters. It runs on its own schedule regardless of the Labels setting, and logs under `[files]`.
+
+**`runLabelsIndexScan` bails on the first line.** No label state touched, no cache seeded, no log
+line written, no network call. Also closed: the 12-hour timer no longer enters the label scan at all
+when off; `/api/home/label-of-the-week` returns an empty row rather than reaching into the label
+index; and the two label rescan routes refuse rather than scanning, for a stale client posting to a
+page that is no longer reachable.
+
+To be explicit about the one thing that does **not** stop: the `/music` tag walk. It is not label
+work, and gating it would take the Decade, Format, Sample rate, Bit depth and Channels filters and
+the local-files badge down with the labels.
+
+### Tests
+- The static gate test was rewritten around the new structure: the flag check must be the *first*
+  statement of the label scan with nothing label-shaped before it, the walk must not be gated on the
+  flag, and the 12-hour timer must run one and not the other.
+- `syncchain.test.js` gained a Labels-off case asserting the walk still runs and the label pass does
+  not.
+- 7/7 mutations caught. Suite: 42 static / 700 unit / 285 dom.
+
 ## [1.7.50] — 2026-08-10
 
 ### Changed — search lives behind a magnifying glass
