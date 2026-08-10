@@ -2,6 +2,25 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.47] — 2026-08-10
+
+### Fixed — a partial answer from Roon could permanently destroy an album's track record
+
+v1.7.46 records an album's tracks under its identity, and does so by **replacing** that album's rows
+wholesale — deliberately, so that a re-rip or a different edition cannot leave phantom tracks behind.
+The hole in that: while Roon is re-indexing, an album's contents come back short — rows arrive as
+placeholders with no `item_key`, or do not arrive at all. Reading three tracks of a twelve-track
+album at that moment would overwrite the correct twelve-track record for good, and playlist import
+would then resolve against a nine-track hole with no way to know it.
+
+Roon's response already says how many rows the level holds, so a short read costs nothing to detect —
+the count sits in the reply that was fetched anyway. When the rows delivered are fewer than the rows
+declared, the cache is simply not written: a partial answer is not evidence about an album's
+contents. It is also logged, so the condition stops being invisible.
+
+This is the same reasoning as the rest of the resolver — an absent or partial fact must not be read
+as a complete one — applied to the write side rather than the read side.
+
 ## [1.7.46] — 2026-08-05
 
 ### Fixed — a shared playlist could match the WRONG album, silently

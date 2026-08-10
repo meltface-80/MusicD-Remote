@@ -1127,6 +1127,18 @@ async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
   });
 
   const items = inside.items || [];
+  // What Roon said the level HOLDS, versus what it actually handed over. The
+  // two differ while the Core is re-indexing: rows arrive as placeholders with
+  // no item_key, or simply do not arrive. Free — the count is already in the
+  // response — and it is the only thing that tells a three-track album apart
+  // from three tracks of a twelve-track one.
+  const declared = (inside.list && Number.isFinite(inside.list.count))
+    ? inside.list.count : null;
+  const shortRead = declared !== null && items.length < declared;
+  if (shortRead) {
+    console.warn("[album] short read for " + JSON.stringify(albumItem.title || "") +
+                 ": Roon declared " + declared + " rows, sent " + items.length);
+  }
   if (DEBUG) {
     console.log("[album items]");
     for (const it of items) {
@@ -1156,7 +1168,14 @@ async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
   //
   // Deferred: this is a synchronous SQLite write, and the caller may be on its
   // way to invoking Play. A cache fill must never sit in front of the music.
-  setImmediate(() => {
+  //
+  // NEVER on a short read. rememberAlbumTracks replaces an album's rows
+  // wholesale — deliberately, so a re-rip cannot leave phantom tracks behind —
+  // which means recording three tracks of a twelve-track album while Roon is
+  // re-indexing would permanently destroy the correct record and hand playlist
+  // import a nine-track hole. A partial answer is not evidence about an
+  // album's contents.
+  if (!shortRead) setImmediate(() => {
     try {
       rememberAlbumTracks(albumItem.title || "", albumItem.subtitle || "",
         items.filter(t => isTrackItem(t, playMenu))
