@@ -1053,6 +1053,18 @@ async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
   const navFilter = (filter && filter.type === "decade") ? null : (filter || null);
   const nav = await navigateToAlbumList(sessionKey, navFilter);
   let hierarchy = nav.hierarchy;
+  // Roon's LIVE album count, already fetched by the navigation above and until
+  // now thrown away. Against the snapshot's count it is proof — free, and
+  // available at the exact moment a user hits a failure — that the library has
+  // changed since this list was built.
+  //
+  // Past tense on purpose. A count mismatch shows the library CHANGED; it does
+  // not show an import is running now, and this must not claim otherwise.
+  // Only for full-library offsets: a genre or tag list has its own count.
+  const libraryMoved = !navFilter && Number.isFinite(nav.total) &&
+                       albumIndex.count > 0 && nav.total !== albumIndex.count;
+  if (libraryMoved) scheduleLibraryRecheck("album open saw " + nav.total +
+                                           " albums, snapshot has " + albumIndex.count);
 
   // 2) Re-resolve THIS session's item_key for the album at `offset`
   const albumLoad = await load({
@@ -1115,7 +1127,7 @@ async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
     multi_session_key: sessionKey
   });
   if (drill.action !== "list") {
-    throw new Error("Unexpected browse action: " + drill.action);
+    throw roonBrowseError(drill, "this album");
   }
 
   // 4) Load contents (tracks + action_list).  Explicit count for big albums.
@@ -1189,12 +1201,48 @@ async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
 
   // `offset` may have been corrected by the stale-offset relocation above —
   // callers pass it back to the client so follow-up plays use the fresh one.
-  return { hierarchy, albumItem, items, playMenu, offset };
+  return { hierarchy, albumItem, items, playMenu, offset, libraryMoved, shortRead, declared };
 }
 
 // A track = an item that isn't the play menu, a no-subtitle submenu
 // (e.g. "Add to Library"), or a section header. Shared by the detail
 // listing and per-track actions so their indexes always align.
+// What Roon said, when Roon said something.
+//
+// A browse response can come back with action "message" instead of "list",
+// carrying `message` (the Core's own words) and `is_error`. Every site that
+// hit this threw "Unexpected browse action: message" and DISCARDED the
+// explanation — which is how a user asking "why can't I play this album?" got
+// a sentence about a protocol instead of the reason. Roon telling us why is
+// the best evidence available anywhere in this file, and it needed no
+// inference at all.
+// The "Roon will not do this" message, in one place.
+//
+// Four sites built their own, all with the same dangling "Available: " and an
+// empty list when Roon had offered no menu at all — an internal diagnostic
+// shown to a human in a toast. Two different facts deserve two sentences:
+// Roon offered nothing, or Roon offered something else.
+function noActionError(kind, actions, what) {
+  const titles = (actions || []).map(a => a.title).filter(Boolean);
+  return new Error(titles.length
+    ? "Roon offers no '" + kind + "' for " + what + ". It offers: " + titles.join(", ")
+    : "Roon offered no playback options for " + what + ".");
+}
+
+function roonBrowseError(body, what) {
+  const said = body && typeof body.message === "string" ? body.message.trim() : "";
+  const err = new Error(said
+    ? "Roon says: " + said
+    : "Roon returned an unexpected " + (body && body.action) + " for " + what);
+  // Roon's own advisories are transient by nature (a library mid-update, a
+  // service reconnecting), so they are flagged the same way a stale offset is:
+  // the route answers 409 and the client can say "try again" honestly.
+  if (said) err.stale = true;
+  err.roonMessage = said || "";
+  err.roonIsError = !!(body && body.is_error);
+  return err;
+}
+
 function isTrackItem(t, playMenu) {
   if (t === playMenu)                          return false;
   if (t.hint === "action_list" && !t.subtitle) return false;
@@ -1248,7 +1296,8 @@ function relocateAlbumOffset(expect) {
 }
 async function openAlbumByOffset(offset, zoneOrOutputId, invokeKind, filter, expect) {
   return withBrowseSession(async (sessionKey) => {
-    const { hierarchy, albumItem, items, playMenu, offset: effectiveOffset } =
+    const { hierarchy, albumItem, items, playMenu, offset: effectiveOffset,
+            libraryMoved, shortRead, declared } =
       await loadAlbumSession(sessionKey, offset, filter, expect, zoneOrOutputId);
 
     const albumInfo = {
@@ -1274,8 +1323,23 @@ async function openAlbumByOffset(offset, zoneOrOutputId, invokeKind, filter, exp
     if (invokeKind) {
       const action = matchAction(actions, invokeKind);
       if (!action) {
-        throw new Error("No matching action for '" + invokeKind +
-                        "'. Available: " + actions.map(a => a.title).join(", "));
+        // Two different facts, and they used to share one string — with an
+        // empty "Available:" list left dangling when Roon offered no menu at
+        // all. Say which it is, and say what we can prove about why.
+        const err = (actions.length || !libraryMoved)
+          ? noActionError(invokeKind, actions, "this album")
+          // The one case where more can honestly be said: Roon offered nothing
+          // AND its live album count no longer matches the snapshot, so the
+          // list this offset came from is out of date. Past tense — a mismatch
+          // proves the library CHANGED, not that an import is running now.
+          : new Error("Roon offered no playback options for this album — your library has " +
+                      "changed since this list was built, so it is being re-checked. " +
+                      "Try again shortly.");
+        // A library that has moved is a transient condition with a recheck
+        // already scheduled, so it gets the same 409 "try again" contract a
+        // stale offset does rather than a 500.
+        if (libraryMoved) err.stale = true;
+        throw err;
       }
       if (!zoneOrOutputId) throw new Error("zone_or_output_id required to invoke an action");
       await browse({
@@ -1287,7 +1351,12 @@ async function openAlbumByOffset(offset, zoneOrOutputId, invokeKind, filter, exp
       invoked = action.title;
     }
 
-    return { album: albumInfo, tracks, actions, invoked, offset: effectiveOffset };
+    return { album: albumInfo, tracks, actions, invoked, offset: effectiveOffset,
+             // Told to the client so the album view can explain a thin answer
+             // instead of silently hiding the track list.
+             library_moved: !!libraryMoved,
+             partial: !!shortRead,
+             declared_tracks: Number.isFinite(declared) ? declared : null };
   });
 }
 
@@ -1313,7 +1382,7 @@ function matchAction(actions, kind) {
 async function drillActionMenu(hierarchy, sessionKey, itemKey) {
   const d = await browse({ hierarchy, item_key: itemKey, multi_session_key: sessionKey });
   if (d.action !== "list") {
-    throw new Error("Unexpected browse action: " + d.action);
+    throw roonBrowseError(d, "this menu");
   }
   const acts = await load({ hierarchy, multi_session_key: sessionKey });
   return (acts.items || []).map(a => ({
@@ -1361,8 +1430,7 @@ async function invokeTrackAction(offset, trackIndex, trackTitle, zoneOrOutputId,
 
     const action = matchAction(actions, kind);
     if (!action) {
-      throw new Error("No matching action for '" + kind +
-                      "'. Available: " + actions.map(a => a.title).join(", "));
+      throw noActionError(kind, actions, "this track");
     }
     await browse({
       hierarchy,
@@ -1459,7 +1527,7 @@ async function loadPlaylistSession(sessionKey, offset, expectTitle, zoneId) {
   // Same guard as drillActionMenu: without it a non-list response would leave
   // the follow-up load reading the CURRENT level, and we'd report the playlist
   // list itself as the playlist's tracks.
-  if (d.action !== "list") throw new Error("Unexpected browse action: " + d.action);
+  if (d.action !== "list") throw roonBrowseError(d, "this playlist");
 
   const inside = await load({
     hierarchy, offset: 0, count: PLAYLIST_ITEMS, multi_session_key: sessionKey
@@ -1496,8 +1564,7 @@ async function invokePlaylistAction(offset, title, zoneOrOutputId, kind) {
     const actions = await drillActionMenu(hierarchy, sessionKey, playMenu.item_key);
     const action = matchAction(actions, kind);
     if (!action) {
-      throw new Error("No matching action for '" + kind +
-                      "'. Available: " + actions.map(a => a.title).join(", "));
+      throw noActionError(kind, actions, "this playlist");
     }
     await browse({
       hierarchy,
@@ -1535,8 +1602,7 @@ async function invokePlaylistTrackAction(offset, title, trackIndex, trackTitle, 
     const actions = await drillActionMenu(hierarchy, sessionKey, item.item_key);
     const action = matchAction(actions, kind);
     if (!action) {
-      throw new Error("No matching action for '" + kind +
-                      "'. Available: " + actions.map(a => a.title).join(", "));
+      throw noActionError(kind, actions, "this track");
     }
     await browse({
       hierarchy,
@@ -5769,6 +5835,13 @@ async function checkAndMaybeRebuild(reason, force) {
     if (await libraryIsImporting()) {
       console.log("[index] " + reason + " check: library changed but Roon is still importing — refresh paused");
       _statusSync = "  •  Roon importing — library refresh paused"; pushStatus();
+      // THE gap this version closes. Declining to rebuild during an import is
+      // right; leaving it at that was not. The timer here is a plain 12-hour
+      // interval, so an import caught by one tick left the snapshot stale until
+      // the NEXT tick — up to twelve hours after Roon finished, with every
+      // album open in between hitting stale offsets and empty action lists.
+      // That is why the symptom persisted instead of clearing itself.
+      scheduleLibraryRecheck("Roon was importing at the " + reason + " check");
       return { status: "importing" };
     }
     console.log("[index] " + reason + " check: library changed and settled — rebuilding snapshot once");
@@ -5799,7 +5872,46 @@ function startIndexMaintenance() {
   indexMaintTimer = setInterval(() => { checkAndMaybeRebuild("12h", false); }, INDEX_CHECK_MS);
   if (indexMaintTimer.unref) indexMaintTimer.unref();
 }
+
+// How long to wait before looking again after seeing the library move. Long
+// enough that a long import is not probed to death (each recheck costs a
+// 2-3 call probe plus, if it proceeds, a 5-second settle read), short enough
+// that a finished import is picked up in minutes rather than half a day.
+function libraryRecheckMs() { return 5 * 60 * 1000; }
+// The ceiling on chained rechecks. An import that runs for hours re-arms this
+// each time it is still moving; without a cap a permanently-churning library
+// would probe every five minutes forever.
+function libraryRecheckMax() { return 24; }
+
+let _libraryRecheckTimer = null;
+let _libraryRecheckCount = 0;
+// Ask again in a few minutes, once. Called when something OBSERVED that the
+// library has moved: the 12-hour check finding an import in progress, or an
+// ordinary album open noticing Roon's live count no longer matches the
+// snapshot. Both are evidence; neither is a reason to rebuild inline, because
+// a rebuild is a full re-walk and these fire while somebody is waiting.
+function scheduleLibraryRecheck(why) {
+  if (_libraryRecheckTimer) return;                       // one pending, ever
+  if (_libraryRecheckCount >= libraryRecheckMax()) return;
+  _libraryRecheckCount++;
+  console.log("[index] recheck scheduled in " + Math.round(libraryRecheckMs() / 60000) +
+              " min (" + why + ")");
+  _libraryRecheckTimer = setTimeout(() => {
+    _libraryRecheckTimer = null;
+    checkAndMaybeRebuild("auto", false)
+      .then(r => {
+        // Settled and rebuilt, or nothing had changed after all — either way
+        // the episode is over and the counter resets, so the NEXT import gets
+        // a full budget of its own.
+        if (r && (r.status === "rebuilt" || r.status === "fresh")) _libraryRecheckCount = 0;
+      })
+      .catch(e => console.error("[index] auto recheck failed: " + e.message));
+  }, libraryRecheckMs());
+  if (_libraryRecheckTimer.unref) _libraryRecheckTimer.unref();
+}
 function stopIndexMaintenance() {
+  if (_libraryRecheckTimer) { clearTimeout(_libraryRecheckTimer); _libraryRecheckTimer = null; }
+  _libraryRecheckCount = 0;
   if (indexMaintTimer) { clearInterval(indexMaintTimer); indexMaintTimer = null; }
 }
 
@@ -6283,7 +6395,17 @@ app.get("/api/status", (req, res) => {
     paired:    !!core,
     core_id:   core ? core.core_id      : null,
     core_name: core ? core.display_name : null,
-    zone_count: Object.keys(zones).length
+    zone_count: Object.keys(zones).length,
+    // The extension has always known when it last saw Roon importing — it just
+    // had nowhere to say it. `_statusSync` went only to Roon's own Settings →
+    // Extensions line, so the app itself could not tell a user why albums were
+    // misbehaving. It is a LAGGING indicator (set at the last check, cleared on
+    // the next clean one), so it is reported as an observation with a time
+    // rather than as a claim about right now.
+    library_importing: !!_statusSync,
+    library_recheck_pending: !!_libraryRecheckTimer,
+    index_built_at: albumIndex.builtAt || null,
+    index_count: albumIndex.count || 0
   });
 });
 

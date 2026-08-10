@@ -2,6 +2,66 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.49] — 2026-08-10
+
+### Fixed — the real reason a library change kept breaking playback for hours
+
+Adding albums to Roon made the extension show "no playback options available" and return short or
+empty track lists. The cause of the *symptom* was known — stale offsets while Roon re-indexes. The
+reason it **persisted instead of clearing itself** was not, and it is the actual bug:
+
+> The maintenance loop is a plain twelve-hour interval. When a tick found Roon mid-import it
+> correctly declined to rebuild — and then returned, **scheduling nothing**. The snapshot stayed
+> stale until the *next* tick, up to twelve hours after Roon had already finished.
+
+That is why the manual Rescan looked like the only cure: it forces past that gate. Declining to
+rebuild during an import now arms a re-check a few minutes out, and an ordinary album open that
+notices Roon's live album count no longer matches the snapshot arms one too. One pending re-check at
+a time, capped so a permanently-churning library cannot poll forever, and the budget is wide enough
+to outlast a large streaming import.
+
+### Added — the extension now says what is actually wrong
+
+Three facts were being thrown away at the exact moment a user needed them:
+
+- **Roon's own words.** A browse response can come back as `action: "message"` carrying the Core's
+  explanation and an `is_error` flag. Four sites discarded it and raised *"Unexpected browse action:
+  message"* — a sentence about a protocol where Roon had supplied the reason. Roon's message is now
+  shown as *"Roon says: …"*, and because such advisories are transient it gets the same "try again"
+  contract a stale offset does rather than a server error.
+- **Roon's live album count.** Already fetched on every album open and every play, and dropped on
+  the floor. Against the snapshot's count it proves the library has changed — free, and available at
+  the moment of failure.
+- **How many tracks Roon said the album had.** The level declares its row count, so a short read is
+  now distinguishable from a short album. The view says *"Roon sent 3 of 12 tracks"* instead of
+  silently hiding the whole section.
+
+`/api/status` also reports the sync state at last. The extension has always known when it last saw
+Roon importing; that only ever reached Roon's own Settings screen, so the app itself could not tell
+anyone why albums were misbehaving.
+
+**On wording.** A count mismatch proves the library *changed*; it does not prove an import is running
+*now* — establishing that costs four Core calls and a five-second sleep, which is not available on a
+play path. So the message stays past tense: *"your library has changed since this list was built."*
+A test pins that, because replacing a vague truth with a confident guess is the easy mistake here.
+
+### Fixed — "No matching action for 'play_now'. Available: "
+
+An internal diagnostic shown to a human in a toast, with a dangling empty list whenever Roon had
+offered no menu at all. Four sites built their own copy of it. One shared builder now tells the two
+cases apart: Roon offered nothing, or Roon offered something else and here is what.
+
+### Changed — Labels and Smart Picks leave the side menu when switched off
+
+A menu entry for a disabled feature leads to a screen that can only ever be empty. Hidden at boot
+and the instant the switch is flipped, on whichever device flipped it and on the next open elsewhere.
+
+### Tests
+- `test/unit/librarychange.test.js` — 16 tests over the message builders, the recheck budget, and
+  static assertions that the importing branch and the album-open path both arm a recheck (neither is
+  reachable from a unit test — both are async I/O against a live Core).
+- 9/9 mutations caught. Suite: 41 static / 681 unit / 272 dom.
+
 ## [1.7.48] — 2026-08-10
 
 ### Changed — Labels and Smart Picks are now opt-in, and off means *off*

@@ -5414,8 +5414,17 @@
         { label: "More playback actions" }));
     }
     if (!available.length) {
-      modalActs.innerHTML =
-        `<div class="modal-error">No playback actions available for this album.</div>`;
+      // "No playback actions available" was true and useless — it described
+      // our own empty array rather than anything the user could act on. When
+      // Roon's live album count no longer matches the snapshot we can say why,
+      // and that a re-check is already running.
+      modalActs.innerHTML = "";
+      const err = document.createElement("div");
+      err.className = "modal-error";
+      err.textContent = j.library_moved
+        ? "Roon offered no playback options — your library has changed since this list was built. It is being re-checked; try again shortly."
+        : "Roon offered no playback options for this album.";
+      modalActs.appendChild(err);
     }
 
     // Tracks — each row is tappable and reveals Play now / Queue for that
@@ -5423,7 +5432,26 @@
     const trackWrap = document.querySelector(".track-list-wrap");
     modalTracks.innerHTML = "";
     const trackList = j.tracks || [];
+    // A thin or empty answer is now distinguishable from an album that really
+    // has no tracks: Roon declares how many rows the level holds, so we know
+    // when it sent fewer. Previously the whole section was hidden and an album
+    // mid-reindex looked identical to one with nothing on it.
+    if (j.partial) {
+      const note = document.createElement("div");
+      note.className = "modal-error";
+      note.textContent = j.declared_tracks
+        ? "Roon sent " + trackList.length + " of " + j.declared_tracks +
+          " tracks — your library is changing. Reopen this album shortly."
+        : "Roon sent an incomplete track list — your library is changing.";
+      modalActs.appendChild(note);
+    }
     if (trackList.length === 0) {
+      if (!j.partial && j.library_moved) {
+        const note = document.createElement("div");
+        note.className = "modal-error";
+        note.textContent = "Roon returned no tracks — your library has changed since this list was built.";
+        modalActs.appendChild(note);
+      }
       trackWrap.classList.add("hidden");
     } else {
       trackWrap.classList.remove("hidden");
@@ -6901,6 +6929,42 @@
     }
   };
 
+  // Reflect the opt-in features into the side menu.
+  //
+  // A menu entry for a feature that is switched off leads to a screen that can
+  // only ever be empty — the Labels browser with no scan behind it, Smart Picks
+  // with no build. Hiding the entry is part of "off", not decoration.
+  //
+  // Exported because the settings pane flips these switches and the menu lives
+  // elsewhere; both call this rather than reaching into each other's DOM.
+  // A key absent from `state` leaves that entry alone, so one failed lookup
+  // cannot hide the other feature's entry.
+  window.__applyFeatureMenu = (state) => {
+    const labelsItem = document.getElementById("menu-item-labels");
+    const picksItem  = document.getElementById("menu-item-picks");
+    if (labelsItem && typeof state.labels === "boolean") {
+      labelsItem.classList.toggle("hidden", !state.labels);
+    }
+    if (picksItem && typeof state.picks === "boolean") {
+      picksItem.classList.toggle("hidden", !state.picks);
+    }
+  };
+
+  // Ask at boot. Two independent calls, so an older server or a transient
+  // error on one endpoint does not decide the other entry's visibility.
+  async function applyFeatureMenuFromServer() {
+    const state = {};
+    try {
+      const r = await fetch("/api/settings/labels");
+      if (r.ok) state.labels = !!(await r.json()).enabled;
+    } catch (e) { /* leave the Labels entry as the markup has it */ }
+    try {
+      const r = await fetch("/api/settings/smart-picks");
+      if (r.ok) state.picks = !!(await r.json()).enabled;
+    } catch (e) { /* leave the Smart Picks entry as the markup has it */ }
+    window.__applyFeatureMenu(state);
+  }
+
   window.__buildAlbumTile = (a) => buildAlbumTile(a);
   window.__loadRandom = loadRandom;
   window.__showToast = (msg, kind) => showToast(msg, kind);
@@ -6914,6 +6978,7 @@
     // it before the first paint; on failure the table's own default order
     // stands, which is a working Home rather than a blank one.
     await loadHomeLayout();
+    applyFeatureMenuFromServer();
     const painted = !activeFilter && hydrateHomeFromCache();
     if (!painted) setBanner("Connecting to Roon…");
     for (let i = 0; i < 30; i++) {
@@ -8888,6 +8953,8 @@
       if (!r.ok) return;
       const j = await r.json();
       if (picksEnabled) picksEnabled.checked = !!j.enabled;
+      // A device that was not the one that flipped the switch catches up here.
+      if (window.__applyFeatureMenu) window.__applyFeatureMenu({ picks: !!j.enabled });
       if (picksHour && Number.isFinite(j.hour)) picksHour.value = String(j.hour);
       if (picksAutoAdd) picksAutoAdd.checked = !!j.auto_add;
       if (picksNote) {
@@ -8907,6 +8974,7 @@
       if (await saveSmartPicksSettings({ enabled: on })) {
         showToast(on ? "Smart Picks on — the first set builds at the scheduled hour"
                      : "Smart Picks off — nothing runs in the background");
+        if (window.__applyFeatureMenu) window.__applyFeatureMenu({ picks: on });
       } else {
         picksEnabled.checked = !on;   // the server refused — do not lie about it
       }
@@ -8961,6 +9029,7 @@
       if (!r.ok) return;
       const j = await r.json();
       labelsEnabledEl.checked = !!j.enabled;
+      if (window.__applyFeatureMenu) window.__applyFeatureMenu({ labels: !!j.enabled });
       if (labelsEnabledNote) {
         labelsEnabledNote.textContent = j.enabled
           ? (j.scanning ? "Scanning now…"
@@ -8982,6 +9051,7 @@
         if (!r.ok || j.error) throw new Error(j.error || "Couldn't save");
         showToast(on ? "Labels on — the first scan is running now"
                      : "Labels off — no label lookups will run");
+        if (window.__applyFeatureMenu) window.__applyFeatureMenu({ labels: on });
         loadLabelsEnabled();
       } catch (e) {
         labelsEnabledEl.checked = !on;   // the server refused — do not lie about it
