@@ -333,30 +333,42 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
          is one destination, reached from here or the side menu. -->
     <section id="home-view" class="home-view hidden" aria-label="Home">
       <div id="home-sections">
-        <div class="home-section home-section-unplayed">
+        <!-- data-row is the row's identity. The Home Screen settings page and
+             the loader both read it from the HOME_ROWS table in app.js, so the
+             list you reorder and the rows that render cannot drift apart.
+             Reordering MOVES these nodes; it never rebuilds them from markup
+             (CLAUDE.md pre-flight step 4). -->
+        <div class="home-section home-section-unplayed" data-row="unplayed">
           <h2 class="home-section-title home-section-link" id="home-unplayed-title" role="button" tabindex="0">Not played in 6 months</h2>
           <div id="home-unplayed" class="home-carousel"></div>
         </div>
-        <!-- Smart Picks: six albums a day by artists NOT in the library. Hidden
+        <!-- Recently played, newest first, one tile per album over 30 days.
+             Hidden until there is a play to show, so a fresh install does not
+             open on an empty shelf. -->
+        <div class="home-section home-section-history hidden" data-row="history">
+          <h2 class="home-section-title" id="home-history-title">Recently played</h2>
+          <div id="home-history" class="home-carousel"></div>
+        </div>
+        <!-- Smart Picks: five albums a day by artists NOT in the library. Hidden
              until the first set builds, so a fresh install never shows an empty
              row. Tapping the header opens the full screen with the reasons. -->
-        <div class="home-section home-section-picks hidden">
+        <div class="home-section home-section-picks hidden" data-row="picks">
           <h2 class="home-section-title home-section-link" id="home-picks-title" role="button" tabindex="0">Smart Picks</h2>
           <div id="home-picks" class="home-carousel home-carousel-1row"></div>
         </div>
-        <div class="home-section home-section-random">
+        <div class="home-section home-section-random" data-row="random">
           <h2 class="home-section-title home-section-link" id="home-random-title" role="button" tabindex="0">Random albums</h2>
           <div id="home-random" class="home-carousel"></div>
         </div>
-        <div class="home-section home-section-library">
+        <div class="home-section home-section-library" data-row="library">
           <h2 class="home-section-title home-section-link" id="home-library-title" role="button" tabindex="0">Library</h2>
           <div id="home-library" class="home-carousel"></div>
         </div>
-        <div class="home-section home-section-lotw">
+        <div class="home-section home-section-lotw" data-row="lotw">
           <h2 class="home-section-title home-section-link" id="home-lotw-title" role="button" tabindex="0">Label of the week</h2>
           <div id="home-lotw" class="home-carousel home-carousel-1row"></div>
         </div>
-        <div class="home-section home-section-genres">
+        <div class="home-section home-section-genres" data-row="genres">
           <h2 class="home-section-title">Browse by genre</h2>
           <div id="home-genres" class="home-genre-grid"></div>
         </div>
@@ -877,6 +889,17 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
 
+          <button class="settings-nav-item" type="button" data-pane="homescreen">
+            <span class="settings-nav-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="5" rx="1"/><rect x="3" y="12" width="18" height="5" rx="1"/><path d="M3 20h11"/></svg>
+            </span>
+            <span class="settings-nav-txt">
+              <span class="settings-nav-title">Home Screen</span>
+              <span class="settings-nav-desc">Which rows show, and in what order</span>
+            </span>
+            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+
           <button class="settings-nav-item" type="button" data-pane="smartpicks">
             <span class="settings-nav-ico" aria-hidden="true">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.5-4.5"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>
@@ -977,6 +1000,17 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
           </button>
           <h2>Labels</h2>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Record labels <button class="settings-info-btn" data-info="Off by default. When on, the extension works out each album's record label — from your file tags first, then iTunes, Qobuz, TheAudioDB, MusicBrainz and Discogs — and fetches label logos. That is the only part of the app that talks to those services, and when this is off none of it runs. Your /music tags are still read either way: the Decade, Format, Sample rate, Bit depth and Channels filters and the local-files badge all come from that same pass." aria-label="Info">ⓘ</button></span>
+            <label class="switch">
+              <input type="checkbox" id="labels-enabled" aria-label="Record labels">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+          <div class="settings-note" id="labels-enabled-note">Off by default. Everything below applies only while this is on.</div>
         </div>
 
         <div class="settings-block">
@@ -1174,6 +1208,23 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
         </div>
       </div>
 
+      <!-- Home Screen: which carousels appear, and in what order. The list is
+           built by app.js from its HOME_ROWS table, so the rows you can
+           reorder here and the rows that actually render cannot drift apart. -->
+      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="homescreen">
+        <div class="settings-pane-head">
+          <button class="settings-back" type="button" data-settings-back aria-label="Back to settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h2>Home Screen</h2>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-note">Hold the handle to drag a row into a new position. A row switched off is not fetched at all — it does no work in the background.</div>
+          <ul class="home-rows-list" id="home-rows-list"></ul>
+        </div>
+      </div>
+
       <!-- Smart Picks -->
       <div class="settings-view settings-pane hidden" data-view="pane" data-pane="smartpicks">
         <div class="settings-pane-head">
@@ -1185,7 +1236,18 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
 
         <div class="settings-block">
           <div class="settings-row">
-            <span class="settings-label">Build the day's picks at <button class="settings-info-btn" data-info="The hour the daily build runs, in this server's local time. It analyses your library, asks ListenBrainz and MusicBrainz for artists you don't own, and adds the five genre-based picks to your streaming library so Roon can import them. Early morning keeps all of that away from Roon's own work and gives Roon the rest of the night to import. If the extension is off at that hour, the build runs the next time it starts." aria-label="Info">ⓘ</button></span>
+            <span class="settings-label">Smart Picks <button class="settings-info-btn" data-info="Off by default. When on, the extension analyses your library once a day and asks ListenBrainz and MusicBrainz for five albums by artists you don't own. When off it does nothing at all — no daily build, no timer, no requests to anybody." aria-label="Info">ⓘ</button></span>
+            <label class="switch">
+              <input type="checkbox" id="picks-enabled" aria-label="Smart Picks">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+          <div class="settings-note">Off by default. Everything below applies only while this is on.</div>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Build the day's picks at <button class="settings-info-btn" data-info="The hour the daily build runs, in this server's local time. It analyses your library, asks ListenBrainz and MusicBrainz for artists you don't own, and adds the picks to your streaming library so Roon can import them. Early morning keeps all of that away from Roon's own work and gives Roon the rest of the night to import. If the extension is off at that hour, the build runs the next time it starts." aria-label="Info">ⓘ</button></span>
             <select id="picks-hour" class="settings-select" aria-label="Smart Picks build hour"></select>
           </div>
           <div class="settings-note">Nothing here touches your Roon Core — the analysis reads the library snapshot the extension already keeps.</div>
@@ -1193,9 +1255,9 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
 
         <div class="settings-block">
           <div class="settings-row">
-            <span class="settings-label">Add the five genre picks automatically <button class="settings-info-btn" data-info="Favourites the five genre-based picks in your Qobuz or TIDAL library as soon as they are chosen, so Roon imports them overnight and they are ready to play by morning. The stretch pick is never added automatically — that one is always yours to accept or reject. Turn this off and all six become Add / Not for me." aria-label="Info">ⓘ</button></span>
+            <span class="settings-label">Add picks automatically <button class="settings-info-btn" data-info="Favourites the day's picks in your Qobuz or TIDAL library as soon as they are chosen, so Roon imports them overnight and they are ready to play by morning. Turn this off and each pick becomes Add / Not for me instead." aria-label="Info">ⓘ</button></span>
             <label class="switch">
-              <input type="checkbox" id="picks-autoadd" aria-label="Add the five genre picks automatically">
+              <input type="checkbox" id="picks-autoadd" aria-label="Add picks automatically">
               <span class="switch-track"><span class="switch-thumb"></span></span>
             </label>
           </div>
@@ -1207,7 +1269,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             <span class="settings-label">Rebuild today's picks now</span>
             <button id="picks-rebuild" class="settings-update-btn" type="button">Rebuild</button>
           </div>
-          <div class="settings-note">Discards today's set and chooses six again. Takes a minute or two.</div>
+          <div class="settings-note">Discards today's set and chooses five again. Takes a minute or two.</div>
         </div>
       </div>
 

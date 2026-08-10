@@ -1733,10 +1733,27 @@ function makeTtlCache(ttlMs) {
 // queue — so it wants to run when nothing else does. Default 04:00 local.
 let smartPicksHour    = Number.isFinite(_persisted.smartPicksHour)
   ? Math.min(23, Math.max(0, Math.trunc(_persisted.smartPicksHour))) : 4;
-// Whether the five adjacent picks are favourited automatically at build time,
-// so Roon has all night to import them and they are playable by morning. The
-// stretch pick is NEVER auto-added — it is the one the user is meant to judge.
+// Whether the picks are favourited automatically at build time, so Roon has
+// all night to import them and they are playable by morning.
 let smartPicksAutoAdd = _persisted.smartPicksAutoAdd !== false;
+
+// ---------------------------------------------------------------------------
+// Opt-in features. Both reach the network on their own schedule — Smart Picks
+// queries MusicBrainz/ListenBrainz and writes streaming favourites; the label
+// pipeline walks five metadata APIs and fetches logos — so neither should be
+// running for somebody who has never asked for it. OFF is the default, and off
+// means the timers do not start at all, not merely that the rows are hidden.
+//
+// Existing users are not switched off underneath themselves. An absent setting
+// with evidence of use on the data volume — a label cache, or picks already
+// built — reads as consent, because that state can only exist if the feature
+// was running and nobody complained. A brand new install has neither and
+// starts off. `featureDefaultOn` is called AFTER the database opens, so these
+// are assigned rather than initialised here.
+let labelsEnabled     = _persisted.labelsEnabled === true;
+let smartPicksEnabled = _persisted.smartPicksEnabled === true;
+const _labelsEnabledSet     = _persisted.labelsEnabled !== undefined;
+const _smartPicksEnabledSet = _persisted.smartPicksEnabled !== undefined;
 
 // Qobuz (UNOFFICIAL API — see lib/qobuz.js). Credentials/token set via Settings.
 // We persist the username, the md5 of the password (for silent re-login), the
@@ -2146,6 +2163,10 @@ function openLabelsDb() {
       -- the query compares lower(trim(track)) — an index on the bare column
       -- cannot serve it.
       CREATE INDEX IF NOT EXISTS plays_track ON plays(lower(trim(track)));
+      -- The History row reads a 30-day window out of the one table here that
+      -- grows without bound, on every Home visit, on the synchronous SQLite
+      -- driver. Without this it is a full scan in front of the screen.
+      CREATE INDEX IF NOT EXISTS plays_ts ON plays(ts);
     `);
     // `src` records WHERE a year came from, so a better source can correct a
     // worse one (see yearSourceRank). Added after the table shipped without
@@ -2402,6 +2423,41 @@ function rememberScanYear(title, artist, date, src) {
 }
 
 openLabelsDb();
+
+// Decide the opt-in defaults now that the data volume is readable.
+//
+// The rule is "off unless asked", with one exception: somebody already running
+// these features must not have them switched off underneath them by an update.
+// A populated label cache, or picks already built, is evidence the feature was
+// running — that state cannot exist otherwise — so it is read as consent and
+// written down once, after which the setting is explicit and this never runs
+// again. A fresh install has neither and starts off, which is the point.
+function featureHasHistory(table, column) {
+  if (!labelsDb) return false;
+  try {
+    const row = labelsDb.prepare("SELECT " + column + " AS n FROM " + table + " LIMIT 1").get();
+    return !!row;
+  } catch (e) {
+    return false;   // table absent on a pre-migration DB — no history to honour
+  }
+}
+function applyFeatureDefaults() {
+  const patch = {};
+  if (!_labelsEnabledSet) {
+    labelsEnabled = featureHasHistory("label_names", "key");
+    patch.labelsEnabled = labelsEnabled;
+  }
+  if (!_smartPicksEnabledSet) {
+    smartPicksEnabled = featureHasHistory("smart_picks", "day");
+    patch.smartPicksEnabled = smartPicksEnabled;
+  }
+  if (Object.keys(patch).length) {
+    savePersistedSettings(patch);
+    console.log("[settings] feature defaults applied: " +
+                Object.entries(patch).map(([k, v]) => k + "=" + v).join(" "));
+  }
+}
+applyFeatureDefaults();
 
 // ---------------------------------------------------------------------------
 // Fan Art TV — label logo images. Free API key — set via web UI settings.
@@ -3793,6 +3849,26 @@ async function runLabelsIndexScan(force) {
   // whole point: that return is what used to stop years being collected on an
   // established install.
   harvestAlbumYears("file tags");
+
+  // Labels switched off — stop here, at the boundary between the FILE WALK and
+  // the LABEL work.
+  //
+  // Everything above this line is the /music tag read, and it is not really a
+  // label job at all: it is where release years (the Decade facet), the "local
+  // files" badge, and the Format / Sample rate / Bit depth / Channels facets
+  // come from. Gating the whole scan would take four facets and two badges
+  // down with it, which is not what "turn labels off" asks for.
+  //
+  // Everything below is: label names from tags, then the metadata cascade
+  // (iTunes, Qobuz, TheAudioDB, MusicBrainz, Discogs) and the FanArt/Discogs
+  // logo fetches. That is the network traffic, and off means none of it.
+  if (!labelsEnabled) {
+    labelsIndex.building = false;
+    labelsIndex.builtAt  = Date.now();
+    appendLabelsLog("[labels] file tags read; label lookups skipped — Labels is off in Settings");
+    return;
+  }
+
   if (fileLabelMap.size) {
     let overrideCount = 0;
     for (const [key, fileLabel] of fileLabelMap) {
@@ -5374,7 +5450,7 @@ async function syncChain() {
   await bgRun("genres",            () => harvestAlbumGenres("library sync"));
   await bgRun("art prewarm",       () => prewarmAlbumArt());
   // Last, and only if today has none: the picks need the genre harvest above to
-  // have run at least once (the stretch pick reads genre weights), and a fresh
+  // have run at least once, and a fresh
   // pair should not have to wait up to an hour for the timer's first tick.
   kickSmartPicks("after sync");
 }
@@ -6997,6 +7073,91 @@ app.get("/api/home/unplayed", async (req, res) => {
 // deterministically from today's date so it's stable all day and changes each
 // day. Once it has been played today (a play row with that title since local
 // midnight) it's withheld ({ album: null, played: true }) until tomorrow.
+// How far back the History row looks, and how many tiles it can hold. Older
+// plays are deleted outright rather than merely hidden — a history row that
+// only ever grows is a table that only ever grows.
+function historyDays()     { return 30; }
+function historyMaxTiles() { return 60; }
+
+// Delete plays older than the window. Called from the History route rather
+// than on a timer: the window only matters when somebody looks, and a box that
+// nobody opens for a month should not be doing database writes about it.
+let _historyPrunedAt = 0;
+function pruneOldPlays() {
+  if (!labelsDb) return;
+  // At most once an hour. The route is hit on every Home visit and the delete
+  // is a write on the synchronous driver.
+  if (Date.now() - _historyPrunedAt < 60 * 60 * 1000) return;
+  _historyPrunedAt = Date.now();
+  try {
+    const cutoff = Date.now() - historyDays() * 24 * 60 * 60 * 1000;
+    const r = labelsDb.prepare("DELETE FROM plays WHERE ts < ?").run(cutoff);
+    if (r.changes) console.log("[history] pruned " + r.changes + " plays older than " +
+                               historyDays() + " days");
+  } catch (e) {
+    // Best effort. A failed prune costs disk, not correctness.
+    if (DEBUG) console.warn("[history] prune failed: " + e.message);
+  }
+}
+
+// Albums played in the last 30 days, most recent first, one tile per album.
+//
+// Grouped by lower(trim(album)) — the same key the "not played" row and the
+// Library play sorts use. Two artists' "Greatest Hits" collide under it; that
+// is a known and consistent limitation of recording Roon's now-playing line
+// rather than an album identity.
+//
+// The bare `image_key` column is safe ONLY because there is exactly one
+// aggregate in the SELECT: SQLite's documented min/max rule makes bare columns
+// come from the MAX(ts) row. Add a second aggregate and they become arbitrary
+// — the v1.7.46 changelog records that exact bug on the plays table.
+//
+// The artist is deliberately NOT taken from the history: `plays.artist` is the
+// TRACK artist, so a compilation would name a performer rather than the record.
+// It comes from the snapshot, like every other Home row.
+app.get("/api/home/history", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  try {
+    await ensureAlbumIndex();
+    if (!labelsDb) return res.json({ albums: [] });
+    pruneOldPlays();
+    const count = Math.min(historyMaxTiles(),
+      Math.max(1, parseInt(req.query.count, 10) || historyMaxTiles()));
+    const cutoff = Date.now() - historyDays() * 24 * 60 * 60 * 1000;
+    let rows = [];
+    try {
+      rows = labelsDb.prepare(
+        "SELECT album, image_key, MAX(ts) AS ts FROM plays " +
+        "WHERE ts >= ? AND album != '' " +
+        "GROUP BY lower(trim(album)) ORDER BY ts DESC LIMIT ?").all(cutoff, count);
+    } catch (e) {
+      return res.json({ albums: [] });   // DB unavailable — an empty row, not an error
+    }
+    const lut = libraryLookup();
+    const albums = [];
+    for (const r of rows) {
+      // Resolve to the snapshot so the tile can be opened and played. A title
+      // owned by more than one album is ambiguous and is skipped rather than
+      // guessed at — the same rule the import resolver follows.
+      let hit = null;
+      for (const t of albumTitleVariants(r.album)) {
+        const arr = lut.byTitle.get(t);
+        if (arr && arr.length === 1) { hit = arr[0]; break; }
+      }
+      if (!hit) continue;
+      albums.push(withSource({
+        offset:    hit.offset,
+        title:     hit.title || "",
+        subtitle:  hit.subtitle || "",
+        image_key: hit.image_key || r.image_key || null,
+      }, hit));
+    }
+    res.json({ albums, days: historyDays() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get("/api/home/album-of-the-day", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   try {
@@ -7209,8 +7370,12 @@ app.get("/api/filters/labels", (req, res) => {
   if (labelsIndex.map.size === 0 && albumIndex.count > 0) {
     seedLabelsFromCache();
   }
-  // Kick off a scan if never done, or if the last scan is older than the rescan interval.
-  if (!labelsIndex.building && (labelsIndex.builtAt === 0 || Date.now() - labelsIndex.builtAt > LABELS_RESCAN_MS)) {
+  // Kick off a scan if never done, or if the last scan is older than the rescan
+  // interval. Not while Labels is off: this route is the lazy trigger, and a
+  // feature nobody switched on must not start a scan because a screen happened
+  // to ask.
+  if (labelsEnabled && !labelsIndex.building &&
+      (labelsIndex.builtAt === 0 || Date.now() - labelsIndex.builtAt > LABELS_RESCAN_MS)) {
     runLabelsIndexScan().catch(e => {
       if (DEBUG) console.error("[labels] scan error:", e.message);
     });
@@ -10261,8 +10426,13 @@ app.get("/api/tidal/featured", async (req, res) => {
 // ---------------------------------------------------------------------------
 // Smart Picks — six albums a day by artists NOT in the library.
 //
-// Five "adjacent" picks drawn from the genres the library already lives in, and
-// one "stretch" pick from a genre it barely touches. The set changes daily.
+// Five picks drawn from the genres the library already lives in, changing daily.
+//
+// v1.7.48 dropped a sixth "stretch" pick — one album from a genre the library
+// barely touched. It read well on paper and did not work in practice: an
+// artist reached through a genre tag rather than through the user's own taste
+// is a stranger, and the answer was almost always no. Removed rather than
+// hidden, along with the MusicBrainz tag traffic behind it.
 //
 // WHY THIS IS SHAPED THE WAY IT IS
 //
@@ -10293,21 +10463,15 @@ const discovery = require("./lib/discovery");
 
 // Vocabulary as functions so the tests read the shipping values rather than
 // asserting against a constant they were handed.
-function smartPickKinds()        { return ["adjacent", "stretch"]; }
+function smartPickKinds()        { return ["adjacent"]; }
 function smartAdjacentCount()    { return 5; }
-function smartStretchCount()     { return 1; }
 function smartSeedCount()        { return 24; }
 function smartPoolCount()        { return 150; }
 // How long a shown artist stays out of the pool. Long enough that the set
 // genuinely turns over, short enough that a big library isn't exhausted.
 function smartSeenDays()         { return 120; }
-// A genre counts as "outside the library" at or below this share of it. The
-// user's Roon genre list only contains genres they own something in, so a
-// true zero is never visible — the bottom band is the outside edge there is.
-function smartStretchShare()     { return 0.02; }
 function smartHubTtlMs()         { return 14 * 24 * 60 * 60 * 1000; }
 function smartSimilarTtlMs()     { return 30 * 24 * 60 * 60 * 1000; }
-function smartTagTtlMs()         { return 30 * 24 * 60 * 60 * 1000; }
 
 // An album's key in the plays table. Title-only, because that is all Roon's
 // now-playing feed gives us to record — two artists' "Greatest Hits" collide,
@@ -10348,15 +10512,6 @@ function libraryArtistProfile() {
   return map;
 }
 
-// Genre -> how many albums in the library carry it.
-function libraryGenreWeights() {
-  const w = new Map();
-  for (const al of albumIndex.albums) {
-    for (const g of albumGenresOf(al)) w.set(g, (w.get(g) || 0) + 1);
-  }
-  return w;
-}
-
 // Which library artists to walk out from.
 //
 // Two filters and one sort. Hubs are excluded because seeding from them is what
@@ -10388,20 +10543,6 @@ function smartPickSeeds(profile, hubCanons, limit) {
       out.push(r);
     }
   }
-  return out;
-}
-
-// Genres the library barely touches, least-owned first.
-function smartStretchGenres(weights, totalAlbums) {
-  const total = totalAlbums || 0;
-  if (!total) return [];
-  const out = [];
-  for (const [genre, albums] of weights) {
-    if (!genre) continue;
-    if ((albums / total) <= smartStretchShare()) out.push({ genre, albums });
-  }
-  out.sort((a, b) => a.albums - b.albums ||
-    (a.genre < b.genre ? -1 : a.genre > b.genre ? 1 : 0));
   return out;
 }
 
@@ -10478,7 +10619,7 @@ function diversifySmartCandidates(ranked) {
 }
 
 // Everything a candidate must not be. Kept as one function so the adjacent and
-// stretch paths cannot drift apart on what counts as "already known".
+// every path agrees on what counts as "already known".
 function smartPickExcluded(canon, sets) {
   if (!canon) return true;
   if (sets.library.has(canon)) return true;   // already owned
@@ -10492,11 +10633,6 @@ function smartPickExcluded(canon, sets) {
 // always true — an LLM would write a nicer one and would sometimes be wrong,
 // and a recommendation nobody can check is a recommendation nobody trusts.
 function smartPickReason(rec) {
-  if (rec.kind === "stretch") {
-    return rec.genre
-      ? "Nothing like your library — a cornerstone of " + rec.genre
-      : "Nothing like your library";
-  }
   const names = (rec.seedNames || []).filter(Boolean);
   if (!names.length) return "Close to what you already listen to";
   if (names.length === 1) return "Because you play " + names[0];
@@ -10533,8 +10669,7 @@ function smartCacheSet(key, value) {
 function smartCachePrune() {
   if (!labelsDb) return;
   try {
-    const longest = Math.max(smartHubTtlMs(), smartSimilarTtlMs(),
-                             smartTagTtlMs(), smartAlbumTtlMs());
+    const longest = Math.max(smartHubTtlMs(), smartSimilarTtlMs(), smartAlbumTtlMs());
     const r = labelsDb.prepare("DELETE FROM smart_cache WHERE ts < ?")
       .run(Date.now() - longest);
     if (DEBUG && r.changes) console.log("[picks] pruned " + r.changes + " cache rows");
@@ -10600,18 +10735,6 @@ async function smartSimilarRows(seedMbids) {
     }
   }
   return out;
-}
-
-// A genre's canonical artists, cached.
-async function smartTagArtists(genre) {
-  const key = "tag:" + String(genre || "").toLowerCase();
-  let rows = smartCacheGet(key, smartTagTtlMs());
-  if (!rows) {
-    await mbWait();
-    rows = await discovery.artistsByTag(genre, { limit: 60, userAgent: MB_USER_AGENT });
-    smartCacheSet(key, rows);
-  }
-  return rows || [];
 }
 
 // ---------------------------------------------------------------------------
@@ -10803,8 +10926,8 @@ function readSmartPicks(day) {
   try {
     return labelsDb.prepare(
       // Rank IS the display order — persistSmartPicks writes the five adjacent
-      // picks at 0-4 and the stretch pick last. Sorting on kind as well put
-      // "stretch" before "adjacent" (it sorts later, so DESC lifted it), which
+      // picks at 0-4. Sorting on kind as well once put a second kind first
+      // (it sorted later, so DESC lifted it), which
       // led the row with the one pick chosen for being unlike the library.
       "SELECT * FROM smart_picks WHERE day = ? ORDER BY rank ASC").all(day);
   } catch (e) {
@@ -10814,16 +10937,11 @@ function readSmartPicks(day) {
 }
 
 // How many candidates a build may TRY to resolve before giving up, and how far
-// into the outside genres the stretch pick may look.
-//
 // Every candidate tried costs a streaming search whether or not it becomes a
 // pick, so the pool size is not the bound that matters — this is. Without it a
-// build whose service credentials have expired walks 150 adjacent candidates
-// and then every outside genre × 60 roster artists, several thousand live calls
-// against APIs that are not officially ours to use.
+// build whose service credentials have expired walks all 150 candidates,
+// hundreds of live calls against APIs that are not officially ours to use.
 function smartMaxResolves()      { return 40; }
-function smartMaxStretchGenres() { return 3; }
-function smartMaxStretchRoster() { return 15; }
 
 // Marks a day as attempted, so a build that legitimately produces nothing is
 // not retried on the next request. Without this, "did we build today?" is
@@ -10910,9 +11028,9 @@ async function buildSmartPicks(day) {
       const album = await resolveSmartAlbum(c.name);
       if (!album) continue;      // nothing addable — a pick nobody can act on
       used.add(c.canon);
-      // The five adjacent picks go into the streaming library now, so Roon can
-      // import them before anybody looks at the screen. Only these five: the
-      // stretch pick is the one the user is meant to accept or reject.
+      // The picks go into the streaming library now, so Roon can import them
+      // before anybody looks at the screen — that is what makes them playable
+      // by morning rather than a button somebody has to press.
       const added = smartPicksAutoAdd ? await autoAddSmartAlbum(album) : false;
       picks.push({
         kind: "adjacent", mbid: c.mbid, artist: c.name, canon: c.canon,
@@ -10920,32 +11038,6 @@ async function buildSmartPicks(day) {
       });
     }
 
-    // The stretch pick: one album from a genre the library barely touches, taken
-    // from MusicBrainz's relevance order so it is that genre's canonical name
-    // rather than a random unknown.
-    const outside = smartStretchGenres(libraryGenreWeights(), albumIndex.albums.length)
-      .slice(0, smartMaxStretchGenres());
-    const adjacentCanons = new Set(ranked.map(c => c.canon));
-    for (const g of outside) {
-      if (picks.filter(p => p.kind === "stretch").length >= smartStretchCount()) break;
-      let roster = [];
-      try { roster = await smartTagArtists(g.genre); }
-      catch (e) {
-        console.error("[picks] tag lookup for " + g.genre + ": " + e.message);
-        continue;
-      }
-      for (const a of roster.slice(0, smartMaxStretchRoster())) {
-        const canon = canonArtist(a.name);
-        if (smartPickExcluded(canon, sets)) continue;
-        if (adjacentCanons.has(canon)) continue;   // reachable from the library
-        const album = await resolveSmartAlbum(a.name);
-        if (!album) continue;
-        used.add(canon);
-        picks.push({ kind: "stretch", mbid: a.mbid, artist: a.name, canon,
-                     seedNames: [], album, genre: g.genre });
-        break;
-      }
-    }
   } catch (e) {
     if (!smartRateLimited(e)) throw e;
     // Rate-limited by Qobuz/TIDAL. Keep whatever resolved before the limit and
@@ -11005,6 +11097,11 @@ function persistSmartPicks(day, picks) {
 // three identical builds and triple every upstream call.
 let _smartBuilding = null;
 function kickSmartPicks(why, force) {
+  // The single gate. Every caller — the timer, the post-sync kick, the request
+  // path and the manual rebuild button — comes through here, so one check
+  // covers all of them and none can drift. Off means no MusicBrainz, no
+  // ListenBrainz, no streaming favourites written: nothing at all.
+  if (!smartPicksEnabled) return;
   const day = smartDayKey();
   if (_smartBuilding) return;
   if (!force) {
@@ -11034,8 +11131,17 @@ function smartPicksDue(now) {
 }
 
 let smartPicksTimer = null;
+function stopSmartPicksMaintenance() {
+  if (!smartPicksTimer) return;
+  clearInterval(smartPicksTimer);
+  smartPicksTimer = null;
+}
 function startSmartPicksMaintenance() {
   if (smartPicksTimer) return;
+  // Not even a timer while the feature is off. Restarted by the settings route
+  // the moment it is switched on, so enabling does not need a container
+  // restart.
+  if (!smartPicksEnabled) return;
   // Checked every 10 minutes so the configured hour is honoured closely without
   // the timer itself being the expensive thing — the work behind it is gated on
   // "today has no picks", which is a single indexed read.
@@ -11129,7 +11235,8 @@ app.get("/api/smart-picks", async (req, res) => {
 // Smart Picks settings: when the daily build runs, and whether the five
 // adjacent picks are added automatically.
 app.get("/api/settings/smart-picks", (req, res) => {
-  res.json({ hour: smartPicksHour, auto_add: smartPicksAutoAdd,
+  res.json({ enabled: smartPicksEnabled, hour: smartPicksHour,
+             auto_add: smartPicksAutoAdd,
              service_ready: smartPicksServiceReady() });
 });
 app.post("/api/settings/smart-picks", (req, res) => {
@@ -11142,8 +11249,104 @@ app.post("/api/settings/smart-picks", (req, res) => {
     smartPicksHour = Math.trunc(h);
   }
   if (body.auto_add !== undefined) smartPicksAutoAdd = !!body.auto_add;
-  savePersistedSettings({ smartPicksHour, smartPicksAutoAdd });
-  res.json({ ok: true, hour: smartPicksHour, auto_add: smartPicksAutoAdd });
+  if (body.enabled !== undefined) {
+    smartPicksEnabled = !!body.enabled;
+    // Start or stop the timer here, so switching the feature on takes effect
+    // now rather than after a container restart — and switching it off really
+    // does stop the clock rather than leaving it ticking against a gate.
+    if (smartPicksEnabled) startSmartPicksMaintenance();
+    else stopSmartPicksMaintenance();
+  }
+  savePersistedSettings({ smartPicksEnabled, smartPicksHour, smartPicksAutoAdd });
+  res.json({ ok: true, enabled: smartPicksEnabled, hour: smartPicksHour,
+             auto_add: smartPicksAutoAdd });
+});
+
+// ---------------------------------------------------------------------------
+// Home screen rows — which appear, and in what order.
+//
+// The vocabulary lives HERE and the client renders both the Home screen and
+// the settings list from it, so the two can never drift. Same reasoning as the
+// theme table: a list built from the thing it describes cannot disagree with
+// it.
+//
+// Stored as an array of { id, on } rather than a set of booleans plus a
+// separate order, because order and membership are one fact and splitting them
+// is how they end up contradicting each other.
+// ---------------------------------------------------------------------------
+function homeRowIds() {
+  return ["unplayed", "history", "picks", "random", "library", "lotw", "genres"];
+}
+// The order and enablement a fresh install gets. History is on — it is the row
+// people expect to exist — and sits second, right after the discovery row.
+function homeRowsDefault() {
+  return homeRowIds().map(id => ({ id, on: true }));
+}
+// Read the stored layout, repaired against the current vocabulary: unknown ids
+// dropped (a row removed by an update), missing ids appended in default order
+// and switched on (a row ADDED by an update must appear, not silently stay
+// hidden because an old layout predates it).
+function homeRowsLayout() {
+  const stored = loadPersistedSettings().homeRows;
+  const valid = new Set(homeRowIds());
+  const out = [];
+  const seen = new Set();
+  if (Array.isArray(stored)) {
+    for (const r of stored) {
+      const id = r && typeof r.id === "string" ? r.id : null;
+      if (!id || !valid.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      out.push({ id, on: r.on !== false });
+    }
+  }
+  for (const { id, on } of homeRowsDefault()) {
+    if (!seen.has(id)) out.push({ id, on });
+  }
+  return out;
+}
+
+app.get("/api/settings/home-rows", (req, res) => {
+  res.json({ rows: homeRowsLayout() });
+});
+app.post("/api/settings/home-rows", (req, res) => {
+  const rows = (req.body || {}).rows;
+  if (!Array.isArray(rows)) return res.status(400).json({ error: "rows array required" });
+  const valid = new Set(homeRowIds());
+  const clean = [];
+  const seen = new Set();
+  for (const r of rows) {
+    const id = r && typeof r.id === "string" ? r.id : null;
+    if (!id || !valid.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    clean.push({ id, on: r.on !== false });
+  }
+  if (!clean.length) return res.status(400).json({ error: "no recognisable rows" });
+  savePersistedSettings({ homeRows: clean });
+  // Answered from the same repair path the GET uses, so the client is told
+  // what was actually stored rather than what it sent.
+  res.json({ ok: true, rows: homeRowsLayout() });
+});
+
+// Labels on/off. The scan's own gate lives inside runLabelsIndexScan, at the
+// boundary between the /music tag read (which other features are built on) and
+// the label lookups (which are the network traffic this switch is about).
+app.get("/api/settings/labels", (req, res) => {
+  res.json({ enabled: labelsEnabled, count: labelsIndex.count,
+             scanning: !!labelsIndex.building });
+});
+app.post("/api/settings/labels", (req, res) => {
+  const body = req.body || {};
+  if (body.enabled === undefined) return res.status(400).json({ error: "enabled required" });
+  const was = labelsEnabled;
+  labelsEnabled = !!body.enabled;
+  savePersistedSettings({ labelsEnabled });
+  // Switched on: the cache may be empty or stale, so build it now instead of
+  // leaving an empty Labels screen until the 12-hour timer comes round.
+  if (labelsEnabled && !was) {
+    bgRun("labels (enabled)", () => runLabelsIndexScan(true))
+      .catch(e => console.error("[labels] scan after enable failed: " + e.message));
+  }
+  res.json({ ok: true, enabled: labelsEnabled });
 });
 
 // Rebuild today's picks now, ignoring the schedule and the attempt marker.

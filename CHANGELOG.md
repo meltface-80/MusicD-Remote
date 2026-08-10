@@ -2,6 +2,71 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.48] — 2026-08-10
+
+### Changed — Labels and Smart Picks are now opt-in, and off means *off*
+
+Both reach the network on their own schedule — Smart Picks queries MusicBrainz and ListenBrainz and
+writes favourites into a streaming library; the label pipeline walks five metadata APIs and fetches
+logos — so neither should be running for somebody who never asked for it. Both are off by default,
+with a switch at the top of their Settings page.
+
+**Off stops the timers, not just the rows.** Smart Picks is gated in `kickSmartPicks`, the single
+funnel every entry point goes through (the ten-minute timer, the post-sync kick, the request path
+and the manual rebuild), and the timer is not started at all while it is off. Labels is gated inside
+the scan itself.
+
+**Existing users are not switched off underneath them.** An absent setting plus evidence of use on
+the data volume — a populated label cache, or picks already built — is read as consent, because that
+state cannot exist unless the feature was running and nobody minded. The decision is written down
+once, so it never has to be inferred again. A fresh install has neither and starts off.
+
+**One deliberate exception, and it matters.** Turning Labels off does *not* stop the `/music` tag
+read. That pass is where release years (the Decade filter), the "local files" badge, and the Format,
+Sample rate, Bit depth and Channels filters come from — gating the whole scan would take four
+filters and two badges down with the labels, which is not what the switch asks for. The gate sits
+exactly at the boundary: the tag read still happens, and the label names, the iTunes → Qobuz →
+TheAudioDB → MusicBrainz → Discogs cascade and the FanArt/Discogs logo fetches do not. That
+placement is asserted by a test, because getting it wrong in either direction is invisible in a diff.
+
+### Removed — the Smart Picks "stretch" pick
+
+The sixth daily pick, drawn from a genre the library barely touched. It read well on paper and did
+not work in practice: an artist reached through a genre tag rather than through the user's own taste
+is a stranger, and the answer was almost always no. Removed rather than hidden — the build path, the
+genre-weighting, the MusicBrainz tag traffic behind it, the badge, the card styling and the copy are
+all gone. Smart Picks is five albums a day.
+
+### Added — Settings → Home Screen
+
+Every Home carousel in one list: a drag handle on the left, an on/off switch on the right, hold the
+handle to drag a row into a new position. **A row switched off is not fetched at all** — the loader
+skips it rather than loading it and hiding the result.
+
+The list is built from the same row table the Home screen itself loops, so the rows you can reorder
+and the rows that actually render cannot drift apart. Reordering *moves* the live sections rather
+than rebuilding them from markup, which is the v1.6.52 lesson about listeners. The layout is stored
+on the server, so it is the same on every device, and it is repaired on read: a row removed by an
+update is dropped, and a row *added* by an update appears switched on rather than silently hidden.
+
+### Added — a Recently played row
+
+Albums played in the last 30 days, most recent first, one tile per album rather than one per play.
+Older plays are deleted outright rather than merely hidden from the row — `plays` was the one table
+here that grew without bound. Toggleable and reorderable like every other row.
+
+The artist on each tile comes from the library snapshot, never from the play history: that column
+holds the *track* artist, so a compilation would name a performer rather than the record.
+
+### Tests
+- `test/unit/homerows.test.js` — 21 tests over the layout repair rules and the Smart Picks gate,
+  including a newly-shipped row defaulting to visible as a named case.
+- `test/static/preflight.test.js` — the Labels gate's *position* between the file walk and the
+  metadata cascade, since that ordering is not reachable from a unit test.
+- The static preflight suite now reads through the extractor rather than opening `index.js`
+  directly, so mutation runs can actually reach it — it had been passing against every mutant.
+- 6/6 mutations caught. Suite: 41 static / 665 unit / 272 dom.
+
 ## [1.7.47] — 2026-08-10
 
 ### Fixed — a partial answer from Roon could permanently destroy an album's track record

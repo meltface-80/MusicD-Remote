@@ -40,9 +40,6 @@ const PICKS = [
     album_id: "q4", service: "qobuz", image: "", reason: "Because you play Labradford", genre: "" },
   { kind: "adjacent", artist: "Windy & Carl", album: "Depths",
     album_id: "q5", service: "qobuz", image: "", reason: "Because you play Low", genre: "" },
-  { kind: "stretch",  artist: "Camarón de la Isla", album: "La Leyenda del Tiempo",
-    album_id: "q6", service: "qobuz", image: "", reason: "Nothing like your library — a cornerstone of Flamenco",
-    genre: "Flamenco" },
 ];
 
 const ZONE = {
@@ -109,7 +106,6 @@ const DRIVER = `
   // rows around it.
   T("home_has_actions", row ? row.querySelectorAll(".pick-actions").length : -1);
   T("home_has_reason",  row ? row.querySelectorAll(".pick-reason").length : -1);
-  T("home_stretch_flagged", row ? row.querySelectorAll(".pick-flag").length : -1);
 
   // Tiles must sit side by side in a scrolling carousel, not stack.
   (function () {
@@ -134,7 +130,6 @@ const DRIVER = `
   T("full_reasons", document.querySelectorAll("#album-grid .pick-reason").length);
   T("full_adds", document.querySelectorAll("#album-grid .pick-add").length);
   T("full_blocks", document.querySelectorAll("#album-grid .pick-block").length);
-  T("full_stretch_flagged", document.querySelectorAll("#album-grid .pick-flag").length);
   T("first_reason", (document.querySelector("#album-grid .pick-reason") || {}).textContent);
   T("first_artist", (document.querySelector("#album-grid .pick-artist") || {}).textContent);
 
@@ -160,11 +155,6 @@ const DRIVER = `
       T("art_inside_card", ar.right <= cr.right + 1);
       T("button_inside_card", br.right <= cr.right + 1 && br.left >= cr.left - 1);
     } else { T("art_inside_card", null); T("button_inside_card", null); }
-  })();
-  // The stretch card must not claim similarity to anything.
-  (function () {
-    var st = document.querySelector("#album-grid .pick-card-stretch .pick-reason");
-    T("stretch_reason", st ? st.textContent : null);
   })();
 
   // ---- Add favourites the album, once --------------------------------------
@@ -227,7 +217,7 @@ test("Smart Picks: six a day, addable, never playable (v1.7.41)",
 
     await t.test("the Home row shows the day's picks", () => {
       assert.equal(r.home_row_shown, true);
-      assert.equal(r.home_tiles, 6, "five adjacent plus one stretch");
+      assert.equal(r.home_tiles, 5, "the day's five picks");
       assert.equal(r.home_side_by_side, true,
         "the tiles stacked instead of forming a carousel");
     });
@@ -246,18 +236,11 @@ test("Smart Picks: six a day, addable, never playable (v1.7.41)",
       assert.equal(r.home_has_reason, 0);
     });
 
-    await t.test("the stretch pick is marked in both places", () => {
-      // Unmarked, the one deliberately-unlike-your-library pick reads as the
-      // recommender getting it wrong.
-      assert.equal(r.home_stretch_flagged, 1);
-      assert.equal(r.full_stretch_flagged, 1);
-    });
-
     await t.test("the side menu opens the full screen", () => {
       assert.equal(r.menu_item_found, true);
       assert.equal(r.menu_item_label, "Smart Picks");
       assert.equal(r.screen_title, "Smart Picks");
-      assert.equal(r.full_cards, 6);
+      assert.equal(r.full_cards, 5);
     });
 
     await t.test("the screen spans the shared grid, not one of its cells", () => {
@@ -272,26 +255,17 @@ test("Smart Picks: six a day, addable, never playable (v1.7.41)",
       assert.equal(r.button_inside_card, true, "an action button overflowed its card");
     });
 
-    await t.test("the adjacent picks lead; the stretch pick does not", () => {
-      // The server assigns the stretch pick the last rank. It once came back
-      // first because the read also sorted on `kind`, and "stretch" sorts after
-      // "adjacent" — so the one pick chosen for being unlike the library led
-      // the row every day.
+    await t.test("the picks come back in the rank the server assigned", () => {
+      // The read once sorted on `kind` as well as rank, which reordered the
+      // set behind the server's back. Rank alone now.
       assert.equal(r.first_artist, "Labradford");
       assert.match(r.first_reason, /Because you play/);
     });
 
     await t.test("every card on the full screen explains itself", () => {
-      assert.equal(r.full_reasons, 6,
+      assert.equal(r.full_reasons, 5,
         "a pick with no reason is indistinguishable from a random album");
       assert.match(r.first_reason, /Because you play/);
-    });
-
-    await t.test("the stretch card does not claim similarity", () => {
-      assert.match(r.stretch_reason, /Flamenco/);
-      assert.doesNotMatch(r.stretch_reason, /Because you play/,
-        "the stretch pick was chosen for being UNLIKE the library — saying it " +
-        "matches something in it is simply false");
     });
 
     await t.test("a pick Roon has imported offers Play, not Add", () => {
@@ -314,8 +288,7 @@ test("Smart Picks: six a day, addable, never playable (v1.7.41)",
     await t.test("only genuinely un-added picks offer Add", () => {
       assert.equal(r.found_addable, true);
       assert.match(r.action_labels[2], /Add$/);
-      // The stretch pick is always addable — it is never auto-added.
-      assert.match(r.action_labels[5], /Add$/);
+      assert.match(r.action_labels[4], /Add$/);
     });
 
     await t.test("Add favourites the album on its own service", () => {

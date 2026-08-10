@@ -3134,12 +3134,6 @@ input.vol-range::-moz-range-thumb {
 .pick-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
 /* Marks the one pick a day that is deliberately unlike the library, so it is
    not mistaken for a bad adjacent recommendation. */
-.pick-flag {
-  position: absolute; left: 6px; bottom: 6px;
-  padding: 2px 7px; border-radius: 999px;
-  background: var(--accent); color: var(--on-accent);
-  font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
-}
 .pick-meta { min-width: 0; }
 .pick-artist {
   font-size: 13px; font-weight: 600; color: var(--text);
@@ -3168,7 +3162,6 @@ input.vol-range::-moz-range-thumb {
 }
 /* The one pick a day chosen for being UNLIKE the library gets an accent edge,
    so it reads as deliberate rather than as the recommender misfiring. */
-.pick-card-full.pick-card-stretch { border-left: 3px solid var(--accent); }
 .pick-card-full .pick-art { width: 96px; flex: 0 0 96px; }
 .pick-card-full .pick-meta { flex: 1 1 auto; }
 .pick-card-full .pick-artist { font-size: 15px; white-space: normal; }
@@ -3793,3 +3786,33 @@ body.show-quality .album-quality { display: block; }
 .theme-apply-row { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
 .theme-apply-hint { font-size: 12.5px; color: var(--text-faint); }
 .theme-apply-row .action-btn { flex: 0 0 auto; min-width: 110px; }
+
+/*  Home Screen settings — which rows show, and in what order.
+    Grip on the left, name, switch on the right. The row is the drag target's
+    parent; only the grip starts a drag, so a tap anywhere else still reaches
+    the switch.  */
+.home-rows-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.home-row-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 2px; min-height: 44px;
+  border-bottom: 1px solid var(--panel-hairline);
+  background: var(--bg-elev);
+}
+.home-row-item:last-child { border-bottom: 0; }
+.home-row-item.is-dragging {
+  background: var(--bg-elev-2);
+  border-radius: 8px;
+  box-shadow: var(--shadow-card);
+}
+.home-row-grip {
+  flex: 0 0 auto; width: 32px; min-height: 44px;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-faint); font-size: 18px; line-height: 1;
+  cursor: grab; touch-action: none;   /* the drag owns the gesture, not the scroller */
+}
+.home-row-item.is-dragging .home-row-grip { cursor: grabbing; }
+.home-row-name {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 15px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}

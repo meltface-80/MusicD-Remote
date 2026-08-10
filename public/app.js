@@ -333,6 +333,7 @@
   const homeLibrary  = document.getElementById("home-library");
   const homeLotw     = document.getElementById("home-lotw");
   const homePicks    = document.getElementById("home-picks");
+  const homeHistory  = document.getElementById("home-history");
   const homeGenres   = document.getElementById("home-genres");
   const topbarBack   = document.getElementById("topbar-back");
   const topbarRefresh = document.getElementById("topbar-refresh");
@@ -344,6 +345,75 @@
   // Home visit until it populates (the first build runs in the background and
   // can take a minute), then left alone — the set does not change again today.
   let homePicksDay = "";
+  let homeHistoryLoaded = false;  // set once the recently-played row populates
+
+  // ---------------------------------------------------------------------------
+  // The Home rows, as one table.
+  //
+  // Every row's identity, its title, the node it lives in, how to load it and
+  // when it is stale, in one place. The Home screen loops it, the Home Screen
+  // settings page renders from it, and the server validates against the same
+  // id list — so a row cannot exist in one of those and not the others. Same
+  // reasoning as the theme table.
+  //
+  // `load` is called when the row is enabled and `isFresh()` says otherwise.
+  // A DISABLED row is never loaded, which is the whole point: hiding a row has
+  // to stop the work behind it, not just the paint.
+  // ---------------------------------------------------------------------------
+  const HOME_ROWS = [
+    { id: "unplayed", title: "Not played in 6 months",
+      load: () => { loadHomeUnplayed(); }, isFresh: () => rowsTtlFresh() },
+    { id: "history",  title: "Recently played",
+      load: () => { loadHomeHistory(); }, isFresh: () => homeHistoryLoaded },
+    { id: "picks",    title: "Smart Picks",
+      load: () => { loadHomeSmartPicks(); }, isFresh: () => homePicksDay === localDayKey() },
+    { id: "random",   title: "Random albums",
+      load: () => { loadHomeRandom(); }, isFresh: () => rowsTtlFresh() },
+    { id: "library",  title: "Library",
+      load: () => { loadHomeLibrary(); }, isFresh: () => homeLibraryLoaded },
+    { id: "lotw",     title: "Label of the week",
+      load: () => { loadHomeLabelOfWeek(); }, isFresh: () => homeLotwLoaded },
+    { id: "genres",   title: "Browse by genre",
+      load: () => { loadHomeGenres(); }, isFresh: () => homeSectionsLoaded },
+  ];
+  function homeRowEl(id) {
+    return homeSections ? homeSections.querySelector('[data-row="' + id + '"]') : null;
+  }
+  // The stored layout, defaulting to the table's own order with everything on.
+  let homeLayout = HOME_ROWS.map(r => ({ id: r.id, on: true }));
+
+  // Put the sections in the stored order and hide the ones switched off.
+  //
+  // appendChild on an element already in the DOM MOVES it — listeners, closures
+  // and all. Rebuilding this from an HTML string would silently drop every
+  // handler on every tile, which is the v1.6.52 "albums untappable after Back"
+  // bug (CLAUDE.md pre-flight step 4).
+  function applyHomeLayout() {
+    if (!homeSections) return;
+    for (const row of homeLayout) {
+      const el = homeRowEl(row.id);
+      if (!el) continue;
+      homeSections.appendChild(el);
+      el.dataset.rowOff = row.on ? "" : "1";
+      if (!row.on) el.classList.add("hidden");
+    }
+  }
+  async function loadHomeLayout() {
+    try {
+      const r = await fetch("/api/settings/home-rows");
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j && Array.isArray(j.rows) && j.rows.length) homeLayout = j.rows;
+    } catch (e) {
+      // Offline or pre-upgrade server: keep the default order. A Home screen
+      // in the wrong order is recoverable; one that never renders is not.
+    }
+    applyHomeLayout();
+  }
+  function homeRowOn(id) {
+    const r = homeLayout.find(x => x.id === id);
+    return !r || r.on;
+  }
 
   // Topbar chrome per view: Back button (off Home), Refresh button (random /
   // genre grids), and the Search box (Home only, beside the hamburger).
@@ -383,24 +453,22 @@
     // ~60 cover images through the Roon Core — the single biggest repeated cost
     // in the app. Within the TTL the existing DOM (and the browser's image
     // cache) is reused; after it, or if a load failed, both rows reload fresh.
-    const rowsFresh = homeRowsLoadedAt &&
+    // The unplayed and random rows share one TTL, so mark it before the loop
+    // rather than once per row.
+    if (!rowsTtlFresh()) homeRowsLoadedAt = Date.now();
+    for (const row of HOME_ROWS) {
+      if (!homeRowOn(row.id)) continue;   // off means the work does not run
+      if (row.isFresh()) continue;
+      row.load();
+    }
+  }
+  // Shared freshness for the two rows that turn over on a clock rather than a
+  // flag: recheck every 5 minutes, but only when they actually hold tiles.
+  function rowsTtlFresh() {
+    return !!(homeRowsLoadedAt &&
       (Date.now() - homeRowsLoadedAt) < HOME_ROWS_TTL_MS &&
       homeUnplayed && homeUnplayed.querySelector(".album") &&
-      homeRandom && homeRandom.querySelector(".album");
-    if (!rowsFresh) {
-      homeRowsLoadedAt = Date.now();
-      loadHomeUnplayed();
-      loadHomeRandom();
-    }
-    // Label of the week depends on the background labels scan, which may not be
-    // ready on the first visit — retry each visit until it populates, then stop.
-    if (!homeLotwLoaded) loadHomeLabelOfWeek();
-    if (!homeLibraryLoaded) loadHomeLibrary();
-    // Smart Picks change at local midnight. Comparing the day the row was built
-    // for against today is what makes a device left open overnight pick up the
-    // new set — a plain "loaded once" flag would show yesterday's until reload.
-    if (homePicksDay !== localDayKey()) loadHomeSmartPicks();
-    if (!homeSectionsLoaded) loadHomeGenres();
+      homeRandom && homeRandom.querySelector(".album"));
   }
   // Reveal the album wall. opts.loadIfEmpty loads a fresh wall only when it has
   // no content yet (so passive reveals — opening an overlay from the menu —
@@ -651,8 +719,38 @@
     }
   }
 
+  // Recently played — one tile per album, newest first, 30 days.
+  //
+  // The section stays hidden until there is something in it: a fresh install
+  // has no history, and an empty shelf labelled "Recently played" reads like a
+  // fault rather than an absence.
+  function renderHomeHistory(albums) {
+    if (!homeHistory) return;
+    renderAlbumRow(homeHistory, albums);
+    const sec = homeHistory.closest(".home-section");
+    if (sec) sec.classList.toggle("hidden", !albums.length || !homeRowOn("history"));
+  }
+  async function loadHomeHistory() {
+    if (!homeHistory) return;
+    try {
+      const r = await fetch("/api/home/history?count=30");
+      if (!r.ok) return;   // retried next visit — homeHistoryLoaded stays false
+      const j = await r.json();
+      const albums = (j && j.albums) || [];
+      renderHomeHistory(albums);
+      // Marked loaded even when empty: an empty history is a real answer, and
+      // retrying it on every Home visit would query the plays table forever on
+      // a box nobody has played anything from.
+      homeHistoryLoaded = true;
+      if (albums.length) saveHomeCache({ history: albums });
+    } catch (e) {
+      // Offline or the server went away. The row keeps whatever it had; the
+      // next visit tries again.
+    }
+  }
+
   // -------------------------------------------------------------------------
-  // Smart Picks — six albums a day by artists NOT in the library.
+  // Smart Picks — five albums a day by artists NOT in the library.
   //
   // These albums are NOT in Roon, so they have no offset and cannot be played
   // or queued. The only action is Add, which favourites the album on the
@@ -742,8 +840,7 @@
   // carousel stays a plain tile so it reads like the rows around it.
   function smartPickCard(pick, full) {
     const card = document.createElement("div");
-    card.className = "pick-card" + (full ? " pick-card-full" : "") +
-                     (pick.kind === "stretch" ? " pick-card-stretch" : "");
+    card.className = "pick-card" + (full ? " pick-card-full" : "");
     const art = document.createElement("div");
     art.className = "pick-art";
     if (pick.image) {
@@ -752,12 +849,6 @@
       img.alt = "";
       img.src = pick.image;
       art.appendChild(img);
-    }
-    if (pick.kind === "stretch") {
-      const flag = document.createElement("span");
-      flag.className = "pick-flag";
-      flag.textContent = "Stretch";
-      art.appendChild(flag);
     }
     card.appendChild(art);
 
@@ -787,12 +878,12 @@
       // has it yet:
       //
       //   PLAY     — Roon has imported it, so it has an offset and every
-      //              ordinary play route works. This is where the five adjacent
-      //              picks should be by morning.
+      //              ordinary play route works. This is where the picks should
+      //              be by morning when adding automatically is on.
       //   WAITING  — favourited on the service but not imported yet. Roon
       //              decides when, so there is nothing to press.
-      //   ADD      — not in the streaming library. The stretch pick lives here
-      //              permanently, because it is the one to accept or reject.
+      //   ADD      — not in the streaming library. Where every pick sits when
+      //              automatic adding is off.
       if (pick.offset !== null && pick.offset !== undefined) {
         const play = document.createElement("button");
         play.type = "button";
@@ -4161,11 +4252,15 @@
   function hydrateHomeFromCache() {
     const c = readHomeCache();
     if (!c) return false;
+    // Order and enablement first: painting into the default order and then
+    // reordering is a visible flash on every cold open.
+    applyHomeLayout();
     let painted = false;
     if (c.unplayed && homeUnplayed) { renderHomeUnplayed(c.unplayed.aotd, c.unplayed.albums); painted = rowHasContent(homeUnplayed) || painted; }
     if (c.random   && homeRandom)   { renderHomeRandom(c.random);                              painted = rowHasContent(homeRandom)   || painted; }
     if (c.library  && homeLibrary)  { renderHomeLibrary(c.library); }
     if (c.lotw     && homeLotw)     { renderHomeLotw(c.lotw.label, c.lotw.albums); }
+    if (c.history  && homeHistory)  { renderHomeHistory(c.history); }
     if (c.genres   && homeGenres)   { renderHomeGenres(c.genres); }
     if (!painted) return false;
     if (typeof c.unplayedAt === "number" && typeof c.randomAt === "number") {
@@ -6786,6 +6881,26 @@
   }
 
   window.__openAlbum = openAlbum;
+  // The Home Screen settings page renders its list from these, so the row
+  // vocabulary has exactly one definition (HOME_ROWS) and the settings list
+  // cannot describe a row that does not exist.
+  window.__homeRowTitles = () => {
+    const out = {};
+    for (const r of HOME_ROWS) out[r.id] = r.title;
+    return out;
+  };
+  window.__applyHomeLayout = (rows) => {
+    if (Array.isArray(rows) && rows.length) homeLayout = rows;
+    applyHomeLayout();
+    // A row switched back on has never been loaded this session, so give it a
+    // chance to fill before the user goes looking for it.
+    for (const row of HOME_ROWS) {
+      if (!homeRowOn(row.id)) continue;
+      if (row.isFresh()) continue;
+      row.load();
+    }
+  };
+
   window.__buildAlbumTile = (a) => buildAlbumTile(a);
   window.__loadRandom = loadRandom;
   window.__showToast = (msg, kind) => showToast(msg, kind);
@@ -6795,6 +6910,10 @@
     // reopening the PWA shows content immediately instead of reloading the whole
     // screen. Skipped when a filtered wall is being restored (activeFilter), and
     // when there's nothing cached (first-ever launch) we fall back to the banner.
+    // The layout is server-persisted, so it is the same on every device. Read
+    // it before the first paint; on failure the table's own default order
+    // stands, which is a working Home rather than a blank one.
+    await loadHomeLayout();
     const painted = !activeFilter && hydrateHomeFromCache();
     if (!painted) setBanner("Connecting to Roon…");
     for (let i = 0; i < 30; i++) {
@@ -8760,23 +8879,38 @@
     }
   }
 
+  const picksEnabled = document.getElementById("picks-enabled");
+
   async function loadSmartPicksSettings() {
-    if (!picksHour && !picksAutoAdd) return;
+    if (!picksHour && !picksAutoAdd && !picksEnabled) return;
     try {
       const r = await fetch("/api/settings/smart-picks");
       if (!r.ok) return;
       const j = await r.json();
+      if (picksEnabled) picksEnabled.checked = !!j.enabled;
       if (picksHour && Number.isFinite(j.hour)) picksHour.value = String(j.hour);
       if (picksAutoAdd) picksAutoAdd.checked = !!j.auto_add;
       if (picksNote) {
         picksNote.textContent = j.service_ready
-          ? "The stretch pick is never added automatically — that one is always yours to accept or reject."
+          ? "Picks you were not offered automatically are always yours to accept or reject."
           : "Connect Qobuz or TIDAL under Streaming accounts first — without one, picks can be shown but not added.";
       }
     } catch (e) {
       // Settings simply show their last values; the pane is not the place to
       // report a transient fetch failure.
     }
+  }
+
+  if (picksEnabled) {
+    picksEnabled.addEventListener("change", async () => {
+      const on = picksEnabled.checked;
+      if (await saveSmartPicksSettings({ enabled: on })) {
+        showToast(on ? "Smart Picks on — the first set builds at the scheduled hour"
+                     : "Smart Picks off — nothing runs in the background");
+      } else {
+        picksEnabled.checked = !on;   // the server refused — do not lie about it
+      }
+    });
   }
 
   if (picksHour) {
@@ -8791,8 +8925,8 @@
     picksAutoAdd.addEventListener("change", async () => {
       const on = picksAutoAdd.checked;
       if (await saveSmartPicksSettings({ auto_add: on })) {
-        showToast(on ? "The five genre picks will be added automatically"
-                     : "All six picks will ask before adding");
+        showToast(on ? "Picks will be added automatically"
+                     : "Every pick will ask before adding");
       } else {
         picksAutoAdd.checked = !on;   // the server refused — do not lie about it
       }
@@ -8817,7 +8951,170 @@
     });
   }
 
-  const open = () => { showView("home"); pendingThemeId = null; renderThemeList(); loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); loadDisplaySettings(); loadLabelFolderDepth(); loadQobuzStatus(); loadTidalStatus(); loadSmartPicksSettings(); overlay.classList.remove("hidden"); };
+  // ----- Labels on/off -----
+  const labelsEnabledEl = document.getElementById("labels-enabled");
+  const labelsEnabledNote = document.getElementById("labels-enabled-note");
+  async function loadLabelsEnabled() {
+    if (!labelsEnabledEl) return;
+    try {
+      const r = await fetch("/api/settings/labels");
+      if (!r.ok) return;
+      const j = await r.json();
+      labelsEnabledEl.checked = !!j.enabled;
+      if (labelsEnabledNote) {
+        labelsEnabledNote.textContent = j.enabled
+          ? (j.scanning ? "Scanning now…"
+             : (j.count ? j.count + " label" + (j.count === 1 ? "" : "s") + " found."
+                        : "No labels yet — the first scan runs in the background."))
+          : "Off. Your /music tags are still read, so the Decade, Format and quality filters keep working.";
+      }
+    } catch (e) { /* keep the last shown value */ }
+  }
+  if (labelsEnabledEl) {
+    labelsEnabledEl.addEventListener("change", async () => {
+      const on = labelsEnabledEl.checked;
+      try {
+        const r = await fetch("/api/settings/labels", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: on })
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || j.error) throw new Error(j.error || "Couldn't save");
+        showToast(on ? "Labels on — the first scan is running now"
+                     : "Labels off — no label lookups will run");
+        loadLabelsEnabled();
+      } catch (e) {
+        labelsEnabledEl.checked = !on;   // the server refused — do not lie about it
+        showToast(e.message, "error");
+      }
+    });
+  }
+
+  // ----- Home Screen: which rows show, and in what order -----
+  //
+  // Rendered from the same HOME_ROWS table the Home screen itself loops, via
+  // the globals below, so a row can never appear in one and not the other.
+  const homeRowsList = document.getElementById("home-rows-list");
+  let homeRowsDraft = [];
+
+  function renderHomeRowsList() {
+    if (!homeRowsList) return;
+    homeRowsList.innerHTML = "";
+    const titles = window.__homeRowTitles ? window.__homeRowTitles() : {};
+    for (const row of homeRowsDraft) {
+      const li = document.createElement("li");
+      li.className = "home-row-item";
+      li.dataset.row = row.id;
+
+      const grip = document.createElement("span");
+      grip.className = "home-row-grip";
+      grip.setAttribute("aria-hidden", "true");
+      grip.textContent = "⠿";
+
+      const name = document.createElement("span");
+      name.className = "home-row-name";
+      name.textContent = titles[row.id] || row.id;
+
+      const sw = document.createElement("label");
+      sw.className = "switch";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = row.on !== false;
+      cb.setAttribute("aria-label", (titles[row.id] || row.id) + " row");
+      cb.addEventListener("change", () => {
+        row.on = cb.checked;
+        saveHomeRows();
+      });
+      const track = document.createElement("span");
+      track.className = "switch-track";
+      const thumb = document.createElement("span");
+      thumb.className = "switch-thumb";
+      track.appendChild(thumb);
+      sw.appendChild(cb); sw.appendChild(track);
+
+      li.appendChild(grip); li.appendChild(name); li.appendChild(sw);
+      attachRowDrag(li, grip);
+      homeRowsList.appendChild(li);
+    }
+  }
+
+  // Hold the grip, then drag. Pointer events so one code path covers touch and
+  // mouse; the list reorders live under the finger and the draft array is
+  // rewritten from the DOM on drop, so the two can never disagree.
+  function attachRowDrag(li, grip) {
+    let dragging = false;
+    grip.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      dragging = true;
+      li.classList.add("is-dragging");
+      grip.setPointerCapture(e.pointerId);
+    });
+    grip.addEventListener("pointermove", (e) => {
+      if (!dragging || !homeRowsList) return;
+      // Which sibling is under the pointer? Compare against each row's middle
+      // so the swap happens when the dragged row has genuinely passed it,
+      // rather than flickering on every pixel.
+      const items = [...homeRowsList.querySelectorAll(".home-row-item")];
+      for (const other of items) {
+        if (other === li) continue;
+        const r = other.getBoundingClientRect();
+        const mid = r.top + r.height / 2;
+        if (e.clientY < mid && other.compareDocumentPosition(li) & Node.DOCUMENT_POSITION_FOLLOWING) {
+          homeRowsList.insertBefore(li, other);
+          break;
+        }
+        if (e.clientY > mid && other.compareDocumentPosition(li) & Node.DOCUMENT_POSITION_PRECEDING) {
+          homeRowsList.insertBefore(li, other.nextSibling);
+          break;
+        }
+      }
+    });
+    const end = () => {
+      if (!dragging) return;
+      dragging = false;
+      li.classList.remove("is-dragging");
+      // The DOM is the truth now — read the order back out of it rather than
+      // trying to mirror every move into the array as it happened.
+      if (homeRowsList) {
+        const order = [...homeRowsList.querySelectorAll(".home-row-item")].map(x => x.dataset.row);
+        homeRowsDraft.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+      }
+      saveHomeRows();
+    };
+    grip.addEventListener("pointerup", end);
+    grip.addEventListener("pointercancel", end);
+  }
+
+  async function saveHomeRows() {
+    try {
+      const r = await fetch("/api/settings/home-rows", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: homeRowsDraft })
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.error) throw new Error(j.error || "Couldn't save");
+      if (Array.isArray(j.rows)) homeRowsDraft = j.rows;
+      // Apply immediately — the Home screen is behind this sheet, and a layout
+      // that only takes effect on the next launch reads as a broken control.
+      if (window.__applyHomeLayout) window.__applyHomeLayout(homeRowsDraft);
+    } catch (e) {
+      showToast(e.message, "error");
+      loadHomeRowsSettings();   // resync from the server rather than keep a lie
+    }
+  }
+
+  async function loadHomeRowsSettings() {
+    if (!homeRowsList) return;
+    try {
+      const r = await fetch("/api/settings/home-rows");
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j && Array.isArray(j.rows)) homeRowsDraft = j.rows;
+    } catch (e) { /* keep whatever is drawn */ }
+    renderHomeRowsList();
+  }
+
+  const open = () => { showView("home"); pendingThemeId = null; renderThemeList(); loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); loadDisplaySettings(); loadLabelFolderDepth(); loadQobuzStatus(); loadTidalStatus(); loadSmartPicksSettings(); loadLabelsEnabled(); loadHomeRowsSettings(); overlay.classList.remove("hidden"); };
   const close = () => {
     overlay.classList.add("hidden");
     // Closing Settings ends the client side of any pending Tidal device flow

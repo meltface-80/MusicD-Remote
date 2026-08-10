@@ -325,3 +325,51 @@ test("checklist — POST bodies carry the fields their route requires", async (t
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// v1.7.48: Labels became opt-in, and the gate's POSITION is the whole design.
+//
+// The label scan does two unrelated jobs in one function. Pass 0 reads /music
+// tags — and that is where release years (the Decade facet), the "local files"
+// badge, and the Format / Sample rate / Bit depth / Channels facets come from.
+// Everything after it is label names, the five-API metadata cascade and the
+// logo fetches: the network traffic the switch is actually about.
+//
+// Gate too early and four Library facets plus two badge systems go dark with
+// the labels. Gate too late and "off" still walks MusicBrainz and Discogs.
+// Neither failure is visible in an ordinary read of the diff, and neither is
+// reachable from a unit test — runLabelsIndexScan is 400 lines of async I/O.
+// So the ordering is asserted here, on the source text.
+// ---------------------------------------------------------------------------
+test("the Labels opt-in gate sits between the file walk and the label lookups", async (t) => {
+  // Via the extractor's indexSource(), NOT a direct read: it honours
+  // MUSICD_INDEX_JS, which is what lets a mutation run point this at a
+  // modified copy. Reading index.js directly here would make these assertions
+  // untestable — they would pass against every mutant.
+  const src = require("../lib/extract").indexSource();
+
+  await t.test("the gate exists", () => {
+    assert.ok(src.includes("if (!labelsEnabled) {"),
+      "runLabelsIndexScan has no opt-in gate — Labels off would still scan");
+  });
+
+  await t.test("it is AFTER the file-tag harvest", () => {
+    const harvest = src.indexOf('harvestAlbumYears("file tags")');
+    const gate = src.indexOf("if (!labelsEnabled) {");
+    assert.ok(harvest > 0 && gate > 0, "one of the two anchors moved");
+    assert.ok(gate > harvest,
+      "the gate returns before the /music tags are read — that takes the " +
+      "Decade, Format, Sample rate, Bit depth and Channels facets and the " +
+      "local-files badge down with the labels");
+  });
+
+  await t.test("it is BEFORE the metadata cascade and the logo fetches", () => {
+    const gate = src.indexOf("if (!labelsEnabled) {");
+    for (const marker of ['pass 2 (TheAudioDB)', 'pass 3 (MusicBrainz)',
+                          'pass 4 (Discogs)', 'kickFanArtFetches()']) {
+      const at = src.indexOf(marker, gate);
+      assert.ok(at > gate,
+        "'" + marker + "' is not after the gate — Labels off would still run it");
+    }
+  });
+});
