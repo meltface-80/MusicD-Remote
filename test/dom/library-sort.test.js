@@ -208,12 +208,14 @@ test("Library sort: one arrow drives all four orderings (v1.6.58)",
     });
     harness.assertNoPageError(assert, r);
 
-    await t.test("the row is Roon's: funnel, Focus, Sort — nothing else", () => {
+    await t.test("the row is Roon's: Focus, Sort, magnifier — nothing else", () => {
       assert.equal(r.controls_present, true);
-      // Three since v1.7.50: the funnel text filter joined Focus and Sort. It
-      // is first because it narrows what the other two then order and facet.
+      // Three since v1.7.50: the text filter joined Focus and Sort, in the
+      // position Roon puts its own magnifier.
       assert.equal(r.ctl_count, 3, "the row should hold exactly three controls");
-      assert.deepEqual(r.ctl_order, ["filter", "focus", "sort"]);
+      // Roon's own order on this screen: Focus left, Sort right, then the
+      // magnifier that narrows the list.
+      assert.deepEqual(r.ctl_order, ["focus", "sort", "filter"]);
       assert.equal(r.focus_has_chevron, true,
         "Focus reads as a way INTO a screen, so it carries a chevron");
       assert.equal(r.legacy_dir_btn_count, 0,

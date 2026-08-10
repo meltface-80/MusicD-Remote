@@ -1875,9 +1875,12 @@
     const caret = typing ? typing.selectionStart : 0;
 
     bar.innerHTML = "";
-    bar.appendChild(buildLibFilterControl(libFilterOpen));
+    // Roon's own order on this screen: Focus left, Sort right, then the
+    // magnifier that narrows the list. Matching it means the row reads the
+    // same way in both apps rather than being a third arrangement to learn.
     bar.appendChild(buildLibFocusButton());
     bar.appendChild(buildLibSortButton());
+    bar.appendChild(buildLibFilterControl(libFilterOpen));
     bar.classList.toggle("hidden", !libraryWallActive);
 
     if (libFilterOpen) {
@@ -1910,9 +1913,11 @@
       btn.type = "button";
       btn.className = "lib-filter-btn lib-ctl" + (libView.prefix ? " is-active" : "");
       btn.setAttribute("aria-label", "Filter by name");
-      btn.innerHTML = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" ' +
+      btn.setAttribute("aria-expanded", "false");
+      btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" ' +
         'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ' +
-        'aria-hidden="true"><path d="M3 4h18l-7 8v6l-4 2v-8z"/></svg>';
+        'aria-hidden="true"><circle cx="11" cy="11" r="7"/>' +
+        '<line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
         libFilterOpen = true;

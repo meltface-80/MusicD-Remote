@@ -2955,12 +2955,14 @@ function loadLocalAlbumKeys() {
       localAlbumKeys = new Set(raw.keys);
       if (DEBUG) console.log("[local] loaded", localAlbumKeys.size, "local album keys");
     } else {
-      // Old format: the file scan rebuilds it. Kick a labels scan shortly so
-      // local badges come back in minutes rather than at the next 12h cycle.
+      // Old format: the /music walk rebuilds it. Kicked shortly so local badges
+      // come back in minutes rather than at the next 12h cycle. The WALK, not
+      // the label scan — the badge is not a label feature, and routing this
+      // through the label scan meant it never ran with Labels switched off.
       console.log("[local] stored keys are an older format — rescanning /music to rebuild badges");
       const t = setTimeout(() => {
         if (!core || labelsIndex.building) return;
-        runLabelsIndexScan().catch(e => {
+        runFileMetadataScan("local keys missing").catch(e => {
           if (DEBUG) console.error("[local] rebuild scan:", e.message);
         });
       }, 60000);
@@ -2973,7 +2975,7 @@ function loadLocalAlbumKeys() {
     // else happened to trigger the walk.
     const t = setTimeout(() => {
       if (!core || labelsIndex.building) return;
-      runLabelsIndexScan().catch(err => {
+      runFileMetadataScan("local keys absent").catch(err => {
         if (DEBUG) console.error("[local] first-run scan:", err.message);
       });
     }, 60000);
@@ -3908,7 +3910,13 @@ async function buildFileLabelMap(onProgress) {
 //
 // So it runs whether or not Labels is switched on. Its label output is simply
 // kept for whoever wants it, and nothing consumes it while Labels is off.
+// What the last walk produced, kept for the label scan to consume when it
+// runs. Both were locals of the combined function before the split, and the
+// Bandcamp pass still reads the second — leaving it behind was a ReferenceError
+// that the scan's own catch would have swallowed into "scan aborted by
+// unexpected error", killing every pass after it on a /music library.
 let _lastFileLabelMap = null;
+let _lastFileBandcampMap = null;
 let _fileScanRunning = false;
 
 async function runFileMetadataScan(reason) {
@@ -3918,10 +3926,11 @@ async function runFileMetadataScan(reason) {
   _fileScanRunning = true;
   try {
     const estimate = albumIndex.albums.length || 1000;
-    const { labelMap, localKeys } = await buildFileLabelMap((n) => {
+    const { labelMap, bandcampMap, localKeys } = await buildFileLabelMap((n) => {
       labelsIndex.progress = Math.min(0.15, n / estimate);
     });
     _lastFileLabelMap = labelMap || new Map();
+    _lastFileBandcampMap = bandcampMap || new Map();
     // Only replace the known-local set when the scan actually saw the mount —
     // an unmounted /music must not wipe badges earned by a previous scan.
     if (localKeys && localKeys.size) setLocalAlbumKeys(localKeys);
@@ -3964,6 +3973,7 @@ async function runLabelsIndexScan(force) {
   // label names are handed over here so the cascade below only has to chase
   // what the files could not answer.
   const fileLabelMap = _lastFileLabelMap || new Map();
+  const bandcampMap  = _lastFileBandcampMap || new Map();
 
   if (fileLabelMap.size) {
     let overrideCount = 0;
@@ -7926,6 +7936,7 @@ app.post("/api/labels/logo", async (req, res) => {
 // Body: { items: [{key, display}, ...] } — first item is the merge target (canonical name).
 // All subsequent items become sources whose albums are redirected to the target.
 app.post("/api/labels/merge", (req, res) => {
+  if (!labelsEnabled) return res.status(409).json({ error: "Labels is off in Settings" });
   const { items } = req.body || {};
   if (!Array.isArray(items) || items.length < 2) {
     return res.status(400).json({ error: "Need at least 2 labels" });
@@ -7944,6 +7955,7 @@ app.post("/api/labels/merge", (req, res) => {
 
 // Remove a single source label from a merge group.
 app.delete("/api/labels/merge/:sourceKey", (req, res) => {
+  if (!labelsEnabled) return res.status(409).json({ error: "Labels is off in Settings" });
   const { sourceKey } = req.params;
   if (labelsDb) stmtDeleteMerge.run(sourceKey);
   labelMerges.delete(sourceKey);
@@ -9963,7 +9975,7 @@ app.post("/api/settings/fanart-key", (req, res) => {
   const purged = purgeFanartLogoMisses();
   console.log("[settings] fanart key set (" + key.length + " chars), persisted=" + saved +
               ", cleared " + purged + " cached no-logo verdicts");
-  appendLabelsLog("[labels:fanart] key saved — cleared " + purged + " cached misses, refetching");
+  if (labelsEnabled) appendLabelsLog("[labels:fanart] key saved — cleared " + purged + " cached misses, refetching");
   kickFanArtFetches().then(() => kickDiscogsLogoFetches()).catch(e => {
     if (DEBUG) console.error("[labels:fanart] post-save kick:", e.message);
   });
@@ -9985,13 +9997,16 @@ app.post("/api/settings/label-folder-depth", (req, res) => {
   labelFolderDepth = depth;
   const saved = savePersistedSettings({ labelFolderDepth: depth });
   console.log("[settings] label folder depth set to " + depth + ", persisted=" + saved);
-  // Re-run the label scan so file labels are re-derived from folders (or tags).
-  if (changed && core && !labelsIndex.building) {
+  // Re-derive file labels from folders (or tags). This setting only means
+  // anything to the label pipeline, so with Labels off there is nothing to
+  // re-run — and nothing to write into the labels log about it.
+  const rescanning = changed && !!core && labelsEnabled;
+  if (rescanning && !labelsIndex.building) {
     labelsIndex.builtAt = 0;
     appendLabelsLog("[labels] rescan triggered by label-folder-depth change → " + depth);
     runLabelsIndexScan().catch(e => { if (DEBUG) console.error("[labels] rescan error:", e.message); });
   }
-  res.json({ ok: true, saved, rescanning: changed && !!core });
+  res.json({ ok: true, saved, rescanning });
 });
 
 // ---------------------------------------------------------------------------

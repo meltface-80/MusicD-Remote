@@ -2,6 +2,40 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.52] — 2026-08-10
+
+### Fixed — a crash v1.7.51 introduced, caught before release
+
+Splitting the `/music` walk out of the label scan left `bandcampMap` dangling: the Bandcamp pass
+still referenced a variable that had moved into the other function. `node --check` passes on it —
+it is a runtime `ReferenceError`, swallowed by the scan's own catch and surfacing only as
+"[labels] scan aborted by unexpected error", which would have killed every pass after Bandcamp on
+any library with `/music` mounted. Exactly the class the pre-flight's startup check exists for.
+
+### Fixed — the last label work that ran with Labels off
+
+The audit turned up four more paths beyond v1.7.51's:
+
+- **Every album you opened recorded a label.** The Qobuz metadata lookup behind the album view and
+  the wall display persisted a label name and added it to the label index on each open — a label
+  scan by another name, one album at a time.
+- **The local-files badge rebuild ran through the label scan.** Both boot timers that rebuild
+  `local-albums.json` called `runLabelsIndexScan`, which now returns immediately when Labels is off
+  — so a missing or old-format file would never have been rebuilt and the badges would have stayed
+  empty. They call the walk directly now, which is what they always wanted.
+- The label-folder-depth setting still triggered a scan and wrote to the labels log.
+- The merge/unmerge routes and the FanArt key save still wrote label data and log lines.
+
+### Changed — the Library control row matches Roon's
+
+Focus on the left, Sort on the right, and the text filter last, in the position Roon puts its own
+magnifier — and drawn as a magnifier rather than a funnel, since that is what it is doing. The
+top-bar search is hidden on this screen, so there is no second glass to confuse it with.
+
+### Tests
+- 7/7 mutations still caught; suite 42 static / 700 unit / 285 dom.
+- The control-row order test now pins Roon's arrangement rather than the previous one.
+
 ## [1.7.51] — 2026-08-10
 
 ### Fixed — Labels off now genuinely stops label scanning
