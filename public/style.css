@@ -3467,10 +3467,25 @@ body.show-quality .album-quality { display: block; }
    look like Roon. Text controls, one hairline, and the row recedes behind the
    albums where it belongs. */
 .library-controls {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  /*  Focus pinned LEFT, Sort and the magnifier grouped RIGHT.
+      justify-content: space-between put the middle child — Sort — in the
+      centre of the row once the filter became a third control, so it floated
+      away from the thing it belongs next to, and did so MORE the wider the
+      screen got.
+      The auto margin on .lib-ctl-sort below is what does the grouping, and it
+      does it alone: auto margins consume the free space before justify-content
+      is applied, so no justify-content value here can change the result. It is
+      left at the default rather than restated, so nothing in this rule claims
+      to be doing work it is not.  */
+  display: flex; align-items: center; gap: 12px;
   margin: 0 0 12px; padding-bottom: 8px;
   border-bottom: 1px solid var(--panel-hairline);
 }
+.library-controls .lib-ctl-sort { margin-left: auto; }
+/*  …except while the filter field is open, where the free space belongs to
+    the input rather than to the margin. An auto margin wins over flex-grow,
+    so it has to be released or the field opens at zero width.  */
+.library-controls.is-filtering .lib-ctl-sort { margin-left: 0; }
 .library-controls.hidden { display: none; }
 .lib-ctl {
   display: flex; align-items: center; gap: 6px;
@@ -3823,7 +3838,7 @@ body.show-quality .album-quality { display: block; }
     rather than opening a sheet — the point is to type and watch the wall
     narrow, which a sheet covering the wall would defeat.  */
 .lib-filter-wrap { display: flex; align-items: center; flex: 0 0 auto; }
-.lib-filter-wrap:has(.lib-filter-input) { flex: 1 1 auto; min-width: 0; }
+.library-controls.is-filtering .lib-filter-wrap { flex: 1 1 auto; min-width: 0; }
 .lib-filter-btn {
   display: inline-flex; align-items: center; justify-content: center;
   width: var(--tap-min); min-height: var(--tap-min);

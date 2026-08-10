@@ -1882,6 +1882,9 @@
     bar.appendChild(buildLibSortButton());
     bar.appendChild(buildLibFilterControl(libFilterOpen));
     bar.classList.toggle("hidden", !libraryWallActive);
+    // Drives the layout: Sort's auto margin is released while the field is
+    // open so the input, not the margin, gets the row's free space.
+    bar.classList.toggle("is-filtering", libFilterOpen);
 
     if (libFilterOpen) {
       const again = bar.querySelector(".lib-filter-input");

@@ -2,6 +2,29 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.53] — 2026-08-10
+
+### Fixed — Sort floated in the middle of the Library control row
+
+The row was laid out with `justify-content: space-between`. With two controls that put Focus left
+and Sort right, which was correct. Adding the text filter as a third made Sort the *middle* child,
+so the free space was split either side of it and it drifted away from the control it belongs
+beside — and drifted **further the wider the screen**, since every extra pixel was shared between
+the two gaps.
+
+Sort now carries an auto left margin, which absorbs all the slack in one place: Focus hugs the left
+edge, Sort and the magnifier sit together on the right with the row's own gap between them, at every
+width. The `justify-content` declaration was removed rather than changed — auto margins consume free
+space *before* justify-content is applied, so no value there could affect the result, and leaving one
+in place would have been a rule claiming to do work it wasn't.
+
+### Tests
+- The control row is now **measured** at 360, 390, 768 and 1280px wide. Counting controls and
+  checking their order passed against the broken layout too — only a rectangle can see that Sort was
+  stranded mid-row. The assertion is the request itself: the gap on Sort's left must be several times
+  the gap on its right.
+- Suite: 42 static / 700 unit / 291 dom.
+
 ## [1.7.52] — 2026-08-10
 
 ### Fixed — a crash v1.7.51 introduced, caught before release
