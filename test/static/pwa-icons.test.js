@@ -327,3 +327,92 @@ test("full-screen panels size against their fixed parent, not the viewport", asy
       "the desktop modal's inset max-height was changed; it is not the same case");
   });
 });
+
+// ---------------------------------------------------------------------------
+// v1.7.66: pinning the iOS full-screen contract.
+//
+// This cost six versions (v1.7.60 → v1.7.65) and five wrong diagnoses. The
+// mechanism, finally: `apple-mobile-web-app-status-bar-style: black-translucent`
+// shifts the document UP under the status bar without growing the layout
+// viewport, so the gap it leaves at the BOTTOM equals the TOP inset — 44-62px,
+// not the 34px of a home indicator. That is why the band looked too tall and
+// appeared on every screen.
+//
+// The reason it took so long is worth writing down, because no assertion can
+// fix it: `apple-mobile-web-app-capable` and `-status-bar-style` are read by
+// iOS at ADD-TO-HOME-SCREEN time, NOT on each launch, while viewport-fit=cover
+// IS re-read every launch. So a shortcut created against a bad build keeps the
+// bad window configuration forever, and no server-side change can be observed
+// through it. Every "not fixed" report was true AND every fix may have been
+// live — the two are not contradictory, and that is the trap.
+//
+// What CAN be pinned is the known-good state, which is what these do. v1.6.50
+// is the reference: installed, confirmed filling an iPhone screen, and its
+// shell is byte-identical to today's.
+// ---------------------------------------------------------------------------
+test("the iOS full-screen contract cannot be broken silently", async (t) => {
+  await t.test("there is EXACTLY ONE viewport meta", () => {
+    // Two of them is a documented cause of viewport-fit being ignored, and the
+    // second one is invisible in review because both look correct alone.
+    const all = indexHtml.match(/<meta\s+name="viewport"[^>]*>/g) || [];
+    assert.equal(all.length, 1,
+      "found " + all.length + " viewport metas. A second one silently overrides " +
+      "the first and viewport-fit=cover stops applying, which zeroes every " +
+      "env(safe-area-inset-*) in the stylesheet.");
+  });
+
+  await t.test("no legacy Apple web-app meta, in any file served to a browser", () => {
+    // Scoped wider than index.html on purpose: display.html never had these and
+    // must never gain them either.
+    for (const file of ["index.html", "display.html"]) {
+      // Comments stripped first. index.html carries a comment NAMING these three
+      // and explaining why they are absent, so a raw includes() matches the
+      // explanation rather than a live tag. Third time this trap has appeared in
+      // this suite: it also hit the CSS rule lookup and the head allowlist.
+      const html = fs.readFileSync(path.join(PUBLIC, file), "utf8")
+        .replace(/<!--[\s\S]*?-->/g, "");
+      for (const meta of ["apple-mobile-web-app-capable",
+                          "mobile-web-app-capable",
+                          "apple-mobile-web-app-status-bar-style"]) {
+        assert.ok(!html.includes(meta),
+          file + " contains " + meta + ". black-translucent shifts the document up " +
+          "under the status bar without growing the viewport, leaving a gap at the " +
+          "BOTTOM the size of the TOP inset; apple-mobile-web-app-capable opts into " +
+          "the legacy web-app path where that style governs the window. Both are " +
+          "baked in at Add-to-Home-Screen time, so the damage outlives any later fix " +
+          "until the user deletes and re-adds the shortcut.");
+      }
+    }
+  });
+
+  await t.test("the shell rules still match v1.6.50, the last confirmed-good build", () => {
+    // These four have never changed in the repo's entire history and the app
+    // filled the screen throughout. If one of them ever needs to change, this
+    // failing is the prompt to test on a real device first — not to update the
+    // expectation and move on.
+    const bare = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const rule = (sel) => {
+      const at = bare.indexOf(sel);
+      assert.ok(at > -1, sel + " rule not found");
+      return bare.slice(at, bare.indexOf("}", at)).replace(/\s+/g, " ").trim();
+    };
+    assert.match(rule("html, body {"), /height: 100%/,
+      "html/body height changed. Generic PWA advice says use 100vh here; v1.6.50 " +
+      "uses 100% and fills the screen correctly, so that advice does not apply to " +
+      "this app and this line is load-bearing evidence.");
+    assert.match(rule("html, body {"), /background: var\(--bg\)/,
+      "html lost its background — the safe areas are painted from it, so they " +
+      "would fall through to the browser canvas and really would be black");
+    for (const sel of [".app {", ".modal {"]) {
+      assert.match(rule(sel), /position: fixed/, sel + " is no longer fixed");
+      assert.match(rule(sel), /bottom: 0/, sel + " no longer reaches the bottom");
+    }
+  });
+
+  await t.test("viewport-fit=cover survives, spelled exactly as the working build spells it", () => {
+    assert.match(indexHtml,
+      /content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"/,
+      "the viewport string differs from v1.6.50's. That exact string is the one " +
+      "confirmed to fill an iPhone screen.");
+  });
+});

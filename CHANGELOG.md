@@ -2,6 +2,49 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.66] — 2026-08-11
+
+### Added — the iOS full-screen contract, written down and pinned
+
+Confirmed fixed on device. This records what happened so it cannot recur, and is honest about the
+part no test can prevent.
+
+**The mechanism.** `apple-mobile-web-app-status-bar-style: black-translucent` shifts the document
+*up* under the status bar without growing the layout viewport. The gap that leaves at the **bottom**
+equals the **top** inset — 44–62px, not the 34px of a home indicator. That is why the band looked
+too tall for a home indicator and appeared on every screen.
+`apple-mobile-web-app-capable` opts into the legacy web-app path where that style governs the
+window. Both were added in v1.7.60 alongside the icons; neither was needed for an icon.
+
+**Why it took six versions.** iOS reads those two metas at **Add-to-Home-Screen time, not per
+launch**, while `viewport-fit=cover` *is* re-read every launch. A shortcut created against a bad
+build keeps the bad window configuration permanently, and no server-side fix is observable through
+it. So "still broken" and "the fix is live" were both true at the same time, and each new report
+looked like the previous fix had failed. Three of the four attempts were built on the resulting
+false premise — v1.7.61 asserted the app had never run standalone, which the repo's own v1.7.42
+entry had already disproved five days earlier.
+
+**What is now pinned** (`test/static/pwa-icons.test.js`, and pre-flight step 6 in CLAUDE.md):
+
+- No legacy Apple web-app meta in `index.html` **or** `display.html` — matched as a tag, not a word,
+  so the comment explaining their absence does not trip it.
+- Exactly **one** viewport meta. A second silently overrides the first and zeroes every inset.
+- The `viewport` string byte-for-byte as v1.6.50 spells it.
+- `html, body`, `.app` and `.modal` still match v1.6.50 — including `height: 100%`, which generic
+  PWA advice says to replace with `100vh`. v1.6.50 uses `100%` and fills the screen, so that advice
+  does not apply here and the line is load-bearing evidence.
+- An **allowlist** on the head: v1.6.50's tags plus four inert icon lines. Anything else fails.
+
+**What cannot be pinned, stated plainly.** The DOM harness is headless Chromium — no browser chrome,
+no safe areas, `dvh` == `vh` == `100%`. No assertion in this suite can observe iOS window behaviour,
+so writing more of them buys confidence and no coverage. Two of the v1.7.60 assertions were
+themselves permanently green. The suite's honest job here is to hold a known-good state still, and
+CLAUDE.md now carries the operational half: **a "still broken" report after a `<head>` change is not
+evidence the fix failed — ask for the shortcut to be deleted and re-added before diagnosing.**
+
+Five mutations confirmed red: a live `black-translucent` tag, a second viewport meta, a legacy meta
+appearing in `display.html`, `html/body` height changed, and `viewport-fit` removed.
+
 ## [1.7.65] — 2026-08-11
 
 ### Fixed — head reduced to v1.6.50's, plus four lines that cannot affect layout
