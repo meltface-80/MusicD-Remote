@@ -2,6 +2,214 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.65] — 2026-08-11
+
+### Fixed — head reduced to v1.6.50's, plus four lines that cannot affect layout
+
+v1.6.50 was installed and confirmed to fill an iPhone screen correctly. That turns the problem from
+a diagnosis into a diff, so this version is that diff applied.
+
+Comparing v1.6.50 to the current build:
+
+- **`html, body`** — byte-identical. Never changed in the repo's entire history.
+- **`.app`** — byte-identical.
+- **`.modal`** — byte-identical.
+- **the `viewport` meta** — byte-identical. It has exactly one distinct value across all 43 commits
+  that have ever touched `index.html`.
+
+The whole difference was in `<head>`. v1.7.64 removed the three metas v1.7.60 added; this removes
+the last line that iOS also reads: **the manifest link**. iOS 17+ parses the manifest, and
+`display: standalone` with a `background_color` is exactly the shape of declaration that letterboxes
+a web app rather than letting `viewport-fit=cover` fill the display.
+
+The head now differs from the known-good v1.6.50 by four lines, and none of them can relayout a
+window: two `rel="icon"` links, one `rel="apple-touch-icon"`, and `apple-mobile-web-app-title`.
+
+**The duck is unaffected on iOS** — it comes from `rel="apple-touch-icon"`, which is still there.
+`public/manifest.json` is kept in place, ready to re-link once the screen is confirmed. The cost
+until then is that Android and desktop lose the install prompt.
+
+### Added — an allowlist on the head, which is the check that would have stopped this
+
+Every test written across v1.7.60–64 asked "is this thing present?" — the wrong question, because the
+bug was something present that shouldn't have been. The head's `<meta>` and `<link>` set is now
+checked against an explicit allowlist: v1.6.50's own tags plus the four inert icon lines. Anything
+else fails, with the reason spelled out, and has to be added deliberately by editing the list.
+
+Three mutations confirmed red: the manifest link restored, `apple-mobile-web-app-capable` restored,
+and `apple-mobile-web-app-status-bar-style` restored.
+
+## [1.7.64] — 2026-08-11
+
+### Fixed — the black safe-area band: three metas v1.7.60 added, now removed
+
+Three previous attempts failed because the diagnosis was wrong. The changelog itself held the
+answer, and I had asserted the opposite of it.
+
+**The correction.** v1.7.61 claimed the app had never run standalone on iOS before v1.7.60, and that
+the safe-area CSS had therefore never executed. That was false. **v1.7.42**, five days earlier,
+fixed *"Now playing sat under the status bar"* — a symptom that is only possible when the insets are
+live and the page is already full-bleed — and its own note says *"only visible in the installed
+PWA — in a browser tab the address bar occupies that space"*. The app was standalone, full-bleed,
+and correct before v1.7.60.
+
+**What actually broke it.** The head before v1.7.60 was four lines: charset, `viewport` with
+`viewport-fit=cover`, `theme-color`, `title`. Modern iOS opens a home-screen shortcut as a
+standalone web app by itself, and `viewport-fit=cover` was already filling the display. v1.7.60
+added the icons — and, unnecessarily, three metas:
+
+```
+apple-mobile-web-app-capable
+mobile-web-app-capable
+apple-mobile-web-app-status-bar-style: black-translucent
+```
+
+`apple-mobile-web-app-capable` opts back into Apple's **legacy** web-app path, where the status-bar
+style governs how the web view is inset rather than the page filling the display. The app stopped
+reaching the edges, on every screen, which is exactly the report.
+
+All three are gone. The icon never needed them: iOS reads `rel="apple-touch-icon"`, and the manifest
+covers Android and desktop. The four working lines are byte-identical to their pre-v1.7.60 state
+again, with only icon links added alongside.
+
+### Why the tests did not catch it, honestly
+
+They could not have. Every assertion written across v1.7.60–63 was structural — does this meta
+exist, does this rule contain that declaration — and the DOM harness runs headless Chromium, which
+has no browser chrome, no home indicator and no safe areas. `dvh`, `vh` and `100%` are identical
+there. **No test in this suite can observe iOS chrome behaviour**, so writing more of them would
+have produced more confidence and no more coverage. Worse, two of the v1.7.60 assertions were
+themselves permanently green (fixed in v1.7.61 and v1.7.63).
+
+What the suite CAN do is pin the known-good state so it is not silently changed again, and that is
+what it now does: the three legacy metas must stay absent, and the exact working `viewport` string
+must survive. Four mutations confirmed red — each meta reintroduced individually, and `viewport-fit`
+removed.
+
+The rest stands on its own merits and is kept: v1.7.62's `height: 100%` on the full-bleed panels
+(`100dvh` genuinely does under-measure inside a fixed `inset: 0` parent), v1.7.63's removal of the
+strip that painted over the modal, and the toast insets.
+
+## [1.7.63] — 2026-08-11
+
+### Fixed — removed the v1.7.61 strip, which was the thing making Now Playing worse
+
+A full CSS audit of every bottom-anchored surface found what v1.7.62's fix had not: the strip added
+in v1.7.61 was itself a bug, and the specific reason the Now Playing screen looked *worse* rather
+than merely unfixed.
+
+It sat at `z-index: 69`. `.modal` is `50` and `.share-overlay` is `60`. The transport bar is hidden
+on the Now Playing screen, so nothing covered the strip there — it painted `var(--bg)`, the darkest
+token in every palette, straight over the panel's lighter `var(--bg-elev)`. A brand-new dark bar,
+layered on top of the gap that was already there. The comment shipped alongside it claimed the
+transport covered it "whenever it is on screen"; that was simply false for the modal.
+
+It was also unnecessary from the start. `html` carries `background: var(--bg)`, which propagates to
+the canvas, so an area no element covers is **already the page ground** — the safe area was never
+going to be black from the page's side. Any genuinely black band could only ever have come from a
+painted layer, which is exactly what v1.7.62 identified: `.modal-backdrop`'s `rgba(0,0,0,.55)`
+showing through a short panel.
+
+The audit confirmed every other bottom-anchored surface already pads its own background into the
+inset — `.mini-transport`, `.settings-sheet`, `.lib-sheet`, `.menu-drawer`, both merge bars, both
+volume popovers. With `.modal-panel` fixed in v1.7.62, nothing is left for a strip to cover, so it
+is gone rather than merely re-layered.
+
+### Fixed — the two floating toasts sat in the home-indicator area
+
+Same v1.7.60 standalone fallout, found by the same audit. `.toast` (`bottom: 28px`) and
+`.settings-info-toast` (`bottom: 88px`) were the only bottom-anchored elements with no inset
+awareness, so on an installed iPhone they sat 34px lower than intended, over the home indicator.
+Both now add `env(safe-area-inset-bottom)`.
+
+### Fixed — two test assertions that could not fail
+
+Both found by mutation-checking this change, and both the same mistake in different clothes:
+
+- The rule lookup used a raw `indexOf` on the stylesheet, so it matched the selector inside a
+  **comment** — including the comment written to explain this very fix. Comments are stripped first
+  now.
+- The transport-inset assertion used `/\.mini-transport\s*\{[\s\S]*?padding-bottom:.../`. That
+  `[\s\S]*?` walks straight past the rule's closing brace and matches some *other* selector's
+  padding, so deleting the transport's own inset passed cleanly. It is bounded to the rule body now.
+
+Four mutations confirmed red: the v1.7.61 strip reintroduced above the modal, `html` losing its
+background, the transport losing its inset, and `.modal` ceasing to be full-screen.
+
+## [1.7.62] — 2026-08-11
+
+### Fixed — the real cause of the iOS band: viewport units on a full-screen panel
+
+v1.7.61's painted strip did not fix it, and the Now Playing screen got worse. Reproduced this time
+rather than reasoned about: the stylesheet was copied with `env(safe-area-inset-bottom)` substituted
+for a real `34px`, and rendered in the headless harness. **The bars measure correctly** — the mini
+transport reaches the viewport bottom with its 44px of padding. So the safe-area CSS was never the
+problem, which is why painting a strip behind it changed nothing.
+
+The actual cause is `.modal-panel`, and the Now Playing screen is rendered inside it:
+
+```css
+.modal { position: fixed; top:0; right:0; bottom:0; left:0; }
+.modal-panel { height: 100dvh; max-height: 100dvh; }
+```
+
+Those two do not measure the same box on iOS. A fixed `inset: 0` parent covers the whole screen
+**including** the safe areas; the dynamic viewport (`dvh`) **excludes** them. So the panel came up
+short by the home-indicator inset, and what showed through the gap was `.modal-backdrop` —
+`rgba(0,0,0,.55)` over a blur. That is darker than the page and taller than a bare inset, which is
+exactly why Now Playing looked worse than the Home screen rather than the same.
+
+All three full-bleed panels now use `height: 100%`, measured against the fixed parent they fill:
+`.modal-panel`, its `≥720px` Now-Playing override, and the Qobuz/TIDAL/Pitchfork overlay sheet. The
+`100vh` **max-heights** on deliberately inset panels (the desktop modal's `calc(100vh - 48px)`, the
+popovers) are untouched and correct — a test pins that distinction so nobody "fixes" them later.
+
+Headless Chromium has no browser chrome and no safe areas, so `dvh`, `vh` and `100%` are identical
+there and this cannot be caught by rendering. The invariant is asserted structurally instead, and
+the parents are checked for still being `fixed` + `bottom: 0` — because `height: 100%` is only the
+right answer while that holds. Three mutations confirmed red.
+
+v1.7.61's strip is kept. It is a correct backstop for the case where no bar is on screen, it is
+invisible where a bar already reaches the bottom, and on any device without a home indicator it has
+zero height.
+
+## [1.7.61] — 2026-08-11
+
+### Fixed — the black band along the bottom on iOS, which v1.7.60 caused
+
+Reported after installing v1.7.60's icon: a black strip across the home-indicator area. Traced
+rather than guessed, and the answer is not in v1.6 or v1.7 — it is v1.7.60, from the day before.
+
+| What | When |
+|---|---|
+| `viewport-fit=cover` | 3 Jul 2026, v1.5.104 |
+| the `env(safe-area-inset-*)` rules | 3–14 Jul 2026, v1.5.104 / v1.6.13 / v1.6.38 |
+| `apple-mobile-web-app-capable` | **11 Aug 2026, v1.7.60** |
+
+**The app had never run standalone on iOS before v1.7.60.** There was no manifest and no
+`apple-mobile-web-app-capable`, so "Add to Home Screen" produced a shortcut that opened in Safari —
+and Safari's own toolbar occupied the home-indicator strip, so the page never saw it. Every
+safe-area rule in the stylesheet, some of them fourteen months old, had never once executed on an
+iPhone. Adding the install metadata did not break the layout; it ran it for the first time.
+
+The bars along the bottom do pad themselves correctly. What nothing covered was the case where no
+bar is on screen, leaving iOS to paint its own black. `body::after` now paints that strip with the
+app's own ground, sitting at `z-index: 69` — directly beneath the transport bar, so where the bar
+already reaches the bottom the strip is invisible behind it. On any device without a home indicator
+the inset is `0`, the strip has zero height, and the rule does nothing, which is what makes it safe
+to apply unconditionally.
+
+### Fixed — v1.7.60's own icon tests were permanently green
+
+Caught while mutation-checking this change. `test/static/pwa-icons.test.js` read
+`REPO_ROOT/public` directly instead of honouring `MUSICD_PUBLIC_DIR`, so every mutation ran against
+the real, correct files: deleting a declared icon, making the maskable icons byte-identical to the
+full-bleed ones, and removing `viewport-fit=cover` all passed. Seventeen assertions that could
+never fail. Now pointed at the copy the harness builds, and all five mutations confirmed red.
+
+This is the second time this exact trap has caught a static test in this project — the first was
+the pre-flight suite reading `index.js` instead of going through `indexSource()`.
+
 ## [1.7.60] — 2026-08-11
 
 ### Added — the MusicD duck is now the app icon, on every platform

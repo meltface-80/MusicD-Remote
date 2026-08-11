@@ -21,7 +21,14 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { REPO_ROOT } = require("../lib/extract");
 
-const PUBLIC = path.join(REPO_ROOT, "public");
+// MUSICD_PUBLIC_DIR points at a COPY of public/, exactly as the DOM harness
+// does, so a mutation run can reintroduce a bug in a throwaway copy and prove
+// these assertions bite. Reading REPO_ROOT/public unconditionally is how a
+// static test ends up permanently green: every mutant passed until this line
+// existed.
+const PUBLIC = process.env.MUSICD_PUBLIC_DIR
+  ? path.resolve(process.env.MUSICD_PUBLIC_DIR)
+  : path.join(REPO_ROOT, "public");
 const manifest = JSON.parse(fs.readFileSync(path.join(PUBLIC, "manifest.json"), "utf8"));
 const indexHtml = fs.readFileSync(path.join(PUBLIC, "index.html"), "utf8");
 
@@ -81,9 +88,36 @@ test("every icon the manifest promises actually exists at the size it claims", a
 });
 
 test("the head declares what each platform actually reads", async (t) => {
-  await t.test("the manifest is linked", () => {
-    assert.match(indexHtml, /<link rel="manifest" href="\/manifest\.json">/,
-      "without this the app is not installable at all");
+  await t.test("THE one: the head carries nothing that can relayout the window", () => {
+    // An allowlist, not a blocklist. v1.6.50 is the last build KNOWN to fill an
+    // iPhone screen correctly. Its head plus the four inert icon lines is the
+    // whole permitted set; anything else must be added deliberately, by editing
+    // this list, having thought about whether iOS reads it.
+    //
+    // This is the check that would have stopped v1.7.60. Three metas went in
+    // alongside the icons, none of them needed for an icon, and the app stopped
+    // reaching the edges of the display on every screen.
+    const ALLOWED = new Set([
+      'meta:charset', 'meta:viewport', 'meta:theme-color',          // v1.6.50
+      'meta:apple-mobile-web-app-title',                            // inert: names the shortcut
+      'link:stylesheet', 'link:icon', 'link:apple-touch-icon',      // inert: assets
+    ]);
+    const head = indexHtml.slice(indexHtml.indexOf("<head>"), indexHtml.indexOf("</head>"));
+    const found = [];
+    for (const tag of head.match(/<(meta|link)\b[^>]*>/g) || []) {
+      const name = (tag.match(/\bname="([^"]+)"/) || [])[1];
+      const rel  = (tag.match(/\brel="([^"]+)"/) || [])[1];
+      if (/^<meta\s+charset/.test(tag)) { found.push("meta:charset"); continue; }
+      if (name) found.push("meta:" + name);
+      else if (rel) found.push("link:" + rel);
+    }
+    for (const item of found) {
+      assert.ok(ALLOWED.has(item),
+        'the head gained "' + item + '". v1.6.50 fills the screen correctly and its ' +
+        'head does not contain it. If iOS reads it, it can stop viewport-fit=cover ' +
+        'filling the display — which is exactly what apple-mobile-web-app-capable did ' +
+        'in v1.7.60. Add it here only after deciding that is safe.');
+    }
   });
 
   await t.test("iOS gets its own icon, because it ignores the manifest", () => {
@@ -116,5 +150,180 @@ test("the head declares what each platform actually reads", async (t) => {
     const themeMeta = indexHtml.match(/<meta name="theme-color" content="([^"]+)">/);
     assert.equal(themeMeta[1], manifest.theme_color,
       "the page's theme-color and the manifest's disagree");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.7.64: the iOS safe area.
+//
+// CORRECTION to what v1.7.61 asserted here. That version claimed the app had
+// never run standalone on iOS before v1.7.60, and that the safe-area CSS had
+// therefore never executed. That was wrong, and the repo's own history says so:
+// v1.7.42 (5 Aug) fixed "Now playing sat under the status bar", a symptom that
+// is only possible when the insets are LIVE and the page is already full-bleed,
+// and its note says plainly "only visible in the installed PWA".
+//
+// Modern iOS opens a home-screen shortcut as a standalone web app on its own.
+// viewport-fit=cover was already filling the display. What broke it was
+// v1.7.60 adding the LEGACY apple-mobile-web-app-capable meta, which opts back
+// into the old web-app path where the status-bar style governs how the web view
+// is inset — so the app stopped reaching the edges.
+//
+// What has to stay true: viewport-fit=cover present, the legacy metas absent,
+// and every bottom-anchored surface padding its own background into the inset.
+// ---------------------------------------------------------------------------
+const css = fs.readFileSync(path.join(PUBLIC, "style.css"), "utf8");
+
+test("the iOS safe area is claimed and painted", async (t) => {
+  await t.test("viewport-fit=cover — without it the insets are all zero", () => {
+    const vp = indexHtml.match(/<meta name="viewport" content="([^"]+)">/);
+    assert.ok(vp, "no viewport meta at all");
+    assert.match(vp[1], /viewport-fit=cover/,
+      "env(safe-area-inset-*) resolves to 0 without viewport-fit=cover, so " +
+      "every safe-area rule in the stylesheet becomes a no-op");
+  });
+
+  await t.test("THE one: the legacy apple web-app metas stay OUT", () => {
+    // These three, added in v1.7.60 alongside the icons, are what put a black
+    // band in the safe areas on every screen. Modern iOS already opens a
+    // home-screen shortcut standalone and viewport-fit=cover already filled the
+    // display — proven by v1.7.42, which fixed Now playing sitting UNDER the
+    // status bar, impossible unless the insets were live and the page was
+    // full-bleed. apple-mobile-web-app-capable opts back into the OLD web-app
+    // path, where the status-bar style governs how the web view is inset.
+    for (const meta of ["apple-mobile-web-app-capable",
+                        "mobile-web-app-capable",
+                        "apple-mobile-web-app-status-bar-style"]) {
+      assert.ok(!new RegExp('name="' + meta + '"').test(indexHtml),
+        meta + " is back in the head. It is not needed for the icon (iOS reads " +
+        "apple-touch-icon) and it stops the app filling the screen.");
+    }
+    // The manifest still declares standalone for Android and desktop, where it
+    // is read and where it causes no such trouble.
+    assert.equal(manifest.display, "standalone");
+  });
+
+  await t.test("the pre-v1.7.60 head is preserved exactly", () => {
+    // Everything the icons needed is additive. If a future change edits the
+    // viewport or theme-color line, that is the line that was working.
+    assert.match(indexHtml,
+      /<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">/,
+      "the viewport meta was altered — this exact string is the known-good one");
+    assert.match(indexHtml, /<meta name="theme-color" content="#0e1012">/);
+  });
+
+  await t.test("THE one: the canvas is painted, so an uncovered inset is never black", () => {
+    // The real guarantee, and the one v1.7.61 missed. `html` carries a
+    // background, which propagates to the canvas — so any area no element
+    // covers is already the page ground. A black band can therefore only come
+    // from a PAINTED layer (a backdrop scrim), never from bare page.
+    const htmlRule = css.slice(css.indexOf("html, body {"));
+    assert.match(htmlRule.slice(0, htmlRule.indexOf("}")), /background:\s*var\(--bg\)/,
+      "html has no background, so the safe areas fall through to the browser's " +
+      "own canvas colour and really would show black");
+  });
+
+  await t.test("nothing paints a strip OVER the modal", () => {
+    // v1.7.61 added body::after at z-index 69 to cover the home indicator.
+    // .modal is 50 and .share-overlay is 60, and the transport bar is hidden on
+    // the Now Playing screen — so the strip painted --bg straight over the
+    // panel's lighter --bg-elev and made that screen visibly worse. If a strip
+    // is ever reintroduced it must sit BELOW the overlays, not above them.
+    const at = css.indexOf("body::after");
+    if (at === -1) return;                     // no strip at all: correct
+    const rule = css.slice(css.indexOf("{", at), css.indexOf("}", at));
+    const z = Number((rule.match(/z-index:\s*(-?\d+)/) || [])[1]);
+    assert.ok(!Number.isFinite(z) || z < 50,
+      "a body::after strip at z-index " + z + " sits above .modal (50), so it " +
+      "paints over the Now Playing panel instead of behind it");
+  });
+
+  await t.test("the bars pad their own backgrounds into the inset", () => {
+    // With no strip, this is the ONLY thing keeping the transport's background
+    // and its controls clear of the home indicator.
+    // Bounded to the rule body. A [\s\S]*? between the selector and the
+    // declaration walks straight past the closing brace and happily matches
+    // some OTHER selector's padding, which is exactly what it did — the
+    // mutation that stripped the transport's inset sailed through.
+    const bare2 = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const at = bare2.indexOf(".mini-transport {");
+    assert.ok(at > -1, ".mini-transport rule not found");
+    const rule = bare2.slice(at, bare2.indexOf("}", at));
+    assert.match(rule, /padding-bottom:\s*calc\([^)]*env\(safe-area-inset-bottom\)/,
+      "the transport bar no longer insets its own controls above the home indicator");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.7.62: viewport units on a full-screen panel.
+//
+// This is the one that actually caused the reported band, and it is invisible
+// everywhere except an installed iOS app — which is why v1.7.61's strip did not
+// fix it and the Now Playing screen looked WORSE than the rest.
+//
+// `.modal-panel` sits inside `.modal { position: fixed; inset: 0 }` and set
+// `height: 100dvh`. Those two do not measure the same box on iOS: a fixed
+// inset:0 parent covers the whole screen INCLUDING the safe areas, while the
+// dynamic viewport excludes them. So the panel came up short, and what showed
+// through the gap was `.modal-backdrop` — rgba(0,0,0,.55) over a blur — i.e. a
+// band darker than the page and taller than the 34px inset.
+//
+// Headless Chromium has no browser chrome and no safe areas, so dvh, vh and
+// 100% are all identical there and the bug CANNOT be reproduced in the DOM
+// harness. The invariant is therefore asserted structurally: a panel that fills
+// a fixed inset:0 parent measures itself against that parent, not the viewport.
+// ---------------------------------------------------------------------------
+test("full-screen panels size against their fixed parent, not the viewport", async (t) => {
+  // Each entry: the panel, and the fixed inset:0 parent it fills.
+  const PANELS = [
+    [".modal-panel", ".modal"],
+    ["#qobuz-overlay .qobuz-sheet", ".settings-overlay"],
+  ];
+
+  // The selector may head a GROUP (`a, b, c { ... }`), so the body is whatever
+  // sits between the next "{" after the selector and its closing brace — not
+  // the text following "<selector> {", which does not exist for a grouped rule.
+  // Comments are stripped FIRST. A raw indexOf finds the selector inside any
+  // comment that happens to mention it — which it immediately did, since the
+  // note explaining this very fix names `.modal-panel`.
+  const bare = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  function ruleBody(selector) {
+    const at = bare.indexOf(selector);
+    if (at < 0) return null;
+    const open = bare.indexOf("{", at);
+    return open < 0 ? null : bare.slice(open + 1, bare.indexOf("}", open));
+  }
+
+  await t.test("THE one: no viewport-unit HEIGHT on a full-bleed panel", () => {
+    for (const [panel] of PANELS) {
+      const rule = ruleBody(panel);
+      assert.ok(rule, "rule for " + panel + " not found");
+      const bad = rule.match(/(?<!max-)height:\s*[^;]*\b100(d|s|l)?vh\b/);
+      assert.equal(bad, null,
+        panel + " sizes itself with a viewport unit (" + (bad && bad[0]) + "). Inside a " +
+        "fixed inset:0 parent that is short by the safe-area insets on iOS, and the " +
+        "backdrop shows through underneath as a dark band.");
+      assert.match(rule, /height:\s*100%/,
+        panel + " does not fill its parent");
+    }
+  });
+
+  await t.test("the parents really are fixed and inset to zero", () => {
+    // The whole argument for height:100% rests on this. If a parent stops being
+    // full-screen, 100% silently becomes the wrong answer too.
+    for (const [, parent] of PANELS) {
+      const rule = ruleBody(parent + " {");
+      assert.ok(rule, parent + " rule not found");
+      assert.match(rule, /position:\s*fixed/, parent + " is no longer fixed");
+      assert.match(rule, /bottom:\s*0/, parent + " no longer reaches the bottom of the screen");
+    }
+  });
+
+  await t.test("max-height constraints on INSET panels may still use vh", () => {
+    // Not everything with a vh is wrong. The desktop modal and the popovers
+    // deliberately sit inside a margin, and there a viewport unit is exactly
+    // right — this test must not push someone into "fixing" those.
+    assert.match(css, /max-height:\s*calc\(100vh - 48px\)/,
+      "the desktop modal's inset max-height was changed; it is not the same case");
   });
 });

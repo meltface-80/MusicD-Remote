@@ -20,17 +20,39 @@
        `maskable` is inset to 78%, because Android crops adaptive icons to
        whatever shape the launcher uses and guarantees only the centre 80%;
        the full-bleed version would lose the headphone cup. -->
-  <link rel="manifest" href="/manifest.json">
+  <!-- The manifest link is DELIBERATELY not here yet. v1.6.50 is known to fill
+       the screen correctly on iOS; its head and this one now differ by exactly
+       four inert lines (three icon links and a title), and every one of those
+       is incapable of changing how the window is laid out. The manifest was the
+       one remaining line that could: iOS 17+ reads it, and `display: standalone`
+       with a `background_color` is exactly the shape of thing that letterboxes
+       a web app instead of letting viewport-fit=cover fill the display.
+       public/manifest.json is kept, ready to re-link once the screen is
+       confirmed correct. Cost meanwhile: Android and desktop lose the
+       install prompt. iOS is unaffected — it takes the icon from
+       rel="apple-touch-icon" below, which is why the duck still appears. -->
   <link rel="icon" href="/icons/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
   <!-- iOS reads only this one, ignores the manifest's icons, and composites
        any transparency onto white — so it is pre-flattened onto the logo's
        own black. -->
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="MusicD">
+
+  <!-- DELIBERATELY ABSENT: apple-mobile-web-app-capable,
+       mobile-web-app-capable, apple-mobile-web-app-status-bar-style.
+       v1.7.60 added all three alongside the icons and that is what put a black
+       band in the safe areas on every screen.
+       Modern iOS already opens a home-screen shortcut as a standalone web app,
+       and viewport-fit=cover was already filling the display — v1.7.42 fixed
+       Now playing sitting UNDER the status bar, which is only possible if the
+       insets were live and the page was full-bleed. Adding the legacy
+       apple-mobile-web-app-capable opts back into the OLD web-app path, where
+       the status-bar style governs how the web view is inset, and the app
+       stopped reaching the edges.
+       The icon does not need any of them: iOS reads rel="apple-touch-icon",
+       and the manifest covers Android and desktop. -->
+
 
   <link rel="stylesheet" href="/style.css">
 </head>
