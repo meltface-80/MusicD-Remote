@@ -254,7 +254,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
 - The README contains version references (install commands, tarball URLs, `docker build` tags).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.7.60** (until the user says otherwise).
+- Current stable version in the README: **v1.7.66** (until the user says otherwise).
 - The extension is being renamed **MusicD Remote** ("for Roon" is descriptive, not part of the name). The Roon `extension_id` must NEVER change — it would force every user to re-authorize.
 
 ---
@@ -395,7 +395,7 @@ docker run -d \
 | v1.7.54–v1.7.56 | superseded | Automatic rescan repaired end to end: recheck budget could never refill, failed rebuilds reported success, "finished" meant only "not still adding"; periodic check 12h → 10 min; change probe compared against the filtered count |
 | v1.7.57–v1.7.58 | superseded | Library-change messages say why, what next, and the manual Rescan; each quotes the clock it actually waits on |
 | v1.7.59 | stable (superseded) | A switched-off feature no longer leaves its Home row or its playlists behind |
-| v1.7.60 | superseded (caused the iOS regression; README still points here until promoted) | PWA icon set from the MusicD duck — and three legacy Apple metas that stopped the app filling the display |
+| v1.7.60 | superseded (caused the iOS regression) | PWA icon set from the MusicD duck — and three legacy Apple metas that stopped the app filling the display |
 | v1.7.61–v1.7.64 | superseded | Four attempts at the iOS band, three from a false premise; v1.7.62's `height:100%` on full-bleed panels and v1.7.63's toast insets are the parts worth keeping |
 | v1.7.65 | stable | Head reduced to v1.6.50's plus four inert icon lines; head allowlist test |
-| v1.7.66 | **Latest (stable)** | The iOS full-screen contract pinned: pre-flight step 6, head allowlist, shell rules checked against v1.6.50; 758 unit / 317 DOM / 69 static |
+| v1.7.66 | **Latest (stable)** | The iOS full-screen contract pinned: pre-flight step 6, head allowlist, shell rules checked against v1.6.50; 758 unit / 317 DOM / 69 static — README points here |
