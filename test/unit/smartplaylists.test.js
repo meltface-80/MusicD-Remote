@@ -27,7 +27,12 @@ const { sanitizeLibView, smartPlaylistRecord, smartLimitDefault, smartLimitMax,
   ["sanitizeLibView", "smartPlaylistRecord", "libSortIds", "libPlayedIds", "smartNameMax",
    "smartLimitDefault", "smartLimitMax", "smartLimitOptions",
    "smartModes", "smartModeDefault", "smartOrders", "smartOrderDefault",
-   "libFacetDefs", "libFacetChipMax"]);
+   "libFacetDefs", "libFacetChipMax"],
+  // libFacetDefs publishes "Record label" only while the Labels feature is on.
+  // On, here: this file's subject is the FULL saved-view vocabulary, and a
+  // facet missing from it is what makes a saved playlist silently drop a
+  // filter.
+  { labelsEnabled: true });
 
 // Built FROM the shipping facet table, so a facet added to libFacetDefs() has
 // to appear in every saved view — which is what stops a new facet from working

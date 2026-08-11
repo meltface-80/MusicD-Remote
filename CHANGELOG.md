@@ -2,6 +2,113 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.54] — 2026-08-10
+
+### Changed — the Home search magnifier moved to the right of the top bar
+
+It sat beside the hamburger, which is where the always-open search box used to live. That was the
+right place while the box owned the whole bar; once it collapsed to a single icon in v1.7.50 the
+icon joined the left-hand navigation cluster and read as a third nav control. It now hugs the right
+edge at every width. Opening it still fills the bar — the right edge stays where the glass was and
+the left edge travels out — measured at 360 / 390 / 768 / 1280 px.
+
+### Fixed — the automatic rescan could stop firing permanently, and did not mean what it claimed
+
+The v1.7.49 automatic rescan was audited end to end against the requirement that it fires **after
+Roon has finished adding and identifying albums**. It did not hold up. Five separate defects, all
+of them silent — the twelve-hour tick kept running, so the only symptom was the original v1.7.49
+complaint quietly coming back:
+
+- **The recheck budget could never refill.** `_libraryRecheckCount` was reset only by a recheck
+  returning `fresh`, but at the cap `scheduleLibraryRecheck()` returns before arming anything — so
+  no recheck could fire, so no `fresh` could ever arrive to reset it. The counter was global and
+  was not refunded on `rebuilt` either, so roughly two dozen ordinary imports were enough to spend
+  it. After that the automatic rescan was **dead for the lifetime of the container** and every
+  later import waited for the next twelve-hour tick. The budget is now per *episode*: an idle gap
+  of 30 minutes — comfortably longer than the 5-minute chain, so a running episode can never refill
+  itself — starts a new one with a full budget. This is a *class* of error: a resource whose only
+  refill path is gated behind the resource itself.
+- **A failed rebuild reported success.** `buildAlbumIndex()`'s rejection was swallowed and
+  `{ status: "rebuilt" }` returned regardless. Since the builder only assigns the snapshot after a
+  full successful walk, a mid-walk failure left the old data in place, told the recheck chain the
+  episode was over, and cleared the "Roon importing" banner. It now returns `error`, which is one
+  of the two statuses that re-arm the chain.
+- **"Finished" only meant "not still adding".** The import probe compared the album count across
+  one 5-second window. Roon imports in bursts, so any pause longer than that window read as
+  finished — and identification, which happens *after* the import and changes nothing about the
+  count, was not looked for at all. The probe now takes three samples, and each sample carries the
+  first and last album's identity as well as the count: identification rewrites titles and artists,
+  which moves rows in an alphabetical list. Roon publishes no import-finished event of any kind, so
+  this is inference from what the browse API will tell us — good evidence that work is still
+  happening, never proof that it has stopped.
+- **A re-pair scheduled nothing.** An unpair clears any pending recheck, and a websocket flap is
+  most likely during exactly the heavy import that recheck was waiting on — so the refresh silently
+  dropped back to the twelve-hour tick. A re-pair with a snapshot already in memory now arms one.
+  (The comment claiming `startIndexMaintenance()` "re-verifies it on re-pair with a cheap 2-call
+  probe" described code that was never written; it has been corrected.)
+- **The automatic rebuild stopped at the album snapshot.** Everything built *on* the snapshot — the
+  Qobuz/TIDAL source badges, the Genre facet, the decade and quality data from file tags, the label
+  map — was refreshed only by the chain behind the manual Rescan button. An automatically refreshed
+  library came back with the right albums wearing last week's metadata, which reads as the automatic
+  rescan not having run. Both automatic paths now run the same chain the button does, tagged
+  `auto rescan` in the log so the two are tellable apart.
+
+### Fixed — Labels off now means off in scans, searches and filters too
+
+v1.7.51-52 stopped the label *scanning* when Labels is off. The label features it had already
+produced were still on screen: the "Record label" entry in the Library Focus sheet, the Labels
+section of global search, the "more from this label" grid on the wall display, and the two label
+endpoints. A stored Record-label filter also kept narrowing the Library wall with no visible way to
+clear it, because the Focus sheet no longer listed the facet it came from. All five are now gated
+on the same `labelsEnabled` switch, and the client's Focus count badge follows the vocabulary the
+server actually publishes rather than a hardcoded list.
+
+### Fixed — three defects the review found in this version's own changes
+
+Caught before release, all three re-creating the class of bug the version exists to fix:
+
+- **A labels-map failure reported the snapshot as failed.** `rebuildLabelsMap()` was chained into
+  `buildAlbumIndex()`'s promise, so a throw from the label map returned `error` for a perfectly
+  rebuilt snapshot — which stopped the post-rebuild chain firing and left every dependant stale.
+  One line from the fix for exactly that. The flag now tracks the snapshot build alone, and a
+  labels-map failure is logged rather than silently swallowed.
+- **The automatic chain ran with `force`.** In both scans `force` means "a human insisted": it buys
+  past the `libraryIsImporting()` gate, and in the genre walk it turns a fingerprint-skipping pass
+  into a full sweep of a few hundred browse calls. Carrying it onto the automatic path would have
+  skipped the very import check this version strengthened, at the moment Roon is most likely to
+  still be identifying — and swept the whole library every time an import settled. New albums have
+  no fingerprint yet, so the incremental walk picks them up regardless.
+- **The Focus count badge lagged a version behind.** `libAvailableFacets` was populated only when
+  the Focus sheet was first opened, so on a fresh load with Labels off the wall's "N matching
+  albums" and the badge still counted a stored Record-label selection the user could neither see
+  nor clear. It is now seeded at boot from the Labels switch the client already asks for.
+
+Also de-duplicated: the change probe and the import probe were each spelling out their own
+`title||subtitle` identity. They now share `browseItemIdentity()`, because a disagreement between
+"is this the library we indexed" and "is this the library it was five seconds ago" would be
+unexplainable if the two recognised albums differently.
+
+### Added — the Rescan row now says what the snapshot is
+
+The automatic rescan runs silently by design, which is also why five defects in it went unnoticed:
+from the app, a library refreshing itself and a library that had quietly stopped refreshing looked
+identical. The server has published `library_importing`, `library_recheck_pending`, `index_built_at`
+and `index_count` on `/api/status` since v1.7.49 and no client read any of them. The side-menu
+"Rescan library" row now carries a second line — `12,431 albums · checked 2 hours ago`, or `the
+library moved, checking again shortly`, or `Roon was importing at the last check — refresh paused`.
+Every phrase is past tense or explicitly a schedule: these flags are set at the last check and
+cleared at the next clean one, so "Roon is importing" would be a confident lie about an instant
+nothing can observe.
+
+### Added — the recheck episode is now driven, not grepped
+
+Everything that previously covered this scheduling was a substring search against `index.js`, which
+is why all five defects shipped. The episode is now executed with a fake clock and a fake
+`setTimeout`, so every branch of the status dispatch runs: one pending recheck ever, `busy`/`error`
+re-ask, the cap engaging, `rebuilt` not refunding, `fresh` refilling, and an exhausted budget
+recovering after an idle gap. Ten mutations of `index.js` were confirmed to turn the suite red.
+723 unit / 302 DOM / 42 static.
+
 ## [1.7.53] — 2026-08-10
 
 ### Fixed — Sort floated in the middle of the Library control row

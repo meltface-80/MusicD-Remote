@@ -240,12 +240,42 @@ test("rescanChain serialises the Rescan button's background work", async (t) => 
     // looks wrong. Letting the importing-check defer it would make the button
     // appear to do nothing at exactly the moment it is needed.
     const capture = [];
-    await buildRescan(tracker(), capture).rescanChain({ status: "fresh" });
+    await buildRescan(tracker(), capture).rescanChain({ status: "fresh" }, "manual rescan", true);
     const g = capture.find(c => c.reason);
     assert.ok(g, "the genre harvest was never called");
     assert.equal(g.force, true);
     const l = capture.find(c => "labelsForce" in c);
     assert.equal(l.labelsForce, true, "the label scan is forced for the same reason");
+  });
+
+  // v1.7.54: the same chain now also runs automatically after an import
+  // settles, and `force` must NOT travel with it.
+  await t.test("THE one: the automatic run does not force", async () => {
+    // In both scans `force` means "a human insisted": it buys past the
+    // libraryIsImporting() gate, and in the genre walk it turns a
+    // fingerprint-skipping pass into a full sweep of a few hundred browse
+    // calls. Carrying it onto the automatic path would skip the import check
+    // at the one moment Roon is most likely to still be identifying — and
+    // sweep the whole library every single time an import settles.
+    const capture = [];
+    await buildRescan(tracker(), capture).rescanChain({ status: "rebuilt" }, "auto rescan", false);
+    const g = capture.find(c => c.reason);
+    assert.equal(g.force, false,
+      "the automatic post-import chain forced the genre sweep — it skips the " +
+      "importing check and re-walks the entire library on every import");
+    assert.equal(g.reason, "auto rescan",
+      "the automatic run is indistinguishable from a button press in the log");
+    const l = capture.find(c => "labelsForce" in c);
+    assert.equal(l.labelsForce, false,
+      "the automatic label scan skipped the importing check");
+  });
+
+  await t.test("an omitted force is not a forced one", async () => {
+    // A call site that forgets the argument must land on the SAFE side.
+    const capture = [];
+    await buildRescan(tracker(), capture).rescanChain({ status: "fresh" });
+    assert.equal(capture.find(c => c.reason).force, false);
+    assert.equal(capture.find(c => "labelsForce" in c).labelsForce, false);
   });
 
   await t.test("a failing step does not cancel the rest, and it never rejects", async () => {

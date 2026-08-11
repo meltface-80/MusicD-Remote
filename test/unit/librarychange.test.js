@@ -171,3 +171,310 @@ test("the wording claims only what can be proved", async (t) => {
     assert.equal(uses, 0, "the old dangling Available: list is still being built");
   });
 });
+
+// ---------------------------------------------------------------------------
+// v1.7.54: the recheck EPISODE, driven rather than grepped.
+//
+// Everything above this line about scheduling is a substring search against
+// index.js. That was enough to prove the v1.7.49 call site exists; it proved
+// nothing about the loop it starts, which is the part that decides whether the
+// feature still works on day thirty.
+//
+// It did not. `_libraryRecheckCount` was refilled ONLY by a recheck returning
+// "fresh" — and once the count reached the cap, `scheduleLibraryRecheck`
+// returned before arming anything, so no recheck could fire, so no "fresh"
+// could ever arrive to refill it. The budget was global and was not refunded
+// on "rebuilt" either, so roughly two dozen ordinary imports were enough to
+// spend it. After that the fast path was dead for the lifetime of the
+// container, silently: the twelve-hour tick kept running, so the only visible
+// symptom was the original v1.7.49 complaint coming back.
+//
+// The fix is that an idle gap ends an episode. These tests drive the real
+// function with a fake clock and a fake setTimeout, so every branch of the
+// status dispatch is executed rather than matched as text.
+// ---------------------------------------------------------------------------
+function recheckHarness(opts) {
+  opts = opts || {};
+  const fired = [];          // pending timer callbacks, in order
+  const chained = [];        // results handed to kickPostRebuildChain
+  const state = { clock: opts.now || 1_000_000, next: "busy" };
+  const F = loadIndexFunctions(
+    ["scheduleLibraryRecheck", "libraryRecheckIdleMs"],
+    {
+      _libraryRecheckTimer: null,
+      _libraryRecheckCount: 0,
+      _libraryRecheckLast: 0,
+      libraryRecheckMs: () => 1,
+      // Small on purpose: the real 24 is range-checked above, and three makes
+      // exhaustion legible here.
+      libraryRecheckMax: () => 3,
+      Date: { now: () => state.clock },
+      setTimeout: (fn) => { fired.push(fn); return { unref() {} }; },
+      console: { log() {}, error() {} },
+      checkAndMaybeRebuild: async () => ({ status: state.next }),
+      kickPostRebuildChain: (r) => chained.push(r && r.status),
+    });
+  return {
+    fired, chained, state, idleMs: F.libraryRecheckIdleMs(),
+    arm: (why) => F.scheduleLibraryRecheck(why || "test"),
+    advance: (ms) => { state.clock += ms; },
+    // Run the oldest pending callback and let its .then settle.
+    fire: async (status) => {
+      state.next = status;
+      const fn = fired.shift();
+      assert.ok(fn, "expected a pending recheck to fire, there was none");
+      fn();
+      await new Promise(r => setImmediate(r));
+    },
+  };
+}
+
+test("the recheck episode keeps asking, and stops asking, and starts again",
+  async (t) => {
+    await t.test("only one recheck is pending no matter how many arm it", async () => {
+      // Every album open during an import calls this.
+      const h = recheckHarness();
+      h.arm(); h.arm(); h.arm();
+      assert.equal(h.fired.length, 1);
+    });
+
+    await t.test("a check that could not answer is asked again", async () => {
+      // "busy" means something else was already rebuilding; "error" means the
+      // probe failed. Neither is an answer, and abandoning the question is the
+      // v1.7.49 bug wearing a different hat.
+      const h = recheckHarness();
+      h.arm();
+      await h.fire("busy");
+      assert.equal(h.fired.length, 1, "a busy result ended the episode");
+      await h.fire("error");
+      assert.equal(h.fired.length, 1, "an error result ended the episode");
+    });
+
+    await t.test("the cap actually engages", async () => {
+      const h = recheckHarness();
+      h.arm();
+      await h.fire("busy");    // 2nd armed
+      await h.fire("busy");    // 3rd armed — budget of 3 now spent
+      await h.fire("busy");
+      assert.equal(h.fired.length, 0,
+        "a library that never settles re-armed past the cap — that is a probe " +
+        "every five minutes forever against a Core that is already struggling");
+    });
+
+    await t.test("a rebuild does NOT refill the budget", async () => {
+      // Refilling on "rebuilt" is how the cap was made unreachable once before.
+      const h = recheckHarness();
+      h.arm();                 // 1 of 3
+      await h.fire("rebuilt"); // episode ends here, but the unit stays spent
+      h.arm();                 // 2 of 3
+      await h.fire("busy");    // 3 of 3 — the budget is now gone
+      await h.fire("busy");
+      assert.equal(h.fired.length, 0,
+        "a rebuild refunded a budget unit — with that refund the cap can never " +
+        "engage, because any library whose count keeps moving rebuilds each " +
+        "time and re-walks itself every five minutes forever");
+    });
+
+    await t.test("a settled library refills it", async () => {
+      const h = recheckHarness();
+      h.arm();
+      await h.fire("fresh");
+      // A full budget again: three more arm.
+      h.arm();
+      await h.fire("busy");
+      await h.fire("busy");
+      assert.equal(h.fired.length, 1, "'fresh' did not end the episode cleanly");
+    });
+
+    await t.test("THE one: an exhausted budget recovers on its own", async () => {
+      // The permanent-death bug. Spend the budget, then come back after an
+      // idle gap the way a real second import does, hours later.
+      const h = recheckHarness();
+      h.arm();
+      await h.fire("busy");
+      await h.fire("busy");
+      await h.fire("busy");
+      assert.equal(h.fired.length, 0, "precondition: the budget should be spent");
+
+      h.advance(h.idleMs - 1);
+      h.arm("still inside the episode");
+      assert.equal(h.fired.length, 0,
+        "the budget refilled while the episode was still running — the cap can " +
+        "never engage if a gap shorter than the chain itself resets it");
+
+      h.advance(2);
+      h.arm("a new import, hours later");
+      assert.equal(h.fired.length, 1,
+        "the recheck budget never refilled. Once spent, scheduleLibraryRecheck " +
+        "returns before arming anything, so no recheck can fire, so no 'fresh' " +
+        "can arrive to refill it — the automatic rescan is dead for the life of " +
+        "the container and every later import waits for the twelve-hour tick");
+    });
+
+    await t.test("the idle gap is longer than the chain it must not interrupt", () => {
+      const F = loadIndexFunctions(["libraryRecheckMs", "libraryRecheckIdleMs"], {});
+      assert.ok(F.libraryRecheckIdleMs() > F.libraryRecheckMs() * 2,
+        "an episode re-arms every " + Math.round(F.libraryRecheckMs() / 60000) +
+        " min but is considered over after " + Math.round(F.libraryRecheckIdleMs() / 60000) +
+        " min of idle — a running episode would refill its own budget");
+    });
+
+    await t.test("a background rebuild drags its dependants with it", async () => {
+      // Source badges, the Genre facet and the decade/quality data all sit on
+      // top of the snapshot. Rebuilding the snapshot alone gives the user the
+      // new albums wearing the old metadata, which reads as nothing happening.
+      const h = recheckHarness();
+      h.arm();
+      await h.fire("rebuilt");
+      assert.deepEqual(h.chained, ["rebuilt"],
+        "the automatic rebuild stopped at the album snapshot — the streaming " +
+        "favourites, genres and file tags were left stale until somebody " +
+        "pressed Rescan by hand");
+    });
+
+    await t.test("and it kicks it WITHOUT force", async () => {
+      // `force` means "a human insisted" in both scans the chain runs: it buys
+      // past the libraryIsImporting() gate and turns the genre walk into a full
+      // sweep. Carried onto the automatic path it would skip the import check
+      // at the one moment Roon is most likely to still be identifying.
+      const calls = [];
+      const F = loadIndexFunctions(["kickPostRebuildChain"], {
+        rescanChain: async (r, reason, force) => { calls.push({ reason, force }); },
+        console: { error() {} },
+      });
+      F.kickPostRebuildChain({ status: "rebuilt" });
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].force, false,
+        "the automatic post-import chain forces the genre sweep and the label " +
+        "scan — both then skip the importing check and the genre walk re-walks " +
+        "the whole library every time an import settles");
+      assert.equal(calls[0].reason, "auto rescan",
+        "the automatic run is indistinguishable from a button press in the log");
+
+      calls.length = 0;
+      for (const st of ["fresh", "busy", "error", "importing", undefined]) {
+        F.kickPostRebuildChain(st ? { status: st } : null);
+      }
+      assert.equal(calls.length, 0, "a non-rebuild kicked a full rescan chain");
+    });
+
+    await t.test("nothing but a rebuild kicks that chain", async () => {
+      for (const st of ["fresh", "busy", "error", "importing"]) {
+        const h = recheckHarness();
+        h.arm();
+        await h.fire(st);
+        assert.deepEqual(h.chained, [], st + " kicked a full rescan chain");
+      }
+    });
+  });
+
+// ---------------------------------------------------------------------------
+// v1.7.54: "Roon has finished" is inferred, and the inference got two things
+// wrong.
+// ---------------------------------------------------------------------------
+test("the import probe watches for identification, not just for growth", async (t) => {
+  const src = indexSource();
+  const fn = src.slice(src.indexOf("async function libraryIsImporting("));
+  const body = fn.slice(0, fn.indexOf("\n}\n") + 3);
+
+  await t.test("more than one settle window", () => {
+    const F = loadIndexFunctions(["importSettleReads"], {});
+    assert.ok(F.importSettleReads() >= 3,
+      "the probe takes " + F.importSettleReads() + " samples, so it spans one " +
+      "window. Roon imports in bursts, and any pause between bursts longer " +
+      "than that window reads as finished — which is how a rebuild lands " +
+      "halfway through an import");
+  });
+
+  await t.test("the sample carries identity, not only the count", () => {
+    // Identification does not change the album count; it rewrites titles and
+    // artists, which moves rows in an alphabetical list. The count alone can
+    // only answer the "still adding" half of the user's question.
+    assert.ok(/browseItemIdentity/.test(body),
+      "libraryIsImporting compares nothing but the album count, so an import " +
+      "that has finished ADDING but is still IDENTIFYING reads as settled");
+    assert.ok(/offset: total - 1/.test(body),
+      "only the head of the list is sampled — identification deep in the " +
+      "library would never move it");
+  });
+
+  await t.test("that identity is the one the change probe uses", () => {
+    // Shared, because the two probes ask questions whose answers must be
+    // comparable: "is this the library we indexed" and "is this the library it
+    // was five seconds ago". Two spellings of identity would make a
+    // disagreement between them impossible to explain.
+    const F = loadIndexFunctions(["browseItemIdentity"], {});
+    assert.equal(F.browseItemIdentity({ title: "Rumours", subtitle: "Fleetwood Mac" }),
+                 "Rumours||Fleetwood Mac");
+    assert.equal(F.browseItemIdentity({ title: "Rumours" }), "Rumours||",
+      "a missing artist must still produce a comparable value, not undefined");
+    assert.equal(F.browseItemIdentity(null), "");
+    const changed = src.slice(src.indexOf("async function libraryChangedSince("));
+    assert.ok(/browseItemIdentity/.test(changed.slice(0, changed.indexOf("\n}\n"))),
+      "libraryChangedSince spells identity its own way again");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.7.54: a rebuild that threw used to report success.
+// ---------------------------------------------------------------------------
+test("a failed rebuild is reported as a failure", async (t) => {
+  const src = indexSource();
+
+  await t.test("the catch records the failure instead of swallowing it", () => {
+    const fn = src.slice(src.indexOf("async function checkAndMaybeRebuild("));
+    const body = fn.slice(0, fn.indexOf("\n}\n") + 3);
+    assert.ok(/\.catch\(\(\) => \{ built = false; \}\)/.test(body),
+      "buildAlbumIndex's rejection is discarded, so the old snapshot survives " +
+      "and the caller is told 'rebuilt'");
+    // The flag must track the SNAPSHOT and nothing else. Chaining the labels
+    // map into the same promise as buildAlbumIndex makes a throw from
+    // rebuildLabelsMap report a perfectly rebuilt snapshot as "error" — which
+    // stops kickPostRebuildChain firing and leaves every dependant stale, the
+    // exact failure this version exists to fix.
+    const build = body.indexOf("await buildAlbumIndex()");
+    const labels = body.indexOf("rebuildLabelsMap()", build);
+    assert.ok(build > 0 && labels > build, "the rebuild block moved");
+    assert.ok(!body.slice(build, labels).includes(".then("),
+      "rebuildLabelsMap is chained onto buildAlbumIndex's promise, so a failure " +
+      "in the LABEL map is reported as a failed snapshot rebuild");
+    assert.ok(/catch \(e\) \{ console\.error\("\[index\] labels map rebuild/.test(body),
+      "a labels-map failure is now swallowed with no log at all");
+    const failReturn = body.indexOf('if (!built) return { status: "error" };');
+    const okReturn   = body.indexOf('return { status: "rebuilt"');
+    assert.ok(failReturn > 0, "nothing acts on the failure");
+    assert.ok(failReturn < okReturn,
+      "the success return comes first, so a failed build still reports rebuilt");
+  });
+
+  await t.test("'error' is one of the statuses that re-arms the chain", async () => {
+    // Otherwise reporting the failure honestly would just end the episode
+    // quietly instead of loudly, which is no better.
+    const h = recheckHarness();
+    h.arm();
+    await h.fire("error");
+    assert.equal(h.fired.length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.7.54: an unpair clears the pending recheck. A re-pair has to put one back.
+// ---------------------------------------------------------------------------
+test("re-pairing with an existing snapshot asks again", async (t) => {
+  const src = indexSource();
+  const fn = src.slice(src.indexOf("function startIndexMaintenance("));
+  const body = fn.slice(0, fn.indexOf("\n}\n") + 3);
+
+  await t.test("the else branch arms a recheck", () => {
+    assert.ok(/\} else \{[\s\S]*scheduleLibraryRecheck\(/.test(body),
+      "a re-pair with a snapshot already in memory schedules nothing. " +
+      "stopIndexMaintenance() clears any pending recheck on unpair, and a " +
+      "websocket flap is most likely during the very import that recheck was " +
+      "waiting on — so the refresh silently drops back to the 12-hour tick");
+  });
+
+  await t.test("the comment no longer claims a probe that does not exist", () => {
+    assert.ok(!/re-verifies it on\s*\n?\s*\/\/\s*re-pair with a cheap 2-call probe/.test(src),
+      "the unpair comment still describes a re-pair probe that was never written");
+  });
+});

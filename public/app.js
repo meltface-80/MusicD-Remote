@@ -1406,8 +1406,23 @@
   }
   // How many filters are ON. Every selected chip counts — including the
   // excluded ones, which are as much a filter as the included ones.
+  // Only the facets the SERVER is currently publishing. With Labels off the
+  // "Record label" facet is gone from the sheet, and counting a selection
+  // stored before the switch was flipped would show a filter the user can
+  // neither see nor clear.
+  // Seeded at boot from the Labels switch, not only when the Focus sheet is
+  // first opened. `/api/library/facets` is fetched on sheet open, so relying on
+  // it alone left the wall's "N matching albums" and the Focus badge counting a
+  // stored Record-label selection on every fresh load until the sheet had been
+  // opened once — which is exactly the invisible, unclearable filter this is
+  // meant to prevent.
+  let libAvailableFacets = LIB_FACET_IDS.slice();
+  window.__setLabelsFacetAvailable = (on) => {
+    libAvailableFacets = on ? LIB_FACET_IDS.slice()
+                            : LIB_FACET_IDS.filter(id => id !== "label");
+  };
   const libFocusCount = () =>
-    LIB_FACET_IDS.reduce((n, id) => n + (libView[id] || []).length, 0) +
+    libAvailableFacets.reduce((n, id) => n + (libView[id] || []).length, 0) +
     (libView.played !== "any" ? 1 : 0);
   // Chip state, encoding Roon's tap-again-to-invert: a value prefixed with "!"
   // is EXCLUDED. Kept inside the value so the whole selection stays a plain
@@ -2929,6 +2944,13 @@
       const r = await fetch("/api/library/facets", { cache: "no-store" });
       if (r.ok) libFacets = await r.json();
     } catch (e) { /* offline — keep whatever we last had rather than blanking */ }
+    // The server decides the vocabulary — it drops "Record label" when Labels
+    // is switched off — so the count badge follows what it publishes rather
+    // than a list hardcoded here.
+    if (libFacets && Array.isArray(libFacets.facets)) {
+      const ids = libFacets.facets.map(x => x && x.id).filter(Boolean);
+      if (ids.length) libAvailableFacets = ids;
+    }
     const f = libFacets || { facets: [], coverage: {} };
     // Which sections are expanded. Held across repaints (a chip tap rebuilds
     // the body) but NOT across openings: a sheet that reopens half-collapsed
@@ -7116,6 +7138,10 @@
     const picksItem  = document.getElementById("menu-item-picks");
     if (labelsItem && typeof state.labels === "boolean") {
       labelsItem.classList.toggle("hidden", !state.labels);
+      // The same switch decides whether the Library Focus vocabulary still
+      // contains "Record label", and the count badge has to agree with the
+      // sheet from the first paint, not from the first time it is opened.
+      if (window.__setLabelsFacetAvailable) window.__setLabelsFacetAvailable(state.labels);
     }
     if (picksItem && typeof state.picks === "boolean") {
       picksItem.classList.toggle("hidden", !state.picks);
@@ -10937,6 +10963,7 @@ initServiceBrowser({
         j.status === "unpaired"  ? "Not connected to Roon" :
                                    "Rescan failed";
       toast(msg, j.status === "rebuilt" || j.status === "fresh" ? undefined : "error");
+      refreshRescanSub();   // the row's sub-line is now stale whatever happened
     } catch (e) {
       toast("Rescan failed", "error");
     }
@@ -10977,7 +11004,45 @@ initServiceBrowser({
                                  "All zones unmuted", "Could not unmute all zones"),
   };
 
-  const openMenu  = () => overlay.classList.remove("hidden");
+  // What the snapshot is right now, under the Rescan row. Every phrase here is
+  // deliberately PAST tense or explicitly a schedule, because none of it can be
+  // a claim about this instant: `library_importing` is set at the last check
+  // and cleared at the next clean one, and Roon publishes no import-finished
+  // event to make it live. Saying "Roon is importing" would be a confident lie
+  // dressed up as a status line.
+  function libraryAgeText(ms) {
+    const mins = Math.round((Date.now() - ms) / 60000);
+    if (mins < 2)    return "just now";
+    if (mins < 60)   return mins + " min ago";
+    const hrs = Math.round(mins / 60);
+    if (hrs < 48)    return hrs + (hrs === 1 ? " hour ago" : " hours ago");
+    return Math.round(hrs / 24) + " days ago";
+  }
+  async function refreshRescanSub() {
+    const el = document.getElementById("rescan-sub");
+    if (!el) return;
+    try {
+      const r = await fetch("/api/status");
+      const j = await r.json();
+      if (!j.paired) { el.textContent = "Not connected to Roon"; return; }
+      const albums = (j.index_count || 0).toLocaleString() + " albums";
+      if (j.library_importing) {
+        el.textContent = albums + " · Roon was importing at the last check — refresh paused";
+      } else if (j.library_recheck_pending) {
+        el.textContent = albums + " · the library moved, checking again shortly";
+      } else if (j.index_built_at) {
+        el.textContent = albums + " · checked " + libraryAgeText(j.index_built_at);
+      } else {
+        el.textContent = "No snapshot yet";
+      }
+    } catch (e) {
+      // The drawer must open regardless. An empty sub-line reads as "no
+      // information", which is exactly what a failed status call means.
+      el.textContent = "";
+    }
+  }
+
+  const openMenu  = () => { overlay.classList.remove("hidden"); refreshRescanSub(); };
   const closeMenu = () => overlay.classList.add("hidden");
 
   toggle.addEventListener("click", openMenu);

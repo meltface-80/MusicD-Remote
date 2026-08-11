@@ -302,3 +302,76 @@ test("the Home Screen settings list actually controls the Home screen",
       assert.equal(r.library_hidden, true);
     });
   });
+
+// ---------------------------------------------------------------------------
+// v1.7.54: the glass belongs on the RIGHT of the top bar, at every width.
+//
+// It shipped beside the hamburger on the left, which is where the always-open
+// search box used to live — sensible when the box owned the whole bar, wrong
+// once it collapsed to a single icon, because the left cluster is the
+// navigation cluster (menu / back) and the icon read as a third nav control.
+//
+// Measured rather than asserted from the stylesheet, because the rule that
+// places it is an auto margin sharing a row with a grow factor, and which of
+// those wins is not visible in the source. It is the grow factor: auto margins
+// only divide the space still free after flexible lengths resolve, so the
+// collapsed glass sits right AND the opened field still fills the bar. Both
+// halves of that are measured, because reading the CSS gets it wrong.
+// ---------------------------------------------------------------------------
+const GLASS_DRIVER = `
+  await window.__sleep(400);
+  var row   = document.querySelector(".topbar-row");
+  var wrap  = document.getElementById("topbar-search");
+  var glass = document.getElementById("search-open");
+  var menu  = document.getElementById("menu-toggle");
+  var b = row.getBoundingClientRect();
+  var g = glass.getBoundingClientRect();
+  var m = menu.getBoundingClientRect();
+  T("row_w", Math.round(b.width));
+  T("visible", !wrap.classList.contains("hidden"));
+  T("right_gap", Math.round(b.right - g.right));
+  T("glass_left_of_row", Math.round(g.left - b.left));
+  T("clears_menu", Math.round(g.left - m.right));
+  T("closed_w", Math.round(wrap.getBoundingClientRect().width));
+
+  glass.click();
+  await window.__sleep(150);
+  var o = wrap.getBoundingClientRect();
+  T("open_w", Math.round(o.width));
+  T("open_right_gap", Math.round(b.right - o.right));
+`;
+
+test("the search glass sits at the right of the top bar at every width",
+  { concurrency: 1 }, async (t) => {
+    for (const size of ["360x780", "390x844", "768x1024", "1280x900"]) {
+      await t.test(size + ": glass hugs the right edge and the field grows to fill", () => {
+        const r = harness.renderPage({
+          stub: STUB, driver: GLASS_DRIVER, name: "glass-right-" + size.split("x")[0],
+          windowSize: size,
+        });
+        harness.assertNoPageError(assert, r);
+        assert.equal(r.visible, true, "the search container is not shown on Home at " + size);
+
+        assert.ok(r.right_gap <= 4,
+          "the glass is " + r.right_gap + "px off the right edge at " + size);
+
+        // The direction of the move, stated as the thing that was wrong: it used
+        // to sit immediately after the hamburger, so its left offset was a
+        // handful of pixels regardless of how wide the window got.
+        assert.ok(r.glass_left_of_row > r.row_w / 2,
+          "at " + size + " the glass starts " + r.glass_left_of_row + "px into a " +
+          r.row_w + "px bar — it is still parked in the left-hand nav cluster");
+        assert.ok(r.clears_menu > 0, "the glass overlaps the hamburger at " + size);
+
+        // Right-anchoring must not cost the open field its width. Everything in
+        // the row but the hamburger is hidden on Home, so a field that grows
+        // properly reaches within one button-and-gap of the left edge.
+        assert.ok(r.open_w >= r.row_w - 80,
+          "the opened field is " + r.open_w + "px in a " + r.row_w + "px bar at " + size +
+          " — it stayed near its collapsed " + r.closed_w + "px instead of filling the row");
+        assert.ok(r.open_right_gap <= 4,
+          "the opened field left " + r.open_right_gap + "px at the right edge at " + size +
+          " — it should grow leftwards from where the glass was");
+      });
+    }
+  });

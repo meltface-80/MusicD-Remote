@@ -288,9 +288,9 @@ const roon = new RoonApi({
     stopIndexMaintenance();
     // The album index is deliberately KEPT across an unpair: it's plain
     // offset/title data (no session-scoped item_keys), so it stays usable for
-    // search while disconnected, and startIndexMaintenance() re-verifies it on
-    // re-pair with a cheap 2-call probe instead of a full library re-walk —
-    // a flapping connection no longer multiplies full rescans onto the Core.
+    // search while disconnected, and startIndexMaintenance() schedules one
+    // recheck on re-pair instead of a full library re-walk — a flapping
+    // connection no longer multiplies full rescans onto the Core.
     console.log("[roon] unpaired from core — index kept, awaiting re-pair");
     _statusSync = "";   // clear any "library updating…" note — sync state is reset on re-pair
     _statusPair = "Not paired with any Roon Core"; _statusPairErr = true; pushStatus();
@@ -5833,12 +5833,19 @@ async function ensureAlbumIndex() {
 // One cheap library-change probe (2-3 count:1 round-trips): is the album count
 // or the first/last album different from our built snapshot? Returns true when
 // something changed. No side effects — the caller decides whether to rebuild.
+// All an Item gives us to recognise an album by. Shared so the change probe and
+// the import probe can never drift into recognising albums differently — one
+// asks "is this the library we indexed", the other "is this the library it was
+// five seconds ago", and a mismatch between the two answers is unexplainable.
+function browseItemIdentity(it) {
+  return it ? (it.title || "") + "||" + (it.subtitle || "") : "";
+}
 async function libraryChangedSince() {
   return await withBrowseSession(async (sessionKey) => {
     await browse({ hierarchy: "albums", pop_all: true, multi_session_key: sessionKey });
     const head = await load({ hierarchy: "albums", offset: 0, count: 1, multi_session_key: sessionKey });
     const total = head.list && head.list.count ? head.list.count : 0;
-    const identity = it => it ? (it.title || "") + "||" + (it.subtitle || "") : "";
+    const identity = browseItemIdentity;
     const firstNow = identity(head.items && head.items[0]);
     const firstIdx = identity(albumIndex.albums[0]);
     let lastChanged = false;
@@ -5850,6 +5857,12 @@ async function libraryChangedSince() {
   });
 }
 
+// How many samples the import probe takes, IMPORT_SETTLE_MS apart. Two is one
+// window and is not enough: Roon imports in bursts, and any burst gap longer
+// than the window reads as finished. Three costs another five seconds on a code
+// path that already refuses to run while somebody is waiting.
+function importSettleReads() { return 3; }
+
 // Best-effort "is Roon importing right now?" — read the album count, wait a few
 // seconds, read it again; a changed count means the library is actively growing.
 // Cheap (two count:1 loads) and only called when we're about to start heavy
@@ -5859,14 +5872,38 @@ async function libraryIsImporting() {
   if (!core) return false;
   try {
     return await withBrowseSession(async (sessionKey) => {
-      await browse({ hierarchy: "albums", pop_all: true, multi_session_key: sessionKey });
-      const a = await load({ hierarchy: "albums", offset: 0, count: 1, multi_session_key: sessionKey });
-      const c1 = a.list && a.list.count ? a.list.count : 0;
-      await new Promise(r => setTimeout(r, IMPORT_SETTLE_MS));
-      await browse({ hierarchy: "albums", pop_all: true, multi_session_key: sessionKey });
-      const b = await load({ hierarchy: "albums", offset: 0, count: 1, multi_session_key: sessionKey });
-      const c2 = b.list && b.list.count ? b.list.count : 0;
-      return c1 !== c2;
+      const identity = browseItemIdentity;
+      // One sample = the album count PLUS the identity of the first and last
+      // rows. The count on its own only answers "is Roon still ADDING albums".
+      // The identities are what carry the other half of the question: Roon
+      // identifies an album AFTER importing it, and identification rewrites its
+      // title and artist, which reorders an alphabetical list around it. Roon
+      // publishes no import-finished event of any kind, so this is inference
+      // from the little the browse API will tell us — good evidence that work
+      // is still happening, never a proof that it has stopped.
+      const sample = async () => {
+        await browse({ hierarchy: "albums", pop_all: true, multi_session_key: sessionKey });
+        const head = await load({ hierarchy: "albums", offset: 0, count: 1, multi_session_key: sessionKey });
+        const total = head.list && head.list.count ? head.list.count : 0;
+        let tail = "";
+        if (total > 1) {
+          const t = await load({ hierarchy: "albums", offset: total - 1, count: 1, multi_session_key: sessionKey });
+          tail = identity(t.items && t.items[0]);
+        }
+        return total + "|" + identity(head.items && head.items[0]) + "|" + tail;
+      };
+      let prev = await sample();
+      // Sampled more than twice on purpose. A single 5-second window calls a
+      // BATCHED import settled during any pause between batches, and Roon
+      // imports in bursts — that is precisely the case that got the snapshot
+      // rebuilt halfway through and left the user with missing albums.
+      for (let i = 1; i < importSettleReads(); i++) {
+        await new Promise(r => setTimeout(r, IMPORT_SETTLE_MS));
+        const now = await sample();
+        if (now !== prev) return true;
+        prev = now;
+      }
+      return false;
     });
   } catch (e) { return false; }   // probe blip — don't block work on a transient error
 }
@@ -5905,9 +5942,25 @@ async function checkAndMaybeRebuild(reason, force) {
     }
     console.log("[index] " + reason + " check: library changed and settled — rebuilding snapshot once");
     clearBrowseOffsetCache();
-    await buildAlbumIndex()
-      .then(() => { if (labelsEnabled) rebuildLabelsMap(); })
-      .catch(() => { /* build error logged in buildAlbumIndex */ });
+    // The flag tracks the SNAPSHOT build and nothing else. Chaining the labels
+    // map into the same .then/.catch made a throw from rebuildLabelsMap report
+    // the whole rebuild as failed — so a perfectly rebuilt snapshot returned
+    // "error", kickPostRebuildChain never fired, and every dependant stayed
+    // stale. That is the exact failure this version exists to fix, re-created
+    // one line away from the fix.
+    let built = true;
+    await buildAlbumIndex().catch(() => { built = false; });   // error logged in buildAlbumIndex
+    if (built && labelsEnabled) {
+      try { rebuildLabelsMap(); }
+      catch (e) { console.error("[index] labels map rebuild after " + reason + ": " + e.message); }
+    }
+    // A rebuild that threw leaves the OLD snapshot in place — buildAlbumIndex
+    // only assigns albums/count/declared once a full walk succeeds. Reporting
+    // "rebuilt" anyway told the recheck chain the episode was over and cleared
+    // the "Roon importing" banner, so a library that failed to refresh went
+    // quiet and stayed stale until the next 12-hour tick. "error" is the truth
+    // and is one of the two statuses that re-arm the chain.
+    if (!built) return { status: "error" };
     if (_statusSync) { _statusSync = ""; pushStatus(); }
     return { status: "rebuilt", count: albumIndex.count };
   } finally {
@@ -5922,16 +5975,29 @@ async function checkAndMaybeRebuild(reason, force) {
 function startIndexMaintenance() {
   stopIndexMaintenance();
   _statusSync = "";
-  // The index survives an unpair (it's plain offset/title data), so a re-pair
-  // with an existing snapshot needs no work — the 12h timer and manual Rescan
-  // handle refreshes. Build only when there's no snapshot yet (first pair).
+  // The index survives an unpair (it's plain offset/title data), so it stays
+  // usable for search while disconnected. Build only when there's no snapshot
+  // yet (first pair).
   if (!isIndexBuilt()) {
     buildAlbumIndex()
       .then(() => runFileMetadataScan("first pair"))
       .then(() => { if (labelsEnabled) seedLabelsFromCache(); })
       .catch(e => { if (DEBUG) console.error("[index] initial build:", e.message); });
+  } else {
+    // A re-pair with an existing snapshot asks again in five minutes. The
+    // comment that used to sit here claimed startIndexMaintenance already
+    // "re-verifies it on re-pair with a cheap 2-call probe"; it never did.
+    // That mattered because an unpair CLEARS any pending recheck, and a
+    // websocket flap is most likely during exactly the heavy import the
+    // recheck was waiting on — so the refresh silently dropped from five
+    // minutes back to the next 12-hour tick.
+    scheduleLibraryRecheck("re-paired with an existing snapshot");
   }
-  indexMaintTimer = setInterval(() => { checkAndMaybeRebuild("12h", false); }, INDEX_CHECK_MS);
+  indexMaintTimer = setInterval(() => {
+    checkAndMaybeRebuild("12h", false)
+      .then(kickPostRebuildChain)
+      .catch(e => console.error("[index] 12h check failed: " + e.message));
+  }, INDEX_CHECK_MS);
   if (indexMaintTimer.unref) indexMaintTimer.unref();
 }
 
@@ -5944,9 +6010,27 @@ function libraryRecheckMs() { return 5 * 60 * 1000; }
 // each time it is still moving; without a cap a permanently-churning library
 // would probe every five minutes forever.
 function libraryRecheckMax() { return 24; }
+// How long the chain must be completely idle before the next recheck counts as
+// a NEW episode with a full budget. Comfortably longer than the 5-minute chain,
+// so a running episode can never refill itself mid-flight and walk around the
+// cap the way resetting on "rebuilt" did.
+function libraryRecheckIdleMs() { return 30 * 60 * 1000; }
 
 let _libraryRecheckTimer = null;
 let _libraryRecheckCount = 0;
+let _libraryRecheckLast = 0;
+
+// The automatic rebuild stops at the album snapshot. Everything BUILT ON that
+// snapshot — the Qobuz/TIDAL source badges, the Genre facet, the decade and
+// quality data harvested from file tags, the label map — is refreshed only by
+// the chain the manual Rescan button runs. Without this the automatic path
+// brought back the right albums wearing last week's metadata, which reads as
+// the auto-rescan not having run at all.
+function kickPostRebuildChain(r) {
+  if (!r || r.status !== "rebuilt") return;
+  rescanChain(r, "auto rescan", false).catch(e =>
+    console.error("[index] auto rescan chain: " + e.message));
+}
 // Ask again in a few minutes, once. Called when something OBSERVED that the
 // library has moved: the 12-hour check finding an import in progress, or an
 // ordinary album open noticing Roon's live count no longer matches the
@@ -5954,8 +6038,21 @@ let _libraryRecheckCount = 0;
 // a rebuild is a full re-walk and these fire while somebody is waiting.
 function scheduleLibraryRecheck(why) {
   if (_libraryRecheckTimer) return;                       // one pending, ever
+  const now = Date.now();
+  // The budget is per EPISODE, and an idle gap is what ends one. Refilling it
+  // ONLY on "fresh" made exhaustion permanent: at the cap nothing can be
+  // scheduled, so no recheck can fire, so no "fresh" can ever arrive to refill
+  // it. The fast path died for the lifetime of the container — silently, with
+  // the 12-hour tick still running so nothing looked broken — and every later
+  // import was back to waiting up to twelve hours. The counter is global and
+  // is not refunded on "rebuilt" either, so roughly two dozen ordinary
+  // automatic rescans were enough to reach it on a long-lived install.
+  if (_libraryRecheckLast && now - _libraryRecheckLast >= libraryRecheckIdleMs()) {
+    _libraryRecheckCount = 0;
+  }
   if (_libraryRecheckCount >= libraryRecheckMax()) return;
   _libraryRecheckCount++;
+  _libraryRecheckLast = now;
   console.log("[index] recheck scheduled in " + Math.round(libraryRecheckMs() / 60000) +
               " min (" + why + ")");
   _libraryRecheckTimer = setTimeout(() => {
@@ -5963,6 +6060,9 @@ function scheduleLibraryRecheck(why) {
     checkAndMaybeRebuild("auto", false)
       .then(r => {
         const st = r && r.status;
+        // A snapshot rebuilt in the background has to drag its dependants with
+        // it, exactly as the manual Rescan button does.
+        if (st === "rebuilt") kickPostRebuildChain(r);
         // Only "fresh" — the library genuinely matches — ends the episode and
         // returns a full budget. Resetting on "rebuilt" too meant the cap
         // could never engage: any rebuild refilled it, so a library whose
@@ -5980,6 +6080,7 @@ function scheduleLibraryRecheck(why) {
 function stopIndexMaintenance() {
   if (_libraryRecheckTimer) { clearTimeout(_libraryRecheckTimer); _libraryRecheckTimer = null; }
   _libraryRecheckCount = 0;
+  _libraryRecheckLast = 0;
   if (indexMaintTimer) { clearInterval(indexMaintTimer); indexMaintTimer = null; }
 }
 
@@ -6768,8 +6869,13 @@ function libFacetDefs() {
       sort: "numeric-desc",
       labels: (v) => v + "s",
       values: (al) => { const y = albumYearOf(al); return y === null ? [] : [String(Math.floor(y / 10) * 10)]; } },
-    { id: "label",  label: "Record label",
-      values: (al) => { const n = resolveAlbumLabelName(al); return n ? [n] : []; } },
+    // Only when the feature is on. Dropping it from the vocabulary is enough
+    // to disable it everywhere: the Focus sheet renders from this list, and
+    // libraryView applies only the facets this list still publishes — so a
+    // selection stored from before the switch was flipped stops filtering
+    // rather than silently narrowing a wall with no visible reason why.
+    ...(labelsEnabled ? [{ id: "label",  label: "Record label",
+      values: (al) => { const n = resolveAlbumLabelName(al); return n ? [n] : []; } }] : []),
     { id: "format", label: "Format",
       values: (al) => { const f = albumFileFactsOf(al); return f && f.container ? [f.container] : []; } },
     { id: "rate",   label: "Sample rate",
@@ -7618,6 +7724,10 @@ app.get("/api/filters/tags", async (req, res) => {
 // Triggers a background scan on first call so the list grows over time.
 app.get("/api/filters/labels", (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  // An empty list rather than an error: the screen behind this is unreachable
+  // while the feature is off, and a stale client asking should get "nothing
+  // here", not a failure it will render as a broken screen.
+  if (!labelsEnabled) return res.json({ labels: [], scanning: false, progress: 0 });
   // Seed from cache so the first response includes labels even on a fresh restart.
   if (labelsEnabled && labelsIndex.map.size === 0 && albumIndex.count > 0) {
     seedLabelsFromCache();
@@ -7667,6 +7777,7 @@ app.get("/api/filters/labels", (req, res) => {
 // Albums are served from the Qobuz-derived labelsIndex; offsets are positions
 // in the full "albums" hierarchy so open/play work without any filter.
 app.get("/api/label-albums", (req, res) => {
+  if (!labelsEnabled) return res.json({ label: null, albums: [] });
   const name  = String(req.query.label || "").trim();
   const order = req.query.order === "random" ? "random" : "alpha";
   if (!name) return res.status(400).json({ error: "label query parameter required" });
@@ -7730,7 +7841,7 @@ app.post("/api/library/rescan", async (req, res) => {
     // Deliberately after checkAndMaybeRebuild: if it rebuilt, it has already
     // kicked its own prewarm and genre harvest, and the guards inside those
     // make the calls below no-ops rather than a second pass.
-    rescanChain(r).catch(e => {
+    rescanChain(r, "manual rescan", true).catch(e => {
       if (DEBUG) console.error("[rescan] background chain:", e.message);
     });
     res.json(r);
@@ -7752,17 +7863,27 @@ app.post("/api/library/rescan", async (req, res) => {
 // Each step is caught individually: one failing must not cancel the rest, and
 // a Rescan that silently did two of its three jobs is worse than one that says
 // which part failed.
-async function rescanChain(rebuildResult) {
-  await bgRun("stream favourites", () => refreshStreamAlbumKeys("manual rescan"));
-  // `force` — this is an explicit user action, and it is the button somebody
-  // presses precisely when the Genre facet looks wrong. Deferring it to a
-  // background timer, or letting a fingerprint skip it, would make the button
-  // appear to do nothing at exactly the moment it is needed.
-  await bgRun("genres", () => harvestAlbumGenres("manual rescan", true));
+// `reason` travels into the first three steps' log lines so an automatic
+// post-import run is distinguishable from a button press in the rotating log —
+// they do the same work but arrive for very different reasons. The labels step
+// is the exception: runLabelsIndexScan takes no reason and writes its own
+// wording to the labels log, so that one is told apart by its timing only.
+async function rescanChain(rebuildResult, reason, force) {
+  reason = reason || "manual rescan";
+  await bgRun("stream favourites", () => refreshStreamAlbumKeys(reason));
+  // `force` is NOT a synonym for "run it now" — in both of these it means "a
+  // human insisted", and it buys past the `libraryIsImporting()` gate and, in
+  // the genre walk, turns a fingerprint-skipping pass into a full sweep of a
+  // few hundred browse calls. Right for the button; wrong for the automatic
+  // run, which would then skip the very import check this version strengthened
+  // at the one moment Roon is most likely to still be identifying — and sweep
+  // the whole library every time. Newly-arrived albums have no fingerprint
+  // yet, so the incremental walk picks them up regardless.
+  await bgRun("genres", () => harvestAlbumGenres(reason, !!force));
   // The walk is part of a Rescan regardless — it is what refreshes the Decade
   // and quality filters — and the label pass follows only when Labels is on.
-  await bgRun("file tags", () => runFileMetadataScan("manual rescan"));
-  if (labelsEnabled) await bgRun("labels", () => runLabelsIndexScan(true));
+  await bgRun("file tags", () => runFileMetadataScan(reason));
+  if (labelsEnabled) await bgRun("labels", () => runLabelsIndexScan(!!force));
   if (DEBUG) console.log("[rescan] background chain done (" + (rebuildResult && rebuildResult.status) + ")");
 }
 
@@ -11681,7 +11802,10 @@ app.get("/api/search", async (req, res) => {
     }
     const nq      = normalize(q);
     const results = searchAlbums(q, limit);
-    const labels  = searchLabels(nq);
+    // A disabled feature does not appear in results. The label index is still
+    // populated from before it was switched off, so this has to be asked
+    // rather than inferred from emptiness.
+    const labels  = labelsEnabled ? searchLabels(nq) : [];
     const artists = searchArtists(nq);
     res.json({ query: q, count: results.length, indexed: albumIndex.count, results, labels, artists });
   } catch (e) {
@@ -12496,7 +12620,8 @@ app.get("/api/display/content", async (req, res) => {
     // source (Qobuz/disk) than the live Roon browse rows, the match silently
     // failed and the tiles arrived with no usable offset — which is why they
     // could not be selected. Projecting the live index removes that dependency.
-    const labelName = resolveAlbumLabelName({ title: album, subtitle: artist });
+    const labelName = labelsEnabled
+      ? resolveAlbumLabelName({ title: album, subtitle: artist }) : null;
     const targetKey = labelName ? canonicalLabelGroupKey(labelName) : null;
     if (targetKey) {
       const picks = [];

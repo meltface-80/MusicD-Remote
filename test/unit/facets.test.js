@@ -75,6 +75,8 @@ function build(opts) {
       // these tests are about is which value WINS in memory.
       stmtInsertFileFacts: null,
       DEBUG: false,
+      // libFacetDefs publishes "Record label" only when Labels is on.
+      labelsEnabled: true,
       albumSeenCache: new Map(Object.entries(opts.seen || {})),
       libraryMetaVersion: 0,
       libraryViewCache: new Map(),

@@ -64,6 +64,8 @@ function build(opts) {
      "libFacetDefs", "facetMatch", "albumGenresOf", "albumFileFactsOf", "albumFileFacts",
      "rateLabel", "channelLabel", "libAddedWindows"],
     {
+      // libFacetDefs publishes "Record label" only when Labels is on.
+      labelsEnabled: true,
       albumYearCache,
       albumSeenCache,
       albumGenreCache: opts.genres || new Map(),
