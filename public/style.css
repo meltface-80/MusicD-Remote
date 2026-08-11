@@ -186,6 +186,33 @@ button { font-family: inherit; }
   display: flex; flex-direction: column;
 }
 
+/* The home-indicator strip, painted with the app's own ground.
+ *
+ * v1.7.60 made the app installable on iOS for the first time — before it there
+ * was no manifest and no apple-mobile-web-app-capable, so "Add to Home Screen"
+ * opened in Safari and SAFARI'S toolbar covered this strip. The page never saw
+ * it. All the env(safe-area-inset-*) rules dating from v1.5.104 had therefore
+ * never actually run on iOS, and the first standalone launch left a black band
+ * along the bottom.
+ *
+ * A backstop rather than a replacement: the bars above still pad themselves, so
+ * where they already reach the bottom this sits behind them and is invisible.
+ * It only shows through where nothing else painted. On any device without a
+ * home indicator the inset is 0, so the strip has zero height and does nothing —
+ * which is why it is safe to apply unconditionally.
+ *
+ * --bg, not --bg-elev: the transport bar (z-index 70) covers this whenever it
+ * is on screen, so the only time the strip is visible is when there is no bar,
+ * and then the page background is what should continue. */
+body::after {
+  content: "";
+  position: fixed; left: 0; right: 0; bottom: 0;
+  height: env(safe-area-inset-bottom);
+  background: var(--bg);
+  z-index: 69;            /* directly beneath .mini-transport (70) */
+  pointer-events: none;   /* never steals a tap near the home indicator */
+}
+
 /* ------------------------------------------------------------------ */
 /*  Top bar                                                            */
 /* ------------------------------------------------------------------ */

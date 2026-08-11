@@ -21,7 +21,14 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { REPO_ROOT } = require("../lib/extract");
 
-const PUBLIC = path.join(REPO_ROOT, "public");
+// MUSICD_PUBLIC_DIR points at a COPY of public/, exactly as the DOM harness
+// does, so a mutation run can reintroduce a bug in a throwaway copy and prove
+// these assertions bite. Reading REPO_ROOT/public unconditionally is how a
+// static test ends up permanently green: every mutant passed until this line
+// existed.
+const PUBLIC = process.env.MUSICD_PUBLIC_DIR
+  ? path.resolve(process.env.MUSICD_PUBLIC_DIR)
+  : path.join(REPO_ROOT, "public");
 const manifest = JSON.parse(fs.readFileSync(path.join(PUBLIC, "manifest.json"), "utf8"));
 const indexHtml = fs.readFileSync(path.join(PUBLIC, "index.html"), "utf8");
 
@@ -116,5 +123,70 @@ test("the head declares what each platform actually reads", async (t) => {
     const themeMeta = indexHtml.match(/<meta name="theme-color" content="([^"]+)">/);
     assert.equal(themeMeta[1], manifest.theme_color,
       "the page's theme-color and the manifest's disagree");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.7.61: the iOS safe area, which v1.7.60 exposed.
+//
+// Adding apple-mobile-web-app-capable made the app run STANDALONE on iOS for
+// the first time. Until then "Add to Home Screen" opened in Safari, and
+// Safari's own toolbar sat over the home-indicator strip, so the page never
+// saw it — every env(safe-area-inset-*) rule in the stylesheet, dating from
+// v1.5.104, had never once executed on an iPhone. The first standalone launch
+// left a black band along the bottom.
+//
+// These pin the three things that have to be true together. Any one of them
+// alone is silently useless: viewport-fit without the standalone flag is a
+// Safari tab, the standalone flag without viewport-fit letterboxes the app,
+// and both without a painted strip leaves the band that was reported.
+// ---------------------------------------------------------------------------
+const css = fs.readFileSync(path.join(PUBLIC, "style.css"), "utf8");
+
+test("the iOS safe area is claimed and painted", async (t) => {
+  await t.test("viewport-fit=cover — without it the insets are all zero", () => {
+    const vp = indexHtml.match(/<meta name="viewport" content="([^"]+)">/);
+    assert.ok(vp, "no viewport meta at all");
+    assert.match(vp[1], /viewport-fit=cover/,
+      "env(safe-area-inset-*) resolves to 0 without viewport-fit=cover, so " +
+      "every safe-area rule in the stylesheet becomes a no-op");
+  });
+
+  await t.test("standalone is declared for both iOS and the manifest", () => {
+    // iOS reads the meta; everything else reads the manifest. Neither one
+    // covers both.
+    assert.match(indexHtml, /<meta name="apple-mobile-web-app-capable" content="yes">/);
+    assert.equal(manifest.display, "standalone");
+  });
+
+  await t.test("THE one: something paints the bottom inset", () => {
+    // The reported symptom. The bars pad themselves, but when no bar is on
+    // screen nothing reached the strip and iOS showed its own black.
+    assert.match(css, /body::after\s*\{[^}]*height:\s*env\(safe-area-inset-bottom\)/,
+      "nothing paints the home-indicator strip, so it shows through as a black " +
+      "band whenever the transport bar is hidden");
+    const rule = css.slice(css.indexOf("body::after"));
+    const body = rule.slice(0, rule.indexOf("}") + 1);
+    assert.match(body, /position:\s*fixed/, "the strip scrolls away with the page");
+    assert.match(body, /background:\s*var\(--bg\)/,
+      "the strip is not painted with the app's own ground, so it will not match");
+    assert.match(body, /pointer-events:\s*none/,
+      "the strip would swallow taps aimed at the bottom of the screen");
+  });
+
+  await t.test("the strip sits under the transport bar, not over it", () => {
+    // At or above 70 it would cover the transport's own padded area and, worse,
+    // its controls.
+    const rule = css.slice(css.indexOf("body::after"));
+    const z = Number((rule.slice(0, rule.indexOf("}")).match(/z-index:\s*(\d+)/) || [])[1]);
+    assert.ok(z < 70, "the safe-area strip (z-index " + z + ") is not below .mini-transport (70)");
+  });
+
+  await t.test("the bars still pad themselves — the strip is a backstop", () => {
+    // If someone deletes the bars' own insets and leans on the strip, the
+    // CONTROLS move into the home-indicator area even though the background
+    // looks right.
+    assert.match(css, /\.mini-transport\s*\{[\s\S]*?padding-bottom:\s*calc\([^)]*env\(safe-area-inset-bottom\)/,
+      "the transport bar no longer insets its own controls above the home indicator");
   });
 });

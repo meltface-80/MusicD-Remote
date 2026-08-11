@@ -2,6 +2,43 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.61] — 2026-08-11
+
+### Fixed — the black band along the bottom on iOS, which v1.7.60 caused
+
+Reported after installing v1.7.60's icon: a black strip across the home-indicator area. Traced
+rather than guessed, and the answer is not in v1.6 or v1.7 — it is v1.7.60, from the day before.
+
+| What | When |
+|---|---|
+| `viewport-fit=cover` | 3 Jul 2026, v1.5.104 |
+| the `env(safe-area-inset-*)` rules | 3–14 Jul 2026, v1.5.104 / v1.6.13 / v1.6.38 |
+| `apple-mobile-web-app-capable` | **11 Aug 2026, v1.7.60** |
+
+**The app had never run standalone on iOS before v1.7.60.** There was no manifest and no
+`apple-mobile-web-app-capable`, so "Add to Home Screen" produced a shortcut that opened in Safari —
+and Safari's own toolbar occupied the home-indicator strip, so the page never saw it. Every
+safe-area rule in the stylesheet, some of them fourteen months old, had never once executed on an
+iPhone. Adding the install metadata did not break the layout; it ran it for the first time.
+
+The bars along the bottom do pad themselves correctly. What nothing covered was the case where no
+bar is on screen, leaving iOS to paint its own black. `body::after` now paints that strip with the
+app's own ground, sitting at `z-index: 69` — directly beneath the transport bar, so where the bar
+already reaches the bottom the strip is invisible behind it. On any device without a home indicator
+the inset is `0`, the strip has zero height, and the rule does nothing, which is what makes it safe
+to apply unconditionally.
+
+### Fixed — v1.7.60's own icon tests were permanently green
+
+Caught while mutation-checking this change. `test/static/pwa-icons.test.js` read
+`REPO_ROOT/public` directly instead of honouring `MUSICD_PUBLIC_DIR`, so every mutation ran against
+the real, correct files: deleting a declared icon, making the maskable icons byte-identical to the
+full-bleed ones, and removing `viewport-fit=cover` all passed. Seventeen assertions that could
+never fail. Now pointed at the copy the harness builds, and all five mutations confirmed red.
+
+This is the second time this exact trap has caught a static test in this project — the first was
+the pre-flight suite reading `index.js` instead of going through `indexSource()`.
+
 ## [1.7.60] — 2026-08-11
 
 ### Added — the MusicD duck is now the app icon, on every platform
