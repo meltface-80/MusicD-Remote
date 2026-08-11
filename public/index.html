@@ -20,7 +20,17 @@
        `maskable` is inset to 78%, because Android crops adaptive icons to
        whatever shape the launcher uses and guarantees only the centre 80%;
        the full-bleed version would lose the headphone cup. -->
-  <link rel="manifest" href="/manifest.json">
+  <!-- The manifest link is DELIBERATELY not here yet. v1.6.50 is known to fill
+       the screen correctly on iOS; its head and this one now differ by exactly
+       four inert lines (three icon links and a title), and every one of those
+       is incapable of changing how the window is laid out. The manifest was the
+       one remaining line that could: iOS 17+ reads it, and `display: standalone`
+       with a `background_color` is exactly the shape of thing that letterboxes
+       a web app instead of letting viewport-fit=cover fill the display.
+       public/manifest.json is kept, ready to re-link once the screen is
+       confirmed correct. Cost meanwhile: Android and desktop lose the
+       install prompt. iOS is unaffected — it takes the icon from
+       rel="apple-touch-icon" below, which is why the duck still appears. -->
   <link rel="icon" href="/icons/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
   <!-- iOS reads only this one, ignores the manifest's icons, and composites

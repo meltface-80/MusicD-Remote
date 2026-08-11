@@ -2,6 +2,43 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.65] — 2026-08-11
+
+### Fixed — head reduced to v1.6.50's, plus four lines that cannot affect layout
+
+v1.6.50 was installed and confirmed to fill an iPhone screen correctly. That turns the problem from
+a diagnosis into a diff, so this version is that diff applied.
+
+Comparing v1.6.50 to the current build:
+
+- **`html, body`** — byte-identical. Never changed in the repo's entire history.
+- **`.app`** — byte-identical.
+- **`.modal`** — byte-identical.
+- **the `viewport` meta** — byte-identical. It has exactly one distinct value across all 43 commits
+  that have ever touched `index.html`.
+
+The whole difference was in `<head>`. v1.7.64 removed the three metas v1.7.60 added; this removes
+the last line that iOS also reads: **the manifest link**. iOS 17+ parses the manifest, and
+`display: standalone` with a `background_color` is exactly the shape of declaration that letterboxes
+a web app rather than letting `viewport-fit=cover` fill the display.
+
+The head now differs from the known-good v1.6.50 by four lines, and none of them can relayout a
+window: two `rel="icon"` links, one `rel="apple-touch-icon"`, and `apple-mobile-web-app-title`.
+
+**The duck is unaffected on iOS** — it comes from `rel="apple-touch-icon"`, which is still there.
+`public/manifest.json` is kept in place, ready to re-link once the screen is confirmed. The cost
+until then is that Android and desktop lose the install prompt.
+
+### Added — an allowlist on the head, which is the check that would have stopped this
+
+Every test written across v1.7.60–64 asked "is this thing present?" — the wrong question, because the
+bug was something present that shouldn't have been. The head's `<meta>` and `<link>` set is now
+checked against an explicit allowlist: v1.6.50's own tags plus the four inert icon lines. Anything
+else fails, with the reason spelled out, and has to be added deliberately by editing the list.
+
+Three mutations confirmed red: the manifest link restored, `apple-mobile-web-app-capable` restored,
+and `apple-mobile-web-app-status-bar-style` restored.
+
 ## [1.7.64] — 2026-08-11
 
 ### Fixed — the black safe-area band: three metas v1.7.60 added, now removed

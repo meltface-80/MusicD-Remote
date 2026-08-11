@@ -88,9 +88,36 @@ test("every icon the manifest promises actually exists at the size it claims", a
 });
 
 test("the head declares what each platform actually reads", async (t) => {
-  await t.test("the manifest is linked", () => {
-    assert.match(indexHtml, /<link rel="manifest" href="\/manifest\.json">/,
-      "without this the app is not installable at all");
+  await t.test("THE one: the head carries nothing that can relayout the window", () => {
+    // An allowlist, not a blocklist. v1.6.50 is the last build KNOWN to fill an
+    // iPhone screen correctly. Its head plus the four inert icon lines is the
+    // whole permitted set; anything else must be added deliberately, by editing
+    // this list, having thought about whether iOS reads it.
+    //
+    // This is the check that would have stopped v1.7.60. Three metas went in
+    // alongside the icons, none of them needed for an icon, and the app stopped
+    // reaching the edges of the display on every screen.
+    const ALLOWED = new Set([
+      'meta:charset', 'meta:viewport', 'meta:theme-color',          // v1.6.50
+      'meta:apple-mobile-web-app-title',                            // inert: names the shortcut
+      'link:stylesheet', 'link:icon', 'link:apple-touch-icon',      // inert: assets
+    ]);
+    const head = indexHtml.slice(indexHtml.indexOf("<head>"), indexHtml.indexOf("</head>"));
+    const found = [];
+    for (const tag of head.match(/<(meta|link)\b[^>]*>/g) || []) {
+      const name = (tag.match(/\bname="([^"]+)"/) || [])[1];
+      const rel  = (tag.match(/\brel="([^"]+)"/) || [])[1];
+      if (/^<meta\s+charset/.test(tag)) { found.push("meta:charset"); continue; }
+      if (name) found.push("meta:" + name);
+      else if (rel) found.push("link:" + rel);
+    }
+    for (const item of found) {
+      assert.ok(ALLOWED.has(item),
+        'the head gained "' + item + '". v1.6.50 fills the screen correctly and its ' +
+        'head does not contain it. If iOS reads it, it can stop viewport-fit=cover ' +
+        'filling the display — which is exactly what apple-mobile-web-app-capable did ' +
+        'in v1.7.60. Add it here only after deciding that is safe.');
+    }
   });
 
   await t.test("iOS gets its own icon, because it ignores the manifest", () => {
