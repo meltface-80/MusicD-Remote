@@ -190,3 +190,73 @@ test("the iOS safe area is claimed and painted", async (t) => {
       "the transport bar no longer insets its own controls above the home indicator");
   });
 });
+
+// ---------------------------------------------------------------------------
+// v1.7.62: viewport units on a full-screen panel.
+//
+// This is the one that actually caused the reported band, and it is invisible
+// everywhere except an installed iOS app — which is why v1.7.61's strip did not
+// fix it and the Now Playing screen looked WORSE than the rest.
+//
+// `.modal-panel` sits inside `.modal { position: fixed; inset: 0 }` and set
+// `height: 100dvh`. Those two do not measure the same box on iOS: a fixed
+// inset:0 parent covers the whole screen INCLUDING the safe areas, while the
+// dynamic viewport excludes them. So the panel came up short, and what showed
+// through the gap was `.modal-backdrop` — rgba(0,0,0,.55) over a blur — i.e. a
+// band darker than the page and taller than the 34px inset.
+//
+// Headless Chromium has no browser chrome and no safe areas, so dvh, vh and
+// 100% are all identical there and the bug CANNOT be reproduced in the DOM
+// harness. The invariant is therefore asserted structurally: a panel that fills
+// a fixed inset:0 parent measures itself against that parent, not the viewport.
+// ---------------------------------------------------------------------------
+test("full-screen panels size against their fixed parent, not the viewport", async (t) => {
+  // Each entry: the panel, and the fixed inset:0 parent it fills.
+  const PANELS = [
+    [".modal-panel", ".modal"],
+    ["#qobuz-overlay .qobuz-sheet", ".settings-overlay"],
+  ];
+
+  // The selector may head a GROUP (`a, b, c { ... }`), so the body is whatever
+  // sits between the next "{" after the selector and its closing brace — not
+  // the text following "<selector> {", which does not exist for a grouped rule.
+  function ruleBody(selector) {
+    const at = css.indexOf(selector);
+    if (at < 0) return null;
+    const open = css.indexOf("{", at);
+    return open < 0 ? null : css.slice(open + 1, css.indexOf("}", open));
+  }
+
+  await t.test("THE one: no viewport-unit HEIGHT on a full-bleed panel", () => {
+    for (const [panel] of PANELS) {
+      const rule = ruleBody(panel);
+      assert.ok(rule, "rule for " + panel + " not found");
+      const bad = rule.match(/(?<!max-)height:\s*[^;]*\b100(d|s|l)?vh\b/);
+      assert.equal(bad, null,
+        panel + " sizes itself with a viewport unit (" + (bad && bad[0]) + "). Inside a " +
+        "fixed inset:0 parent that is short by the safe-area insets on iOS, and the " +
+        "backdrop shows through underneath as a dark band.");
+      assert.match(rule, /height:\s*100%/,
+        panel + " does not fill its parent");
+    }
+  });
+
+  await t.test("the parents really are fixed and inset to zero", () => {
+    // The whole argument for height:100% rests on this. If a parent stops being
+    // full-screen, 100% silently becomes the wrong answer too.
+    for (const [, parent] of PANELS) {
+      const rule = ruleBody(parent + " {");
+      assert.ok(rule, parent + " rule not found");
+      assert.match(rule, /position:\s*fixed/, parent + " is no longer fixed");
+      assert.match(rule, /bottom:\s*0/, parent + " no longer reaches the bottom of the screen");
+    }
+  });
+
+  await t.test("max-height constraints on INSET panels may still use vh", () => {
+    // Not everything with a vh is wrong. The desktop modal and the popovers
+    // deliberately sit inside a margin, and there a viewport unit is exactly
+    // right — this test must not push someone into "fixing" those.
+    assert.match(css, /max-height:\s*calc\(100vh - 48px\)/,
+      "the desktop modal's inset max-height was changed; it is not the same case");
+  });
+});

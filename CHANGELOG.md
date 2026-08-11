@@ -2,6 +2,43 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.62] — 2026-08-11
+
+### Fixed — the real cause of the iOS band: viewport units on a full-screen panel
+
+v1.7.61's painted strip did not fix it, and the Now Playing screen got worse. Reproduced this time
+rather than reasoned about: the stylesheet was copied with `env(safe-area-inset-bottom)` substituted
+for a real `34px`, and rendered in the headless harness. **The bars measure correctly** — the mini
+transport reaches the viewport bottom with its 44px of padding. So the safe-area CSS was never the
+problem, which is why painting a strip behind it changed nothing.
+
+The actual cause is `.modal-panel`, and the Now Playing screen is rendered inside it:
+
+```css
+.modal { position: fixed; top:0; right:0; bottom:0; left:0; }
+.modal-panel { height: 100dvh; max-height: 100dvh; }
+```
+
+Those two do not measure the same box on iOS. A fixed `inset: 0` parent covers the whole screen
+**including** the safe areas; the dynamic viewport (`dvh`) **excludes** them. So the panel came up
+short by the home-indicator inset, and what showed through the gap was `.modal-backdrop` —
+`rgba(0,0,0,.55)` over a blur. That is darker than the page and taller than a bare inset, which is
+exactly why Now Playing looked worse than the Home screen rather than the same.
+
+All three full-bleed panels now use `height: 100%`, measured against the fixed parent they fill:
+`.modal-panel`, its `≥720px` Now-Playing override, and the Qobuz/TIDAL/Pitchfork overlay sheet. The
+`100vh` **max-heights** on deliberately inset panels (the desktop modal's `calc(100vh - 48px)`, the
+popovers) are untouched and correct — a test pins that distinction so nobody "fixes" them later.
+
+Headless Chromium has no browser chrome and no safe areas, so `dvh`, `vh` and `100%` are identical
+there and this cannot be caught by rendering. The invariant is asserted structurally instead, and
+the parents are checked for still being `fixed` + `bottom: 0` — because `height: 100%` is only the
+right answer while that holds. Three mutations confirmed red.
+
+v1.7.61's strip is kept. It is a correct backstop for the case where no bar is on screen, it is
+invisible where a bar already reaches the bottom, and on any device without a home indicator it has
+zero height.
+
 ## [1.7.61] — 2026-08-11
 
 ### Fixed — the black band along the bottom on iOS, which v1.7.60 caused
