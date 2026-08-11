@@ -216,7 +216,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
 - The README contains version references (install commands, tarball URLs, `docker build` tags).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.7.59** (until the user says otherwise).
+- Current stable version in the README: **v1.7.60** (until the user says otherwise).
 - The extension is being renamed **MusicD Remote** ("for Roon" is descriptive, not part of the name). The Roon `extension_id` must NEVER change — it would force every user to re-authorize.
 
 ---
@@ -356,4 +356,5 @@ docker run -d \
 | v1.7.51–v1.7.53 | superseded | Labels off genuinely stops label scanning; Library control row matches Roon's |
 | v1.7.54–v1.7.56 | superseded | Automatic rescan repaired end to end: recheck budget could never refill, failed rebuilds reported success, "finished" meant only "not still adding"; periodic check 12h → 10 min; change probe compared against the filtered count |
 | v1.7.57–v1.7.58 | superseded | Library-change messages say why, what next, and the manual Rescan; each quotes the clock it actually waits on |
-| v1.7.59 | **Latest (stable)** | A switched-off feature no longer leaves its Home row or its playlists behind; 758 unit / 317 DOM / 42 static — README points here |
+| v1.7.59 | stable (superseded) | A switched-off feature no longer leaves its Home row or its playlists behind |
+| v1.7.60 | **Latest (stable)** | PWA icon set from the MusicD duck — manifest, any + maskable families, apple-touch-icon; the app had no PWA setup at all before this; 758 unit / 317 DOM / 53 static — README points here |
