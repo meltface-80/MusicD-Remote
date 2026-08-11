@@ -27,10 +27,22 @@
        any transparency onto white — so it is pre-flattened onto the logo's
        own black. -->
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="MusicD">
+
+  <!-- DELIBERATELY ABSENT: apple-mobile-web-app-capable,
+       mobile-web-app-capable, apple-mobile-web-app-status-bar-style.
+       v1.7.60 added all three alongside the icons and that is what put a black
+       band in the safe areas on every screen.
+       Modern iOS already opens a home-screen shortcut as a standalone web app,
+       and viewport-fit=cover was already filling the display — v1.7.42 fixed
+       Now playing sitting UNDER the status bar, which is only possible if the
+       insets were live and the page was full-bleed. Adding the legacy
+       apple-mobile-web-app-capable opts back into the OLD web-app path, where
+       the status-bar style governs how the web view is inset, and the app
+       stopped reaching the edges.
+       The icon does not need any of them: iOS reads rel="apple-touch-icon",
+       and the manifest covers Android and desktop. -->
+
 
   <link rel="stylesheet" href="/style.css">
 </head>

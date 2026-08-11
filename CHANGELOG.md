@@ -2,6 +2,57 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.64] — 2026-08-11
+
+### Fixed — the black safe-area band: three metas v1.7.60 added, now removed
+
+Three previous attempts failed because the diagnosis was wrong. The changelog itself held the
+answer, and I had asserted the opposite of it.
+
+**The correction.** v1.7.61 claimed the app had never run standalone on iOS before v1.7.60, and that
+the safe-area CSS had therefore never executed. That was false. **v1.7.42**, five days earlier,
+fixed *"Now playing sat under the status bar"* — a symptom that is only possible when the insets are
+live and the page is already full-bleed — and its own note says *"only visible in the installed
+PWA — in a browser tab the address bar occupies that space"*. The app was standalone, full-bleed,
+and correct before v1.7.60.
+
+**What actually broke it.** The head before v1.7.60 was four lines: charset, `viewport` with
+`viewport-fit=cover`, `theme-color`, `title`. Modern iOS opens a home-screen shortcut as a
+standalone web app by itself, and `viewport-fit=cover` was already filling the display. v1.7.60
+added the icons — and, unnecessarily, three metas:
+
+```
+apple-mobile-web-app-capable
+mobile-web-app-capable
+apple-mobile-web-app-status-bar-style: black-translucent
+```
+
+`apple-mobile-web-app-capable` opts back into Apple's **legacy** web-app path, where the status-bar
+style governs how the web view is inset rather than the page filling the display. The app stopped
+reaching the edges, on every screen, which is exactly the report.
+
+All three are gone. The icon never needed them: iOS reads `rel="apple-touch-icon"`, and the manifest
+covers Android and desktop. The four working lines are byte-identical to their pre-v1.7.60 state
+again, with only icon links added alongside.
+
+### Why the tests did not catch it, honestly
+
+They could not have. Every assertion written across v1.7.60–63 was structural — does this meta
+exist, does this rule contain that declaration — and the DOM harness runs headless Chromium, which
+has no browser chrome, no home indicator and no safe areas. `dvh`, `vh` and `100%` are identical
+there. **No test in this suite can observe iOS chrome behaviour**, so writing more of them would
+have produced more confidence and no more coverage. Worse, two of the v1.7.60 assertions were
+themselves permanently green (fixed in v1.7.61 and v1.7.63).
+
+What the suite CAN do is pin the known-good state so it is not silently changed again, and that is
+what it now does: the three legacy metas must stay absent, and the exact working `viewport` string
+must survive. Four mutations confirmed red — each meta reintroduced individually, and `viewport-fit`
+removed.
+
+The rest stands on its own merits and is kept: v1.7.62's `height: 100%` on the full-bleed panels
+(`100dvh` genuinely does under-measure inside a fixed `inset: 0` parent), v1.7.63's removal of the
+strip that painted over the modal, and the toast insets.
+
 ## [1.7.63] — 2026-08-11
 
 ### Fixed — removed the v1.7.61 strip, which was the thing making Now Playing worse

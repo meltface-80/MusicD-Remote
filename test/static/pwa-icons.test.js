@@ -127,19 +127,23 @@ test("the head declares what each platform actually reads", async (t) => {
 });
 
 // ---------------------------------------------------------------------------
-// v1.7.61: the iOS safe area, which v1.7.60 exposed.
+// v1.7.64: the iOS safe area.
 //
-// Adding apple-mobile-web-app-capable made the app run STANDALONE on iOS for
-// the first time. Until then "Add to Home Screen" opened in Safari, and
-// Safari's own toolbar sat over the home-indicator strip, so the page never
-// saw it — every env(safe-area-inset-*) rule in the stylesheet, dating from
-// v1.5.104, had never once executed on an iPhone. The first standalone launch
-// left a black band along the bottom.
+// CORRECTION to what v1.7.61 asserted here. That version claimed the app had
+// never run standalone on iOS before v1.7.60, and that the safe-area CSS had
+// therefore never executed. That was wrong, and the repo's own history says so:
+// v1.7.42 (5 Aug) fixed "Now playing sat under the status bar", a symptom that
+// is only possible when the insets are LIVE and the page is already full-bleed,
+// and its note says plainly "only visible in the installed PWA".
 //
-// These pin the three things that have to be true together. Any one of them
-// alone is silently useless: viewport-fit without the standalone flag is a
-// Safari tab, the standalone flag without viewport-fit letterboxes the app,
-// and both without a painted strip leaves the band that was reported.
+// Modern iOS opens a home-screen shortcut as a standalone web app on its own.
+// viewport-fit=cover was already filling the display. What broke it was
+// v1.7.60 adding the LEGACY apple-mobile-web-app-capable meta, which opts back
+// into the old web-app path where the status-bar style governs how the web view
+// is inset — so the app stopped reaching the edges.
+//
+// What has to stay true: viewport-fit=cover present, the legacy metas absent,
+// and every bottom-anchored surface padding its own background into the inset.
 // ---------------------------------------------------------------------------
 const css = fs.readFileSync(path.join(PUBLIC, "style.css"), "utf8");
 
@@ -152,11 +156,33 @@ test("the iOS safe area is claimed and painted", async (t) => {
       "every safe-area rule in the stylesheet becomes a no-op");
   });
 
-  await t.test("standalone is declared for both iOS and the manifest", () => {
-    // iOS reads the meta; everything else reads the manifest. Neither one
-    // covers both.
-    assert.match(indexHtml, /<meta name="apple-mobile-web-app-capable" content="yes">/);
+  await t.test("THE one: the legacy apple web-app metas stay OUT", () => {
+    // These three, added in v1.7.60 alongside the icons, are what put a black
+    // band in the safe areas on every screen. Modern iOS already opens a
+    // home-screen shortcut standalone and viewport-fit=cover already filled the
+    // display — proven by v1.7.42, which fixed Now playing sitting UNDER the
+    // status bar, impossible unless the insets were live and the page was
+    // full-bleed. apple-mobile-web-app-capable opts back into the OLD web-app
+    // path, where the status-bar style governs how the web view is inset.
+    for (const meta of ["apple-mobile-web-app-capable",
+                        "mobile-web-app-capable",
+                        "apple-mobile-web-app-status-bar-style"]) {
+      assert.ok(!new RegExp('name="' + meta + '"').test(indexHtml),
+        meta + " is back in the head. It is not needed for the icon (iOS reads " +
+        "apple-touch-icon) and it stops the app filling the screen.");
+    }
+    // The manifest still declares standalone for Android and desktop, where it
+    // is read and where it causes no such trouble.
     assert.equal(manifest.display, "standalone");
+  });
+
+  await t.test("the pre-v1.7.60 head is preserved exactly", () => {
+    // Everything the icons needed is additive. If a future change edits the
+    // viewport or theme-color line, that is the line that was working.
+    assert.match(indexHtml,
+      /<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">/,
+      "the viewport meta was altered — this exact string is the known-good one");
+    assert.match(indexHtml, /<meta name="theme-color" content="#0e1012">/);
   });
 
   await t.test("THE one: the canvas is painted, so an uncovered inset is never black", () => {
