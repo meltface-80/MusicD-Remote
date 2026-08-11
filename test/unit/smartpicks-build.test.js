@@ -29,11 +29,10 @@ const { loadIndexFunctions } = require("../lib/extract");
 // only I/O and state are injected.
 const SHARED = [
   "smartPickExcluded", "collectSmartCandidates", "rankSmartCandidates",
-  "diversifySmartCandidates", "smartPickSeeds", "smartStretchGenres",
+  "diversifySmartCandidates", "smartPickSeeds",
   "smartPickReason", "smartRateLimited", "smartAdjacentCount",
-  "smartStretchCount", "smartSeedCount", "smartPoolCount", "smartPickKinds",
-  "smartStretchShare", "smartMaxResolves", "smartMaxStretchGenres",
-  "smartMaxStretchRoster", "smartAlbumTtlMs", "smartAttemptKey",
+  "smartSeedCount", "smartPoolCount", "smartPickKinds",
+  "smartMaxResolves", "smartAlbumTtlMs", "smartAttemptKey",
   "normalize", "canonText", "canonArtist",
 ];
 // The build tests inject resolveSmartAlbum (to count its calls); the resolver
@@ -82,9 +81,6 @@ function harness(opts) {
 
     fetchArtistMbid: async (name) => "mbid-" + name.toLowerCase().replace(/ /g, ""),
     smartSimilarRows: async () => candidates,
-    smartTagArtists: async (g) => (opts.roster !== undefined ? opts.roster
-      : Array.from({ length: 40 }, (_, i) => ({ mbid: "t" + i, name: "Tag " + g + " " + i }))),
-    libraryGenreWeights: () => opts.weights || new Map([["Pop/Rock", 900], ["Flamenco", 3]]),
 
     resolveSmartAlbum: async (name) => {
       calls.resolves.push(name);
@@ -115,19 +111,6 @@ test("the build is bounded in how many lookups it makes", { concurrency: 1 }, as
       "whole pool rather than stopping at the cap");
   });
 
-  await t.test("the stretch search is capped in genres and in roster depth", async () => {
-    const h = harness({ resolveAll: false, weights: new Map([
-      ["Pop/Rock", 900], ["A", 1], ["B", 2], ["C", 3], ["D", 4], ["E", 5]]) });
-    await h.F.buildSmartPicks("2026-08-05");
-    const tagTries = h.calls.resolves.filter(n => n.startsWith("Tag ")).length;
-    const genres = new Set(h.calls.resolves.filter(n => n.startsWith("Tag "))
-      .map(n => n.split(" ")[1]));
-    assert.ok(genres.size <= h.F.smartMaxStretchGenres(),
-      "the stretch pick searched " + genres.size + " genres");
-    assert.ok(tagTries <= h.F.smartMaxStretchGenres() * h.F.smartMaxStretchRoster(),
-      "the stretch pick made " + tagTries + " lookups");
-  });
-
   await t.test("a normal day stops as soon as it has its picks", async () => {
     // The cap is a backstop, not the usual path: when candidates resolve, the
     // loop must stop at five and not keep spending.
@@ -136,18 +119,18 @@ test("the build is bounded in how many lookups it makes", { concurrency: 1 }, as
     const adjacentTries = h.calls.resolves.filter(n => n.startsWith("Cand ")).length;
     assert.equal(adjacentTries, h.F.smartAdjacentCount());
     assert.equal(h.calls.persisted.filter(p => p.kind === "adjacent").length, 5);
-    assert.equal(h.calls.persisted.filter(p => p.kind === "stretch").length, 1);
+    assert.equal(h.calls.persisted.length, 5, "a kind other than adjacent was built");
   });
 });
 
 // ---------------------------------------------------------------------------
-// v1.7.42. The five genre picks are favourited at build time so Roon has all
-// night to import them and they simply play by morning. The stretch pick is
-// NOT — it is the one deliberately unlike the library, and adding it to
-// somebody's streaming library unasked is the opposite of offering it.
+// v1.7.42. The picks are favourited at build time so Roon has all night to
+// import them and they simply play by morning. v1.7.48 removed the sixth
+// "stretch" pick, which was the one exception to this — it was never
+// auto-added because it was the one the user was meant to judge.
 // ---------------------------------------------------------------------------
-test("only the genre picks are added automatically", { concurrency: 1 }, async (t) => {
-  await t.test("the five adjacent picks are auto-added", async () => {
+test("picks are added automatically when the setting says so", { concurrency: 1 }, async (t) => {
+  await t.test("the five picks are auto-added", async () => {
     const h = harness({});
     await h.F.buildSmartPicks("2026-08-05");
     const adjacent = h.calls.persisted.filter(p => p.kind === "adjacent");
@@ -158,26 +141,12 @@ test("only the genre picks are added automatically", { concurrency: 1 }, async (
     assert.ok(adjacent.every(p => p.autoAdded === true));
   });
 
-  await t.test("the stretch pick is NEVER auto-added", async () => {
-    // THE one. The stretch pick is the single thing the user is asked to judge;
-    // silently putting it in their library removes the only decision the
-    // feature asks them to make.
-    const h = harness({});
-    await h.F.buildSmartPicks("2026-08-05");
-    const stretch = h.calls.persisted.find(p => p.kind === "stretch");
-    assert.ok(stretch, "no stretch pick was built");
-    assert.notEqual(stretch.autoAdded, true);
-    // Its album id must not appear among the auto-added ones.
-    assert.ok(!h.calls.autoAdded.includes(stretch.album.id),
-      "the stretch pick was added to the library without being offered");
-  });
-
   await t.test("the setting turns auto-add off for everything", async () => {
     const h = harness({ autoAdd: false });
     await h.F.buildSmartPicks("2026-08-05");
     assert.deepEqual(h.calls.autoAdded, [],
       "auto-add ran despite the setting being off");
-    assert.equal(h.calls.persisted.length, 6, "the picks themselves must still be built");
+    assert.equal(h.calls.persisted.length, 5, "the picks themselves must still be built");
   });
 });
 

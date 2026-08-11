@@ -62,7 +62,7 @@ function build(opts) {
   }));
 
   return loadIndexFunctions(
-    ["libraryView", "albumPlayKey", "libFacetDefs", "facetMatch", "albumGenresOf", "albumFileFactsOf",
+    ["libraryView", "libraryPrefix", "libraryPrefixMax", "albumMatchesPrefix", "normalize", "albumPlayKey", "libFacetDefs", "facetMatch", "albumGenresOf", "albumFileFactsOf",
      "albumYearOf", "albumAddedOf", "seededRank", "rateLabel", "channelLabel",
      "libAddedWindows", "countWithAny", "smartPlaylistAlbums", "smartOrderDefault",
      "smartOrders", "albumFileFacts", "albumQualityLabel", "albumIsHiRes", "rateShort",
@@ -75,6 +75,8 @@ function build(opts) {
       // these tests are about is which value WINS in memory.
       stmtInsertFileFacts: null,
       DEBUG: false,
+      // libFacetDefs publishes "Record label" only when Labels is on.
+      labelsEnabled: true,
       albumSeenCache: new Map(Object.entries(opts.seen || {})),
       libraryMetaVersion: 0,
       libraryViewCache: new Map(),

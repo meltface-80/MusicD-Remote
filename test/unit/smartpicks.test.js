@@ -31,12 +31,11 @@ const { loadIndexFunctions } = require("../lib/extract");
 // of the stub. It is four lines and its only dependencies (canonText,
 // normalize) are top-level functions with no module state.
 const PURE = [
-  "smartPickSeeds", "smartStretchGenres", "collectSmartCandidates",
+  "smartPickSeeds", "collectSmartCandidates",
   "rankSmartCandidates", "diversifySmartCandidates", "smartPickExcluded",
-  "smartPickReason", "smartDayKey", "smartAdjacentCount", "smartStretchCount",
-  "smartSeedCount", "smartPickKinds", "smartStretchShare", "smartSeenDays",
-  "smartPoolCount", "smartMaxResolves", "smartMaxStretchGenres",
-  "smartMaxStretchRoster", "normalize", "canonText", "canonArtist",
+  "smartPickReason", "smartDayKey", "smartAdjacentCount",
+  "smartSeedCount", "smartPickKinds", "smartSeenDays",
+  "smartPoolCount", "smartMaxResolves", "normalize", "canonText", "canonArtist",
 ];
 
 const F = loadIndexFunctions(PURE, {});
@@ -58,15 +57,17 @@ function profile(spec) {
 }
 
 // ---------------------------------------------------------------------------
-test("the shipped shape is five adjacent plus one stretch", async (t) => {
+test("the shipped shape is five picks a day", async (t) => {
   await t.test("counts match what the user asked for", () => {
     assert.equal(F.smartAdjacentCount(), 5);
-    assert.equal(F.smartStretchCount(), 1);
   });
-  await t.test("both kinds exist and nothing else does", () => {
-    // The kind string is persisted and read back by the client; a third kind
-    // appearing here without UI would render as a blank row.
-    assert.deepEqual(F.smartPickKinds().slice().sort(), ["adjacent", "stretch"]);
+  await t.test("one kind exists and nothing else does", () => {
+    // The kind string is persisted and read back by the client; a second kind
+    // appearing here without UI would render as a blank row. v1.7.48 removed
+    // the "stretch" kind — a sixth pick from a genre the library barely
+    // touched — because an artist reached through a tag rather than through
+    // the user's own taste was almost always declined.
+    assert.deepEqual(F.smartPickKinds(), ["adjacent"]);
   });
   await t.test("more seeds are walked than picks are shown", () => {
     // Picks are filtered hard (owned/famous/blocked/seen, then "is it even
@@ -229,7 +230,7 @@ test("ranking prefers distance from the library over similarity to it", async (t
   });
 
   await t.test("the input array is not mutated", () => {
-    // The pool is reused for the stretch pick's exclusion set; sorting in place
+    // The pool is reused for the exclusion set; sorting in place
     // would reorder it under that caller.
     const list = [c("b", ["s1", "s2"], 1), c("a", ["s1"], 1)];
     const before = list.map(x => x.canon);
@@ -280,7 +281,7 @@ test("the day's picks are spread across different corners of the library", async
   });
 
   await t.test("nothing is lost — every candidate still appears", () => {
-    // The result feeds the pool the stretch pick excludes against, and drives
+    // The result feeds the exclusion pool, and drives
     // the fallback when a pick cannot be resolved to an addable album. Dropping
     // candidates here would silently shrink both.
     const ranked = [
@@ -354,50 +355,6 @@ test("four different reasons to exclude a candidate, all enforced", async (t) =>
 });
 
 // ---------------------------------------------------------------------------
-test("the stretch band is the outside edge of the library", async (t) => {
-  await t.test("a genre at or below the share ceiling is outside", () => {
-    const w = new Map([["Pop/Rock", 900], ["Flamenco", 2]]);
-    const out = F.smartStretchGenres(w, 1000).map(g => g.genre);
-    assert.deepEqual(out, ["Flamenco"]);
-  });
-
-  await t.test("the least-owned genre comes first", () => {
-    // The stretch pick takes the first genre it can fill, so the ordering IS
-    // the policy: the furthest-out genre gets first refusal.
-    const w = new Map([["B", 15], ["A", 3], ["C", 8]]);
-    const out = F.smartStretchGenres(w, 1000).map(g => g.genre);
-    assert.deepEqual(out, ["A", "C", "B"]);
-  });
-
-  await t.test("the ceiling is a SHARE, not a count", () => {
-    // A fixed count would mean a 500-album library and a 50,000-album one used
-    // the same threshold, and on the big one every genre would look "outside".
-    const w = new Map([["G", 20]]);
-    assert.equal(F.smartStretchGenres(w, 100).length, 0, "20% of the library is not outside it");
-    assert.equal(F.smartStretchGenres(w, 10000).length, 1, "0.2% of the library is outside it");
-  });
-
-  await t.test("the ceiling is a small minority of the library", () => {
-    assert.ok(F.smartStretchShare() > 0 && F.smartStretchShare() <= 0.05,
-      "a wide ceiling would make the stretch pick indistinguishable from the adjacent ones");
-  });
-
-  await t.test("an empty library yields no stretch genres rather than dividing by zero", () => {
-    assert.deepEqual(F.smartStretchGenres(new Map([["G", 1]]), 0), []);
-  });
-
-  await t.test("a nameless genre is not offered", () => {
-    const w = new Map([["", 1], ["Real", 1]]);
-    assert.deepEqual(F.smartStretchGenres(w, 1000).map(g => g.genre), ["Real"]);
-  });
-
-  await t.test("ties break deterministically", () => {
-    const w = new Map([["Zydeco", 2], ["Ambient", 2]]);
-    assert.deepEqual(F.smartStretchGenres(w, 1000).map(g => g.genre), ["Ambient", "Zydeco"]);
-  });
-});
-
-// ---------------------------------------------------------------------------
 test("the reason line is derived from the chain, so it is always true", async (t) => {
   await t.test("an adjacent pick names the seed it came from", () => {
     const r = F.smartPickReason({ kind: "adjacent", seedNames: ["Stars of the Lid"] });
@@ -410,14 +367,6 @@ test("the reason line is derived from the chain, so it is always true", async (t
     assert.match(r, /Talk Talk/);
   });
 
-  await t.test("a stretch pick names its genre and does NOT claim similarity", () => {
-    // A stretch pick saying "because you play X" would be a lie — it was chosen
-    // precisely because it is unlike everything in the library.
-    const r = F.smartPickReason({ kind: "stretch", genre: "Flamenco", seedNames: [] });
-    assert.match(r, /Flamenco/);
-    assert.doesNotMatch(r, /Because you play/);
-  });
-
   await t.test("an adjacent pick with no seed names still reads as a sentence", () => {
     // Reachable when a seed's display name is missing from the map. Must not
     // render "Because you play undefined".
@@ -425,10 +374,6 @@ test("the reason line is derived from the chain, so it is always true", async (t
     assert.ok(r && !/undefined|null/.test(r), "the reason line leaked a missing value: " + r);
   });
 
-  await t.test("a stretch pick with no genre still reads as a sentence", () => {
-    const r = F.smartPickReason({ kind: "stretch", genre: "", seedNames: [] });
-    assert.ok(r && !/undefined|null/.test(r), "the reason line leaked a missing value: " + r);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -480,14 +425,6 @@ test("a build is bounded in how many upstream lookups it may make", async (t) =>
       "unbounded-call path this cap exists to close");
   });
 
-  await t.test("the stretch search is bounded in both dimensions", () => {
-    // Genres × roster is a product: uncapped it is every outside genre times
-    // sixty artists, each one a network call.
-    assert.ok(F.smartMaxStretchGenres() > 0 && F.smartMaxStretchGenres() <= 5);
-    assert.ok(F.smartMaxStretchRoster() > 0 && F.smartMaxStretchRoster() <= 25);
-    assert.ok(F.smartMaxStretchGenres() * F.smartMaxStretchRoster() <= F.smartMaxResolves() + 20,
-      "the stretch pick alone can outspend the entire adjacent pass");
-  });
 });
 
 // ---------------------------------------------------------------------------

@@ -288,9 +288,9 @@ const roon = new RoonApi({
     stopIndexMaintenance();
     // The album index is deliberately KEPT across an unpair: it's plain
     // offset/title data (no session-scoped item_keys), so it stays usable for
-    // search while disconnected, and startIndexMaintenance() re-verifies it on
-    // re-pair with a cheap 2-call probe instead of a full library re-walk —
-    // a flapping connection no longer multiplies full rescans onto the Core.
+    // search while disconnected, and startIndexMaintenance() schedules one
+    // recheck on re-pair instead of a full library re-walk — a flapping
+    // connection no longer multiplies full rescans onto the Core.
     console.log("[roon] unpaired from core — index kept, awaiting re-pair");
     _statusSync = "";   // clear any "library updating…" note — sync state is reset on re-pair
     _statusPair = "Not paired with any Roon Core"; _statusPairErr = true; pushStatus();
@@ -1053,6 +1053,19 @@ async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
   const navFilter = (filter && filter.type === "decade") ? null : (filter || null);
   const nav = await navigateToAlbumList(sessionKey, navFilter);
   let hierarchy = nav.hierarchy;
+  // Roon's LIVE album count, already fetched by the navigation above and until
+  // now thrown away. Against the snapshot's count it is proof — free, and
+  // available at the exact moment a user hits a failure — that the library has
+  // changed since this list was built.
+  //
+  // Past tense on purpose. A count mismatch shows the library CHANGED; it does
+  // not show an import is running now, and this must not claim otherwise.
+  // Only for full-library offsets: a genre or tag list has its own count.
+  const libraryMoved = !navFilter && Number.isFinite(nav.total) &&
+                       albumIndex.count > 0 &&
+                       nav.total !== (albumIndex.declared || albumIndex.count);
+  if (libraryMoved) scheduleLibraryRecheck("album open saw " + nav.total +
+                                           " albums, snapshot has " + albumIndex.count);
 
   // 2) Re-resolve THIS session's item_key for the album at `offset`
   const albumLoad = await load({
@@ -1115,7 +1128,7 @@ async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
     multi_session_key: sessionKey
   });
   if (drill.action !== "list") {
-    throw new Error("Unexpected browse action: " + drill.action);
+    throw roonBrowseError(drill, "this album");
   }
 
   // 4) Load contents (tracks + action_list).  Explicit count for big albums.
@@ -1127,6 +1140,18 @@ async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
   });
 
   const items = inside.items || [];
+  // What Roon said the level HOLDS, versus what it actually handed over. The
+  // two differ while the Core is re-indexing: rows arrive as placeholders with
+  // no item_key, or simply do not arrive. Free — the count is already in the
+  // response — and it is the only thing that tells a three-track album apart
+  // from three tracks of a twelve-track one.
+  const declared = (inside.list && Number.isFinite(inside.list.count))
+    ? inside.list.count : null;
+  const shortRead = declared !== null && items.length < declared;
+  if (shortRead) {
+    console.warn("[album] short read for " + JSON.stringify(albumItem.title || "") +
+                 ": Roon declared " + declared + " rows, sent " + items.length);
+  }
   if (DEBUG) {
     console.log("[album items]");
     for (const it of items) {
@@ -1156,7 +1181,14 @@ async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
   //
   // Deferred: this is a synchronous SQLite write, and the caller may be on its
   // way to invoking Play. A cache fill must never sit in front of the music.
-  setImmediate(() => {
+  //
+  // NEVER on a short read. rememberAlbumTracks replaces an album's rows
+  // wholesale — deliberately, so a re-rip cannot leave phantom tracks behind —
+  // which means recording three tracks of a twelve-track album while Roon is
+  // re-indexing would permanently destroy the correct record and hand playlist
+  // import a nine-track hole. A partial answer is not evidence about an
+  // album's contents.
+  if (!shortRead) setImmediate(() => {
     try {
       rememberAlbumTracks(albumItem.title || "", albumItem.subtitle || "",
         items.filter(t => isTrackItem(t, playMenu))
@@ -1170,12 +1202,87 @@ async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
 
   // `offset` may have been corrected by the stale-offset relocation above —
   // callers pass it back to the client so follow-up plays use the fresh one.
-  return { hierarchy, albumItem, items, playMenu, offset };
+  return { hierarchy, albumItem, items, playMenu, offset, libraryMoved, shortRead, declared };
 }
 
 // A track = an item that isn't the play menu, a no-subtitle submenu
 // (e.g. "Add to Library"), or a section header. Shared by the detail
 // listing and per-track actions so their indexes always align.
+// What Roon said, when Roon said something.
+//
+// A browse response can come back with action "message" instead of "list",
+// carrying `message` (the Core's own words) and `is_error`. Every site that
+// hit this threw "Unexpected browse action: message" and DISCARDED the
+// explanation — which is how a user asking "why can't I play this album?" got
+// a sentence about a protocol instead of the reason. Roon telling us why is
+// the best evidence available anywhere in this file, and it needed no
+// inference at all.
+// The "Roon will not do this" message, in one place.
+//
+// Four sites built their own, all with the same dangling "Available: " and an
+// empty list when Roon had offered no menu at all — an internal diagnostic
+// shown to a human in a toast. Two different facts deserve two sentences:
+// Roon offered nothing, or Roon offered something else.
+// The tail every "the library moved underneath us" message now carries.
+//
+// These all used to stop at the symptom — "Roon offered no playback options" —
+// which reads as the extension being broken. Three things the user needs and
+// was not being told: WHY it happened, what the extension is doing about it,
+// and what to do if that doesn't work. `sure` separates the case where a count
+// mismatch PROVES the library changed from the one where it is the likeliest
+// explanation but unproven; overstating the second would be a guess dressed up
+// as a diagnosis.
+// `sure` also decides the TIMING, because the two cases genuinely wait on
+// different clocks and quoting one number for both is wrong at the moment the
+// user is reading it. When the change is proven, the site that proves it has
+// just armed the recheck chain — libraryRecheckMs(), five minutes. When it is
+// only the likeliest explanation, nothing was armed and the next look is the
+// background watch, libraryCheckMs(), ten minutes.
+function libraryChangingAdvice(sure) {
+  const when = sure
+    ? "A re-check is already scheduled — about " +
+      Math.round(libraryRecheckMs() / 60000) + " minutes"
+    : "The extension re-checks every " +
+      Math.round(libraryCheckMs() / 60000) + " minutes";
+  return (sure
+    ? " Your Roon library changed after this list was built"
+    : " This usually means your Roon library changed after this list was built") +
+    " — normally because albums are being added or identified. " + when +
+    " — and it refreshes itself once Roon settles, so this usually clears on " +
+    "its own. If it hasn't, open the side menu and tap Rescan library.";
+}
+
+function noActionError(kind, actions, what) {
+  const titles = (actions || []).map(a => a.title).filter(Boolean);
+  // Roon offering a DIFFERENT menu is not a library-change symptom — it is a
+  // real answer, and appending the advice would send the user to Rescan for
+  // something a rescan cannot fix.
+  return new Error(titles.length
+    ? "Roon offers no '" + kind + "' for " + what + ". It offers: " + titles.join(", ")
+    : "Roon offered no playback options for " + what + "." + libraryChangingAdvice(false));
+}
+
+function roonBrowseError(body, what) {
+  const said = body && typeof body.message === "string" ? body.message.trim() : "";
+  // Roon explaining itself is nearly always the library mid-update, and its own
+  // wording ("Library is being updated") tells the user nothing about what
+  // happens next. An unexpected action is a bug, not a library state, so it
+  // gets no advice — pointing that one at Rescan would waste the user's time.
+  // Roon's own text rarely ends in punctuation, and running it straight into
+  // the next sentence read as one garbled line.
+  const saidEnded = /[.!?]$/.test(said) ? said : said + ".";
+  const err = new Error(said
+    ? "Roon says: " + saidEnded + libraryChangingAdvice(false)
+    : "Roon returned an unexpected " + (body && body.action) + " for " + what);
+  // Roon's own advisories are transient by nature (a library mid-update, a
+  // service reconnecting), so they are flagged the same way a stale offset is:
+  // the route answers 409 and the client can say "try again" honestly.
+  if (said) err.stale = true;
+  err.roonMessage = said || "";
+  err.roonIsError = !!(body && body.is_error);
+  return err;
+}
+
 function isTrackItem(t, playMenu) {
   if (t === playMenu)                          return false;
   if (t.hint === "action_list" && !t.subtitle) return false;
@@ -1229,7 +1336,8 @@ function relocateAlbumOffset(expect) {
 }
 async function openAlbumByOffset(offset, zoneOrOutputId, invokeKind, filter, expect) {
   return withBrowseSession(async (sessionKey) => {
-    const { hierarchy, albumItem, items, playMenu, offset: effectiveOffset } =
+    const { hierarchy, albumItem, items, playMenu, offset: effectiveOffset,
+            libraryMoved, shortRead, declared } =
       await loadAlbumSession(sessionKey, offset, filter, expect, zoneOrOutputId);
 
     const albumInfo = {
@@ -1255,8 +1363,22 @@ async function openAlbumByOffset(offset, zoneOrOutputId, invokeKind, filter, exp
     if (invokeKind) {
       const action = matchAction(actions, invokeKind);
       if (!action) {
-        throw new Error("No matching action for '" + invokeKind +
-                        "'. Available: " + actions.map(a => a.title).join(", "));
+        // Two different facts, and they used to share one string — with an
+        // empty "Available:" list left dangling when Roon offered no menu at
+        // all. Say which it is, and say what we can prove about why.
+        const err = (actions.length || !libraryMoved)
+          ? noActionError(invokeKind, actions, "this album")
+          // The one case where more can honestly be said: Roon offered nothing
+          // AND its live album count no longer matches the snapshot, so the
+          // list this offset came from is out of date. Past tense — a mismatch
+          // proves the library CHANGED, not that an import is running now.
+          : new Error("Roon offered no playback options for this album." +
+                      libraryChangingAdvice(true));
+        // A library that has moved is a transient condition with a recheck
+        // already scheduled, so it gets the same 409 "try again" contract a
+        // stale offset does rather than a 500.
+        if (libraryMoved) err.stale = true;
+        throw err;
       }
       if (!zoneOrOutputId) throw new Error("zone_or_output_id required to invoke an action");
       await browse({
@@ -1268,7 +1390,12 @@ async function openAlbumByOffset(offset, zoneOrOutputId, invokeKind, filter, exp
       invoked = action.title;
     }
 
-    return { album: albumInfo, tracks, actions, invoked, offset: effectiveOffset };
+    return { album: albumInfo, tracks, actions, invoked, offset: effectiveOffset,
+             // Told to the client so the album view can explain a thin answer
+             // instead of silently hiding the track list.
+             library_moved: !!libraryMoved,
+             partial: !!shortRead,
+             declared_tracks: Number.isFinite(declared) ? declared : null };
   });
 }
 
@@ -1294,7 +1421,7 @@ function matchAction(actions, kind) {
 async function drillActionMenu(hierarchy, sessionKey, itemKey) {
   const d = await browse({ hierarchy, item_key: itemKey, multi_session_key: sessionKey });
   if (d.action !== "list") {
-    throw new Error("Unexpected browse action: " + d.action);
+    throw roonBrowseError(d, "this menu");
   }
   const acts = await load({ hierarchy, multi_session_key: sessionKey });
   return (acts.items || []).map(a => ({
@@ -1342,8 +1469,7 @@ async function invokeTrackAction(offset, trackIndex, trackTitle, zoneOrOutputId,
 
     const action = matchAction(actions, kind);
     if (!action) {
-      throw new Error("No matching action for '" + kind +
-                      "'. Available: " + actions.map(a => a.title).join(", "));
+      throw noActionError(kind, actions, "this track");
     }
     await browse({
       hierarchy,
@@ -1440,7 +1566,7 @@ async function loadPlaylistSession(sessionKey, offset, expectTitle, zoneId) {
   // Same guard as drillActionMenu: without it a non-list response would leave
   // the follow-up load reading the CURRENT level, and we'd report the playlist
   // list itself as the playlist's tracks.
-  if (d.action !== "list") throw new Error("Unexpected browse action: " + d.action);
+  if (d.action !== "list") throw roonBrowseError(d, "this playlist");
 
   const inside = await load({
     hierarchy, offset: 0, count: PLAYLIST_ITEMS, multi_session_key: sessionKey
@@ -1477,8 +1603,7 @@ async function invokePlaylistAction(offset, title, zoneOrOutputId, kind) {
     const actions = await drillActionMenu(hierarchy, sessionKey, playMenu.item_key);
     const action = matchAction(actions, kind);
     if (!action) {
-      throw new Error("No matching action for '" + kind +
-                      "'. Available: " + actions.map(a => a.title).join(", "));
+      throw noActionError(kind, actions, "this playlist");
     }
     await browse({
       hierarchy,
@@ -1516,8 +1641,7 @@ async function invokePlaylistTrackAction(offset, title, trackIndex, trackTitle, 
     const actions = await drillActionMenu(hierarchy, sessionKey, item.item_key);
     const action = matchAction(actions, kind);
     if (!action) {
-      throw new Error("No matching action for '" + kind +
-                      "'. Available: " + actions.map(a => a.title).join(", "));
+      throw noActionError(kind, actions, "this track");
     }
     await browse({
       hierarchy,
@@ -1714,10 +1838,27 @@ function makeTtlCache(ttlMs) {
 // queue — so it wants to run when nothing else does. Default 04:00 local.
 let smartPicksHour    = Number.isFinite(_persisted.smartPicksHour)
   ? Math.min(23, Math.max(0, Math.trunc(_persisted.smartPicksHour))) : 4;
-// Whether the five adjacent picks are favourited automatically at build time,
-// so Roon has all night to import them and they are playable by morning. The
-// stretch pick is NEVER auto-added — it is the one the user is meant to judge.
+// Whether the picks are favourited automatically at build time, so Roon has
+// all night to import them and they are playable by morning.
 let smartPicksAutoAdd = _persisted.smartPicksAutoAdd !== false;
+
+// ---------------------------------------------------------------------------
+// Opt-in features. Both reach the network on their own schedule — Smart Picks
+// queries MusicBrainz/ListenBrainz and writes streaming favourites; the label
+// pipeline walks five metadata APIs and fetches logos — so neither should be
+// running for somebody who has never asked for it. OFF is the default, and off
+// means the timers do not start at all, not merely that the rows are hidden.
+//
+// Existing users are not switched off underneath themselves. An absent setting
+// with evidence of use on the data volume — a label cache, or picks already
+// built — reads as consent, because that state can only exist if the feature
+// was running and nobody complained. A brand new install has neither and
+// starts off. `featureDefaultOn` is called AFTER the database opens, so these
+// are assigned rather than initialised here.
+let labelsEnabled     = _persisted.labelsEnabled === true;
+let smartPicksEnabled = _persisted.smartPicksEnabled === true;
+const _labelsEnabledSet     = _persisted.labelsEnabled !== undefined;
+const _smartPicksEnabledSet = _persisted.smartPicksEnabled !== undefined;
 
 // Qobuz (UNOFFICIAL API — see lib/qobuz.js). Credentials/token set via Settings.
 // We persist the username, the md5 of the password (for silent re-login), the
@@ -2127,6 +2268,10 @@ function openLabelsDb() {
       -- the query compares lower(trim(track)) — an index on the bare column
       -- cannot serve it.
       CREATE INDEX IF NOT EXISTS plays_track ON plays(lower(trim(track)));
+      -- The History row reads a 30-day window out of the one table here that
+      -- grows without bound, on every Home visit, on the synchronous SQLite
+      -- driver. Without this it is a full scan in front of the screen.
+      CREATE INDEX IF NOT EXISTS plays_ts ON plays(ts);
     `);
     // `src` records WHERE a year came from, so a better source can correct a
     // worse one (see yearSourceRank). Added after the table shipped without
@@ -2384,12 +2529,60 @@ function rememberScanYear(title, artist, date, src) {
 
 openLabelsDb();
 
+// Decide the opt-in defaults now that the data volume is readable.
+//
+// The rule is "off unless asked", with one exception: somebody already running
+// these features must not have them switched off underneath them by an update.
+// A populated label cache, or picks already built, is evidence the feature was
+// running — that state cannot exist otherwise — so it is read as consent and
+// written down once, after which the setting is explicit and this never runs
+// again. A fresh install has neither and starts off, which is the point.
+function featureHasHistory(table, column) {
+  if (!labelsDb) return false;
+  try {
+    const row = labelsDb.prepare("SELECT " + column + " AS n FROM " + table + " LIMIT 1").get();
+    return !!row;
+  } catch (e) {
+    return false;   // table absent on a pre-migration DB — no history to honour
+  }
+}
+function applyFeatureDefaults() {
+  // No database means the evidence cannot be READ, which is not the same as
+  // there being none. Writing an inference down here would switch an existing
+  // user's features off permanently on one bad boot — a corrupt file, a locked
+  // DB, a native module that failed to load — and repairing the database would
+  // not bring them back, because the setting is explicit by then.
+  if (!labelsDb) {
+    console.warn("[settings] feature defaults deferred — no database to read use from");
+    return;
+  }
+  const patch = {};
+  if (!_labelsEnabledSet) {
+    labelsEnabled = featureHasHistory("label_names", "key");
+    patch.labelsEnabled = labelsEnabled;
+  }
+  if (!_smartPicksEnabledSet) {
+    smartPicksEnabled = featureHasHistory("smart_picks", "day");
+    patch.smartPicksEnabled = smartPicksEnabled;
+  }
+  if (Object.keys(patch).length) {
+    // The write is what makes the inference permanent, so an unwritten
+    // inference must not be reported as applied — it will be re-derived on the
+    // next boot, which is the correct outcome.
+    const saved = savePersistedSettings(patch);
+    console.log("[settings] feature defaults " + (saved ? "applied" : "inferred but NOT saved") +
+                ": " + Object.entries(patch).map(([k, v]) => k + "=" + v).join(" "));
+  }
+}
+applyFeatureDefaults();
+
 // ---------------------------------------------------------------------------
 // Fan Art TV — label logo images. Free API key — set via web UI settings.
 
 const labelsIndex = {
   map:      new Map(),   // groupKey → { display, image_key, albums: [{offset,title,subtitle,image_key}] }
   count:    0,
+  declared: 0,     // Roon's own album count when this snapshot was taken
   builtAt:  0,
   progress: 0,           // 0..1 while scanning
   building: false
@@ -2800,12 +2993,14 @@ function loadLocalAlbumKeys() {
       localAlbumKeys = new Set(raw.keys);
       if (DEBUG) console.log("[local] loaded", localAlbumKeys.size, "local album keys");
     } else {
-      // Old format: the file scan rebuilds it. Kick a labels scan shortly so
-      // local badges come back in minutes rather than at the next 12h cycle.
+      // Old format: the /music walk rebuilds it. Kicked shortly so local badges
+      // come back in minutes rather than at the next 12h cycle. The WALK, not
+      // the label scan — the badge is not a label feature, and routing this
+      // through the label scan meant it never ran with Labels switched off.
       console.log("[local] stored keys are an older format — rescanning /music to rebuild badges");
       const t = setTimeout(() => {
         if (!core || labelsIndex.building) return;
-        runLabelsIndexScan().catch(e => {
+        runFileMetadataScan("local keys missing").catch(e => {
           if (DEBUG) console.error("[local] rebuild scan:", e.message);
         });
       }, 60000);
@@ -2818,7 +3013,7 @@ function loadLocalAlbumKeys() {
     // else happened to trigger the walk.
     const t = setTimeout(() => {
       if (!core || labelsIndex.building) return;
-      runLabelsIndexScan().catch(err => {
+      runFileMetadataScan("local keys absent").catch(err => {
         if (DEBUG) console.error("[local] first-run scan:", err.message);
       });
     }, 60000);
@@ -3736,7 +3931,62 @@ async function buildFileLabelMap(onProgress) {
 // Errors are logged to data/labels-scan.log. On excessive errors in a pass
 // the scan finishes early; the next 12-hour auto-rescan will retry.
 // ---------------------------------------------------------------------------
+// The /music tag walk, on its own.
+//
+// This is NOT label work, and keeping it inside runLabelsIndexScan was the
+// reason "Labels off" still looked like label scanning: it entered a function
+// named for labels, flipped labelsIndex.building, seeded the label map and
+// wrote "[labels] …" into the labels scan log.
+//
+// What this pass actually produces, and what breaks if it stops:
+//   release years          -> the Decade filter
+//   local album keys       -> the "local files" badge
+//   container/bits/rate/
+//     channels/lossless    -> the Format, Sample rate, Bit depth and Channels
+//                             filters
+//   label names from tags  -> handed to the label scan, but only when it runs
+//
+// So it runs whether or not Labels is switched on. Its label output is simply
+// kept for whoever wants it, and nothing consumes it while Labels is off.
+// What the last walk produced, kept for the label scan to consume when it
+// runs. Both were locals of the combined function before the split, and the
+// Bandcamp pass still reads the second — leaving it behind was a ReferenceError
+// that the scan's own catch would have swallowed into "scan aborted by
+// unexpected error", killing every pass after it on a /music library.
+let _lastFileLabelMap = null;
+let _lastFileBandcampMap = null;
+let _fileScanRunning = false;
+
+async function runFileMetadataScan(reason) {
+  if (_fileScanRunning) return;
+  if (!musicDirMounted()) return;    // nothing to walk
+  if (albumIndex.count === 0) return;
+  _fileScanRunning = true;
+  try {
+    const estimate = albumIndex.albums.length || 1000;
+    const { labelMap, bandcampMap, localKeys } = await buildFileLabelMap((n) => {
+      labelsIndex.progress = Math.min(0.15, n / estimate);
+    });
+    _lastFileLabelMap = labelMap || new Map();
+    _lastFileBandcampMap = bandcampMap || new Map();
+    // Only replace the known-local set when the scan actually saw the mount —
+    // an unmounted /music must not wipe badges earned by a previous scan.
+    if (localKeys && localKeys.size) setLocalAlbumKeys(localKeys);
+    // The walk just re-read every album's tags, so join its years on now.
+    harvestAlbumYears("file tags");
+    console.log("[files] tag scan complete (" + (reason || "scheduled") + ")");
+  } catch (e) {
+    console.error("[files] tag scan failed: " + e.message);
+  } finally {
+    _fileScanRunning = false;
+  }
+}
+
 async function runLabelsIndexScan(force) {
+  // At the very top, before any label state is touched, any label log line is
+  // written, and any cache is seeded. Off means this function does nothing at
+  // all — not "does the harmless half".
+  if (!labelsEnabled) return;
   if (labelsIndex.building) return;
   // Never scan while Roon is importing — offsets are still moving and it piles
   // external fetches onto the churn. `force` (an explicit user "Rescan") skips
@@ -3757,23 +4007,12 @@ async function runLabelsIndexScan(force) {
 
   seedLabelsFromCache();
 
-  // Pass 0: File metadata — runs unconditionally (before the early-return check)
-  // so corrected file tags override stale API-derived cache entries on every scan,
-  // including 12-hour auto-rescans where all albums are already cached.
-  const estimate = albumIndex.albums.length || 1000;
-  const { labelMap: fileLabelMap, bandcampMap, localKeys } = musicDirMounted()
-    ? await buildFileLabelMap((n) => {
-        labelsIndex.progress = Math.min(0.15, n / estimate);
-      })
-    : { labelMap: new Map(), bandcampMap: new Map(), localKeys: new Set() };
-  // Only replace the known-local set when the scan actually saw the mount —
-  // an unmounted /music must not wipe badges earned by a previous scan.
-  if (localKeys && localKeys.size) setLocalAlbumKeys(localKeys);
-  // Pass 0 just re-read every album's tags, so join its years on now. This runs
-  // BEFORE the "all albums already cached" early return below, which is the
-  // whole point: that return is what used to stop years being collected on an
-  // established install.
-  harvestAlbumYears("file tags");
+  // The tag walk has already run (runFileMetadataScan, above this call). Its
+  // label names are handed over here so the cascade below only has to chase
+  // what the files could not answer.
+  const fileLabelMap = _lastFileLabelMap || new Map();
+  const bandcampMap  = _lastFileBandcampMap || new Map();
+
   if (fileLabelMap.size) {
     let overrideCount = 0;
     for (const [key, fileLabel] of fileLabelMap) {
@@ -4213,12 +4452,18 @@ async function runLabelsIndexScan(force) {
 const LABELS_RESCAN_MS = 12 * 60 * 60 * 1000;
 setInterval(() => {
   if (!core) return;
-  if (labelsIndex.building) return;
-  appendLabelsLog("[labels] 12-hour auto-rescan triggered");
-  runLabelsIndexScan().catch(e => {
-    const msg = "[labels] auto-rescan error: " + e.message;
-    console.error(msg);
-    appendLabelsLog(msg);
+  // The tag walk keeps its schedule whatever Labels is set to — the Decade,
+  // Format, Sample rate, Bit depth and Channels filters and the local-files
+  // badge are all downstream of it, and none of them is a label feature.
+  runFileMetadataScan("12-hour auto-rescan").then(() => {
+    if (!labelsEnabled) return;   // nothing further, and nothing logged
+    if (labelsIndex.building) return;
+    appendLabelsLog("[labels] 12-hour auto-rescan triggered");
+    return runLabelsIndexScan().catch(e => {
+      const msg = "[labels] auto-rescan error: " + e.message;
+      console.error(msg);
+      appendLabelsLog(msg);
+    });
   });
 }, LABELS_RESCAN_MS);
 
@@ -4260,6 +4505,12 @@ async function fetchFanArtLogo(groupKey, mbid) {
 // Kick off Fan Art TV logo fetches for all labels that have an MBID but no cached logo result.
 // Runs in batches of 5 concurrent requests — Fan Art TV has no strict rate limit.
 async function kickFanArtFetches() {
+  // Labels off means no label network traffic. This is reachable from
+  // seedLabelsFromCache(), which runs before runLabelsIndexScan's own gate (it
+  // seeds the in-memory map from cache, which is free) — so the gate has to be
+  // here as well, or a box with a FanArt key kept fetching logos every 12 hours
+  // for a feature its owner had switched off.
+  if (!labelsEnabled) return;
   if (!fanartKey) return;
   const pending = [];
   for (const [groupKey, entry] of labelsIndex.map) {
@@ -4324,6 +4575,7 @@ async function fetchLogoFromDiscogs(labelName) {
 }
 
 async function kickDiscogsLogoFetches() {
+  if (!labelsEnabled) return;   // see kickFanArtFetches
   if (!discogsToken) return;
   const pending = [];
   for (const [groupKey, entry] of labelsIndex.map) {
@@ -5022,13 +5274,14 @@ const SEARCH_PAGE      = 500;              // albums per Roon load() page
 // render's browse + image traffic — a major sluggishness source after the
 // Home redesign.
 // The album index is a stable snapshot. Roon owns the library; the extension
-// scans it once on first pair, then re-checks only every 12 hours (or on a
-// manual Rescan from the side menu) — and NEVER rebuilds while Roon is actively
-// importing (a still-moving album count). This keeps the extension off a busy
-// Core entirely. Playback stays correct against a snapshot that's hours stale
-// because a stale offset is resolved LIVE by name at play time (see the search
-// fallback in loadAlbumSession), so an out-of-date snapshot never blocks a play.
-const INDEX_CHECK_MS   = 12 * 60 * 60 * 1000;   // re-check for new albums every 12h
+// scans it once on first pair, then asks every ten minutes whether anything
+// moved (a 2-3 call probe; see libraryCheckMs) — and NEVER rebuilds while Roon
+// is actively importing (a still-moving album count). The CHECK is frequent
+// because it is cheap; the REBUILD is rare because it is not. This keeps the
+// extension off a busy Core entirely. Playback stays correct against a snapshot
+// that's stale because a stale offset is resolved LIVE by name at play time
+// (see the search fallback in loadAlbumSession), so an out-of-date snapshot
+// never blocks a play.
 const IMPORT_SETTLE_MS = 5000;                  // album count must hold steady this long to count as "not importing"
 
 const albumIndex = {
@@ -5284,6 +5537,19 @@ async function buildAlbumIndex() {
 
     albumIndex.albums   = albums.filter(Boolean);  // drop any holes
     albumIndex.count    = albumIndex.albums.length;
+    // What Roon SAID the library held when this snapshot was taken, which is
+    // not always what arrived: a short page leaves holes, and the filter above
+    // drops them. Comparing a live count against the filtered one would then
+    // report "the library moved" forever on a library that never changed —
+    // and every album open would arm another full re-walk.
+    albumIndex.declared = total || albumIndex.count;
+    // Say so when they disagree. A holed snapshot makes libraryChangedSince
+    // stop reporting same-count changes, so it must not be silent — this is the
+    // one line that explains why a library seems to have stopped noticing edits.
+    if (albumIndex.declared !== albumIndex.count) {
+      console.log("[index] short read: Roon declared " + albumIndex.declared +
+                  " albums, " + albumIndex.count + " arrived — a Rescan will retry");
+    }
     rebuildAmbiguousAlbumKeys();   // identities shared by >1 album get no badge
     recordFirstSeenAlbums();       // anything new since the last rebuild
     albumIndex.builtAt  = Date.now();
@@ -5355,7 +5621,7 @@ async function syncChain() {
   await bgRun("genres",            () => harvestAlbumGenres("library sync"));
   await bgRun("art prewarm",       () => prewarmAlbumArt());
   // Last, and only if today has none: the picks need the genre harvest above to
-  // have run at least once (the stretch pick reads genre weights), and a fresh
+  // have run at least once, and a fresh
   // pair should not have to wait up to an hour for the timer's first tick.
   kickSmartPicks("after sync");
 }
@@ -5587,8 +5853,9 @@ async function harvestAlbumGenres(reason, force) {
   }
 }
 
-// Does a usable snapshot exist? (Freshness is no longer time-based: the index
-// is a deliberate snapshot refreshed only by the 12h check or a manual Rescan.)
+// Does a usable snapshot exist? (Freshness is not time-based: the index is a
+// deliberate snapshot, refreshed only when a check OBSERVES that the library
+// moved, or on a manual Rescan.)
 function isIndexBuilt() {
   return albumIndex.count > 0 && albumIndex.builtAt > 0;
 }
@@ -5606,47 +5873,120 @@ async function ensureAlbumIndex() {
   }
 }
 
-// One cheap library-change probe: 2-3 Roon round-trips (count + the first
-// and last albums' identities), triggering a full rebuild only when something
-// actually changed. Runs on the 5-minute maintenance interval AND once on
-// re-pair (instead of the unconditional full re-walk re-pairing used to cost).
-// One cheap library-change probe (2-3 count:1 round-trips): is the album count
-// or the first/last album different from our built snapshot? Returns true when
-// something changed. No side effects — the caller decides whether to rebuild.
+// All an Item gives us to recognise an album by. Shared so the change probe and
+// the import probe can never drift into recognising albums differently — one
+// asks "is this the library we indexed", the other "is this the library it was
+// five seconds ago", and a mismatch between the two answers is unexplainable.
+function browseItemIdentity(it) {
+  return it ? (it.title || "") + "||" + (it.subtitle || "") : "";
+}
+
+// One cheap library-change probe (2-3 count:1 round-trips): is the album count,
+// the first album or the last album different from our built snapshot? Returns
+// true when something changed. No side effects — the caller decides whether to
+// rebuild.
+//
+// This is the question the ten-minute watch repeats, and its cheapness is what
+// makes that interval affordable.
 async function libraryChangedSince() {
   return await withBrowseSession(async (sessionKey) => {
     await browse({ hierarchy: "albums", pop_all: true, multi_session_key: sessionKey });
     const head = await load({ hierarchy: "albums", offset: 0, count: 1, multi_session_key: sessionKey });
     const total = head.list && head.list.count ? head.list.count : 0;
-    const identity = it => it ? (it.title || "") + "||" + (it.subtitle || "") : "";
-    const firstNow = identity(head.items && head.items[0]);
-    const firstIdx = identity(albumIndex.albums[0]);
-    let lastChanged = false;
-    if (total > 1 && albumIndex.count > 1 && total === albumIndex.count) {
+    // DECLARED, not count. `count` is the snapshot AFTER holes were filtered
+    // out; `declared` is what Roon said the library held when it was taken.
+    // buildAlbumIndex's own comment spells out why the difference matters —
+    // "comparing a live count against the filtered one would report the library
+    // moved forever" — and loadAlbumSession was fixed for it. This probe was
+    // not. At a twelve-hour interval that was two wasted re-walks a day and
+    // nobody noticed; at ten minutes it is a full re-walk, genre harvest and
+    // art prewarm every ten minutes, forever, on a library nobody touched.
+    const declared = albumIndex.declared || albumIndex.count;
+    if (total !== declared) return true;      // the count moved — that IS the answer
+
+    // The counts agree. The identity checks are only meaningful on a COMPLETE
+    // snapshot: with holes filtered out, albums[0] and albums[total - 1] are
+    // simply not the albums sitting at offsets 0 and total - 1, so comparing
+    // them re-creates exactly the forever-true loop above. A holed snapshot
+    // therefore reports "unchanged" until the count moves or somebody presses
+    // Rescan — degraded, but bounded, which the alternative is not.
+    if (albumIndex.count === 0 || albumIndex.count !== declared) return false;
+
+    const identity = browseItemIdentity;
+    if (identity(head.items && head.items[0]) !== identity(albumIndex.albums[0])) return true;
+    if (total > 1) {
       const tail = await load({ hierarchy: "albums", offset: total - 1, count: 1, multi_session_key: sessionKey });
-      lastChanged = identity(tail.items && tail.items[0]) !== identity(albumIndex.albums[albumIndex.count - 1]);
+      if (identity(tail.items && tail.items[0]) !== identity(albumIndex.albums[total - 1])) return true;
     }
-    return total !== albumIndex.count || (albumIndex.count > 0 && firstNow !== firstIdx) || lastChanged;
+    return false;
   });
 }
 
+// How often the extension asks Roon, entirely on its own, whether the library
+// moved.
+//
+// This is the ONLY detector that needs nobody. The other one is opportunistic —
+// it rides along on `nav.total` when a user opens an album — so on a box that
+// is sitting idle, or one being used only from Home and Now playing, it never
+// fires at all. This interval was TWELVE HOURS, which is why "I added albums to
+// Roon and the extension did nothing" was the normal experience rather than an
+// edge case: with nobody opening albums, twelve hours was the detection time.
+//
+// Ten minutes is affordable because the QUESTION is cheap and the answer is
+// almost always no: `libraryChangedSince()` is 2-3 browse round-trips (~430 a
+// day), and the expensive part — the settle probe and the full re-walk — still
+// only happens when something actually changed.
+function libraryCheckMs() { return 10 * 60 * 1000; }
+
+// How many samples the import probe takes, IMPORT_SETTLE_MS apart. Two is one
+// window and is not enough: Roon imports in bursts, and any burst gap longer
+// than the window reads as finished. Three costs another five seconds on a code
+// path that already refuses to run while somebody is waiting.
+function importSettleReads() { return 3; }
+
 // Best-effort "is Roon importing right now?" — read the album count, wait a few
 // seconds, read it again; a changed count means the library is actively growing.
-// Cheap (two count:1 loads) and only called when we're about to start heavy
-// work, never in a loop. This is how the extension honors "never scan while
-// Roon is adding albums": a manual Rescan and the 12h check both consult it.
+// Only called when we're about to start heavy work, never in a loop — the
+// ten-minute watch runs the CHEAP probe (libraryChangedSince) and reaches this
+// one only once that says something moved. This is how the extension honors
+// "never scan while Roon is adding albums": the manual Rescan, the watch and
+// the recheck chain all consult it.
 async function libraryIsImporting() {
   if (!core) return false;
   try {
     return await withBrowseSession(async (sessionKey) => {
-      await browse({ hierarchy: "albums", pop_all: true, multi_session_key: sessionKey });
-      const a = await load({ hierarchy: "albums", offset: 0, count: 1, multi_session_key: sessionKey });
-      const c1 = a.list && a.list.count ? a.list.count : 0;
-      await new Promise(r => setTimeout(r, IMPORT_SETTLE_MS));
-      await browse({ hierarchy: "albums", pop_all: true, multi_session_key: sessionKey });
-      const b = await load({ hierarchy: "albums", offset: 0, count: 1, multi_session_key: sessionKey });
-      const c2 = b.list && b.list.count ? b.list.count : 0;
-      return c1 !== c2;
+      const identity = browseItemIdentity;
+      // One sample = the album count PLUS the identity of the first and last
+      // rows. The count on its own only answers "is Roon still ADDING albums".
+      // The identities are what carry the other half of the question: Roon
+      // identifies an album AFTER importing it, and identification rewrites its
+      // title and artist, which reorders an alphabetical list around it. Roon
+      // publishes no import-finished event of any kind, so this is inference
+      // from the little the browse API will tell us — good evidence that work
+      // is still happening, never a proof that it has stopped.
+      const sample = async () => {
+        await browse({ hierarchy: "albums", pop_all: true, multi_session_key: sessionKey });
+        const head = await load({ hierarchy: "albums", offset: 0, count: 1, multi_session_key: sessionKey });
+        const total = head.list && head.list.count ? head.list.count : 0;
+        let tail = "";
+        if (total > 1) {
+          const t = await load({ hierarchy: "albums", offset: total - 1, count: 1, multi_session_key: sessionKey });
+          tail = identity(t.items && t.items[0]);
+        }
+        return total + "|" + identity(head.items && head.items[0]) + "|" + tail;
+      };
+      let prev = await sample();
+      // Sampled more than twice on purpose. A single 5-second window calls a
+      // BATCHED import settled during any pause between batches, and Roon
+      // imports in bursts — that is precisely the case that got the snapshot
+      // rebuilt halfway through and left the user with missing albums.
+      for (let i = 1; i < importSettleReads(); i++) {
+        await new Promise(r => setTimeout(r, IMPORT_SETTLE_MS));
+        const now = await sample();
+        if (now !== prev) return true;
+        prev = now;
+      }
+      return false;
     });
   } catch (e) { return false; }   // probe blip — don't block work on a transient error
 }
@@ -5674,11 +6014,36 @@ async function checkAndMaybeRebuild(reason, force) {
     if (await libraryIsImporting()) {
       console.log("[index] " + reason + " check: library changed but Roon is still importing — refresh paused");
       _statusSync = "  •  Roon importing — library refresh paused"; pushStatus();
+      // THE gap this version closes. Declining to rebuild during an import is
+      // right; leaving it at that was not. The timer here is a plain 12-hour
+      // interval, so an import caught by one tick left the snapshot stale until
+      // the NEXT tick — up to twelve hours after Roon finished, with every
+      // album open in between hitting stale offsets and empty action lists.
+      // That is why the symptom persisted instead of clearing itself.
+      scheduleLibraryRecheck("Roon was importing at the " + reason + " check");
       return { status: "importing" };
     }
     console.log("[index] " + reason + " check: library changed and settled — rebuilding snapshot once");
     clearBrowseOffsetCache();
-    await buildAlbumIndex().then(() => rebuildLabelsMap()).catch(() => { /* build error logged in buildAlbumIndex */ });
+    // The flag tracks the SNAPSHOT build and nothing else. Chaining the labels
+    // map into the same .then/.catch made a throw from rebuildLabelsMap report
+    // the whole rebuild as failed — so a perfectly rebuilt snapshot returned
+    // "error", kickPostRebuildChain never fired, and every dependant stayed
+    // stale. That is the exact failure this version exists to fix, re-created
+    // one line away from the fix.
+    let built = true;
+    await buildAlbumIndex().catch(() => { built = false; });   // error logged in buildAlbumIndex
+    if (built && labelsEnabled) {
+      try { rebuildLabelsMap(); }
+      catch (e) { console.error("[index] labels map rebuild after " + reason + ": " + e.message); }
+    }
+    // A rebuild that threw leaves the OLD snapshot in place — buildAlbumIndex
+    // only assigns albums/count/declared once a full walk succeeds. Reporting
+    // "rebuilt" anyway told the recheck chain the episode was over and cleared
+    // the "Roon importing" banner, so a library that failed to refresh went
+    // quiet and stayed stale until the next 12-hour tick. "error" is the truth
+    // and is one of the two statuses that re-arm the chain.
+    if (!built) return { status: "error" };
     if (_statusSync) { _statusSync = ""; pushStatus(); }
     return { status: "rebuilt", count: albumIndex.count };
   } finally {
@@ -5687,24 +6052,133 @@ async function checkAndMaybeRebuild(reason, force) {
 }
 
 // Background maintenance: build the snapshot once on pair (if empty), then
-// re-check for new albums every 12h. No rebuild ever fires from a user action
-// or a play — only this timer or the manual Rescan button, and never while
-// Roon is importing.
+// watch for new albums every ten minutes. No rebuild ever fires from a user
+// action or a play — only this timer, the recheck chain it hands off to, or the
+// manual Rescan button, and never while Roon is importing.
 function startIndexMaintenance() {
   stopIndexMaintenance();
   _statusSync = "";
-  // The index survives an unpair (it's plain offset/title data), so a re-pair
-  // with an existing snapshot needs no work — the 12h timer and manual Rescan
-  // handle refreshes. Build only when there's no snapshot yet (first pair).
+  // The index survives an unpair (it's plain offset/title data), so it stays
+  // usable for search while disconnected. Build only when there's no snapshot
+  // yet (first pair).
   if (!isIndexBuilt()) {
     buildAlbumIndex()
-      .then(() => seedLabelsFromCache())
+      .then(() => runFileMetadataScan("first pair"))
+      .then(() => { if (labelsEnabled) seedLabelsFromCache(); })
       .catch(e => { if (DEBUG) console.error("[index] initial build:", e.message); });
+  } else {
+    // A re-pair with an existing snapshot asks again in five minutes. The
+    // comment that used to sit here claimed startIndexMaintenance already
+    // "re-verifies it on re-pair with a cheap 2-call probe"; it never did.
+    // That mattered because an unpair CLEARS any pending recheck, and a
+    // websocket flap is most likely during exactly the heavy import the
+    // recheck was waiting on — so the refresh silently dropped from five
+    // minutes back to the next 12-hour tick.
+    scheduleLibraryRecheck("re-paired with an existing snapshot");
   }
-  indexMaintTimer = setInterval(() => { checkAndMaybeRebuild("12h", false); }, INDEX_CHECK_MS);
+  indexMaintTimer = setInterval(() => {
+    // Skip entirely while somebody else owns the library. A pending recheck is
+    // already asking this exact question on a schedule of its own, and a
+    // rebuild in flight would answer "busy" — probing underneath either only
+    // adds calls to a Core that is already working. The guard is read
+    // synchronously and checkAndMaybeRebuild sets _rebuildInFlight before its
+    // first await, so two ticks cannot both get past it.
+    if (_libraryRecheckTimer || _rebuildInFlight || albumIndex.building) return;
+    checkAndMaybeRebuild("watch", false)
+      .then(r => {
+        kickPostRebuildChain(r);
+        // Neither is an answer. Handing off to the recheck chain is what stops
+        // the observation being lost until the next tick — the same reason the
+        // importing branch hands off.
+        if (r && (r.status === "busy" || r.status === "error")) {
+          scheduleLibraryRecheck("watch check returned " + r.status);
+        }
+      })
+      .catch(e => console.error("[index] watch check failed: " + e.message));
+  }, libraryCheckMs());
   if (indexMaintTimer.unref) indexMaintTimer.unref();
 }
+
+// How long to wait before looking again after seeing the library move. Long
+// enough that a long import is not probed to death (each recheck costs a
+// 2-3 call probe plus, if it proceeds, a 5-second settle read), short enough
+// that a finished import is picked up in minutes rather than half a day.
+function libraryRecheckMs() { return 5 * 60 * 1000; }
+// The ceiling on chained rechecks. An import that runs for hours re-arms this
+// each time it is still moving; without a cap a permanently-churning library
+// would probe every five minutes forever.
+function libraryRecheckMax() { return 24; }
+// How long the chain must be completely idle before the next recheck counts as
+// a NEW episode with a full budget. Comfortably longer than the 5-minute chain,
+// so a running episode can never refill itself mid-flight and walk around the
+// cap the way resetting on "rebuilt" did.
+function libraryRecheckIdleMs() { return 30 * 60 * 1000; }
+
+let _libraryRecheckTimer = null;
+let _libraryRecheckCount = 0;
+let _libraryRecheckLast = 0;
+
+// The automatic rebuild stops at the album snapshot. Everything BUILT ON that
+// snapshot — the Qobuz/TIDAL source badges, the Genre facet, the decade and
+// quality data harvested from file tags, the label map — is refreshed only by
+// the chain the manual Rescan button runs. Without this the automatic path
+// brought back the right albums wearing last week's metadata, which reads as
+// the auto-rescan not having run at all.
+function kickPostRebuildChain(r) {
+  if (!r || r.status !== "rebuilt") return;
+  rescanChain(r, "auto rescan", false).catch(e =>
+    console.error("[index] auto rescan chain: " + e.message));
+}
+// Ask again in a few minutes, once. Called when something OBSERVED that the
+// library has moved: the 12-hour check finding an import in progress, or an
+// ordinary album open noticing Roon's live count no longer matches the
+// snapshot. Both are evidence; neither is a reason to rebuild inline, because
+// a rebuild is a full re-walk and these fire while somebody is waiting.
+function scheduleLibraryRecheck(why) {
+  if (_libraryRecheckTimer) return;                       // one pending, ever
+  const now = Date.now();
+  // The budget is per EPISODE, and an idle gap is what ends one. Refilling it
+  // ONLY on "fresh" made exhaustion permanent: at the cap nothing can be
+  // scheduled, so no recheck can fire, so no "fresh" can ever arrive to refill
+  // it. The fast path died for the lifetime of the container — silently, with
+  // the 12-hour tick still running so nothing looked broken — and every later
+  // import was back to waiting up to twelve hours. The counter is global and
+  // is not refunded on "rebuilt" either, so roughly two dozen ordinary
+  // automatic rescans were enough to reach it on a long-lived install.
+  if (_libraryRecheckLast && now - _libraryRecheckLast >= libraryRecheckIdleMs()) {
+    _libraryRecheckCount = 0;
+  }
+  if (_libraryRecheckCount >= libraryRecheckMax()) return;
+  _libraryRecheckCount++;
+  _libraryRecheckLast = now;
+  console.log("[index] recheck scheduled in " + Math.round(libraryRecheckMs() / 60000) +
+              " min (" + why + ")");
+  _libraryRecheckTimer = setTimeout(() => {
+    _libraryRecheckTimer = null;
+    checkAndMaybeRebuild("auto", false)
+      .then(r => {
+        const st = r && r.status;
+        // A snapshot rebuilt in the background has to drag its dependants with
+        // it, exactly as the manual Rescan button does.
+        if (st === "rebuilt") kickPostRebuildChain(r);
+        // Only "fresh" — the library genuinely matches — ends the episode and
+        // returns a full budget. Resetting on "rebuilt" too meant the cap
+        // could never engage: any rebuild refilled it, so a library whose
+        // count never settles could re-walk itself every five minutes forever.
+        if (st === "fresh") { _libraryRecheckCount = 0; return; }
+        // Dropped because something else was already working, or the probe
+        // failed. Neither is an answer, so the question has to be asked again
+        // rather than silently abandoned until the 12-hour tick.
+        if (st === "busy" || st === "error") scheduleLibraryRecheck("previous check returned " + st);
+      })
+      .catch(e => console.error("[index] auto recheck failed: " + e.message));
+  }, libraryRecheckMs());
+  if (_libraryRecheckTimer.unref) _libraryRecheckTimer.unref();
+}
 function stopIndexMaintenance() {
+  if (_libraryRecheckTimer) { clearTimeout(_libraryRecheckTimer); _libraryRecheckTimer = null; }
+  _libraryRecheckCount = 0;
+  _libraryRecheckLast = 0;
   if (indexMaintTimer) { clearInterval(indexMaintTimer); indexMaintTimer = null; }
 }
 
@@ -6188,7 +6662,17 @@ app.get("/api/status", (req, res) => {
     paired:    !!core,
     core_id:   core ? core.core_id      : null,
     core_name: core ? core.display_name : null,
-    zone_count: Object.keys(zones).length
+    zone_count: Object.keys(zones).length,
+    // The extension has always known when it last saw Roon importing — it just
+    // had nowhere to say it. `_statusSync` went only to Roon's own Settings →
+    // Extensions line, so the app itself could not tell a user why albums were
+    // misbehaving. It is a LAGGING indicator (set at the last check, cleared on
+    // the next clean one), so it is reported as an observation with a time
+    // rather than as a claim about right now.
+    library_importing: !!_statusSync,
+    library_recheck_pending: !!_libraryRecheckTimer,
+    index_built_at: albumIndex.builtAt || null,
+    index_count: albumIndex.count || 0
   });
 });
 
@@ -6483,8 +6967,13 @@ function libFacetDefs() {
       sort: "numeric-desc",
       labels: (v) => v + "s",
       values: (al) => { const y = albumYearOf(al); return y === null ? [] : [String(Math.floor(y / 10) * 10)]; } },
-    { id: "label",  label: "Record label",
-      values: (al) => { const n = resolveAlbumLabelName(al); return n ? [n] : []; } },
+    // Only when the feature is on. Dropping it from the vocabulary is enough
+    // to disable it everywhere: the Focus sheet renders from this list, and
+    // libraryView applies only the facets this list still publishes — so a
+    // selection stored from before the switch was flipped stops filtering
+    // rather than silently narrowing a wall with no visible reason why.
+    ...(labelsEnabled ? [{ id: "label",  label: "Record label",
+      values: (al) => { const n = resolveAlbumLabelName(al); return n ? [n] : []; } }] : []),
     { id: "format", label: "Format",
       values: (al) => { const f = albumFileFactsOf(al); return f && f.container ? [f.container] : []; } },
     { id: "rate",   label: "Sample rate",
@@ -6728,6 +7217,38 @@ function playStats() {
   return out;
 }
 
+// The funnel's text, normalised the one way this file normalises anything.
+// Bounded because it arrives on a query string: a megabyte of "a" would
+// otherwise be compared against every album.
+function libraryPrefixMax() { return 40; }
+function libraryPrefix(raw) {
+  return normalize(String(raw || "")).slice(0, libraryPrefixMax());
+}
+
+// Does this album start with the typed text, by TITLE or by ARTIST?
+//
+// Title uses `sortTitle` — the article-stripped key the A-Z wall, the "Starts
+// with" facet and every sort tiebreak already use — so typing W finds "The
+// Wall" exactly where the wall files it, rather than under T.
+//
+// Artist matches each credited name separately via `artistNames`, so F finds
+// "Fela Kuti" inside "Tony Allen / Fela Kuti". A whole-credit test would miss
+// every collaboration where the searched-for artist is not billed first.
+//
+// startsWith throughout, never includes(): v1.6.56 was spent eradicating
+// substring artist matching from thirteen call sites, and re-introducing it
+// here would put "Prince" back in front of Bonnie "Prince" Billy.
+function albumMatchesPrefix(al, prefix) {
+  if (!prefix) return true;
+  if (String(al.sortTitle || "").startsWith(prefix)) return true;
+  if (String(al.nTitle || "").startsWith(prefix)) return true;
+  const names = al.artistNames;
+  if (names && names.length) {
+    for (const a of names) if (String(a.n || "").startsWith(prefix)) return true;
+  }
+  return String(al.nArtist || "").startsWith(prefix);
+}
+
 function libraryView(q) {
   const sort   = LIB_SORTS.has(String(q.sort || "")) ? String(q.sort) : "album";
   const desc   = String(q.dir || "asc") === "desc";
@@ -6739,9 +7260,20 @@ function libraryView(q) {
   const defs = libFacetDefs();
   const picked = defs.map(d => ({ def: d, sel: asList(q[d.id]) }))
                      .filter(x => x.sel.length);
-  const sig = [albumIndex.builtAt, libraryMetaVersion, sort, desc, seed, played]
+  // Free-text "starts with", from the funnel on the Library wall.
+  //
+  // Deliberately part of the FILTER chain rather than a sort mode: it runs
+  // before the comparator, so it narrows identically under Album name, Artist,
+  // Release year, Recently added, Most played, Last played and Random. That is
+  // the whole reason it replaced the A-Z scroll rail — a letter index is
+  // meaningless the moment the wall is ordered by anything but the alphabet.
+  const prefix = libraryPrefix(q.prefix);
+  const sig = [albumIndex.builtAt, libraryMetaVersion, sort, desc, seed, played, "p=" + prefix]
     .concat(picked.map(x => x.def.id + "=" + x.sel.slice().sort().join(","))).join("|");
-  const hit = libraryViewCache.get(sig);
+  // A free-text param is unbounded, so it must not be allowed to fill a
+  // fixed-size cache with one-hit entries — every keystroke is a new key.
+  // Cached only when empty, which is the common case the cache exists for.
+  const hit = prefix ? null : libraryViewCache.get(sig);
   if (hit) return hit;
 
   let list = albumIndex.albums;
@@ -6749,6 +7281,7 @@ function libraryView(q) {
   for (const { def, sel } of picked) {
     list = list.filter(al => facetMatch(sel, def.values(al)));
   }
+  if (prefix) list = list.filter(al => albumMatchesPrefix(al, prefix));
   if (played !== "any") {
     // "never" uses the whole history; "played" is its complement; "6"/"12"
     // mean "not in the last N months".
@@ -6978,6 +7511,105 @@ app.get("/api/home/unplayed", async (req, res) => {
 // deterministically from today's date so it's stable all day and changes each
 // day. Once it has been played today (a play row with that title since local
 // midnight) it's withheld ({ album: null, played: true }) until tomorrow.
+// How far back the History ROW looks, and how many tiles it can hold.
+function historyDays()     { return 30; }
+function historyMaxTiles() { return 60; }
+
+// How far back the plays TABLE is kept — which is a completely different
+// question, and conflating the two in v1.7.48 destroyed real listening history.
+//
+// The History row shows 30 days. Four other features read further back:
+//   "Play something unheard"        12 months (UNHEARD_MONTHS)
+//   the "Not played in 6 months" row 6 months — it is in the row's title
+//   Library sort by plays / last played   all time
+//   Focus -> Listening -> "Never played"  all time
+//
+// Pruning to the row's display window silently turned "not played in 6 months"
+// into "not played in 30 days" and reset the play leaderboard, irreversibly:
+// Roon exposes no last-played date, so nothing can rebuild it. The retention
+// horizon has to be the WIDEST consumer's window, and the row simply queries a
+// narrower slice of it.
+function playsRetentionDays() { return 400; }
+
+// Delete plays older than the window. Called from the History route rather
+// than on a timer: the window only matters when somebody looks, and a box that
+// nobody opens for a month should not be doing database writes about it.
+let _historyPrunedAt = 0;
+function pruneOldPlays() {
+  if (!labelsDb) return;
+  // At most once an hour. The route is hit on every Home visit and the delete
+  // is a write on the synchronous driver.
+  if (Date.now() - _historyPrunedAt < 60 * 60 * 1000) return;
+  _historyPrunedAt = Date.now();
+  try {
+    const cutoff = Date.now() - playsRetentionDays() * 24 * 60 * 60 * 1000;
+    const r = labelsDb.prepare("DELETE FROM plays WHERE ts < ?").run(cutoff);
+    if (r.changes) console.log("[history] pruned " + r.changes + " plays older than " +
+                               playsRetentionDays() + " days");
+  } catch (e) {
+    // Best effort. A failed prune costs disk, not correctness.
+    if (DEBUG) console.warn("[history] prune failed: " + e.message);
+  }
+}
+
+// Albums played in the last 30 days, most recent first, one tile per album.
+//
+// Grouped by lower(trim(album)) — the same key the "not played" row and the
+// Library play sorts use. Two artists' "Greatest Hits" collide under it; that
+// is a known and consistent limitation of recording Roon's now-playing line
+// rather than an album identity.
+//
+// The bare `image_key` column is safe ONLY because there is exactly one
+// aggregate in the SELECT: SQLite's documented min/max rule makes bare columns
+// come from the MAX(ts) row. Add a second aggregate and they become arbitrary
+// — the v1.7.46 changelog records that exact bug on the plays table.
+//
+// The artist is deliberately NOT taken from the history: `plays.artist` is the
+// TRACK artist, so a compilation would name a performer rather than the record.
+// It comes from the snapshot, like every other Home row.
+app.get("/api/home/history", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  try {
+    await ensureAlbumIndex();
+    if (!labelsDb) return res.json({ albums: [] });
+    pruneOldPlays();
+    const count = Math.min(historyMaxTiles(),
+      Math.max(1, parseInt(req.query.count, 10) || historyMaxTiles()));
+    const cutoff = Date.now() - historyDays() * 24 * 60 * 60 * 1000;
+    let rows = [];
+    try {
+      rows = labelsDb.prepare(
+        "SELECT album, image_key, MAX(ts) AS ts FROM plays " +
+        "WHERE ts >= ? AND album != '' " +
+        "GROUP BY lower(trim(album)) ORDER BY ts DESC LIMIT ?").all(cutoff, count);
+    } catch (e) {
+      return res.json({ albums: [] });   // DB unavailable — an empty row, not an error
+    }
+    const lut = libraryLookup();
+    const albums = [];
+    for (const r of rows) {
+      // Resolve to the snapshot so the tile can be opened and played. A title
+      // owned by more than one album is ambiguous and is skipped rather than
+      // guessed at — the same rule the import resolver follows.
+      let hit = null;
+      for (const t of albumTitleVariants(r.album)) {
+        const arr = lut.byTitle.get(t);
+        if (arr && arr.length === 1) { hit = arr[0]; break; }
+      }
+      if (!hit) continue;
+      albums.push(withSource({
+        offset:    hit.offset,
+        title:     hit.title || "",
+        subtitle:  hit.subtitle || "",
+        image_key: hit.image_key || r.image_key || null,
+      }, hit));
+    }
+    res.json({ albums, days: historyDays() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get("/api/home/album-of-the-day", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   try {
@@ -7021,6 +7653,10 @@ function isoWeekKey(d = new Date()) {
 }
 let lotwCache = { weekKey: "", at: 0, count: -1, data: null };
 app.get("/api/home/label-of-the-week", (req, res) => {
+  // Labels off means the row has nothing to build from and must not try:
+  // reaching into labelsIndex here would be the one path still doing label
+  // work, and the Home row is switched off alongside the side-menu entry.
+  if (!labelsEnabled) return res.json({ label: null, albums: [] });
   try {
     const wk = isoWeekKey();
     // Reuse the cached pick within the same week/hour unless the index grew
@@ -7186,12 +7822,20 @@ app.get("/api/filters/tags", async (req, res) => {
 // Triggers a background scan on first call so the list grows over time.
 app.get("/api/filters/labels", (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  // An empty list rather than an error: the screen behind this is unreachable
+  // while the feature is off, and a stale client asking should get "nothing
+  // here", not a failure it will render as a broken screen.
+  if (!labelsEnabled) return res.json({ labels: [], scanning: false, progress: 0 });
   // Seed from cache so the first response includes labels even on a fresh restart.
-  if (labelsIndex.map.size === 0 && albumIndex.count > 0) {
+  if (labelsEnabled && labelsIndex.map.size === 0 && albumIndex.count > 0) {
     seedLabelsFromCache();
   }
-  // Kick off a scan if never done, or if the last scan is older than the rescan interval.
-  if (!labelsIndex.building && (labelsIndex.builtAt === 0 || Date.now() - labelsIndex.builtAt > LABELS_RESCAN_MS)) {
+  // Kick off a scan if never done, or if the last scan is older than the rescan
+  // interval. Not while Labels is off: this route is the lazy trigger, and a
+  // feature nobody switched on must not start a scan because a screen happened
+  // to ask.
+  if (labelsEnabled && !labelsIndex.building &&
+      (labelsIndex.builtAt === 0 || Date.now() - labelsIndex.builtAt > LABELS_RESCAN_MS)) {
     runLabelsIndexScan().catch(e => {
       if (DEBUG) console.error("[labels] scan error:", e.message);
     });
@@ -7231,6 +7875,7 @@ app.get("/api/filters/labels", (req, res) => {
 // Albums are served from the Qobuz-derived labelsIndex; offsets are positions
 // in the full "albums" hierarchy so open/play work without any filter.
 app.get("/api/label-albums", (req, res) => {
+  if (!labelsEnabled) return res.json({ label: null, albums: [] });
   const name  = String(req.query.label || "").trim();
   const order = req.query.order === "random" ? "random" : "alpha";
   if (!name) return res.status(400).json({ error: "label query parameter required" });
@@ -7294,7 +7939,7 @@ app.post("/api/library/rescan", async (req, res) => {
     // Deliberately after checkAndMaybeRebuild: if it rebuilt, it has already
     // kicked its own prewarm and genre harvest, and the guards inside those
     // make the calls below no-ops rather than a second pass.
-    rescanChain(r).catch(e => {
+    rescanChain(r, "manual rescan", true).catch(e => {
       if (DEBUG) console.error("[rescan] background chain:", e.message);
     });
     res.json(r);
@@ -7316,18 +7961,32 @@ app.post("/api/library/rescan", async (req, res) => {
 // Each step is caught individually: one failing must not cancel the rest, and
 // a Rescan that silently did two of its three jobs is worse than one that says
 // which part failed.
-async function rescanChain(rebuildResult) {
-  await bgRun("stream favourites", () => refreshStreamAlbumKeys("manual rescan"));
-  // `force` — this is an explicit user action, and it is the button somebody
-  // presses precisely when the Genre facet looks wrong. Deferring it to a
-  // background timer, or letting a fingerprint skip it, would make the button
-  // appear to do nothing at exactly the moment it is needed.
-  await bgRun("genres", () => harvestAlbumGenres("manual rescan", true));
-  await bgRun("labels", () => runLabelsIndexScan(true));
+// `reason` travels into the first three steps' log lines so an automatic
+// post-import run is distinguishable from a button press in the rotating log —
+// they do the same work but arrive for very different reasons. The labels step
+// is the exception: runLabelsIndexScan takes no reason and writes its own
+// wording to the labels log, so that one is told apart by its timing only.
+async function rescanChain(rebuildResult, reason, force) {
+  reason = reason || "manual rescan";
+  await bgRun("stream favourites", () => refreshStreamAlbumKeys(reason));
+  // `force` is NOT a synonym for "run it now" — in both of these it means "a
+  // human insisted", and it buys past the `libraryIsImporting()` gate and, in
+  // the genre walk, turns a fingerprint-skipping pass into a full sweep of a
+  // few hundred browse calls. Right for the button; wrong for the automatic
+  // run, which would then skip the very import check this version strengthened
+  // at the one moment Roon is most likely to still be identifying — and sweep
+  // the whole library every time. Newly-arrived albums have no fingerprint
+  // yet, so the incremental walk picks them up regardless.
+  await bgRun("genres", () => harvestAlbumGenres(reason, !!force));
+  // The walk is part of a Rescan regardless — it is what refreshes the Decade
+  // and quality filters — and the label pass follows only when Labels is on.
+  await bgRun("file tags", () => runFileMetadataScan(reason));
+  if (labelsEnabled) await bgRun("labels", () => runLabelsIndexScan(!!force));
   if (DEBUG) console.log("[rescan] background chain done (" + (rebuildResult && rebuildResult.status) + ")");
 }
 
 app.post("/api/labels/rescan", (req, res) => {
+  if (!labelsEnabled) return res.status(409).json({ error: "Labels is off in Settings" });
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   if (labelsIndex.building) return res.json({ ok: false, reason: "scan already running" });
   labelsIndex.builtAt = 0;
@@ -7343,6 +8002,7 @@ app.post("/api/labels/rescan", (req, res) => {
 // Force a FULL rescan — wipes label name cache so ALL albums are re-queried
 // from sources. Logo, MBID and merge data are preserved.
 app.post("/api/labels/rescan-force", (req, res) => {
+  if (!labelsEnabled) return res.status(409).json({ error: "Labels is off in Settings" });
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   if (labelsIndex.building) return res.json({ ok: false, reason: "scan already running" });
   // Clear label name cache only (logos and MBIDs are expensive to re-fetch).
@@ -7495,6 +8155,7 @@ app.post("/api/labels/logo", async (req, res) => {
 // Body: { items: [{key, display}, ...] } — first item is the merge target (canonical name).
 // All subsequent items become sources whose albums are redirected to the target.
 app.post("/api/labels/merge", (req, res) => {
+  if (!labelsEnabled) return res.status(409).json({ error: "Labels is off in Settings" });
   const { items } = req.body || {};
   if (!Array.isArray(items) || items.length < 2) {
     return res.status(400).json({ error: "Need at least 2 labels" });
@@ -7513,6 +8174,7 @@ app.post("/api/labels/merge", (req, res) => {
 
 // Remove a single source label from a merge group.
 app.delete("/api/labels/merge/:sourceKey", (req, res) => {
+  if (!labelsEnabled) return res.status(409).json({ error: "Labels is off in Settings" });
   const { sourceKey } = req.params;
   if (labelsDb) stmtDeleteMerge.run(sourceKey);
   labelMerges.delete(sourceKey);
@@ -7916,12 +8578,36 @@ app.get("/api/image/:image_key", async (req, res) => {
 // Each track carries its own album's `image_key`, so a track row can show the
 // artwork it came from without a second lookup.
 const SMART_ALBUM_PAGE = 8;
+// Why a saved playlist cannot be honoured right now, or null.
+//
+// libraryView only applies the facets libFacetDefs() currently publishes, so
+// with Labels off a saved Record-label filter is simply skipped. That is the
+// right MECHANICAL answer and a terrible one to show a user: the playlist
+// still opens, still plays, and quietly returns a completely different set of
+// albums with nothing on screen to explain it. Naming it is the whole fix.
+function smartPlaylistUnavailable(sp) {
+  const view = (sp && sp.view) || {};
+  if (!labelsEnabled && Array.isArray(view.label) && view.label.length) {
+    return "This playlist filters by record label, and Labels is off in " +
+           "Settings. Switch Labels on to use it.";
+  }
+  return null;
+}
+
 app.get("/api/smart-playlist", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   const id = String(req.query.id || "").trim();
   if (!id) return res.status(400).json({ error: "id required" });
   const sp = loadSmartPlaylists().find(p => p.id === id);
   if (!sp) return res.status(404).json({ error: "No such dynamic playlist" });
+  // Answered before any work: showing the albums a half-applied query happens
+  // to return, alongside a note saying the playlist is unavailable, would be
+  // worse than showing none.
+  const blocked = smartPlaylistUnavailable(sp);
+  if (blocked) {
+    return res.json({ playlist: sp, unavailable: blocked, tracks: [],
+                      albums: [], total: 0, album_total: 0, offset: 0 });
+  }
 
   const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
   const count  = Math.max(1, Math.min(SMART_ALBUM_PAGE,
@@ -8009,6 +8695,10 @@ app.get("/api/smart-playlist/albums", async (req, res) => {
   if (!id) return res.status(400).json({ error: "id required" });
   const sp = loadSmartPlaylists().find(p => p.id === id);
   if (!sp) return res.status(404).json({ error: "No such dynamic playlist" });
+  // The play path needs the same answer as the detail screen, or the playlist
+  // reads "unavailable" and plays anyway.
+  const blocked = smartPlaylistUnavailable(sp);
+  if (blocked) return res.status(409).json({ error: blocked, unavailable: blocked });
   try {
     await ensureAlbumIndex();
     if (!isIndexBuilt()) return res.status(503).json({ error: "Library index is still building" });
@@ -9224,10 +9914,16 @@ app.get("/api/smart-playlists", (req, res) => {
           album_total: Math.min(view.length, p.limit),
           album_matched: view.length,
           art_keys: keys,
+          unavailable: smartPlaylistUnavailable(p),
         });
       }
-      catch (e) { return p; }   // a bad view must not take the whole list down
+      // A bad view must not take the whole list down — but the row still has to
+      // carry its reason, or the tile looks ordinary until it is opened.
+      catch (e) { return Object.assign({}, p, { unavailable: smartPlaylistUnavailable(p) }); }
     });
+  } else {
+    // No snapshot yet, so no counts — the reason is still known and cheap.
+    counted = list.map(p => Object.assign({}, p, { unavailable: smartPlaylistUnavailable(p) }));
   }
   res.json({ playlists: counted });
 });
@@ -9532,7 +10228,7 @@ app.post("/api/settings/fanart-key", (req, res) => {
   const purged = purgeFanartLogoMisses();
   console.log("[settings] fanart key set (" + key.length + " chars), persisted=" + saved +
               ", cleared " + purged + " cached no-logo verdicts");
-  appendLabelsLog("[labels:fanart] key saved — cleared " + purged + " cached misses, refetching");
+  if (labelsEnabled) appendLabelsLog("[labels:fanart] key saved — cleared " + purged + " cached misses, refetching");
   kickFanArtFetches().then(() => kickDiscogsLogoFetches()).catch(e => {
     if (DEBUG) console.error("[labels:fanart] post-save kick:", e.message);
   });
@@ -9554,13 +10250,16 @@ app.post("/api/settings/label-folder-depth", (req, res) => {
   labelFolderDepth = depth;
   const saved = savePersistedSettings({ labelFolderDepth: depth });
   console.log("[settings] label folder depth set to " + depth + ", persisted=" + saved);
-  // Re-run the label scan so file labels are re-derived from folders (or tags).
-  if (changed && core && !labelsIndex.building) {
+  // Re-derive file labels from folders (or tags). This setting only means
+  // anything to the label pipeline, so with Labels off there is nothing to
+  // re-run — and nothing to write into the labels log about it.
+  const rescanning = changed && !!core && labelsEnabled;
+  if (rescanning && !labelsIndex.building) {
     labelsIndex.builtAt = 0;
     appendLabelsLog("[labels] rescan triggered by label-folder-depth change → " + depth);
     runLabelsIndexScan().catch(e => { if (DEBUG) console.error("[labels] rescan error:", e.message); });
   }
-  res.json({ ok: true, saved, rescanning: changed && !!core });
+  res.json({ ok: true, saved, rescanning });
 });
 
 // ---------------------------------------------------------------------------
@@ -10242,8 +10941,13 @@ app.get("/api/tidal/featured", async (req, res) => {
 // ---------------------------------------------------------------------------
 // Smart Picks — six albums a day by artists NOT in the library.
 //
-// Five "adjacent" picks drawn from the genres the library already lives in, and
-// one "stretch" pick from a genre it barely touches. The set changes daily.
+// Five picks drawn from the genres the library already lives in, changing daily.
+//
+// v1.7.48 dropped a sixth "stretch" pick — one album from a genre the library
+// barely touched. It read well on paper and did not work in practice: an
+// artist reached through a genre tag rather than through the user's own taste
+// is a stranger, and the answer was almost always no. Removed rather than
+// hidden, along with the MusicBrainz tag traffic behind it.
 //
 // WHY THIS IS SHAPED THE WAY IT IS
 //
@@ -10274,21 +10978,15 @@ const discovery = require("./lib/discovery");
 
 // Vocabulary as functions so the tests read the shipping values rather than
 // asserting against a constant they were handed.
-function smartPickKinds()        { return ["adjacent", "stretch"]; }
+function smartPickKinds()        { return ["adjacent"]; }
 function smartAdjacentCount()    { return 5; }
-function smartStretchCount()     { return 1; }
 function smartSeedCount()        { return 24; }
 function smartPoolCount()        { return 150; }
 // How long a shown artist stays out of the pool. Long enough that the set
 // genuinely turns over, short enough that a big library isn't exhausted.
 function smartSeenDays()         { return 120; }
-// A genre counts as "outside the library" at or below this share of it. The
-// user's Roon genre list only contains genres they own something in, so a
-// true zero is never visible — the bottom band is the outside edge there is.
-function smartStretchShare()     { return 0.02; }
 function smartHubTtlMs()         { return 14 * 24 * 60 * 60 * 1000; }
 function smartSimilarTtlMs()     { return 30 * 24 * 60 * 60 * 1000; }
-function smartTagTtlMs()         { return 30 * 24 * 60 * 60 * 1000; }
 
 // An album's key in the plays table. Title-only, because that is all Roon's
 // now-playing feed gives us to record — two artists' "Greatest Hits" collide,
@@ -10329,15 +11027,6 @@ function libraryArtistProfile() {
   return map;
 }
 
-// Genre -> how many albums in the library carry it.
-function libraryGenreWeights() {
-  const w = new Map();
-  for (const al of albumIndex.albums) {
-    for (const g of albumGenresOf(al)) w.set(g, (w.get(g) || 0) + 1);
-  }
-  return w;
-}
-
 // Which library artists to walk out from.
 //
 // Two filters and one sort. Hubs are excluded because seeding from them is what
@@ -10369,20 +11058,6 @@ function smartPickSeeds(profile, hubCanons, limit) {
       out.push(r);
     }
   }
-  return out;
-}
-
-// Genres the library barely touches, least-owned first.
-function smartStretchGenres(weights, totalAlbums) {
-  const total = totalAlbums || 0;
-  if (!total) return [];
-  const out = [];
-  for (const [genre, albums] of weights) {
-    if (!genre) continue;
-    if ((albums / total) <= smartStretchShare()) out.push({ genre, albums });
-  }
-  out.sort((a, b) => a.albums - b.albums ||
-    (a.genre < b.genre ? -1 : a.genre > b.genre ? 1 : 0));
   return out;
 }
 
@@ -10459,7 +11134,7 @@ function diversifySmartCandidates(ranked) {
 }
 
 // Everything a candidate must not be. Kept as one function so the adjacent and
-// stretch paths cannot drift apart on what counts as "already known".
+// every path agrees on what counts as "already known".
 function smartPickExcluded(canon, sets) {
   if (!canon) return true;
   if (sets.library.has(canon)) return true;   // already owned
@@ -10473,11 +11148,6 @@ function smartPickExcluded(canon, sets) {
 // always true — an LLM would write a nicer one and would sometimes be wrong,
 // and a recommendation nobody can check is a recommendation nobody trusts.
 function smartPickReason(rec) {
-  if (rec.kind === "stretch") {
-    return rec.genre
-      ? "Nothing like your library — a cornerstone of " + rec.genre
-      : "Nothing like your library";
-  }
   const names = (rec.seedNames || []).filter(Boolean);
   if (!names.length) return "Close to what you already listen to";
   if (names.length === 1) return "Because you play " + names[0];
@@ -10514,8 +11184,7 @@ function smartCacheSet(key, value) {
 function smartCachePrune() {
   if (!labelsDb) return;
   try {
-    const longest = Math.max(smartHubTtlMs(), smartSimilarTtlMs(),
-                             smartTagTtlMs(), smartAlbumTtlMs());
+    const longest = Math.max(smartHubTtlMs(), smartSimilarTtlMs(), smartAlbumTtlMs());
     const r = labelsDb.prepare("DELETE FROM smart_cache WHERE ts < ?")
       .run(Date.now() - longest);
     if (DEBUG && r.changes) console.log("[picks] pruned " + r.changes + " cache rows");
@@ -10581,18 +11250,6 @@ async function smartSimilarRows(seedMbids) {
     }
   }
   return out;
-}
-
-// A genre's canonical artists, cached.
-async function smartTagArtists(genre) {
-  const key = "tag:" + String(genre || "").toLowerCase();
-  let rows = smartCacheGet(key, smartTagTtlMs());
-  if (!rows) {
-    await mbWait();
-    rows = await discovery.artistsByTag(genre, { limit: 60, userAgent: MB_USER_AGENT });
-    smartCacheSet(key, rows);
-  }
-  return rows || [];
 }
 
 // ---------------------------------------------------------------------------
@@ -10784,8 +11441,8 @@ function readSmartPicks(day) {
   try {
     return labelsDb.prepare(
       // Rank IS the display order — persistSmartPicks writes the five adjacent
-      // picks at 0-4 and the stretch pick last. Sorting on kind as well put
-      // "stretch" before "adjacent" (it sorts later, so DESC lifted it), which
+      // picks at 0-4. Sorting on kind as well once put a second kind first
+      // (it sorted later, so DESC lifted it), which
       // led the row with the one pick chosen for being unlike the library.
       "SELECT * FROM smart_picks WHERE day = ? ORDER BY rank ASC").all(day);
   } catch (e) {
@@ -10795,16 +11452,11 @@ function readSmartPicks(day) {
 }
 
 // How many candidates a build may TRY to resolve before giving up, and how far
-// into the outside genres the stretch pick may look.
-//
 // Every candidate tried costs a streaming search whether or not it becomes a
 // pick, so the pool size is not the bound that matters — this is. Without it a
-// build whose service credentials have expired walks 150 adjacent candidates
-// and then every outside genre × 60 roster artists, several thousand live calls
-// against APIs that are not officially ours to use.
+// build whose service credentials have expired walks all 150 candidates,
+// hundreds of live calls against APIs that are not officially ours to use.
 function smartMaxResolves()      { return 40; }
-function smartMaxStretchGenres() { return 3; }
-function smartMaxStretchRoster() { return 15; }
 
 // Marks a day as attempted, so a build that legitimately produces nothing is
 // not retried on the next request. Without this, "did we build today?" is
@@ -10891,9 +11543,9 @@ async function buildSmartPicks(day) {
       const album = await resolveSmartAlbum(c.name);
       if (!album) continue;      // nothing addable — a pick nobody can act on
       used.add(c.canon);
-      // The five adjacent picks go into the streaming library now, so Roon can
-      // import them before anybody looks at the screen. Only these five: the
-      // stretch pick is the one the user is meant to accept or reject.
+      // The picks go into the streaming library now, so Roon can import them
+      // before anybody looks at the screen — that is what makes them playable
+      // by morning rather than a button somebody has to press.
       const added = smartPicksAutoAdd ? await autoAddSmartAlbum(album) : false;
       picks.push({
         kind: "adjacent", mbid: c.mbid, artist: c.name, canon: c.canon,
@@ -10901,32 +11553,6 @@ async function buildSmartPicks(day) {
       });
     }
 
-    // The stretch pick: one album from a genre the library barely touches, taken
-    // from MusicBrainz's relevance order so it is that genre's canonical name
-    // rather than a random unknown.
-    const outside = smartStretchGenres(libraryGenreWeights(), albumIndex.albums.length)
-      .slice(0, smartMaxStretchGenres());
-    const adjacentCanons = new Set(ranked.map(c => c.canon));
-    for (const g of outside) {
-      if (picks.filter(p => p.kind === "stretch").length >= smartStretchCount()) break;
-      let roster = [];
-      try { roster = await smartTagArtists(g.genre); }
-      catch (e) {
-        console.error("[picks] tag lookup for " + g.genre + ": " + e.message);
-        continue;
-      }
-      for (const a of roster.slice(0, smartMaxStretchRoster())) {
-        const canon = canonArtist(a.name);
-        if (smartPickExcluded(canon, sets)) continue;
-        if (adjacentCanons.has(canon)) continue;   // reachable from the library
-        const album = await resolveSmartAlbum(a.name);
-        if (!album) continue;
-        used.add(canon);
-        picks.push({ kind: "stretch", mbid: a.mbid, artist: a.name, canon,
-                     seedNames: [], album, genre: g.genre });
-        break;
-      }
-    }
   } catch (e) {
     if (!smartRateLimited(e)) throw e;
     // Rate-limited by Qobuz/TIDAL. Keep whatever resolved before the limit and
@@ -10986,6 +11612,11 @@ function persistSmartPicks(day, picks) {
 // three identical builds and triple every upstream call.
 let _smartBuilding = null;
 function kickSmartPicks(why, force) {
+  // The single gate. Every caller — the timer, the post-sync kick, the request
+  // path and the manual rebuild button — comes through here, so one check
+  // covers all of them and none can drift. Off means no MusicBrainz, no
+  // ListenBrainz, no streaming favourites written: nothing at all.
+  if (!smartPicksEnabled) return;
   const day = smartDayKey();
   if (_smartBuilding) return;
   if (!force) {
@@ -11015,8 +11646,17 @@ function smartPicksDue(now) {
 }
 
 let smartPicksTimer = null;
+function stopSmartPicksMaintenance() {
+  if (!smartPicksTimer) return;
+  clearInterval(smartPicksTimer);
+  smartPicksTimer = null;
+}
 function startSmartPicksMaintenance() {
   if (smartPicksTimer) return;
+  // Not even a timer while the feature is off. Restarted by the settings route
+  // the moment it is switched on, so enabling does not need a container
+  // restart.
+  if (!smartPicksEnabled) return;
   // Checked every 10 minutes so the configured hour is honoured closely without
   // the timer itself being the expensive thing — the work behind it is gated on
   // "today has no picks", which is a single indexed read.
@@ -11088,6 +11728,15 @@ async function smartPickFavourites() {
 // (nothing, first time). It never waits — see kickSmartPicks.
 app.get("/api/smart-picks", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  // Off means nothing is served, not just that nothing new is generated. The
+  // build already stopped when the switch was flipped, but the last day's rows
+  // stayed on disk and this route kept handing them out — so the Home carousel
+  // and the Smart Picks screen went on showing recommendations from a feature
+  // the user had switched off, frozen at the day it stopped.
+  if (!smartPicksEnabled) {
+    return res.json({ day: smartDayKey(), enabled: false, service_ready: false,
+                      auto_add: false, hour: smartPicksHour, building: false, picks: [] });
+  }
   try {
     const day  = smartDayKey();
     const rows = readSmartPicks(day);
@@ -11110,7 +11759,8 @@ app.get("/api/smart-picks", async (req, res) => {
 // Smart Picks settings: when the daily build runs, and whether the five
 // adjacent picks are added automatically.
 app.get("/api/settings/smart-picks", (req, res) => {
-  res.json({ hour: smartPicksHour, auto_add: smartPicksAutoAdd,
+  res.json({ enabled: smartPicksEnabled, hour: smartPicksHour,
+             auto_add: smartPicksAutoAdd,
              service_ready: smartPicksServiceReady() });
 });
 app.post("/api/settings/smart-picks", (req, res) => {
@@ -11123,8 +11773,119 @@ app.post("/api/settings/smart-picks", (req, res) => {
     smartPicksHour = Math.trunc(h);
   }
   if (body.auto_add !== undefined) smartPicksAutoAdd = !!body.auto_add;
-  savePersistedSettings({ smartPicksHour, smartPicksAutoAdd });
-  res.json({ ok: true, hour: smartPicksHour, auto_add: smartPicksAutoAdd });
+  if (body.enabled !== undefined) {
+    smartPicksEnabled = !!body.enabled;
+    // Start or stop the timer here, so switching the feature on takes effect
+    // now rather than after a container restart — and switching it off really
+    // does stop the clock rather than leaving it ticking against a gate.
+    if (smartPicksEnabled) startSmartPicksMaintenance();
+    else stopSmartPicksMaintenance();
+  }
+  savePersistedSettings({ smartPicksEnabled, smartPicksHour, smartPicksAutoAdd });
+  res.json({ ok: true, enabled: smartPicksEnabled, hour: smartPicksHour,
+             auto_add: smartPicksAutoAdd });
+});
+
+// ---------------------------------------------------------------------------
+// Home screen rows — which appear, and in what order.
+//
+// The vocabulary lives HERE and the client renders both the Home screen and
+// the settings list from it, so the two can never drift. Same reasoning as the
+// theme table: a list built from the thing it describes cannot disagree with
+// it.
+//
+// Stored as an array of { id, on } rather than a set of booleans plus a
+// separate order, because order and membership are one fact and splitting them
+// is how they end up contradicting each other.
+// ---------------------------------------------------------------------------
+function homeRowIds() {
+  return ["unplayed", "history", "picks", "random", "library", "lotw", "genres"];
+}
+// The order and enablement a fresh install gets. History is on — it is the row
+// people expect to exist — and sits second, right after the discovery row.
+function homeRowsDefault() {
+  return homeRowIds().map(id => ({ id, on: true }));
+}
+// Read the stored layout, repaired against the current vocabulary: unknown ids
+// dropped (a row removed by an update), missing ids appended in default order
+// and switched on (a row ADDED by an update must appear, not silently stay
+// hidden because an old layout predates it).
+function homeRowsLayout() {
+  const stored = loadPersistedSettings().homeRows;
+  const valid = new Set(homeRowIds());
+  const out = [];
+  const seen = new Set();
+  if (Array.isArray(stored)) {
+    for (const r of stored) {
+      const id = r && typeof r.id === "string" ? r.id : null;
+      if (!id || !valid.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      out.push({ id, on: r.on !== false });
+    }
+  }
+  for (const { id, on } of homeRowsDefault()) {
+    if (!seen.has(id)) out.push({ id, on });
+  }
+  return out;
+}
+
+// A row whose FEATURE is switched off is not a layout choice, and the two must
+// not be confused. The user's stored `on` stays exactly as they left it — so
+// switching Smart Picks or Labels back on restores the Home screen they had —
+// while the row is off everywhere until then. Reported by the server rather
+// than worked out in the client, because the client would otherwise need to
+// know which rows belong to which feature.
+function homeRowUnavailable(id) {
+  if (id === "picks" && !smartPicksEnabled) return "Smart Picks is off in Settings";
+  if (id === "lotw"  && !labelsEnabled)     return "Labels is off in Settings";
+  return null;
+}
+
+app.get("/api/settings/home-rows", (req, res) => {
+  res.json({
+    rows: homeRowsLayout().map(r =>
+      Object.assign({}, r, { unavailable: homeRowUnavailable(r.id) })),
+  });
+});
+app.post("/api/settings/home-rows", (req, res) => {
+  const rows = (req.body || {}).rows;
+  if (!Array.isArray(rows)) return res.status(400).json({ error: "rows array required" });
+  const valid = new Set(homeRowIds());
+  const clean = [];
+  const seen = new Set();
+  for (const r of rows) {
+    const id = r && typeof r.id === "string" ? r.id : null;
+    if (!id || !valid.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    clean.push({ id, on: r.on !== false });
+  }
+  if (!clean.length) return res.status(400).json({ error: "no recognisable rows" });
+  savePersistedSettings({ homeRows: clean });
+  // Answered from the same repair path the GET uses, so the client is told
+  // what was actually stored rather than what it sent.
+  res.json({ ok: true, rows: homeRowsLayout() });
+});
+
+// Labels on/off. The scan's own gate lives inside runLabelsIndexScan, at the
+// boundary between the /music tag read (which other features are built on) and
+// the label lookups (which are the network traffic this switch is about).
+app.get("/api/settings/labels", (req, res) => {
+  res.json({ enabled: labelsEnabled, count: labelsIndex.count,
+             scanning: !!labelsIndex.building });
+});
+app.post("/api/settings/labels", (req, res) => {
+  const body = req.body || {};
+  if (body.enabled === undefined) return res.status(400).json({ error: "enabled required" });
+  const was = labelsEnabled;
+  labelsEnabled = !!body.enabled;
+  savePersistedSettings({ labelsEnabled });
+  // Switched on: the cache may be empty or stale, so build it now instead of
+  // leaving an empty Labels screen until the 12-hour timer comes round.
+  if (labelsEnabled && !was) {
+    bgRun("labels (enabled)", () => runLabelsIndexScan(true))
+      .catch(e => console.error("[labels] scan after enable failed: " + e.message));
+  }
+  res.json({ ok: true, enabled: labelsEnabled });
 });
 
 // Rebuild today's picks now, ignoring the schedule and the attempt marker.
@@ -11197,7 +11958,10 @@ app.get("/api/search", async (req, res) => {
     }
     const nq      = normalize(q);
     const results = searchAlbums(q, limit);
-    const labels  = searchLabels(nq);
+    // A disabled feature does not appear in results. The label index is still
+    // populated from before it was switched off, so this has to be asked
+    // rather than inferred from emptiness.
+    const labels  = labelsEnabled ? searchLabels(nq) : [];
     const artists = searchArtists(nq);
     res.json({ query: q, count: results.length, indexed: albumIndex.count, results, labels, artists });
   } catch (e) {
@@ -12012,7 +12776,8 @@ app.get("/api/display/content", async (req, res) => {
     // source (Qobuz/disk) than the live Roon browse rows, the match silently
     // failed and the tiles arrived with no usable offset — which is why they
     // could not be selected. Projecting the live index removes that dependency.
-    const labelName = resolveAlbumLabelName({ title: album, subtitle: artist });
+    const labelName = labelsEnabled
+      ? resolveAlbumLabelName({ title: album, subtitle: artist }) : null;
     const targetKey = labelName ? canonicalLabelGroupKey(labelName) : null;
     if (targetKey) {
       const picks = [];

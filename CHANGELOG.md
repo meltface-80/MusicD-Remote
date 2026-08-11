@@ -2,6 +2,631 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.59] — 2026-08-11
+
+### Fixed — a switched-off feature no longer leaves its Home row and its playlists behind
+
+Both of these were flagged as outstanding at the end of the v1.7.58 review; neither was done.
+
+**Smart Picks off now means the carousel is gone.** Switching it off stopped the daily build but
+left the row on the Home screen, still showing the last day it produced — recommendations from a
+feature the user had switched off, frozen at the moment it stopped. `/api/smart-picks` now serves
+nothing when the feature is off, the row does not render, and — the part that actually matters —
+the Home screen no longer *fetches* it either. Hiding a row that has already asked for its data
+still polls a switched-off feature once per Home visit, forever.
+
+The same treatment for **Label of the week**, which had the identical shape: with Labels off its
+route already returned nothing, so the row was an empty heading.
+
+In the Home Screen settings page these rows now read as off and cannot be switched on, with the
+reason on the row (*"Smart Picks is off in Settings"*). The stored preference is deliberately **not
+rewritten** — switching the feature back on restores the Home screen the user had, rather than one
+this page quietly changed while the row was unavailable. A row's feature being off is not a layout
+choice, and the two are kept apart in the data.
+
+**A saved playlist that filters by record label now says so.** `libraryView` only applies the facets
+`libFacetDefs()` currently publishes, so with Labels off a stored Record-label filter was simply
+skipped: the playlist still opened, still played, and returned a completely different set of albums
+with nothing on screen to explain it — "Late Night on Blue Note" quietly becoming "every album in
+the library". The detail screen and the play path now both refuse it and name the cause and the
+setting to change, and the tile carries the same reason so it does not look ordinary until opened.
+The saved view is left untouched, so switching Labels back on restores the playlist exactly as it
+was.
+
+758 unit / 317 DOM / 42 static. Six mutations confirmed red, including one that proved a redundant
+guard was redundant — `applyHomeLayout`'s unavailable term changes nothing today, because the only
+two rows that can be unavailable are also the two that hide when empty. It is kept for a future row
+that does not, and is now labelled as belt-and-braces rather than as the thing doing the work.
+
+## [1.7.58] — 2026-08-11
+
+### Fixed — the red line people actually see, and the wrong wait time
+
+Two corrections to v1.7.57, both reported from a screenshot of the real thing.
+
+**The message on screen was composed in the client, so v1.7.57 went straight past it.** The line
+under the album title — *"Roon offered no playback options for this album."* — is not the server's
+`noActionError`; that one is a toast on the play path. This sentence is built in `public/app.js`
+from an empty action list, and its "nothing was proven" branch carried no explanation at all. The
+pass that added why/what-next/how-to-fix to every message on this path fixed the ones nobody was
+looking at. Both branches now explain themselves. The narrow lesson, worth keeping: a message the
+server also knows how to build is not evidence the server built the one on screen.
+
+**It quoted one interval where there are two.** They are different clocks. When the live album count
+contradicts the snapshot, the site that proves it has *already armed* the recheck chain —
+`libraryRecheckMs()`, **5 minutes**. When the change is only the likeliest explanation, nothing was
+armed and the next look is the background watch — `libraryCheckMs()`, **10 minutes**. Quoting ten
+for both was wrong precisely in the case a user is most likely reading, and told somebody staring at
+a red line to wait twice as long as they needed to. Each branch now quotes the clock it is actually
+waiting on, read from the constants rather than written into the sentence, so retuning either can
+no longer make the message lie.
+
+Four DOM assertions drive the real album view for both branches, and three mutations of the client
+confirmed red — including a straight revert to the sentence in the screenshot.
+
+## [1.7.57] — 2026-08-11
+
+### Changed — every "library is changing" message now explains itself
+
+The red messages you get while Roon is adding albums stopped at the symptom — *"Roon offered no
+playback options for this album"* — which reads as the extension being broken. Every message on
+that path now says three things: **why** it happened, **what the extension is doing about it**, and
+**the manual way out** if that doesn't work.
+
+> Roon offered no playback options for this album. Your Roon library changed after this list was
+> built — normally because albums are being added or identified. The extension re-checks every 10
+> minutes and refreshes itself once Roon settles, so this usually clears on its own. If it hasn't,
+> open the side menu and tap Rescan library.
+
+One shared builder, so the four places that raise this cannot drift apart: no playback options,
+Roon's own advisory (*"Library is being updated"*), a partial track list, and an empty one. Two
+cases deliberately do **not** carry it — Roon offering a different menu, and an unexpected browse
+action — because both would send you to a Rescan that cannot help.
+
+The wording keeps the distinction the code can actually prove. When the live album count contradicts
+the snapshot the change is stated as fact; when it is merely the likeliest explanation it is
+hedged. Overstating the second would be a guess dressed up as a diagnosis.
+
+### Fixed — those messages were unreadable, which would have made the rewrite pointless
+
+The toast was built for "Queued 12 albums": a pill, dismissed after 2.4 seconds. Measuring it at
+phone width showed the new text laid out **195px wide and 270px tall** — a narrow ribbon running up
+the middle of a 390px screen — and then removed before it could be read.
+
+The cause is not obvious from the stylesheet: `left: 50%` makes the containing block half the
+viewport, and a shrink-to-fit box cannot exceed it. `width: max-content` frees it and a max-width
+clamps it, giving 362px on a phone and 560px on a desktop. The lifetime now scales with length (11s
+over 120 characters), so ordinary confirmations are unchanged. The corner radius drops from a pill
+to 22px, which still reads as a pill on one line and as a rounded card once the text wraps.
+
+Six DOM assertions measure this at 390 and 1280px, including the narrow-column case specifically —
+the stylesheet gives no hint of it and only measurement catches it.
+
+## [1.7.56] — 2026-08-11
+
+### Fixed — the ten-minute watch would have re-walked the library forever on some installs
+
+Found by review before release, and it is the reason the watch could not have shipped as it stood.
+
+`buildAlbumIndex` keeps two numbers: `count`, the albums that actually arrived once holes are
+filtered out, and `declared`, what Roon *said* the library held when the snapshot was taken. Its own
+comment explains why the difference matters — *"comparing a live count against the filtered one
+would then report 'the library moved' forever on a library that never changed, and every album open
+would arm another full re-walk"* — and `loadAlbumSession` was fixed for exactly that.
+
+`libraryChangedSince()`, the probe the watch repeats, was not. It compared the live count against
+`count`. On any install whose build hit a short page, every probe returned "changed" on a library
+nobody had touched. At the old twelve-hour interval that was two needless re-walks a day and went
+unnoticed across several versions. At ten minutes it becomes a full library walk, a genre harvest
+(a few hundred browse calls) and an art prewarm **144 times a day** — a self-inflicted denial of
+service on the Core, delivered by the feature meant to make the extension well behaved.
+
+The probe now compares against `declared || count`, the same expression `loadAlbumSession` uses. The
+first/last identity checks — the only way to see a library whose album count did not change — are
+skipped when the snapshot has holes, because with holes filtered out those entries are simply not
+the albums at those offsets and comparing them re-creates the same forever-true loop. A holed
+snapshot therefore reports "unchanged" until the count moves or somebody presses Rescan: degraded,
+but bounded, which the alternative is not. A short read now also says so in the log, since it is the
+one line that would explain a library appearing to stop noticing edits.
+
+The probe had **no test at all** — it is the single most-repeated Roon call in the extension. It now
+has nine, covering the holed snapshot, a snapshot written before `declared` existed, same-count
+swaps at either end, and the empty and one-album libraries. Five mutations confirmed red.
+
+## [1.7.55] — 2026-08-11
+
+### Fixed — the automatic rescan now actually fires, because something finally asks
+
+v1.7.54 repaired the recheck chain: the loop that keeps asking, backs off, and rebuilds once Roon
+settles. It did not fix the thing standing in front of that loop, and on its own the chain was
+worth very little — because **nothing was asking the question on a schedule that mattered**.
+
+There were exactly two detectors. One is opportunistic: it rides along on `nav.total` when a user
+opens or plays an album, costs nothing, and is genuinely fast — but it needs somebody to open an
+album. On a box sitting idle, or one used only from Home, the carousels and Now playing, it never
+fires at all. The other was a **twelve-hour `setInterval`**. That was the entire detection story.
+
+So "I added albums to Roon and the extension did nothing" was never an edge case. It was the
+expected behaviour of the design, and every repair in v1.7.54 was downstream of a question nobody
+was asking often enough to reach them.
+
+**The periodic check is now ten minutes.** The affordability argument is that the QUESTION and the
+ANSWER have wildly different costs and only the question is being repeated: `libraryChangedSince()`
+is 2-3 browse round-trips (about 430 a day) and almost always returns "no". The expensive parts —
+the settle probe and the full re-walk — still only happen when something has genuinely changed, and
+still never while Roon is importing.
+
+Detection to refreshed snapshot, with nobody touching the app: **≤10 minutes**, plus the 10-second
+settle probe, plus the walk. If Roon is still importing when the tick lands, the v1.7.54 recheck
+chain takes over at 5-minute intervals and the tick stands down while it runs.
+
+The tick also stands down while a rebuild is in flight, while the index is building, and while a
+recheck is already pending — each of those means the question is already being asked or answered,
+and probing underneath only adds calls to a Core that is working. A `busy` or `error` result is
+handed to the recheck chain rather than being lost until the next tick. The chain and the watcher
+now back each other up: if the chain's budget runs out, the watcher is still there.
+
+### Changed — comments that described the old twelve-hour design
+
+Four comments on the index path still told the reader the snapshot is "re-checked only every 12
+hours". They now describe the ten-minute watch, including the point that matters when reading this
+code: the check is frequent because it is cheap, the rebuild is rare because it is not.
+
+## [1.7.54] — 2026-08-10
+
+### Changed — the Home search magnifier moved to the right of the top bar
+
+It sat beside the hamburger, which is where the always-open search box used to live. That was the
+right place while the box owned the whole bar; once it collapsed to a single icon in v1.7.50 the
+icon joined the left-hand navigation cluster and read as a third nav control. It now hugs the right
+edge at every width. Opening it still fills the bar — the right edge stays where the glass was and
+the left edge travels out — measured at 360 / 390 / 768 / 1280 px.
+
+### Fixed — the automatic rescan could stop firing permanently, and did not mean what it claimed
+
+The v1.7.49 automatic rescan was audited end to end against the requirement that it fires **after
+Roon has finished adding and identifying albums**. It did not hold up. Five separate defects, all
+of them silent — the twelve-hour tick kept running, so the only symptom was the original v1.7.49
+complaint quietly coming back:
+
+- **The recheck budget could never refill.** `_libraryRecheckCount` was reset only by a recheck
+  returning `fresh`, but at the cap `scheduleLibraryRecheck()` returns before arming anything — so
+  no recheck could fire, so no `fresh` could ever arrive to reset it. The counter was global and
+  was not refunded on `rebuilt` either, so roughly two dozen ordinary imports were enough to spend
+  it. After that the automatic rescan was **dead for the lifetime of the container** and every
+  later import waited for the next twelve-hour tick. The budget is now per *episode*: an idle gap
+  of 30 minutes — comfortably longer than the 5-minute chain, so a running episode can never refill
+  itself — starts a new one with a full budget. This is a *class* of error: a resource whose only
+  refill path is gated behind the resource itself.
+- **A failed rebuild reported success.** `buildAlbumIndex()`'s rejection was swallowed and
+  `{ status: "rebuilt" }` returned regardless. Since the builder only assigns the snapshot after a
+  full successful walk, a mid-walk failure left the old data in place, told the recheck chain the
+  episode was over, and cleared the "Roon importing" banner. It now returns `error`, which is one
+  of the two statuses that re-arm the chain.
+- **"Finished" only meant "not still adding".** The import probe compared the album count across
+  one 5-second window. Roon imports in bursts, so any pause longer than that window read as
+  finished — and identification, which happens *after* the import and changes nothing about the
+  count, was not looked for at all. The probe now takes three samples, and each sample carries the
+  first and last album's identity as well as the count: identification rewrites titles and artists,
+  which moves rows in an alphabetical list. Roon publishes no import-finished event of any kind, so
+  this is inference from what the browse API will tell us — good evidence that work is still
+  happening, never proof that it has stopped.
+- **A re-pair scheduled nothing.** An unpair clears any pending recheck, and a websocket flap is
+  most likely during exactly the heavy import that recheck was waiting on — so the refresh silently
+  dropped back to the twelve-hour tick. A re-pair with a snapshot already in memory now arms one.
+  (The comment claiming `startIndexMaintenance()` "re-verifies it on re-pair with a cheap 2-call
+  probe" described code that was never written; it has been corrected.)
+- **The automatic rebuild stopped at the album snapshot.** Everything built *on* the snapshot — the
+  Qobuz/TIDAL source badges, the Genre facet, the decade and quality data from file tags, the label
+  map — was refreshed only by the chain behind the manual Rescan button. An automatically refreshed
+  library came back with the right albums wearing last week's metadata, which reads as the automatic
+  rescan not having run. Both automatic paths now run the same chain the button does, tagged
+  `auto rescan` in the log so the two are tellable apart.
+
+### Fixed — Labels off now means off in scans, searches and filters too
+
+v1.7.51-52 stopped the label *scanning* when Labels is off. The label features it had already
+produced were still on screen: the "Record label" entry in the Library Focus sheet, the Labels
+section of global search, the "more from this label" grid on the wall display, and the two label
+endpoints. A stored Record-label filter also kept narrowing the Library wall with no visible way to
+clear it, because the Focus sheet no longer listed the facet it came from. All five are now gated
+on the same `labelsEnabled` switch, and the client's Focus count badge follows the vocabulary the
+server actually publishes rather than a hardcoded list.
+
+### Fixed — three defects the review found in this version's own changes
+
+Caught before release, all three re-creating the class of bug the version exists to fix:
+
+- **A labels-map failure reported the snapshot as failed.** `rebuildLabelsMap()` was chained into
+  `buildAlbumIndex()`'s promise, so a throw from the label map returned `error` for a perfectly
+  rebuilt snapshot — which stopped the post-rebuild chain firing and left every dependant stale.
+  One line from the fix for exactly that. The flag now tracks the snapshot build alone, and a
+  labels-map failure is logged rather than silently swallowed.
+- **The automatic chain ran with `force`.** In both scans `force` means "a human insisted": it buys
+  past the `libraryIsImporting()` gate, and in the genre walk it turns a fingerprint-skipping pass
+  into a full sweep of a few hundred browse calls. Carrying it onto the automatic path would have
+  skipped the very import check this version strengthened, at the moment Roon is most likely to
+  still be identifying — and swept the whole library every time an import settled. New albums have
+  no fingerprint yet, so the incremental walk picks them up regardless.
+- **The Focus count badge lagged a version behind.** `libAvailableFacets` was populated only when
+  the Focus sheet was first opened, so on a fresh load with Labels off the wall's "N matching
+  albums" and the badge still counted a stored Record-label selection the user could neither see
+  nor clear. It is now seeded at boot from the Labels switch the client already asks for.
+
+Also de-duplicated: the change probe and the import probe were each spelling out their own
+`title||subtitle` identity. They now share `browseItemIdentity()`, because a disagreement between
+"is this the library we indexed" and "is this the library it was five seconds ago" would be
+unexplainable if the two recognised albums differently.
+
+### Added — the Rescan row now says what the snapshot is
+
+The automatic rescan runs silently by design, which is also why five defects in it went unnoticed:
+from the app, a library refreshing itself and a library that had quietly stopped refreshing looked
+identical. The server has published `library_importing`, `library_recheck_pending`, `index_built_at`
+and `index_count` on `/api/status` since v1.7.49 and no client read any of them. The side-menu
+"Rescan library" row now carries a second line — `12,431 albums · checked 2 hours ago`, or `the
+library moved, checking again shortly`, or `Roon was importing at the last check — refresh paused`.
+Every phrase is past tense or explicitly a schedule: these flags are set at the last check and
+cleared at the next clean one, so "Roon is importing" would be a confident lie about an instant
+nothing can observe.
+
+### Added — the recheck episode is now driven, not grepped
+
+Everything that previously covered this scheduling was a substring search against `index.js`, which
+is why all five defects shipped. The episode is now executed with a fake clock and a fake
+`setTimeout`, so every branch of the status dispatch runs: one pending recheck ever, `busy`/`error`
+re-ask, the cap engaging, `rebuilt` not refunding, `fresh` refilling, and an exhausted budget
+recovering after an idle gap. Ten mutations of `index.js` were confirmed to turn the suite red.
+723 unit / 302 DOM / 42 static.
+
+## [1.7.53] — 2026-08-10
+
+### Fixed — Sort floated in the middle of the Library control row
+
+The row was laid out with `justify-content: space-between`. With two controls that put Focus left
+and Sort right, which was correct. Adding the text filter as a third made Sort the *middle* child,
+so the free space was split either side of it and it drifted away from the control it belongs
+beside — and drifted **further the wider the screen**, since every extra pixel was shared between
+the two gaps.
+
+Sort now carries an auto left margin, which absorbs all the slack in one place: Focus hugs the left
+edge, Sort and the magnifier sit together on the right with the row's own gap between them, at every
+width. The `justify-content` declaration was removed rather than changed — auto margins consume free
+space *before* justify-content is applied, so no value there could affect the result, and leaving one
+in place would have been a rule claiming to do work it wasn't.
+
+### Tests
+- The control row is now **measured** at 360, 390, 768 and 1280px wide. Counting controls and
+  checking their order passed against the broken layout too — only a rectangle can see that Sort was
+  stranded mid-row. The assertion is the request itself: the gap on Sort's left must be several times
+  the gap on its right.
+- Suite: 42 static / 700 unit / 291 dom.
+
+## [1.7.52] — 2026-08-10
+
+### Fixed — a crash v1.7.51 introduced, caught before release
+
+Splitting the `/music` walk out of the label scan left `bandcampMap` dangling: the Bandcamp pass
+still referenced a variable that had moved into the other function. `node --check` passes on it —
+it is a runtime `ReferenceError`, swallowed by the scan's own catch and surfacing only as
+"[labels] scan aborted by unexpected error", which would have killed every pass after Bandcamp on
+any library with `/music` mounted. Exactly the class the pre-flight's startup check exists for.
+
+### Fixed — the last label work that ran with Labels off
+
+The audit turned up four more paths beyond v1.7.51's:
+
+- **Every album you opened recorded a label.** The Qobuz metadata lookup behind the album view and
+  the wall display persisted a label name and added it to the label index on each open — a label
+  scan by another name, one album at a time.
+- **The local-files badge rebuild ran through the label scan.** Both boot timers that rebuild
+  `local-albums.json` called `runLabelsIndexScan`, which now returns immediately when Labels is off
+  — so a missing or old-format file would never have been rebuilt and the badges would have stayed
+  empty. They call the walk directly now, which is what they always wanted.
+- The label-folder-depth setting still triggered a scan and wrote to the labels log.
+- The merge/unmerge routes and the FanArt key save still wrote label data and log lines.
+
+### Changed — the Library control row matches Roon's
+
+Focus on the left, Sort on the right, and the text filter last, in the position Roon puts its own
+magnifier — and drawn as a magnifier rather than a funnel, since that is what it is doing. The
+top-bar search is hidden on this screen, so there is no second glass to confuse it with.
+
+### Tests
+- 7/7 mutations still caught; suite 42 static / 700 unit / 285 dom.
+- The control-row order test now pins Roon's arrangement rather than the previous one.
+
+## [1.7.51] — 2026-08-10
+
+### Fixed — Labels off now genuinely stops label scanning
+
+v1.7.48 put the on/off gate in the *middle* of the label scan. The boundary was right — everything
+before it was the `/music` tag read, which four Library filters and a badge depend on — but the
+shape was wrong. With Labels off the extension still entered a function named for labels, set
+`labelsIndex.building`, seeded the label map (which writes label names **and** kicks logo fetches),
+and wrote `[labels] 12-hour auto-rescan triggered` into the labels scan log. From outside, that is
+label scanning, whatever the gate did afterwards.
+
+**The tag walk is now its own job.** `runFileMetadataScan` reads `/music` and produces release years
+(the Decade filter), the local-files badge, and the Format / Sample rate / Bit depth / Channels
+filters. It runs on its own schedule regardless of the Labels setting, and logs under `[files]`.
+
+**`runLabelsIndexScan` bails on the first line.** No label state touched, no cache seeded, no log
+line written, no network call. Also closed: the 12-hour timer no longer enters the label scan at all
+when off; `/api/home/label-of-the-week` returns an empty row rather than reaching into the label
+index; and the two label rescan routes refuse rather than scanning, for a stale client posting to a
+page that is no longer reachable.
+
+To be explicit about the one thing that does **not** stop: the `/music` tag walk. It is not label
+work, and gating it would take the Decade, Format, Sample rate, Bit depth and Channels filters and
+the local-files badge down with the labels.
+
+### Tests
+- The static gate test was rewritten around the new structure: the flag check must be the *first*
+  statement of the label scan with nothing label-shaped before it, the walk must not be gated on the
+  flag, and the 12-hour timer must run one and not the other.
+- `syncchain.test.js` gained a Labels-off case asserting the walk still runs and the label pass does
+  not.
+- 7/7 mutations caught. Suite: 42 static / 700 unit / 285 dom.
+
+## [1.7.50] — 2026-08-10
+
+### Changed — search lives behind a magnifying glass
+
+The field is no longer permanently in the top bar. Tap the glass to open it; tap anywhere away from
+it, or press Escape, to close it. **Closing always clears.** A field that reopens holding an old
+query, with the results gone and the Home rows back, reads as a search that has silently stopped
+working.
+
+It follows the overflow menu's pattern exactly — one module-level "what is open", `stopPropagation`
+on the trigger, a `closest()` containment test on the document — rather than inventing a second
+idiom for the same gesture. A tap on the X or the status text counts as inside, so clearing does not
+also dismiss.
+
+This fixes a layout inconsistency too: the search box measured 48px against 40px icon buttons, so
+the top bar was 48px tall on Home and 40px everywhere else and visibly jumped on every navigation.
+The collapsed state is measured in a test rather than assumed.
+
+The search bar previously had **no test coverage at all** — the largest untested surface in the
+client, which mattered here because almost everything this change touches is invisible in a
+screenshot.
+
+### Added — a text filter on the Library wall, behind a funnel
+
+Type "F" to narrow the wall to albums and artists starting with F. Tap away to close and clear.
+
+**On the request.** The ask was an A-Z rail down the edge of the screen, which worked under Album
+name and Artist and did nothing under the others. That is not a bug to fix: a letter is a *position
+in an alphabetical list*, and there is no such position when the wall is ordered by year, play count
+or random. A filter is orthogonal to sort order, so it works under all seven — and it reaches
+artists as well as titles, which a rail down the side of an album grid structurally cannot.
+
+Two matcher rules worth stating:
+
+- **Titles match on the article-stripped key** the wall already sorts by, so "The Wall" narrows
+  under W exactly where the wall files it. Typing "the w" still finds it, so somebody typing what
+  they see is not told the album is missing.
+- **Artists match per credited name**, so "F" finds Fela Kuti inside "Tony Allen / Fela Kuti". It is
+  `startsWith`, never `includes` — v1.6.56 was spent removing substring artist matching from
+  thirteen call sites, and a filter is exactly where it would creep back.
+
+It runs in the filter chain *before* the comparator, which is what makes it sort-independent; a test
+asserts that ordering. The typed text is bounded (it arrives on a query string), and a filtered view
+is deliberately not cached — every keystroke is a new key, and a fixed-size cache would be evicted
+down to nothing by one session of typing.
+
+### Changed — button sizing and placement
+
+The stylesheet had **no sizing tokens at all**: every height, padding and min-width was a one-off.
+That is how one shared `.action-btn` class came to render at four different heights — 37px on the
+playlist screens, 40px in the album modal, 38px on a track row, 38px in the label merge sheet —
+because each container re-declared its own padding. There is now one control height, and
+`.action-btn` uses it everywhere.
+
+- `.icon-btn`'s phone size tiers were scoped to the top bar only, so the album modal's corner
+  buttons never shrank on a small screen. It now uses the shared token.
+- Tap targets raised: the settings info button (18×14px, the smallest in the app by a wide margin),
+  the artist-view Back button (27px, and the only way out of that screen), the settings Back button,
+  the search clear, the dev and update buttons, and the Smart Picks card actions.
+- The modal's corner buttons were positioned by hand-computed arithmetic (`12`, `60`, `108`), so
+  changing the icon size silently mis-spaced all three. They now derive from the token. The overflow
+  menu was also missing the `env(safe-area-inset-top)` its two neighbours had, so on a notched phone
+  it sat higher than the × and Share it lines up with.
+- Deleted three dead rule sets (`.filter-pill`, `.filter-pills`, `.active-filter-chip`) with no
+  references anywhere in the client.
+
+### Fixed — the Library control row restored focus to the wrong button
+
+`renderLibraryControls` restored focus by an element's *first* class name, and every control there
+begins with `lib-ctl` — so focus on Sort came back on Focus after any view change. It now restores
+by the control's own class.
+
+### Fixed — three defects the review of v1.7.48/v1.7.49 found, one of them destructive
+
+The independent review pass ran late (a usage limit), and it caught a bug that had already shipped:
+
+- **`pruneOldPlays` was deleting listening history four other features depend on.** The horizon was
+  set to the History row's 30-day *display* window, but `plays` is not that row's private table:
+  "Play something unheard" reads 12 months, the "Not played in 6 months" row reads 6, and the
+  Library's play-count sort and Focus → Never played read all of it. The row is on by default, so
+  one visit to Home after upgrading silently deleted everything older than 30 days — irreversibly,
+  since Roon exposes no last-played date and nothing can rebuild it. Retention is now 400 days and
+  the row simply queries a narrower slice. **If you have already run v1.7.48 or v1.7.49, history
+  older than 30 days at that moment is gone; this stops any further loss.**
+- **A Home row switched off could not be switched back on.** `applyHomeLayout` only ever *added*
+  `.hidden` — nothing removed it, and the row renderers write into the carousel rather than the
+  section wrapper, so the row stayed gone until a full reload.
+- **After the first save, every switch on the Home Screen page was a no-op.** The server's reply
+  replaced the draft array with freshly-built objects, orphaning every checkbox handler that closed
+  over the old ones; the second toggle in a session mutated a discarded object and the request went
+  out with the previous value. After a drag, the whole list went dead.
+
+Also from that review: Labels switched **off** was still fetching logos from FanArt.tv and Discogs
+every twelve hours (the logo kick hangs off `seedLabelsFromCache`, which runs before the scan's own
+gate); a boot where the database could not be opened wrote "no evidence of use" down as a permanent
+*off* for both opt-in features, which repairing the database would not undo; and the new library
+re-check could loop indefinitely, because the snapshot's count is taken *after* dropping holes from
+a short page while the live count is not — so a library that never changed could report as moved
+forever. The snapshot now records what Roon declared, and only a genuinely unchanged library resets
+the re-check budget.
+
+Both client bugs shipped because `homerows.test.js` covers only the server's layout repair; nothing
+exercised the page itself, and neither failure is visible in a screenshot of it.
+
+### Tests
+- `test/dom/search-toggle.test.js` — also covers the Home Screen settings page, with both of the
+  above as named regressions.
+- `test/unit/libraryfilter.test.js` — 18 tests over the prefix matcher, including substring matching
+  as a named regression, plus structural assertions that the filter precedes the comparator and that
+  filtered views bypass the cache.
+- `test/dom/search-toggle.test.js` — 8 tests, the first coverage the search bar has ever had, with
+  the collapsed top-bar height measured rather than assumed.
+- 13/13 mutations caught. Suite: 41 static / 699 unit / 285 dom.
+
+## [1.7.49] — 2026-08-10
+
+### Fixed — the real reason a library change kept breaking playback for hours
+
+Adding albums to Roon made the extension show "no playback options available" and return short or
+empty track lists. The cause of the *symptom* was known — stale offsets while Roon re-indexes. The
+reason it **persisted instead of clearing itself** was not, and it is the actual bug:
+
+> The maintenance loop is a plain twelve-hour interval. When a tick found Roon mid-import it
+> correctly declined to rebuild — and then returned, **scheduling nothing**. The snapshot stayed
+> stale until the *next* tick, up to twelve hours after Roon had already finished.
+
+That is why the manual Rescan looked like the only cure: it forces past that gate. Declining to
+rebuild during an import now arms a re-check a few minutes out, and an ordinary album open that
+notices Roon's live album count no longer matches the snapshot arms one too. One pending re-check at
+a time, capped so a permanently-churning library cannot poll forever, and the budget is wide enough
+to outlast a large streaming import.
+
+### Added — the extension now says what is actually wrong
+
+Three facts were being thrown away at the exact moment a user needed them:
+
+- **Roon's own words.** A browse response can come back as `action: "message"` carrying the Core's
+  explanation and an `is_error` flag. Four sites discarded it and raised *"Unexpected browse action:
+  message"* — a sentence about a protocol where Roon had supplied the reason. Roon's message is now
+  shown as *"Roon says: …"*, and because such advisories are transient it gets the same "try again"
+  contract a stale offset does rather than a server error.
+- **Roon's live album count.** Already fetched on every album open and every play, and dropped on
+  the floor. Against the snapshot's count it proves the library has changed — free, and available at
+  the moment of failure.
+- **How many tracks Roon said the album had.** The level declares its row count, so a short read is
+  now distinguishable from a short album. The view says *"Roon sent 3 of 12 tracks"* instead of
+  silently hiding the whole section.
+
+`/api/status` also reports the sync state at last. The extension has always known when it last saw
+Roon importing; that only ever reached Roon's own Settings screen, so the app itself could not tell
+anyone why albums were misbehaving.
+
+**On wording.** A count mismatch proves the library *changed*; it does not prove an import is running
+*now* — establishing that costs four Core calls and a five-second sleep, which is not available on a
+play path. So the message stays past tense: *"your library has changed since this list was built."*
+A test pins that, because replacing a vague truth with a confident guess is the easy mistake here.
+
+### Fixed — "No matching action for 'play_now'. Available: "
+
+An internal diagnostic shown to a human in a toast, with a dangling empty list whenever Roon had
+offered no menu at all. Four sites built their own copy of it. One shared builder now tells the two
+cases apart: Roon offered nothing, or Roon offered something else and here is what.
+
+### Changed — Labels and Smart Picks leave the side menu when switched off
+
+A menu entry for a disabled feature leads to a screen that can only ever be empty. Hidden at boot
+and the instant the switch is flipped, on whichever device flipped it and on the next open elsewhere.
+
+### Tests
+- `test/unit/librarychange.test.js` — 16 tests over the message builders, the recheck budget, and
+  static assertions that the importing branch and the album-open path both arm a recheck (neither is
+  reachable from a unit test — both are async I/O against a live Core).
+- 9/9 mutations caught. Suite: 41 static / 681 unit / 272 dom.
+
+## [1.7.48] — 2026-08-10
+
+### Changed — Labels and Smart Picks are now opt-in, and off means *off*
+
+Both reach the network on their own schedule — Smart Picks queries MusicBrainz and ListenBrainz and
+writes favourites into a streaming library; the label pipeline walks five metadata APIs and fetches
+logos — so neither should be running for somebody who never asked for it. Both are off by default,
+with a switch at the top of their Settings page.
+
+**Off stops the timers, not just the rows.** Smart Picks is gated in `kickSmartPicks`, the single
+funnel every entry point goes through (the ten-minute timer, the post-sync kick, the request path
+and the manual rebuild), and the timer is not started at all while it is off. Labels is gated inside
+the scan itself.
+
+**Existing users are not switched off underneath them.** An absent setting plus evidence of use on
+the data volume — a populated label cache, or picks already built — is read as consent, because that
+state cannot exist unless the feature was running and nobody minded. The decision is written down
+once, so it never has to be inferred again. A fresh install has neither and starts off.
+
+**One deliberate exception, and it matters.** Turning Labels off does *not* stop the `/music` tag
+read. That pass is where release years (the Decade filter), the "local files" badge, and the Format,
+Sample rate, Bit depth and Channels filters come from — gating the whole scan would take four
+filters and two badges down with the labels, which is not what the switch asks for. The gate sits
+exactly at the boundary: the tag read still happens, and the label names, the iTunes → Qobuz →
+TheAudioDB → MusicBrainz → Discogs cascade and the FanArt/Discogs logo fetches do not. That
+placement is asserted by a test, because getting it wrong in either direction is invisible in a diff.
+
+### Removed — the Smart Picks "stretch" pick
+
+The sixth daily pick, drawn from a genre the library barely touched. It read well on paper and did
+not work in practice: an artist reached through a genre tag rather than through the user's own taste
+is a stranger, and the answer was almost always no. Removed rather than hidden — the build path, the
+genre-weighting, the MusicBrainz tag traffic behind it, the badge, the card styling and the copy are
+all gone. Smart Picks is five albums a day.
+
+### Added — Settings → Home Screen
+
+Every Home carousel in one list: a drag handle on the left, an on/off switch on the right, hold the
+handle to drag a row into a new position. **A row switched off is not fetched at all** — the loader
+skips it rather than loading it and hiding the result.
+
+The list is built from the same row table the Home screen itself loops, so the rows you can reorder
+and the rows that actually render cannot drift apart. Reordering *moves* the live sections rather
+than rebuilding them from markup, which is the v1.6.52 lesson about listeners. The layout is stored
+on the server, so it is the same on every device, and it is repaired on read: a row removed by an
+update is dropped, and a row *added* by an update appears switched on rather than silently hidden.
+
+### Added — a Recently played row
+
+Albums played in the last 30 days, most recent first, one tile per album rather than one per play.
+Older plays are deleted outright rather than merely hidden from the row — `plays` was the one table
+here that grew without bound. Toggleable and reorderable like every other row.
+
+The artist on each tile comes from the library snapshot, never from the play history: that column
+holds the *track* artist, so a compilation would name a performer rather than the record.
+
+### Tests
+- `test/unit/homerows.test.js` — 21 tests over the layout repair rules and the Smart Picks gate,
+  including a newly-shipped row defaulting to visible as a named case.
+- `test/static/preflight.test.js` — the Labels gate's *position* between the file walk and the
+  metadata cascade, since that ordering is not reachable from a unit test.
+- The static preflight suite now reads through the extractor rather than opening `index.js`
+  directly, so mutation runs can actually reach it — it had been passing against every mutant.
+- 6/6 mutations caught. Suite: 41 static / 665 unit / 272 dom.
+
+## [1.7.47] — 2026-08-10
+
+### Fixed — a partial answer from Roon could permanently destroy an album's track record
+
+v1.7.46 records an album's tracks under its identity, and does so by **replacing** that album's rows
+wholesale — deliberately, so that a re-rip or a different edition cannot leave phantom tracks behind.
+The hole in that: while Roon is re-indexing, an album's contents come back short — rows arrive as
+placeholders with no `item_key`, or do not arrive at all. Reading three tracks of a twelve-track
+album at that moment would overwrite the correct twelve-track record for good, and playlist import
+would then resolve against a nine-track hole with no way to know it.
+
+Roon's response already says how many rows the level holds, so a short read costs nothing to detect —
+the count sits in the reply that was fetched anyway. When the rows delivered are fewer than the rows
+declared, the cache is simply not written: a partial answer is not evidence about an album's
+contents. It is also logged, so the condition stops being invisible.
+
+This is the same reasoning as the rest of the resolver — an absent or partial fact must not be read
+as a complete one — applied to the write side rather than the read side.
+
 ## [1.7.46] — 2026-08-05
 
 ### Fixed — a shared playlist could match the WRONG album, silently

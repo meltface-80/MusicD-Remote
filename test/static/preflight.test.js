@@ -325,3 +325,77 @@ test("checklist — POST bodies carry the fields their route requires", async (t
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// v1.7.50: Labels off means the label scan does NOTHING, and the /music tag
+// walk is a separate job that keeps running.
+//
+// v1.7.48 put the gate in the middle of runLabelsIndexScan, which was the
+// right boundary but the wrong shape: "off" still entered a function named for
+// labels, flipped labelsIndex.building, seeded the label map (which writes
+// label names and kicks logo fetches) and wrote "[labels] …" into the labels
+// scan log. From the outside that is label scanning, whatever the gate did
+// afterwards.
+//
+// The walk is now its own function. What still depends on it, and why it must
+// not be gated:
+//   release years        -> the Decade filter
+//   local album keys     -> the "local files" badge
+//   container/bits/rate  -> the Format, Sample rate, Bit depth, Channels filters
+//
+// Neither half is reachable from a unit test — one is 400 lines of async I/O,
+// the other walks a filesystem — so the separation is asserted on the source.
+// ---------------------------------------------------------------------------
+test("Labels off stops label work, and only label work", async (t) => {
+  const src = require("../lib/extract").indexSource();
+
+  await t.test("the gate is the FIRST thing the label scan does", () => {
+    const fn = src.slice(src.indexOf("async function runLabelsIndexScan(force) {"));
+    const head = fn.slice(0, 400);
+    assert.ok(/if \(!labelsEnabled\) return;/.test(head),
+      "runLabelsIndexScan does not bail on the flag before doing anything else");
+    // Nothing label-shaped may precede it.
+    const gateAt = head.indexOf("if (!labelsEnabled) return;");
+    const before = head.slice(0, gateAt);
+    for (const forbidden of ["labelsIndex.building = true", "seedLabelsFromCache",
+                             "appendLabelsLog", "buildFileLabelMap"]) {
+      assert.ok(!before.includes(forbidden),
+        "'" + forbidden + "' runs before the gate — with Labels off that is " +
+        "still label work, and still looks like a scan from the log");
+    }
+  });
+
+  await t.test("the /music walk is a separate job, not part of the label scan", () => {
+    assert.ok(src.includes("async function runFileMetadataScan("),
+      "the tag walk is not separable — gating the label scan would take the " +
+      "Decade, Format, Sample rate, Bit depth and Channels filters with it");
+    const walk = src.slice(src.indexOf("async function runFileMetadataScan("));
+    const body = walk.slice(0, walk.indexOf("\nasync function ", 10));
+    assert.ok(!/if \(!labelsEnabled\)/.test(body),
+      "the tag walk is gated on the Labels switch — it is not label work");
+    assert.ok(body.includes("buildFileLabelMap"), "the walk stopped reading tags");
+    assert.ok(body.includes("harvestAlbumYears"), "the walk stopped collecting years");
+    assert.ok(body.includes("setLocalAlbumKeys"), "the walk stopped recording local albums");
+  });
+
+  await t.test("the logo fetches are gated too", () => {
+    // They hang off seedLabelsFromCache, which has callers of its own, so the
+    // gate has to be on the fetchers rather than only on the scan.
+    for (const fn of ["kickFanArtFetches", "kickDiscogsLogoFetches"]) {
+      const at = src.indexOf("async function " + fn + "(");
+      assert.ok(at > 0, fn + " moved");
+      assert.ok(/if \(!labelsEnabled\) return;/.test(src.slice(at, at + 700)),
+        fn + " can still reach the network with Labels switched off");
+    }
+  });
+
+  await t.test("the 12-hour timer runs the walk but not the labels", () => {
+    const at = src.indexOf("}, LABELS_RESCAN_MS);");
+    const block = src.slice(Math.max(0, at - 900), at);
+    assert.ok(block.includes("runFileMetadataScan("),
+      "the timer no longer refreshes the tag-derived filters");
+    assert.ok(/if \(!labelsEnabled\) return;/.test(block),
+      "the timer still enters the label scan with Labels off — this is the " +
+      "line that wrote '[labels] 12-hour auto-rescan triggered' to the log");
+  });
+});

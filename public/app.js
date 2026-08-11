@@ -333,6 +333,7 @@
   const homeLibrary  = document.getElementById("home-library");
   const homeLotw     = document.getElementById("home-lotw");
   const homePicks    = document.getElementById("home-picks");
+  const homeHistory  = document.getElementById("home-history");
   const homeGenres   = document.getElementById("home-genres");
   const topbarBack   = document.getElementById("topbar-back");
   const topbarRefresh = document.getElementById("topbar-refresh");
@@ -344,6 +345,107 @@
   // Home visit until it populates (the first build runs in the background and
   // can take a minute), then left alone — the set does not change again today.
   let homePicksDay = "";
+  let homeHistoryLoaded = false;  // set once the recently-played row populates
+
+  // ---------------------------------------------------------------------------
+  // The Home rows, as one table.
+  //
+  // Every row's identity, its title, the node it lives in, how to load it and
+  // when it is stale, in one place. The Home screen loops it, the Home Screen
+  // settings page renders from it, and the server validates against the same
+  // id list — so a row cannot exist in one of those and not the others. Same
+  // reasoning as the theme table.
+  //
+  // `load` is called when the row is enabled and `isFresh()` says otherwise.
+  // A DISABLED row is never loaded, which is the whole point: hiding a row has
+  // to stop the work behind it, not just the paint.
+  // ---------------------------------------------------------------------------
+  const HOME_ROWS = [
+    { id: "unplayed", title: "Not played in 6 months",
+      load: () => { loadHomeUnplayed(); }, isFresh: () => rowsTtlFresh() },
+    { id: "history",  title: "Recently played",
+      load: () => { loadHomeHistory(); }, isFresh: () => homeHistoryLoaded },
+    { id: "picks",    title: "Smart Picks",
+      load: () => { loadHomeSmartPicks(); }, isFresh: () => homePicksDay === localDayKey() },
+    { id: "random",   title: "Random albums",
+      load: () => { loadHomeRandom(); }, isFresh: () => rowsTtlFresh() },
+    { id: "library",  title: "Library",
+      load: () => { loadHomeLibrary(); }, isFresh: () => homeLibraryLoaded },
+    { id: "lotw",     title: "Label of the week",
+      load: () => { loadHomeLabelOfWeek(); }, isFresh: () => homeLotwLoaded },
+    { id: "genres",   title: "Browse by genre",
+      load: () => { loadHomeGenres(); }, isFresh: () => homeSectionsLoaded },
+  ];
+  function homeRowEl(id) {
+    return homeSections ? homeSections.querySelector('[data-row="' + id + '"]') : null;
+  }
+  // The stored layout, defaulting to the table's own order with everything on.
+  let homeLayout = HOME_ROWS.map(r => ({ id: r.id, on: true }));
+
+  // Put the sections in the stored order and hide the ones switched off.
+  //
+  // appendChild on an element already in the DOM MOVES it — listeners, closures
+  // and all. Rebuilding this from an HTML string would silently drop every
+  // handler on every tile, which is the v1.6.52 "albums untappable after Back"
+  // bug (CLAUDE.md pre-flight step 4).
+  // Rows that legitimately hide themselves when they have nothing to show. A
+  // fresh install has no history and no picks, and an empty labelled shelf
+  // reads as a fault rather than an absence.
+  function rowHidesWhenEmpty(id) {
+    return id === "history" || id === "picks" || id === "lotw";
+  }
+  function rowHasAnyContent(sectionEl) {
+    return !!(sectionEl && sectionEl.querySelector(".album, .pick-card, .home-genre-tile"));
+  }
+
+  function applyHomeLayout() {
+    if (!homeSections) return;
+    for (const row of homeLayout) {
+      const el = homeRowEl(row.id);
+      if (!el) continue;
+      homeSections.appendChild(el);
+      // toggle, not add. Only ever adding meant a row switched off stayed off
+      // for the rest of the session: nothing removed the class, and the
+      // renderers write into the carousel div rather than the section wrapper.
+      //
+      // Rows that hide themselves when empty (History, Smart Picks, Label of
+      // the week) get their emptiness respected: re-showing a row the layout
+      // enables must not un-hide one that simply has nothing in it.
+      // `unavailable` beats the stored preference: the feature behind the row
+      // is switched off, so there is nothing for it to show. Kept separate from
+      // `on` so the user's own choice survives untouched until they turn the
+      // feature back on.
+      //
+      // Belt and braces, honestly labelled: the two rows that can currently be
+      // unavailable (picks, lotw) are also the two that hide themselves when
+      // empty, and with their feature off they ARE empty — so today this term
+      // changes nothing on its own. The gate that does the work is homeRowOn(),
+      // which stops the row's loader running at all. This one states the intent
+      // so a future unavailable row that does not hide-when-empty is covered.
+      const showable = row.on && !row.unavailable;
+      el.classList.toggle("hidden",
+        !showable || (showable && rowHidesWhenEmpty(row.id) && !rowHasAnyContent(el)));
+    }
+  }
+  async function loadHomeLayout() {
+    try {
+      const r = await fetch("/api/settings/home-rows");
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j && Array.isArray(j.rows) && j.rows.length) homeLayout = j.rows;
+    } catch (e) {
+      // Offline or pre-upgrade server: keep the default order. A Home screen
+      // in the wrong order is recoverable; one that never renders is not.
+    }
+    applyHomeLayout();
+  }
+  function homeRowOn(id) {
+    const r = homeLayout.find(x => x.id === id);
+    // Gates the row's LOADER as well as its visibility — a row whose feature is
+    // off must not fetch either, or Smart Picks keeps polling a route that is
+    // now returning nothing.
+    return !r || (r.on && !r.unavailable);
+  }
 
   // Topbar chrome per view: Back button (off Home), Refresh button (random /
   // genre grids), and the Search box (Home only, beside the hamburger).
@@ -383,24 +485,22 @@
     // ~60 cover images through the Roon Core — the single biggest repeated cost
     // in the app. Within the TTL the existing DOM (and the browser's image
     // cache) is reused; after it, or if a load failed, both rows reload fresh.
-    const rowsFresh = homeRowsLoadedAt &&
+    // The unplayed and random rows share one TTL, so mark it before the loop
+    // rather than once per row.
+    if (!rowsTtlFresh()) homeRowsLoadedAt = Date.now();
+    for (const row of HOME_ROWS) {
+      if (!homeRowOn(row.id)) continue;   // off means the work does not run
+      if (row.isFresh()) continue;
+      row.load();
+    }
+  }
+  // Shared freshness for the two rows that turn over on a clock rather than a
+  // flag: recheck every 5 minutes, but only when they actually hold tiles.
+  function rowsTtlFresh() {
+    return !!(homeRowsLoadedAt &&
       (Date.now() - homeRowsLoadedAt) < HOME_ROWS_TTL_MS &&
       homeUnplayed && homeUnplayed.querySelector(".album") &&
-      homeRandom && homeRandom.querySelector(".album");
-    if (!rowsFresh) {
-      homeRowsLoadedAt = Date.now();
-      loadHomeUnplayed();
-      loadHomeRandom();
-    }
-    // Label of the week depends on the background labels scan, which may not be
-    // ready on the first visit — retry each visit until it populates, then stop.
-    if (!homeLotwLoaded) loadHomeLabelOfWeek();
-    if (!homeLibraryLoaded) loadHomeLibrary();
-    // Smart Picks change at local midnight. Comparing the day the row was built
-    // for against today is what makes a device left open overnight pick up the
-    // new set — a plain "loaded once" flag would show yesterday's until reload.
-    if (homePicksDay !== localDayKey()) loadHomeSmartPicks();
-    if (!homeSectionsLoaded) loadHomeGenres();
+      homeRandom && homeRandom.querySelector(".album"));
   }
   // Reveal the album wall. opts.loadIfEmpty loads a fresh wall only when it has
   // no content yet (so passive reveals — opening an overlay from the menu —
@@ -651,8 +751,38 @@
     }
   }
 
+  // Recently played — one tile per album, newest first, 30 days.
+  //
+  // The section stays hidden until there is something in it: a fresh install
+  // has no history, and an empty shelf labelled "Recently played" reads like a
+  // fault rather than an absence.
+  function renderHomeHistory(albums) {
+    if (!homeHistory) return;
+    renderAlbumRow(homeHistory, albums);
+    const sec = homeHistory.closest(".home-section");
+    if (sec) sec.classList.toggle("hidden", !albums.length || !homeRowOn("history"));
+  }
+  async function loadHomeHistory() {
+    if (!homeHistory) return;
+    try {
+      const r = await fetch("/api/home/history?count=30");
+      if (!r.ok) return;   // retried next visit — homeHistoryLoaded stays false
+      const j = await r.json();
+      const albums = (j && j.albums) || [];
+      renderHomeHistory(albums);
+      // Marked loaded even when empty: an empty history is a real answer, and
+      // retrying it on every Home visit would query the plays table forever on
+      // a box nobody has played anything from.
+      homeHistoryLoaded = true;
+      if (albums.length) saveHomeCache({ history: albums });
+    } catch (e) {
+      // Offline or the server went away. The row keeps whatever it had; the
+      // next visit tries again.
+    }
+  }
+
   // -------------------------------------------------------------------------
-  // Smart Picks — six albums a day by artists NOT in the library.
+  // Smart Picks — five albums a day by artists NOT in the library.
   //
   // These albums are NOT in Roon, so they have no offset and cannot be played
   // or queued. The only action is Add, which favourites the album on the
@@ -742,8 +872,7 @@
   // carousel stays a plain tile so it reads like the rows around it.
   function smartPickCard(pick, full) {
     const card = document.createElement("div");
-    card.className = "pick-card" + (full ? " pick-card-full" : "") +
-                     (pick.kind === "stretch" ? " pick-card-stretch" : "");
+    card.className = "pick-card" + (full ? " pick-card-full" : "");
     const art = document.createElement("div");
     art.className = "pick-art";
     if (pick.image) {
@@ -752,12 +881,6 @@
       img.alt = "";
       img.src = pick.image;
       art.appendChild(img);
-    }
-    if (pick.kind === "stretch") {
-      const flag = document.createElement("span");
-      flag.className = "pick-flag";
-      flag.textContent = "Stretch";
-      art.appendChild(flag);
     }
     card.appendChild(art);
 
@@ -787,12 +910,12 @@
       // has it yet:
       //
       //   PLAY     — Roon has imported it, so it has an offset and every
-      //              ordinary play route works. This is where the five adjacent
-      //              picks should be by morning.
+      //              ordinary play route works. This is where the picks should
+      //              be by morning when adding automatically is on.
       //   WAITING  — favourited on the service but not imported yet. Roon
       //              decides when, so there is nothing to press.
-      //   ADD      — not in the streaming library. The stretch pick lives here
-      //              permanently, because it is the one to accept or reject.
+      //   ADD      — not in the streaming library. Where every pick sits when
+      //              automatic adding is off.
       if (pick.offset !== null && pick.offset !== undefined) {
         const play = document.createElement("button");
         play.type = "button";
@@ -867,7 +990,7 @@
       if (sec) sec.classList.add("hidden");
       return false;
     }
-    if (sec) sec.classList.remove("hidden");
+    if (sec) sec.classList.toggle("hidden", !homeRowOn("picks"));   // never un-hide a row the layout switched off
     homePicks.innerHTML = "";
     const frag = document.createDocumentFragment();
     for (const p of picks) frag.appendChild(smartPickCard(p, false));
@@ -956,7 +1079,7 @@
     }
     if (titleEl) titleEl.textContent = "Label of the week: " + label;
     homeLotw.dataset.label = label;
-    if (sec) sec.classList.remove("hidden");   // un-hide if a prior attempt hid it
+    if (sec) sec.classList.toggle("hidden", !homeRowOn("lotw"));   // never un-hide a row the layout switched off   // un-hide if a prior attempt hid it
     homeLotw.innerHTML = "";
     const frag = document.createDocumentFragment();
     for (const a of albums) frag.appendChild(homeTile(a));   // full-hierarchy offsets → filter:null
@@ -1002,6 +1125,26 @@
   // menu — so there is one dropdown look in the app rather than a second one
   // that almost matches.
   // ---------------------------------------------------------------------
+  // Mirrors libraryChangingAdvice() on the server, for the notes the client
+  // composes itself. Same three things every message on this path carries: why
+  // it happened, what the extension is doing, and the manual way out.
+  //
+  // `moved` is the server's library_moved flag, and it picks the TIMING as well
+  // as the wording — the two cases wait on different clocks. When the change is
+  // proven the server has already armed the recheck chain (5 minutes); when it
+  // is only the likeliest explanation, the next look is the background watch
+  // (10 minutes). One number for both would be wrong exactly when it is read.
+  function libraryChangingAdvice(moved) {
+    return (moved
+      ? " Your Roon library changed after this list was built"
+      : " This usually means your Roon library changed after this list was built") +
+      " — normally because albums are being added or identified. " +
+      (moved ? "A re-check is already scheduled — about 5 minutes"
+             : "The extension re-checks every 10 minutes") +
+      " — and it refreshes itself once Roon settles, so this usually clears on " +
+      "its own. If it hasn't, open the side menu and tap Rescan library.";
+  }
+
   const OVERFLOW_SVG =
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" ' +
     'aria-hidden="true">' +
@@ -1245,8 +1388,12 @@
     for (const id of LIB_FACET_IDS) o[id] = [];
     return o;
   };
+  // `prefix` is deliberately NOT persisted with the rest of the view: it is a
+  // momentary narrowing, and restoring one on next launch would look like a
+  // library that had lost most of its albums. It is stripped after the restore
+  // below for the same reason.
   let libView = Object.assign(
-    { v: LIB_VIEW_VERSION, sort: "album", dir: "asc", seed: 1, played: "any" },
+    { v: LIB_VIEW_VERSION, sort: "album", dir: "asc", seed: 1, played: "any", prefix: "" },
     libEmptyFacets());
   try {
     const saved = JSON.parse(localStorage.getItem(LIB_VIEW_KEY) || "null");
@@ -1254,7 +1401,7 @@
       const stale = saved.v !== LIB_VIEW_VERSION;
       const dirChangedMeaning = stale && LIB_V1_INVERTED_SORTS.indexOf(saved.sort) > -1;
       if (dirChangedMeaning) delete saved.dir;
-      libView = Object.assign(libView, saved, { v: LIB_VIEW_VERSION });
+      libView = Object.assign(libView, saved, { v: LIB_VIEW_VERSION, prefix: "" });
       if (dirChangedMeaning) libView.dir = libSortDefaultDir(libView.sort);
       // A blob is JSON, so it can be well-formed and still the wrong SHAPE —
       // a partial write or a synced/hand-edited value. Object.assign copies it
@@ -1290,12 +1437,28 @@
       for (const v of (libView[id] || [])) p.append(id, v);
     }
     if (libView.played !== "any") p.set("played", libView.played);
+    if (libView.prefix) p.set("prefix", libView.prefix);
     return p.toString();
   }
   // How many filters are ON. Every selected chip counts — including the
   // excluded ones, which are as much a filter as the included ones.
+  // Only the facets the SERVER is currently publishing. With Labels off the
+  // "Record label" facet is gone from the sheet, and counting a selection
+  // stored before the switch was flipped would show a filter the user can
+  // neither see nor clear.
+  // Seeded at boot from the Labels switch, not only when the Focus sheet is
+  // first opened. `/api/library/facets` is fetched on sheet open, so relying on
+  // it alone left the wall's "N matching albums" and the Focus badge counting a
+  // stored Record-label selection on every fresh load until the sheet had been
+  // opened once — which is exactly the invisible, unclearable filter this is
+  // meant to prevent.
+  let libAvailableFacets = LIB_FACET_IDS.slice();
+  window.__setLabelsFacetAvailable = (on) => {
+    libAvailableFacets = on ? LIB_FACET_IDS.slice()
+                            : LIB_FACET_IDS.filter(id => id !== "label");
+  };
   const libFocusCount = () =>
-    LIB_FACET_IDS.reduce((n, id) => n + (libView[id] || []).length, 0) +
+    libAvailableFacets.reduce((n, id) => n + (libView[id] || []).length, 0) +
     (libView.played !== "any" ? 1 : 0);
   // Chip state, encoding Roon's tap-again-to-invert: a value prefixed with "!"
   // is EXCLUDED. Kept inside the value so the whole selection stays a plain
@@ -1730,6 +1893,11 @@
   // since v1.6.59. The row still SHOWS the direction (and the reshuffle glyph
   // for Random) as part of the sort's own label, so nothing is hidden; it just
   // isn't its own button any more.
+  // Whether the funnel's field is showing. Declared before renderLibraryControls
+  // reads it: a `let` used above its declaration is a ReferenceError, which is
+  // the v1.5.66 startup-crash class this project pre-flights for.
+  let libFilterOpen = false;
+
   function renderLibraryControls() {
     let bar = document.getElementById("library-controls");
     if (!bar) {
@@ -1744,18 +1912,110 @@
     // focus is inside it, and dropping focus to <body> then would strand a
     // keyboard user. Restoring by class is enough: there are two controls and
     // they are rebuilt in a fixed order.
-    const refocus = document.activeElement &&
-                    bar.contains(document.activeElement) &&
-                    document.activeElement.className;
+    // Restored by the control's OWN class, not its first one. Every control
+    // here starts with `lib-ctl`, so splitting on the first token matched
+    // whichever came first in the DOM — focus on Sort came back on Focus.
+    const act = document.activeElement;
+    const refocus = act && bar.contains(act) && act.className
+      ? (String(act.className).split(" ").find(c => c !== "lib-ctl" && c) || "lib-ctl")
+      : null;
+    // Typing survives the rebuild applyLibView() does after every keystroke.
+    // `libFilterOpen` is the truth; the live node is only consulted for where
+    // the caret was.
+    const typing = bar.querySelector(".lib-filter-input");
+    const caret = typing ? typing.selectionStart : 0;
+
     bar.innerHTML = "";
+    // Roon's own order on this screen: Focus left, Sort right, then the
+    // magnifier that narrows the list. Matching it means the row reads the
+    // same way in both apps rather than being a third arrangement to learn.
     bar.appendChild(buildLibFocusButton());
     bar.appendChild(buildLibSortButton());
+    bar.appendChild(buildLibFilterControl(libFilterOpen));
     bar.classList.toggle("hidden", !libraryWallActive);
-    if (refocus) {
-      const again = bar.querySelector("." + String(refocus).split(" ")[0]);
+    // Drives the layout: Sort's auto margin is released while the field is
+    // open so the input, not the margin, gets the row's free space.
+    bar.classList.toggle("is-filtering", libFilterOpen);
+
+    if (libFilterOpen) {
+      const again = bar.querySelector(".lib-filter-input");
+      if (again) {
+        again.focus();
+        try { again.setSelectionRange(caret, caret); }
+        catch (e) { /* type="search" refuses setSelectionRange on some engines */ }
+      }
+    } else if (refocus) {
+      const again = bar.querySelector("." + refocus);
       if (again) again.focus();
     }
   }
+
+  // The funnel: a text filter that narrows the wall by the first letters of an
+  // album title OR an artist name.
+  //
+  // A user asked for an A-Z rail down the edge of the screen. That works only
+  // while the wall is sorted alphabetically, which is why it broke under the
+  // other sorts — a letter index means nothing when the order is by year or
+  // play count. Filtering is orthogonal to sorting, so this works under all of
+  // them, and it reaches artists as well as titles, which a rail cannot.
+  function buildLibFilterControl(open) {
+    const wrap = document.createElement("div");
+    wrap.className = "lib-filter-wrap";
+
+    if (!open) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "lib-filter-btn lib-ctl" + (libView.prefix ? " is-active" : "");
+      btn.setAttribute("aria-label", "Filter by name");
+      btn.setAttribute("aria-expanded", "false");
+      btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" ' +
+        'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ' +
+        'aria-hidden="true"><circle cx="11" cy="11" r="7"/>' +
+        '<line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>';
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        libFilterOpen = true;
+        renderLibraryControls();
+      });
+      wrap.appendChild(btn);
+      return wrap;
+    }
+
+    const input = document.createElement("input");
+    input.type = "search";
+    input.className = "lib-filter-input";
+    input.value = libView.prefix || "";
+    input.placeholder = "Starts with…";
+    input.setAttribute("aria-label", "Filter albums and artists by first letters");
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.addEventListener("click", (e) => e.stopPropagation());
+    input.addEventListener("input", () => {
+      libView.prefix = input.value.trim();
+      applyLibView();
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeLibFilter();
+    });
+    wrap.appendChild(input);
+    return wrap;
+  }
+
+  // Tap away closes AND clears, the same contract the topbar search follows.
+  // A filter left applied behind a closed funnel is a wall that looks broken.
+  function closeLibFilter() {
+    if (!libFilterOpen) return;
+    libFilterOpen = false;
+    const had = !!libView.prefix;
+    libView.prefix = "";
+    if (had) applyLibView();
+    else renderLibraryControls();
+  }
+  document.addEventListener("click", (e) => {
+    if (!libFilterOpen) return;
+    if (e.target.closest && e.target.closest(".lib-filter-wrap")) return;
+    closeLibFilter();
+  });
 
   // `› Focus`, with the number of active facets when there are any. The count
   // is the only state this control carries — what those facets ARE is the
@@ -2720,6 +2980,13 @@
       const r = await fetch("/api/library/facets", { cache: "no-store" });
       if (r.ok) libFacets = await r.json();
     } catch (e) { /* offline — keep whatever we last had rather than blanking */ }
+    // The server decides the vocabulary — it drops "Record label" when Labels
+    // is switched off — so the count badge follows what it publishes rather
+    // than a list hardcoded here.
+    if (libFacets && Array.isArray(libFacets.facets)) {
+      const ids = libFacets.facets.map(x => x && x.id).filter(Boolean);
+      if (ids.length) libAvailableFacets = ids;
+    }
     const f = libFacets || { facets: [], coverage: {} };
     // Which sections are expanded. Held across repaints (a chip tap rebuilds
     // the body) but NOT across openings: a sheet that reopens half-collapsed
@@ -3300,6 +3567,19 @@
           done = true;
           failed = true;
           more.classList.add("hidden");   // it would no-op; don't offer it
+          return;
+        }
+        // A playlist whose query needs a feature that is switched off. The
+        // server refuses to half-apply it: with Labels off, libraryView simply
+        // skips a saved Record-label filter, so the playlist would open, play,
+        // and return a completely different set of albums with nothing saying
+        // why. Named here instead.
+        if (j.unavailable) {
+          status.className = "playlist-empty is-unavailable";
+          status.textContent = j.unavailable;
+          done = true;
+          failed = true;
+          more.classList.add("hidden");
           return;
         }
 
@@ -4161,11 +4441,15 @@
   function hydrateHomeFromCache() {
     const c = readHomeCache();
     if (!c) return false;
+    // Order and enablement first: painting into the default order and then
+    // reordering is a visible flash on every cold open.
+    applyHomeLayout();
     let painted = false;
     if (c.unplayed && homeUnplayed) { renderHomeUnplayed(c.unplayed.aotd, c.unplayed.albums); painted = rowHasContent(homeUnplayed) || painted; }
     if (c.random   && homeRandom)   { renderHomeRandom(c.random);                              painted = rowHasContent(homeRandom)   || painted; }
     if (c.library  && homeLibrary)  { renderHomeLibrary(c.library); }
     if (c.lotw     && homeLotw)     { renderHomeLotw(c.lotw.label, c.lotw.albums); }
+    if (c.history  && homeHistory)  { renderHomeHistory(c.history); }
     if (c.genres   && homeGenres)   { renderHomeGenres(c.genres); }
     if (!painted) return false;
     if (typeof c.unplayedAt === "number" && typeof c.randomAt === "number") {
@@ -4190,10 +4474,14 @@
     if (kind === "error") toast.classList.add("error");
     requestAnimationFrame(() => toast.classList.add("show"));
     clearTimeout(toastTimer);
+    // 2.4s is right for "Queued 12 albums" and nowhere near enough for the
+    // library-changed messages, which explain the cause, what happens next and
+    // the manual way out — roughly 330 characters, gone before they could be
+    // read. Scaled by length so short toasts are unchanged.
     toastTimer = setTimeout(() => {
       toast.classList.remove("show");
       setTimeout(() => toast.classList.add("hidden"), 250);
-    }, ms || 2400);
+    }, ms || (String(msg).length > 120 ? 11000 : 2400));
   }
   // One sentence describing what actually reached the queue: how many albums,
   // how many the cap left behind, and how many Roon refused. `pj` is
@@ -5319,8 +5607,20 @@
         { label: "More playback actions" }));
     }
     if (!available.length) {
-      modalActs.innerHTML =
-        `<div class="modal-error">No playback actions available for this album.</div>`;
+      // "No playback actions available" was true and useless — it described
+      // our own empty array rather than anything the user could act on. When
+      // Roon's live album count no longer matches the snapshot we can say why,
+      // and that a re-check is already running.
+      modalActs.innerHTML = "";
+      const err = document.createElement("div");
+      err.className = "modal-error";
+      // BOTH branches explain themselves now. The second one — the plain
+      // sentence with no explanation at all — is the red line users actually
+      // reported, and it was composed here in the client, so the server-side
+      // builder never touched it.
+      err.textContent = "Roon offered no playback options for this album." +
+                        libraryChangingAdvice(!!j.library_moved);
+      modalActs.appendChild(err);
     }
 
     // Tracks — each row is tappable and reveals Play now / Queue for that
@@ -5328,7 +5628,27 @@
     const trackWrap = document.querySelector(".track-list-wrap");
     modalTracks.innerHTML = "";
     const trackList = j.tracks || [];
+    // A thin or empty answer is now distinguishable from an album that really
+    // has no tracks: Roon declares how many rows the level holds, so we know
+    // when it sent fewer. Previously the whole section was hidden and an album
+    // mid-reindex looked identical to one with nothing on it.
+    if (j.partial) {
+      const note = document.createElement("div");
+      note.className = "modal-error";
+      note.textContent = (j.declared_tracks
+        ? "Roon sent " + trackList.length + " of " + j.declared_tracks + " tracks."
+        : "Roon sent an incomplete track list.") +
+        libraryChangingAdvice(!!j.library_moved);
+      modalActs.appendChild(note);
+    }
     if (trackList.length === 0) {
+      if (!j.partial && j.library_moved) {
+        const note = document.createElement("div");
+        note.className = "modal-error";
+        note.textContent = "Roon returned no tracks for this album." +
+                           libraryChangingAdvice(!!j.library_moved);
+        modalActs.appendChild(note);
+      }
       trackWrap.classList.add("hidden");
     } else {
       trackWrap.classList.remove("hidden");
@@ -5981,24 +6301,78 @@
     input.addEventListener("input",  onInput);
     input.addEventListener("search", onInput);
     input.addEventListener("keydown", (e) => {
-      // The search box is always present on Home; Escape just clears it.
-      if (e.key === "Escape") { input.value = ""; stopSearch(); input.blur(); }
+      if (e.key === "Escape") closeSearch();
     });
 
-    // The X has two stages: 1st tap clears the text (bar stays open), 2nd tap
-    // (now empty) closes the bar.
+    // The X clears the text and keeps the field open, so a retype needs no
+    // second tap on the glass. Closing is the tap-away gesture.
     clear.addEventListener("click", () => {
-      // The box stays present on Home; clearing empties it and restores the
-      // Home sections, keeping focus so the user can retype.
       input.value = "";
       stopSearch();
       input.focus();
     });
 
-    window.__runSearch = (q) => { input.value = q; onInput(); };
+    // ---- Open / close --------------------------------------------------
+    //
+    // The field is no longer permanently in the top bar: the glass is the
+    // resting state and the field opens from it. This follows the overflow
+    // menu's pattern exactly (module-level "what is open", stopPropagation on
+    // the trigger, a `closest()` containment test on the document) rather than
+    // inventing a second idiom for the same gesture.
+    //
+    // Closing always CLEARS. A field that reopens holding last week's query,
+    // with the results gone, is a worse state than an empty one.
+    const openBtn = document.getElementById("search-open");
+
+    const searchWrap = document.getElementById("topbar-search");
+    function openSearch() {
+      row.classList.add("open");
+      if (searchWrap) searchWrap.classList.add("is-open");
+      if (openBtn) {
+        openBtn.classList.add("hidden");
+        openBtn.setAttribute("aria-expanded", "true");
+      }
+      input.focus();
+    }
+    function closeSearch() {
+      if (!row.classList.contains("open")) return;
+      input.value = "";
+      stopSearch();
+      input.blur();
+      row.classList.remove("open");
+      if (searchWrap) searchWrap.classList.remove("is-open");
+      if (openBtn) {
+        openBtn.classList.remove("hidden");
+        openBtn.setAttribute("aria-expanded", "false");
+      }
+    }
+
+    if (openBtn) {
+      openBtn.addEventListener("click", (e) => {
+        e.stopPropagation();   // must not reach the document listener below
+        openSearch();
+      });
+    }
+    // Tap anywhere outside the search container closes it. `closest()` on the
+    // container, not `contains()` on the input, so a tap on the X or the
+    // status text is inside rather than a dismissal.
+    document.addEventListener("click", (e) => {
+      if (!row.classList.contains("open")) return;
+      if (e.target.closest && e.target.closest("#topbar-search")) return;
+      closeSearch();
+    });
+
+    // Seed and open in one step. Used by anything that wants to hand the user
+    // a started search rather than an empty box.
+    window.__runSearch = (q) => { openSearch(); input.value = q; onInput(); };
     // Called when leaving Home for the wall/labels so stale search results
-    // don't linger in the shared grid. No-op unless a search is active.
-    window.__clearSearchIfActive = () => { if (active) { input.value = ""; stopSearch(); } };
+    // don't linger in the shared grid. Closes the field too: the glass is the
+    // resting state, and every one of these call sites is a navigation away
+    // from Home.
+    window.__clearSearchIfActive = () => {
+      if (active) { input.value = ""; stopSearch(); }
+      closeSearch();
+    };
     window.__searchActive = () => active;
   })();
 
@@ -6786,6 +7160,66 @@
   }
 
   window.__openAlbum = openAlbum;
+  // The Home Screen settings page renders its list from these, so the row
+  // vocabulary has exactly one definition (HOME_ROWS) and the settings list
+  // cannot describe a row that does not exist.
+  window.__homeRowTitles = () => {
+    const out = {};
+    for (const r of HOME_ROWS) out[r.id] = r.title;
+    return out;
+  };
+  window.__applyHomeLayout = (rows) => {
+    if (Array.isArray(rows) && rows.length) homeLayout = rows;
+    applyHomeLayout();
+    // A row switched back on has never been loaded this session, so give it a
+    // chance to fill before the user goes looking for it.
+    for (const row of HOME_ROWS) {
+      if (!homeRowOn(row.id)) continue;
+      if (row.isFresh()) continue;
+      row.load();
+    }
+  };
+
+  // Reflect the opt-in features into the side menu.
+  //
+  // A menu entry for a feature that is switched off leads to a screen that can
+  // only ever be empty — the Labels browser with no scan behind it, Smart Picks
+  // with no build. Hiding the entry is part of "off", not decoration.
+  //
+  // Exported because the settings pane flips these switches and the menu lives
+  // elsewhere; both call this rather than reaching into each other's DOM.
+  // A key absent from `state` leaves that entry alone, so one failed lookup
+  // cannot hide the other feature's entry.
+  window.__applyFeatureMenu = (state) => {
+    const labelsItem = document.getElementById("menu-item-labels");
+    const picksItem  = document.getElementById("menu-item-picks");
+    if (labelsItem && typeof state.labels === "boolean") {
+      labelsItem.classList.toggle("hidden", !state.labels);
+      // The same switch decides whether the Library Focus vocabulary still
+      // contains "Record label", and the count badge has to agree with the
+      // sheet from the first paint, not from the first time it is opened.
+      if (window.__setLabelsFacetAvailable) window.__setLabelsFacetAvailable(state.labels);
+    }
+    if (picksItem && typeof state.picks === "boolean") {
+      picksItem.classList.toggle("hidden", !state.picks);
+    }
+  };
+
+  // Ask at boot. Two independent calls, so an older server or a transient
+  // error on one endpoint does not decide the other entry's visibility.
+  async function applyFeatureMenuFromServer() {
+    const state = {};
+    try {
+      const r = await fetch("/api/settings/labels");
+      if (r.ok) state.labels = !!(await r.json()).enabled;
+    } catch (e) { /* leave the Labels entry as the markup has it */ }
+    try {
+      const r = await fetch("/api/settings/smart-picks");
+      if (r.ok) state.picks = !!(await r.json()).enabled;
+    } catch (e) { /* leave the Smart Picks entry as the markup has it */ }
+    window.__applyFeatureMenu(state);
+  }
+
   window.__buildAlbumTile = (a) => buildAlbumTile(a);
   window.__loadRandom = loadRandom;
   window.__showToast = (msg, kind) => showToast(msg, kind);
@@ -6795,6 +7229,11 @@
     // reopening the PWA shows content immediately instead of reloading the whole
     // screen. Skipped when a filtered wall is being restored (activeFilter), and
     // when there's nothing cached (first-ever launch) we fall back to the banner.
+    // The layout is server-persisted, so it is the same on every device. Read
+    // it before the first paint; on failure the table's own default order
+    // stands, which is a working Home rather than a blank one.
+    await loadHomeLayout();
+    applyFeatureMenuFromServer();
     const painted = !activeFilter && hydrateHomeFromCache();
     if (!painted) setBanner("Connecting to Roon…");
     for (let i = 0; i < 30; i++) {
@@ -8760,23 +9199,41 @@
     }
   }
 
+  const picksEnabled = document.getElementById("picks-enabled");
+
   async function loadSmartPicksSettings() {
-    if (!picksHour && !picksAutoAdd) return;
+    if (!picksHour && !picksAutoAdd && !picksEnabled) return;
     try {
       const r = await fetch("/api/settings/smart-picks");
       if (!r.ok) return;
       const j = await r.json();
+      if (picksEnabled) picksEnabled.checked = !!j.enabled;
+      // A device that was not the one that flipped the switch catches up here.
+      if (window.__applyFeatureMenu) window.__applyFeatureMenu({ picks: !!j.enabled });
       if (picksHour && Number.isFinite(j.hour)) picksHour.value = String(j.hour);
       if (picksAutoAdd) picksAutoAdd.checked = !!j.auto_add;
       if (picksNote) {
         picksNote.textContent = j.service_ready
-          ? "The stretch pick is never added automatically — that one is always yours to accept or reject."
+          ? "Picks you were not offered automatically are always yours to accept or reject."
           : "Connect Qobuz or TIDAL under Streaming accounts first — without one, picks can be shown but not added.";
       }
     } catch (e) {
       // Settings simply show their last values; the pane is not the place to
       // report a transient fetch failure.
     }
+  }
+
+  if (picksEnabled) {
+    picksEnabled.addEventListener("change", async () => {
+      const on = picksEnabled.checked;
+      if (await saveSmartPicksSettings({ enabled: on })) {
+        showToast(on ? "Smart Picks on — the first set builds at the scheduled hour"
+                     : "Smart Picks off — nothing runs in the background");
+        if (window.__applyFeatureMenu) window.__applyFeatureMenu({ picks: on });
+      } else {
+        picksEnabled.checked = !on;   // the server refused — do not lie about it
+      }
+    });
   }
 
   if (picksHour) {
@@ -8791,8 +9248,8 @@
     picksAutoAdd.addEventListener("change", async () => {
       const on = picksAutoAdd.checked;
       if (await saveSmartPicksSettings({ auto_add: on })) {
-        showToast(on ? "The five genre picks will be added automatically"
-                     : "All six picks will ask before adding");
+        showToast(on ? "Picks will be added automatically"
+                     : "Every pick will ask before adding");
       } else {
         picksAutoAdd.checked = !on;   // the server refused — do not lie about it
       }
@@ -8817,7 +9274,195 @@
     });
   }
 
-  const open = () => { showView("home"); pendingThemeId = null; renderThemeList(); loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); loadDisplaySettings(); loadLabelFolderDepth(); loadQobuzStatus(); loadTidalStatus(); loadSmartPicksSettings(); overlay.classList.remove("hidden"); };
+  // ----- Labels on/off -----
+  const labelsEnabledEl = document.getElementById("labels-enabled");
+  const labelsEnabledNote = document.getElementById("labels-enabled-note");
+  async function loadLabelsEnabled() {
+    if (!labelsEnabledEl) return;
+    try {
+      const r = await fetch("/api/settings/labels");
+      if (!r.ok) return;
+      const j = await r.json();
+      labelsEnabledEl.checked = !!j.enabled;
+      if (window.__applyFeatureMenu) window.__applyFeatureMenu({ labels: !!j.enabled });
+      if (labelsEnabledNote) {
+        labelsEnabledNote.textContent = j.enabled
+          ? (j.scanning ? "Scanning now…"
+             : (j.count ? j.count + " label" + (j.count === 1 ? "" : "s") + " found."
+                        : "No labels yet — the first scan runs in the background."))
+          : "Off. Your /music tags are still read, so the Decade, Format and quality filters keep working.";
+      }
+    } catch (e) { /* keep the last shown value */ }
+  }
+  if (labelsEnabledEl) {
+    labelsEnabledEl.addEventListener("change", async () => {
+      const on = labelsEnabledEl.checked;
+      try {
+        const r = await fetch("/api/settings/labels", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: on })
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || j.error) throw new Error(j.error || "Couldn't save");
+        showToast(on ? "Labels on — the first scan is running now"
+                     : "Labels off — no label lookups will run");
+        if (window.__applyFeatureMenu) window.__applyFeatureMenu({ labels: on });
+        loadLabelsEnabled();
+      } catch (e) {
+        labelsEnabledEl.checked = !on;   // the server refused — do not lie about it
+        showToast(e.message, "error");
+      }
+    });
+  }
+
+  // ----- Home Screen: which rows show, and in what order -----
+  //
+  // Rendered from the same HOME_ROWS table the Home screen itself loops, via
+  // the globals below, so a row can never appear in one and not the other.
+  const homeRowsList = document.getElementById("home-rows-list");
+  let homeRowsDraft = [];
+
+  function renderHomeRowsList() {
+    if (!homeRowsList) return;
+    homeRowsList.innerHTML = "";
+    const titles = window.__homeRowTitles ? window.__homeRowTitles() : {};
+    for (const row of homeRowsDraft) {
+      const li = document.createElement("li");
+      li.className = "home-row-item";
+      li.dataset.row = row.id;
+
+      const grip = document.createElement("span");
+      grip.className = "home-row-grip";
+      grip.setAttribute("aria-hidden", "true");
+      grip.textContent = "⠿";
+
+      // A row whose FEATURE is off is not a layout choice. It reads as off and
+      // cannot be switched on here, because switching it on would do nothing —
+      // the row has no data to show. `row.on` is deliberately left ALONE, so
+      // turning Smart Picks or Labels back on restores the Home screen the user
+      // had rather than one this screen quietly rewrote.
+      const off = row.unavailable || null;
+      if (off) li.classList.add("is-unavailable");
+
+      const name = document.createElement("span");
+      name.className = "home-row-name";
+      name.textContent = titles[row.id] || row.id;
+      if (off) {
+        const why = document.createElement("span");
+        why.className = "home-row-why";
+        why.textContent = off;
+        name.appendChild(why);
+      }
+
+      const sw = document.createElement("label");
+      sw.className = "switch";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !off && row.on !== false;
+      cb.disabled = !!off;
+      cb.setAttribute("aria-label", (titles[row.id] || row.id) + " row");
+      cb.addEventListener("change", () => {
+        row.on = cb.checked;
+        saveHomeRows();
+      });
+      const track = document.createElement("span");
+      track.className = "switch-track";
+      const thumb = document.createElement("span");
+      thumb.className = "switch-thumb";
+      track.appendChild(thumb);
+      sw.appendChild(cb); sw.appendChild(track);
+
+      li.appendChild(grip); li.appendChild(name); li.appendChild(sw);
+      attachRowDrag(li, grip);
+      homeRowsList.appendChild(li);
+    }
+  }
+
+  // Hold the grip, then drag. Pointer events so one code path covers touch and
+  // mouse; the list reorders live under the finger and the draft array is
+  // rewritten from the DOM on drop, so the two can never disagree.
+  function attachRowDrag(li, grip) {
+    let dragging = false;
+    grip.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      dragging = true;
+      li.classList.add("is-dragging");
+      grip.setPointerCapture(e.pointerId);
+    });
+    grip.addEventListener("pointermove", (e) => {
+      if (!dragging || !homeRowsList) return;
+      // Which sibling is under the pointer? Compare against each row's middle
+      // so the swap happens when the dragged row has genuinely passed it,
+      // rather than flickering on every pixel.
+      const items = [...homeRowsList.querySelectorAll(".home-row-item")];
+      for (const other of items) {
+        if (other === li) continue;
+        const r = other.getBoundingClientRect();
+        const mid = r.top + r.height / 2;
+        if (e.clientY < mid && other.compareDocumentPosition(li) & Node.DOCUMENT_POSITION_FOLLOWING) {
+          homeRowsList.insertBefore(li, other);
+          break;
+        }
+        if (e.clientY > mid && other.compareDocumentPosition(li) & Node.DOCUMENT_POSITION_PRECEDING) {
+          homeRowsList.insertBefore(li, other.nextSibling);
+          break;
+        }
+      }
+    });
+    const end = () => {
+      if (!dragging) return;
+      dragging = false;
+      li.classList.remove("is-dragging");
+      // The DOM is the truth now — read the order back out of it rather than
+      // trying to mirror every move into the array as it happened.
+      if (homeRowsList) {
+        const order = [...homeRowsList.querySelectorAll(".home-row-item")].map(x => x.dataset.row);
+        homeRowsDraft.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+      }
+      saveHomeRows();
+    };
+    grip.addEventListener("pointerup", end);
+    grip.addEventListener("pointercancel", end);
+  }
+
+  async function saveHomeRows() {
+    try {
+      const r = await fetch("/api/settings/home-rows", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: homeRowsDraft })
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.error) throw new Error(j.error || "Couldn't save");
+      if (Array.isArray(j.rows)) {
+        homeRowsDraft = j.rows;
+        // REDRAW. The server answers with freshly built {id,on} objects, so
+        // replacing the array orphaned every checkbox handler still closing
+        // over the previous one — after one save, every further toggle
+        // mutated a discarded object and was silently dropped, and after a
+        // drag the whole list went dead. The list is cheap; rebuild it.
+        renderHomeRowsList();
+      }
+      // Apply immediately — the Home screen is behind this sheet, and a layout
+      // that only takes effect on the next launch reads as a broken control.
+      if (window.__applyHomeLayout) window.__applyHomeLayout(homeRowsDraft);
+    } catch (e) {
+      showToast(e.message, "error");
+      loadHomeRowsSettings();   // resync from the server rather than keep a lie
+    }
+  }
+
+  async function loadHomeRowsSettings() {
+    if (!homeRowsList) return;
+    try {
+      const r = await fetch("/api/settings/home-rows");
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j && Array.isArray(j.rows)) homeRowsDraft = j.rows;
+    } catch (e) { /* keep whatever is drawn */ }
+    renderHomeRowsList();
+  }
+
+  const open = () => { showView("home"); pendingThemeId = null; renderThemeList(); loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); loadDisplaySettings(); loadLabelFolderDepth(); loadQobuzStatus(); loadTidalStatus(); loadSmartPicksSettings(); loadLabelsEnabled(); loadHomeRowsSettings(); overlay.classList.remove("hidden"); };
   const close = () => {
     overlay.classList.add("hidden");
     // Closing Settings ends the client side of any pending Tidal device flow
@@ -10390,6 +11035,7 @@ initServiceBrowser({
         j.status === "unpaired"  ? "Not connected to Roon" :
                                    "Rescan failed";
       toast(msg, j.status === "rebuilt" || j.status === "fresh" ? undefined : "error");
+      refreshRescanSub();   // the row's sub-line is now stale whatever happened
     } catch (e) {
       toast("Rescan failed", "error");
     }
@@ -10430,7 +11076,45 @@ initServiceBrowser({
                                  "All zones unmuted", "Could not unmute all zones"),
   };
 
-  const openMenu  = () => overlay.classList.remove("hidden");
+  // What the snapshot is right now, under the Rescan row. Every phrase here is
+  // deliberately PAST tense or explicitly a schedule, because none of it can be
+  // a claim about this instant: `library_importing` is set at the last check
+  // and cleared at the next clean one, and Roon publishes no import-finished
+  // event to make it live. Saying "Roon is importing" would be a confident lie
+  // dressed up as a status line.
+  function libraryAgeText(ms) {
+    const mins = Math.round((Date.now() - ms) / 60000);
+    if (mins < 2)    return "just now";
+    if (mins < 60)   return mins + " min ago";
+    const hrs = Math.round(mins / 60);
+    if (hrs < 48)    return hrs + (hrs === 1 ? " hour ago" : " hours ago");
+    return Math.round(hrs / 24) + " days ago";
+  }
+  async function refreshRescanSub() {
+    const el = document.getElementById("rescan-sub");
+    if (!el) return;
+    try {
+      const r = await fetch("/api/status");
+      const j = await r.json();
+      if (!j.paired) { el.textContent = "Not connected to Roon"; return; }
+      const albums = (j.index_count || 0).toLocaleString() + " albums";
+      if (j.library_importing) {
+        el.textContent = albums + " · Roon was importing at the last check — refresh paused";
+      } else if (j.library_recheck_pending) {
+        el.textContent = albums + " · the library moved, checking again shortly";
+      } else if (j.index_built_at) {
+        el.textContent = albums + " · checked " + libraryAgeText(j.index_built_at);
+      } else {
+        el.textContent = "No snapshot yet";
+      }
+    } catch (e) {
+      // The drawer must open regardless. An empty sub-line reads as "no
+      // information", which is exactly what a failed status call means.
+      el.textContent = "";
+    }
+  }
+
+  const openMenu  = () => { overlay.classList.remove("hidden"); refreshRescanSub(); };
   const closeMenu = () => overlay.classList.add("hidden");
 
   toggle.addEventListener("click", openMenu);
