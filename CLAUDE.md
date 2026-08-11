@@ -58,6 +58,31 @@ grep -n '\${{' .github/workflows/*.yml \
   && echo "ERROR: invalid workflow expression" || echo "OK"
 ```
 
+```bash
+# 6. iOS full-screen contract — the app must keep filling the display.
+#    `apple-mobile-web-app-status-bar-style: black-translucent` shifts the
+#    document UP under the status bar without growing the layout viewport, so
+#    it leaves a gap at the BOTTOM the size of the TOP inset (44-62px, not the
+#    34px of a home indicator). `apple-mobile-web-app-capable` opts into the
+#    legacy web-app path where that style governs the window.
+#    THE PART THAT MAKES IT EXPENSIVE: iOS reads both at ADD-TO-HOME-SCREEN
+#    time, not per launch, so a shortcut created against a bad build keeps the
+#    bad window forever and no later server-side fix is observable through it.
+#    (v1.7.60-65: six versions, five wrong diagnoses.)
+#    Matches the TAG, not the word: index.html carries a comment naming these
+#    three and explaining why they are absent, and a bare word-grep flags it.
+#    A pre-flight step that cries wolf gets ignored, which is how a real one
+#    gets waved through.
+grep -nE '<meta[^>]*name="(apple-mobile-web-app-capable|mobile-web-app-capable|apple-mobile-web-app-status-bar-style)"' \
+  public/index.html public/display.html \
+  && echo "ERROR: legacy Apple web-app meta — this stops the app filling the screen" || echo "OK"
+
+#    Exactly one viewport meta. A second silently overrides the first and
+#    viewport-fit=cover stops applying, zeroing every env(safe-area-inset-*).
+test "$(grep -c 'name="viewport"' public/index.html)" = "1" \
+  && echo "OK" || echo "ERROR: not exactly one viewport meta"
+```
+
 If step 3 cannot run (Roon not available), run steps 1 and 2 and explicitly note why 3 was skipped.
 
 ### Pre-flight checklist (tick each before every push)
@@ -69,6 +94,8 @@ If step 3 cannot run (Roon not available), run steps 1 and 2 and explicitly note
 - [ ] Auth headers reference the live variable, not a deleted constant
 - [ ] Any new HTML element ID matches the `getElementById` call in app.js exactly
 - [ ] No screen is saved/restored via an `.innerHTML` string — move live nodes (step 4 above)
+- [ ] Nothing new in `<head>` that iOS reads — see step 6; the head allowlist in
+      `test/static/pwa-icons.test.js` is the reference for what is permitted
 - [ ] `package.json` version bumped
 - [ ] CHANGELOG.md entry added
 
@@ -78,6 +105,17 @@ If step 3 cannot run (Roon not available), run steps 1 and 2 and explicitly note
 - **No silent catch.** `catch (e) {}` must have a comment explaining why silence is safe.
 - **Variable name freeze.** Once a variable is named, all references — declaration, assignment, template literals, log messages — use the identical name. Never mix camelCase and UPPER_SNAKE for the same value.
 - **Declaration before use.** With `let`/`const` in Node.js, a bare assignment `x = val` on line N while `let x` is on line N+500 is a ReferenceError. Always declare at the first-use site.
+- **Nothing goes in `<head>` without knowing whether iOS reads it.** The four lines
+  charset / viewport / theme-color / title are the confirmed-good set (v1.6.50, installed and
+  verified filling an iPhone screen); icon `<link>`s are inert and safe. Anything else — a
+  manifest link, any `apple-*` meta — changes how iOS sizes the window, is baked in when the user
+  adds the shortcut, and cannot be undone by shipping a new build. **A "still broken" report after
+  such a change is not evidence the fix failed**: the old window config is still in the shortcut
+  until it is deleted and re-added. Ask the user to reinstall the shortcut BEFORE diagnosing.
+- **Device-only behaviour cannot be tested here.** The DOM harness is headless Chromium: no browser
+  chrome, no safe areas, `dvh` == `vh` == `100%`. No assertion in this suite can observe iOS window
+  behaviour, so writing more of them buys confidence and no coverage. What the suite CAN do is pin a
+  known-good state so it is not changed silently — that is what the head allowlist does.
 - **No partial migrations.** When renaming a constant or moving it to settings, search the entire file with grep before committing to ensure zero stale references remain.
 
 ### When a bug is found
@@ -357,4 +395,7 @@ docker run -d \
 | v1.7.54–v1.7.56 | superseded | Automatic rescan repaired end to end: recheck budget could never refill, failed rebuilds reported success, "finished" meant only "not still adding"; periodic check 12h → 10 min; change probe compared against the filtered count |
 | v1.7.57–v1.7.58 | superseded | Library-change messages say why, what next, and the manual Rescan; each quotes the clock it actually waits on |
 | v1.7.59 | stable (superseded) | A switched-off feature no longer leaves its Home row or its playlists behind |
-| v1.7.60 | **Latest (stable)** | PWA icon set from the MusicD duck — manifest, any + maskable families, apple-touch-icon; the app had no PWA setup at all before this; 758 unit / 317 DOM / 53 static — README points here |
+| v1.7.60 | superseded (caused the iOS regression; README still points here until promoted) | PWA icon set from the MusicD duck — and three legacy Apple metas that stopped the app filling the display |
+| v1.7.61–v1.7.64 | superseded | Four attempts at the iOS band, three from a false premise; v1.7.62's `height:100%` on full-bleed panels and v1.7.63's toast insets are the parts worth keeping |
+| v1.7.65 | stable | Head reduced to v1.6.50's plus four inert icon lines; head allowlist test |
+| v1.7.66 | **Latest (stable)** | The iOS full-screen contract pinned: pre-flight step 6, head allowlist, shell rules checked against v1.6.50; 758 unit / 317 DOM / 69 static |
