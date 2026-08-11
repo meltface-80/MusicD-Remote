@@ -1232,14 +1232,24 @@ async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
 // mismatch PROVES the library changed from the one where it is the likeliest
 // explanation but unproven; overstating the second would be a guess dressed up
 // as a diagnosis.
+// `sure` also decides the TIMING, because the two cases genuinely wait on
+// different clocks and quoting one number for both is wrong at the moment the
+// user is reading it. When the change is proven, the site that proves it has
+// just armed the recheck chain — libraryRecheckMs(), five minutes. When it is
+// only the likeliest explanation, nothing was armed and the next look is the
+// background watch, libraryCheckMs(), ten minutes.
 function libraryChangingAdvice(sure) {
+  const when = sure
+    ? "A re-check is already scheduled — about " +
+      Math.round(libraryRecheckMs() / 60000) + " minutes"
+    : "The extension re-checks every " +
+      Math.round(libraryCheckMs() / 60000) + " minutes";
   return (sure
     ? " Your Roon library changed after this list was built"
     : " This usually means your Roon library changed after this list was built") +
-    " — normally because albums are being added or identified. The extension " +
-    "re-checks every 10 minutes and refreshes itself once Roon settles, so this " +
-    "usually clears on its own. If it hasn't, open the side menu and tap " +
-    "Rescan library.";
+    " — normally because albums are being added or identified. " + when +
+    " — and it refreshes itself once Roon settles, so this usually clears on " +
+    "its own. If it hasn't, open the side menu and tap Rescan library.";
 }
 
 function noActionError(kind, actions, what) {

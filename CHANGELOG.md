@@ -2,6 +2,32 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.58] — 2026-08-11
+
+### Fixed — the red line people actually see, and the wrong wait time
+
+Two corrections to v1.7.57, both reported from a screenshot of the real thing.
+
+**The message on screen was composed in the client, so v1.7.57 went straight past it.** The line
+under the album title — *"Roon offered no playback options for this album."* — is not the server's
+`noActionError`; that one is a toast on the play path. This sentence is built in `public/app.js`
+from an empty action list, and its "nothing was proven" branch carried no explanation at all. The
+pass that added why/what-next/how-to-fix to every message on this path fixed the ones nobody was
+looking at. Both branches now explain themselves. The narrow lesson, worth keeping: a message the
+server also knows how to build is not evidence the server built the one on screen.
+
+**It quoted one interval where there are two.** They are different clocks. When the live album count
+contradicts the snapshot, the site that proves it has *already armed* the recheck chain —
+`libraryRecheckMs()`, **5 minutes**. When the change is only the likeliest explanation, nothing was
+armed and the next look is the background watch — `libraryCheckMs()`, **10 minutes**. Quoting ten
+for both was wrong precisely in the case a user is most likely reading, and told somebody staring at
+a red line to wait twice as long as they needed to. Each branch now quotes the clock it is actually
+waiting on, read from the constants rather than written into the sentence, so retuning either can
+no longer make the message lie.
+
+Four DOM assertions drive the real album view for both branches, and three mutations of the client
+confirmed red — including a straight revert to the sentence in the screenshot.
+
 ## [1.7.57] — 2026-08-11
 
 ### Changed — every "library is changing" message now explains itself

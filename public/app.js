@@ -1109,16 +1109,25 @@
   // menu — so there is one dropdown look in the app rather than a second one
   // that almost matches.
   // ---------------------------------------------------------------------
-  // Mirrors libraryChangingAdvice(false) on the server, for the two notes the
-  // client composes itself. Same three things every message on this path now
-  // carries: why it happened, what the extension is doing, and the manual way
-  // out if that doesn't work.
-  const LIBRARY_CHANGING_ADVICE =
-    " This usually means your Roon library changed after this list was built — " +
-    "normally because albums are being added or identified. The extension " +
-    "re-checks every 10 minutes and refreshes itself once Roon settles, so this " +
-    "usually clears on its own. If it hasn't, open the side menu and tap " +
-    "Rescan library.";
+  // Mirrors libraryChangingAdvice() on the server, for the notes the client
+  // composes itself. Same three things every message on this path carries: why
+  // it happened, what the extension is doing, and the manual way out.
+  //
+  // `moved` is the server's library_moved flag, and it picks the TIMING as well
+  // as the wording — the two cases wait on different clocks. When the change is
+  // proven the server has already armed the recheck chain (5 minutes); when it
+  // is only the likeliest explanation, the next look is the background watch
+  // (10 minutes). One number for both would be wrong exactly when it is read.
+  function libraryChangingAdvice(moved) {
+    return (moved
+      ? " Your Roon library changed after this list was built"
+      : " This usually means your Roon library changed after this list was built") +
+      " — normally because albums are being added or identified. " +
+      (moved ? "A re-check is already scheduled — about 5 minutes"
+             : "The extension re-checks every 10 minutes") +
+      " — and it refreshes itself once Roon settles, so this usually clears on " +
+      "its own. If it hasn't, open the side menu and tap Rescan library.";
+  }
 
   const OVERFLOW_SVG =
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" ' +
@@ -5576,9 +5585,12 @@
       modalActs.innerHTML = "";
       const err = document.createElement("div");
       err.className = "modal-error";
-      err.textContent = j.library_moved
-        ? "Roon offered no playback options — your library has changed since this list was built. It is being re-checked; try again shortly."
-        : "Roon offered no playback options for this album.";
+      // BOTH branches explain themselves now. The second one — the plain
+      // sentence with no explanation at all — is the red line users actually
+      // reported, and it was composed here in the client, so the server-side
+      // builder never touched it.
+      err.textContent = "Roon offered no playback options for this album." +
+                        libraryChangingAdvice(!!j.library_moved);
       modalActs.appendChild(err);
     }
 
@@ -5596,14 +5608,16 @@
       note.className = "modal-error";
       note.textContent = (j.declared_tracks
         ? "Roon sent " + trackList.length + " of " + j.declared_tracks + " tracks."
-        : "Roon sent an incomplete track list.") + LIBRARY_CHANGING_ADVICE;
+        : "Roon sent an incomplete track list.") +
+        libraryChangingAdvice(!!j.library_moved);
       modalActs.appendChild(note);
     }
     if (trackList.length === 0) {
       if (!j.partial && j.library_moved) {
         const note = document.createElement("div");
         note.className = "modal-error";
-        note.textContent = "Roon returned no tracks for this album." + LIBRARY_CHANGING_ADVICE;
+        note.textContent = "Roon returned no tracks for this album." +
+                           libraryChangingAdvice(!!j.library_moved);
         modalActs.appendChild(note);
       }
       trackWrap.classList.add("hidden");

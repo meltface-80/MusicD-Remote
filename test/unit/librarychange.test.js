@@ -36,7 +36,8 @@ const assert = require("node:assert/strict");
 const { loadIndexFunctions, indexSource } = require("../lib/extract");
 
 test("Roon's own words are surfaced, not discarded", async (t) => {
-  const F = loadIndexFunctions(["roonBrowseError", "libraryChangingAdvice"], {});
+  const F = loadIndexFunctions(["roonBrowseError", "libraryChangingAdvice",
+                                 "libraryRecheckMs", "libraryCheckMs"], {});
 
   await t.test("THE one: a message response carries Roon's text to the user", () => {
     const e = F.roonBrowseError(
@@ -143,7 +144,8 @@ test("the wording claims only what can be proved", async (t) => {
     // is running now — that costs four Core calls and a five-second sleep to
     // establish, which is not available on a play path. Saying "Roon is
     // importing" here would be a confident guess replacing an honest one.
-    const F = loadIndexFunctions(["libraryChangingAdvice"], {});
+    const F = loadIndexFunctions(["libraryChangingAdvice", "libraryRecheckMs",
+                                  "libraryCheckMs"], {});
     for (const sure of [true, false]) {
       const say = F.libraryChangingAdvice(sure);
       assert.match(say, /library changed after this list was built/,
@@ -166,7 +168,8 @@ test("the wording claims only what can be proved", async (t) => {
   // v1.7.57: the symptom was all the user ever got.
   await t.test("every message on this path says why, what next, and the way out", () => {
     const F = loadIndexFunctions(
-      ["libraryChangingAdvice", "roonBrowseError", "noActionError"], {});
+      ["libraryChangingAdvice", "roonBrowseError", "noActionError",
+       "libraryRecheckMs", "libraryCheckMs"], {});
 
     const shouldAdvise = [
       ["no playback options at all", F.noActionError("play", [], "this album").message],
@@ -175,7 +178,7 @@ test("the wording claims only what can be proved", async (t) => {
     ];
     for (const [label, msg] of shouldAdvise) {
       assert.match(msg, /added or identified/,   label + ": does not say WHY");
-      assert.match(msg, /re-checks every 10 minutes/, label + ": does not say what happens NEXT");
+      assert.match(msg, /minutes/,               label + ": does not say what happens NEXT");
       assert.match(msg, /Rescan library/,
         label + ": leaves the user with no way out if the automatic check does not clear it");
     }
@@ -752,5 +755,57 @@ test("the change probe does not cry wolf at ten-minute intervals", async (t) => 
     const h = probeHarness(live, { count: 2, albums: live.albums.slice() });
     assert.equal(await h.F.libraryChangedSince(), false,
       "an upgraded install reports its library changed on every probe");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.7.58: the message quoted ONE interval, and there are two.
+//
+// They are different clocks and the difference is not cosmetic. A proven
+// library change means the site that proved it has just armed the recheck
+// chain — libraryRecheckMs(), five minutes. An unproven one armed nothing, so
+// the next look is the background watch — libraryCheckMs(), ten minutes.
+//
+// Quoting ten for both is wrong precisely in the case the user is most likely
+// reading it, and tells somebody staring at a red line to wait twice as long
+// as they need to.
+// ---------------------------------------------------------------------------
+test("the message quotes the clock it is actually waiting on", async (t) => {
+  const F = loadIndexFunctions(
+    ["libraryChangingAdvice", "libraryRecheckMs", "libraryCheckMs"], {});
+
+  await t.test("a proven change quotes the recheck that was just armed", () => {
+    const mins = Math.round(F.libraryRecheckMs() / 60000);
+    assert.match(F.libraryChangingAdvice(true), new RegExp("about " + mins + " minutes"),
+      "a proven library change arms the recheck chain at " + mins + " minutes, and " +
+      "the message names a different number");
+    assert.match(F.libraryChangingAdvice(true), /already scheduled/,
+      "the message does not say that a check is already on its way");
+  });
+
+  await t.test("an unproven one quotes the background watch", () => {
+    const mins = Math.round(F.libraryCheckMs() / 60000);
+    assert.match(F.libraryChangingAdvice(false), new RegExp("every " + mins + " minutes"));
+  });
+
+  await t.test("THE one: they are not the same number", () => {
+    // If they ever converge this test is noise, but while they differ, one
+    // hardcoded figure is wrong in one of the two cases — which is how it
+    // shipped.
+    assert.notEqual(F.libraryRecheckMs(), F.libraryCheckMs(),
+      "the two intervals are equal, so this distinction can be collapsed");
+    assert.notEqual(F.libraryChangingAdvice(true), F.libraryChangingAdvice(false),
+      "both cases quote the same wait — one of them is wrong");
+  });
+
+  await t.test("neither is hardcoded", () => {
+    // A literal would drift the moment either constant is retuned, and nothing
+    // would notice.
+    const src = indexSource();
+    const fn = src.slice(src.indexOf("function libraryChangingAdvice("));
+    const body = fn.slice(0, fn.indexOf("\n}\n") + 3);
+    assert.ok(/libraryRecheckMs\(\)/.test(body) && /libraryCheckMs\(\)/.test(body),
+      "the intervals are written into the sentence as literals, so retuning " +
+      "either constant silently makes the message lie");
   });
 });
