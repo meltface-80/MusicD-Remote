@@ -2,6 +2,52 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.63] — 2026-08-11
+
+### Fixed — removed the v1.7.61 strip, which was the thing making Now Playing worse
+
+A full CSS audit of every bottom-anchored surface found what v1.7.62's fix had not: the strip added
+in v1.7.61 was itself a bug, and the specific reason the Now Playing screen looked *worse* rather
+than merely unfixed.
+
+It sat at `z-index: 69`. `.modal` is `50` and `.share-overlay` is `60`. The transport bar is hidden
+on the Now Playing screen, so nothing covered the strip there — it painted `var(--bg)`, the darkest
+token in every palette, straight over the panel's lighter `var(--bg-elev)`. A brand-new dark bar,
+layered on top of the gap that was already there. The comment shipped alongside it claimed the
+transport covered it "whenever it is on screen"; that was simply false for the modal.
+
+It was also unnecessary from the start. `html` carries `background: var(--bg)`, which propagates to
+the canvas, so an area no element covers is **already the page ground** — the safe area was never
+going to be black from the page's side. Any genuinely black band could only ever have come from a
+painted layer, which is exactly what v1.7.62 identified: `.modal-backdrop`'s `rgba(0,0,0,.55)`
+showing through a short panel.
+
+The audit confirmed every other bottom-anchored surface already pads its own background into the
+inset — `.mini-transport`, `.settings-sheet`, `.lib-sheet`, `.menu-drawer`, both merge bars, both
+volume popovers. With `.modal-panel` fixed in v1.7.62, nothing is left for a strip to cover, so it
+is gone rather than merely re-layered.
+
+### Fixed — the two floating toasts sat in the home-indicator area
+
+Same v1.7.60 standalone fallout, found by the same audit. `.toast` (`bottom: 28px`) and
+`.settings-info-toast` (`bottom: 88px`) were the only bottom-anchored elements with no inset
+awareness, so on an installed iPhone they sat 34px lower than intended, over the home indicator.
+Both now add `env(safe-area-inset-bottom)`.
+
+### Fixed — two test assertions that could not fail
+
+Both found by mutation-checking this change, and both the same mistake in different clothes:
+
+- The rule lookup used a raw `indexOf` on the stylesheet, so it matched the selector inside a
+  **comment** — including the comment written to explain this very fix. Comments are stripped first
+  now.
+- The transport-inset assertion used `/\.mini-transport\s*\{[\s\S]*?padding-bottom:.../`. That
+  `[\s\S]*?` walks straight past the rule's closing brace and matches some *other* selector's
+  padding, so deleting the transport's own inset passed cleanly. It is bounded to the rule body now.
+
+Four mutations confirmed red: the v1.7.61 strip reintroduced above the modal, `html` losing its
+background, the transport losing its inset, and `.modal` ceasing to be full-screen.
+
 ## [1.7.62] — 2026-08-11
 
 ### Fixed — the real cause of the iOS band: viewport units on a full-screen panel

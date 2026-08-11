@@ -159,34 +159,44 @@ test("the iOS safe area is claimed and painted", async (t) => {
     assert.equal(manifest.display, "standalone");
   });
 
-  await t.test("THE one: something paints the bottom inset", () => {
-    // The reported symptom. The bars pad themselves, but when no bar is on
-    // screen nothing reached the strip and iOS showed its own black.
-    assert.match(css, /body::after\s*\{[^}]*height:\s*env\(safe-area-inset-bottom\)/,
-      "nothing paints the home-indicator strip, so it shows through as a black " +
-      "band whenever the transport bar is hidden");
-    const rule = css.slice(css.indexOf("body::after"));
-    const body = rule.slice(0, rule.indexOf("}") + 1);
-    assert.match(body, /position:\s*fixed/, "the strip scrolls away with the page");
-    assert.match(body, /background:\s*var\(--bg\)/,
-      "the strip is not painted with the app's own ground, so it will not match");
-    assert.match(body, /pointer-events:\s*none/,
-      "the strip would swallow taps aimed at the bottom of the screen");
+  await t.test("THE one: the canvas is painted, so an uncovered inset is never black", () => {
+    // The real guarantee, and the one v1.7.61 missed. `html` carries a
+    // background, which propagates to the canvas — so any area no element
+    // covers is already the page ground. A black band can therefore only come
+    // from a PAINTED layer (a backdrop scrim), never from bare page.
+    const htmlRule = css.slice(css.indexOf("html, body {"));
+    assert.match(htmlRule.slice(0, htmlRule.indexOf("}")), /background:\s*var\(--bg\)/,
+      "html has no background, so the safe areas fall through to the browser's " +
+      "own canvas colour and really would show black");
   });
 
-  await t.test("the strip sits under the transport bar, not over it", () => {
-    // At or above 70 it would cover the transport's own padded area and, worse,
-    // its controls.
-    const rule = css.slice(css.indexOf("body::after"));
-    const z = Number((rule.slice(0, rule.indexOf("}")).match(/z-index:\s*(\d+)/) || [])[1]);
-    assert.ok(z < 70, "the safe-area strip (z-index " + z + ") is not below .mini-transport (70)");
+  await t.test("nothing paints a strip OVER the modal", () => {
+    // v1.7.61 added body::after at z-index 69 to cover the home indicator.
+    // .modal is 50 and .share-overlay is 60, and the transport bar is hidden on
+    // the Now Playing screen — so the strip painted --bg straight over the
+    // panel's lighter --bg-elev and made that screen visibly worse. If a strip
+    // is ever reintroduced it must sit BELOW the overlays, not above them.
+    const at = css.indexOf("body::after");
+    if (at === -1) return;                     // no strip at all: correct
+    const rule = css.slice(css.indexOf("{", at), css.indexOf("}", at));
+    const z = Number((rule.match(/z-index:\s*(-?\d+)/) || [])[1]);
+    assert.ok(!Number.isFinite(z) || z < 50,
+      "a body::after strip at z-index " + z + " sits above .modal (50), so it " +
+      "paints over the Now Playing panel instead of behind it");
   });
 
-  await t.test("the bars still pad themselves — the strip is a backstop", () => {
-    // If someone deletes the bars' own insets and leans on the strip, the
-    // CONTROLS move into the home-indicator area even though the background
-    // looks right.
-    assert.match(css, /\.mini-transport\s*\{[\s\S]*?padding-bottom:\s*calc\([^)]*env\(safe-area-inset-bottom\)/,
+  await t.test("the bars pad their own backgrounds into the inset", () => {
+    // With no strip, this is the ONLY thing keeping the transport's background
+    // and its controls clear of the home indicator.
+    // Bounded to the rule body. A [\s\S]*? between the selector and the
+    // declaration walks straight past the closing brace and happily matches
+    // some OTHER selector's padding, which is exactly what it did — the
+    // mutation that stripped the transport's inset sailed through.
+    const bare2 = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const at = bare2.indexOf(".mini-transport {");
+    assert.ok(at > -1, ".mini-transport rule not found");
+    const rule = bare2.slice(at, bare2.indexOf("}", at));
+    assert.match(rule, /padding-bottom:\s*calc\([^)]*env\(safe-area-inset-bottom\)/,
       "the transport bar no longer insets its own controls above the home indicator");
   });
 });
@@ -220,11 +230,15 @@ test("full-screen panels size against their fixed parent, not the viewport", asy
   // The selector may head a GROUP (`a, b, c { ... }`), so the body is whatever
   // sits between the next "{" after the selector and its closing brace — not
   // the text following "<selector> {", which does not exist for a grouped rule.
+  // Comments are stripped FIRST. A raw indexOf finds the selector inside any
+  // comment that happens to mention it — which it immediately did, since the
+  // note explaining this very fix names `.modal-panel`.
+  const bare = css.replace(/\/\*[\s\S]*?\*\//g, "");
   function ruleBody(selector) {
-    const at = css.indexOf(selector);
+    const at = bare.indexOf(selector);
     if (at < 0) return null;
-    const open = css.indexOf("{", at);
-    return open < 0 ? null : css.slice(open + 1, css.indexOf("}", open));
+    const open = bare.indexOf("{", at);
+    return open < 0 ? null : bare.slice(open + 1, bare.indexOf("}", open));
   }
 
   await t.test("THE one: no viewport-unit HEIGHT on a full-bleed panel", () => {

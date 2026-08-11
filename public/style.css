@@ -186,32 +186,22 @@ button { font-family: inherit; }
   display: flex; flex-direction: column;
 }
 
-/* The home-indicator strip, painted with the app's own ground.
+/* No safe-area strip here, deliberately.
  *
- * v1.7.60 made the app installable on iOS for the first time — before it there
- * was no manifest and no apple-mobile-web-app-capable, so "Add to Home Screen"
- * opened in Safari and SAFARI'S toolbar covered this strip. The page never saw
- * it. All the env(safe-area-inset-*) rules dating from v1.5.104 had therefore
- * never actually run on iOS, and the first standalone launch left a black band
- * along the bottom.
+ * v1.7.61 added a `body::after` band painted with --bg to cover the home
+ * indicator. It was wrong twice over. First, it was unnecessary: `html` carries
+ * `background: var(--bg)`, which propagates to the canvas, so an uncovered safe
+ * area is already the page ground and was never going to be black from the
+ * page's side. Second, it was actively harmful: at z-index 69 it sat ABOVE
+ * .modal (50) and .share-overlay (60), and the transport bar is hidden on the
+ * Now Playing screen — so it painted a fresh --bg bar straight over the panel's
+ * lighter --bg-elev. That is why Now Playing got worse rather than better.
  *
- * A backstop rather than a replacement: the bars above still pad themselves, so
- * where they already reach the bottom this sits behind them and is invisible.
- * It only shows through where nothing else painted. On any device without a
- * home indicator the inset is 0, so the strip has zero height and does nothing —
- * which is why it is safe to apply unconditionally.
- *
- * --bg, not --bg-elev: the transport bar (z-index 70) covers this whenever it
- * is on screen, so the only time the strip is visible is when there is no bar,
- * and then the page background is what should continue. */
-body::after {
-  content: "";
-  position: fixed; left: 0; right: 0; bottom: 0;
-  height: env(safe-area-inset-bottom);
-  background: var(--bg);
-  z-index: 69;            /* directly beneath .mini-transport (70) */
-  pointer-events: none;   /* never steals a tap near the home indicator */
-}
+ * Every bottom-anchored surface pads its own background into the inset already
+ * (.mini-transport, .settings-sheet, .lib-sheet, .menu-drawer, the merge bars,
+ * both volume popovers), and .modal-panel now fills its fixed parent instead of
+ * measuring itself in dvh. Nothing is left for a strip to cover. */
+
 
 /* ------------------------------------------------------------------ */
 /*  Top bar                                                            */
@@ -966,7 +956,9 @@ main {
 /*  Toast                                                              */
 /* ------------------------------------------------------------------ */
 .toast {
-  position: fixed; left: 50%; bottom: 28px;
+  /* Now that the app runs standalone (v1.7.60), 28px from the bottom is 28px
+     into the home-indicator area. The inset lifts it clear. */
+  position: fixed; left: 50%; bottom: calc(28px + env(safe-area-inset-bottom));
   transform: translateX(-50%) translateY(8px);
   background: var(--bg-elev); color: var(--text);
   border: 1px solid var(--border);
@@ -2184,7 +2176,7 @@ input.vol-range::-moz-range-thumb {
 .settings-info-btn:hover { color: var(--accent-text); }
 
 .settings-info-toast {
-  position: fixed; bottom: 88px; left: 50%; transform: translateX(-50%);
+  position: fixed; bottom: calc(88px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
   background: var(--bg-elev-2); border: 1px solid var(--border);
   color: var(--text); font-size: 14px; line-height: 1.5;
   padding: 12px 18px; border-radius: 12px; max-width: min(400px, 92vw);
