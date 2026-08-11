@@ -2,6 +2,37 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.56] — 2026-08-11
+
+### Fixed — the ten-minute watch would have re-walked the library forever on some installs
+
+Found by review before release, and it is the reason the watch could not have shipped as it stood.
+
+`buildAlbumIndex` keeps two numbers: `count`, the albums that actually arrived once holes are
+filtered out, and `declared`, what Roon *said* the library held when the snapshot was taken. Its own
+comment explains why the difference matters — *"comparing a live count against the filtered one
+would then report 'the library moved' forever on a library that never changed, and every album open
+would arm another full re-walk"* — and `loadAlbumSession` was fixed for exactly that.
+
+`libraryChangedSince()`, the probe the watch repeats, was not. It compared the live count against
+`count`. On any install whose build hit a short page, every probe returned "changed" on a library
+nobody had touched. At the old twelve-hour interval that was two needless re-walks a day and went
+unnoticed across several versions. At ten minutes it becomes a full library walk, a genre harvest
+(a few hundred browse calls) and an art prewarm **144 times a day** — a self-inflicted denial of
+service on the Core, delivered by the feature meant to make the extension well behaved.
+
+The probe now compares against `declared || count`, the same expression `loadAlbumSession` uses. The
+first/last identity checks — the only way to see a library whose album count did not change — are
+skipped when the snapshot has holes, because with holes filtered out those entries are simply not
+the albums at those offsets and comparing them re-creates the same forever-true loop. A holed
+snapshot therefore reports "unchanged" until the count moves or somebody presses Rescan: degraded,
+but bounded, which the alternative is not. A short read now also says so in the log, since it is the
+one line that would explain a library appearing to stop noticing edits.
+
+The probe had **no test at all** — it is the single most-repeated Roon call in the extension. It now
+has nine, covering the holed snapshot, a snapshot written before `declared` existed, same-count
+swaps at either end, and the empty and one-album libraries. Five mutations confirmed red.
+
 ## [1.7.55] — 2026-08-11
 
 ### Fixed — the automatic rescan now actually fires, because something finally asks

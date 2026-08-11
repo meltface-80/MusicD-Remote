@@ -5505,6 +5505,13 @@ async function buildAlbumIndex() {
     // report "the library moved" forever on a library that never changed —
     // and every album open would arm another full re-walk.
     albumIndex.declared = total || albumIndex.count;
+    // Say so when they disagree. A holed snapshot makes libraryChangedSince
+    // stop reporting same-count changes, so it must not be silent — this is the
+    // one line that explains why a library seems to have stopped noticing edits.
+    if (albumIndex.declared !== albumIndex.count) {
+      console.log("[index] short read: Roon declared " + albumIndex.declared +
+                  " albums, " + albumIndex.count + " arrived — a Rescan will retry");
+    }
     rebuildAmbiguousAlbumKeys();   // identities shared by >1 album get no badge
     recordFirstSeenAlbums();       // anything new since the last rebuild
     albumIndex.builtAt  = Date.now();
@@ -5848,15 +5855,32 @@ async function libraryChangedSince() {
     await browse({ hierarchy: "albums", pop_all: true, multi_session_key: sessionKey });
     const head = await load({ hierarchy: "albums", offset: 0, count: 1, multi_session_key: sessionKey });
     const total = head.list && head.list.count ? head.list.count : 0;
+    // DECLARED, not count. `count` is the snapshot AFTER holes were filtered
+    // out; `declared` is what Roon said the library held when it was taken.
+    // buildAlbumIndex's own comment spells out why the difference matters —
+    // "comparing a live count against the filtered one would report the library
+    // moved forever" — and loadAlbumSession was fixed for it. This probe was
+    // not. At a twelve-hour interval that was two wasted re-walks a day and
+    // nobody noticed; at ten minutes it is a full re-walk, genre harvest and
+    // art prewarm every ten minutes, forever, on a library nobody touched.
+    const declared = albumIndex.declared || albumIndex.count;
+    if (total !== declared) return true;      // the count moved — that IS the answer
+
+    // The counts agree. The identity checks are only meaningful on a COMPLETE
+    // snapshot: with holes filtered out, albums[0] and albums[total - 1] are
+    // simply not the albums sitting at offsets 0 and total - 1, so comparing
+    // them re-creates exactly the forever-true loop above. A holed snapshot
+    // therefore reports "unchanged" until the count moves or somebody presses
+    // Rescan — degraded, but bounded, which the alternative is not.
+    if (albumIndex.count === 0 || albumIndex.count !== declared) return false;
+
     const identity = browseItemIdentity;
-    const firstNow = identity(head.items && head.items[0]);
-    const firstIdx = identity(albumIndex.albums[0]);
-    let lastChanged = false;
-    if (total > 1 && albumIndex.count > 1 && total === albumIndex.count) {
+    if (identity(head.items && head.items[0]) !== identity(albumIndex.albums[0])) return true;
+    if (total > 1) {
       const tail = await load({ hierarchy: "albums", offset: total - 1, count: 1, multi_session_key: sessionKey });
-      lastChanged = identity(tail.items && tail.items[0]) !== identity(albumIndex.albums[albumIndex.count - 1]);
+      if (identity(tail.items && tail.items[0]) !== identity(albumIndex.albums[total - 1])) return true;
     }
-    return total !== albumIndex.count || (albumIndex.count > 0 && firstNow !== firstIdx) || lastChanged;
+    return false;
   });
 }
 
