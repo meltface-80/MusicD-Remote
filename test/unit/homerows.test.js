@@ -188,3 +188,62 @@ test("opt-in means the work does not run, not that the row is hidden",
       assert.deepEqual(p.ran, []);
     });
   });
+
+// ---------------------------------------------------------------------------
+// v1.7.59: a row whose FEATURE is off is not a layout choice.
+//
+// Switching Smart Picks off stopped the daily build but left the carousel on
+// the Home screen, still showing the last day it produced — recommendations
+// from a feature the user had switched off, frozen at the moment it stopped.
+// Label of the week had the same shape: the route returns nothing with Labels
+// off, so the row was simply an empty heading.
+//
+// The distinction that matters is between "unavailable" and "off". The stored
+// `on` is the user's own choice and must survive untouched, so that switching
+// the feature back on restores the Home screen they had rather than one this
+// screen quietly rewrote for them.
+// ---------------------------------------------------------------------------
+test("a row whose feature is switched off reports itself unavailable", async (t) => {
+  const build = (opts) => loadIndexFunctions(["homeRowUnavailable"], {
+    smartPicksEnabled: opts.picks,
+    labelsEnabled: opts.labels,
+  });
+
+  await t.test("Smart Picks off makes its row unavailable, and says why", () => {
+    const F = build({ picks: false, labels: true });
+    assert.match(F.homeRowUnavailable("picks"), /Smart Picks is off/,
+      "the Smart Picks row stays on the Home screen after the feature is " +
+      "switched off, showing the last day it built");
+  });
+
+  await t.test("Labels off does the same for Label of the week", () => {
+    const F = build({ picks: true, labels: false });
+    assert.match(F.homeRowUnavailable("lotw"), /Labels is off/);
+  });
+
+  await t.test("each switch governs only its own row", () => {
+    const F = build({ picks: false, labels: true });
+    assert.equal(F.homeRowUnavailable("lotw"), null,
+      "switching Smart Picks off took Label of the week down with it");
+    const G = build({ picks: true, labels: false });
+    assert.equal(G.homeRowUnavailable("picks"), null,
+      "switching Labels off took Smart Picks down with it");
+  });
+
+  await t.test("with both features on, nothing is unavailable", () => {
+    const F = build({ picks: true, labels: true });
+    for (const id of ["unplayed", "history", "picks", "random", "library", "lotw", "genres"]) {
+      assert.equal(F.homeRowUnavailable(id), null, id + " reported unavailable");
+    }
+  });
+
+  await t.test("the ordinary rows never depend on a feature switch", () => {
+    // Whatever is switched off, these four have no feature behind them and
+    // must always be the user's own choice.
+    const F = build({ picks: false, labels: false });
+    for (const id of ["unplayed", "history", "random", "library", "genres"]) {
+      assert.equal(F.homeRowUnavailable(id), null,
+        id + " became unavailable because an unrelated feature was switched off");
+    }
+  });
+});

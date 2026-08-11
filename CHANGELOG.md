@@ -2,6 +2,42 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.59] — 2026-08-11
+
+### Fixed — a switched-off feature no longer leaves its Home row and its playlists behind
+
+Both of these were flagged as outstanding at the end of the v1.7.58 review; neither was done.
+
+**Smart Picks off now means the carousel is gone.** Switching it off stopped the daily build but
+left the row on the Home screen, still showing the last day it produced — recommendations from a
+feature the user had switched off, frozen at the moment it stopped. `/api/smart-picks` now serves
+nothing when the feature is off, the row does not render, and — the part that actually matters —
+the Home screen no longer *fetches* it either. Hiding a row that has already asked for its data
+still polls a switched-off feature once per Home visit, forever.
+
+The same treatment for **Label of the week**, which had the identical shape: with Labels off its
+route already returned nothing, so the row was an empty heading.
+
+In the Home Screen settings page these rows now read as off and cannot be switched on, with the
+reason on the row (*"Smart Picks is off in Settings"*). The stored preference is deliberately **not
+rewritten** — switching the feature back on restores the Home screen the user had, rather than one
+this page quietly changed while the row was unavailable. A row's feature being off is not a layout
+choice, and the two are kept apart in the data.
+
+**A saved playlist that filters by record label now says so.** `libraryView` only applies the facets
+`libFacetDefs()` currently publishes, so with Labels off a stored Record-label filter was simply
+skipped: the playlist still opened, still played, and returned a completely different set of albums
+with nothing on screen to explain it — "Late Night on Blue Note" quietly becoming "every album in
+the library". The detail screen and the play path now both refuse it and name the cause and the
+setting to change, and the tile carries the same reason so it does not look ordinary until opened.
+The saved view is left untouched, so switching Labels back on restores the playlist exactly as it
+was.
+
+758 unit / 317 DOM / 42 static. Six mutations confirmed red, including one that proved a redundant
+guard was redundant — `applyHomeLayout`'s unavailable term changes nothing today, because the only
+two rows that can be unavailable are also the two that hide when empty. It is kept for a future row
+that does not, and is now labelled as belt-and-braces rather than as the thing doing the work.
+
 ## [1.7.58] — 2026-08-11
 
 ### Fixed — the red line people actually see, and the wrong wait time

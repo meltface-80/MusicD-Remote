@@ -8578,12 +8578,36 @@ app.get("/api/image/:image_key", async (req, res) => {
 // Each track carries its own album's `image_key`, so a track row can show the
 // artwork it came from without a second lookup.
 const SMART_ALBUM_PAGE = 8;
+// Why a saved playlist cannot be honoured right now, or null.
+//
+// libraryView only applies the facets libFacetDefs() currently publishes, so
+// with Labels off a saved Record-label filter is simply skipped. That is the
+// right MECHANICAL answer and a terrible one to show a user: the playlist
+// still opens, still plays, and quietly returns a completely different set of
+// albums with nothing on screen to explain it. Naming it is the whole fix.
+function smartPlaylistUnavailable(sp) {
+  const view = (sp && sp.view) || {};
+  if (!labelsEnabled && Array.isArray(view.label) && view.label.length) {
+    return "This playlist filters by record label, and Labels is off in " +
+           "Settings. Switch Labels on to use it.";
+  }
+  return null;
+}
+
 app.get("/api/smart-playlist", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   const id = String(req.query.id || "").trim();
   if (!id) return res.status(400).json({ error: "id required" });
   const sp = loadSmartPlaylists().find(p => p.id === id);
   if (!sp) return res.status(404).json({ error: "No such dynamic playlist" });
+  // Answered before any work: showing the albums a half-applied query happens
+  // to return, alongside a note saying the playlist is unavailable, would be
+  // worse than showing none.
+  const blocked = smartPlaylistUnavailable(sp);
+  if (blocked) {
+    return res.json({ playlist: sp, unavailable: blocked, tracks: [],
+                      albums: [], total: 0, album_total: 0, offset: 0 });
+  }
 
   const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
   const count  = Math.max(1, Math.min(SMART_ALBUM_PAGE,
@@ -8671,6 +8695,10 @@ app.get("/api/smart-playlist/albums", async (req, res) => {
   if (!id) return res.status(400).json({ error: "id required" });
   const sp = loadSmartPlaylists().find(p => p.id === id);
   if (!sp) return res.status(404).json({ error: "No such dynamic playlist" });
+  // The play path needs the same answer as the detail screen, or the playlist
+  // reads "unavailable" and plays anyway.
+  const blocked = smartPlaylistUnavailable(sp);
+  if (blocked) return res.status(409).json({ error: blocked, unavailable: blocked });
   try {
     await ensureAlbumIndex();
     if (!isIndexBuilt()) return res.status(503).json({ error: "Library index is still building" });
@@ -9886,10 +9914,16 @@ app.get("/api/smart-playlists", (req, res) => {
           album_total: Math.min(view.length, p.limit),
           album_matched: view.length,
           art_keys: keys,
+          unavailable: smartPlaylistUnavailable(p),
         });
       }
-      catch (e) { return p; }   // a bad view must not take the whole list down
+      // A bad view must not take the whole list down — but the row still has to
+      // carry its reason, or the tile looks ordinary until it is opened.
+      catch (e) { return Object.assign({}, p, { unavailable: smartPlaylistUnavailable(p) }); }
     });
+  } else {
+    // No snapshot yet, so no counts — the reason is still known and cheap.
+    counted = list.map(p => Object.assign({}, p, { unavailable: smartPlaylistUnavailable(p) }));
   }
   res.json({ playlists: counted });
 });
@@ -11694,6 +11728,15 @@ async function smartPickFavourites() {
 // (nothing, first time). It never waits — see kickSmartPicks.
 app.get("/api/smart-picks", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  // Off means nothing is served, not just that nothing new is generated. The
+  // build already stopped when the switch was flipped, but the last day's rows
+  // stayed on disk and this route kept handing them out — so the Home carousel
+  // and the Smart Picks screen went on showing recommendations from a feature
+  // the user had switched off, frozen at the day it stopped.
+  if (!smartPicksEnabled) {
+    return res.json({ day: smartDayKey(), enabled: false, service_ready: false,
+                      auto_add: false, hour: smartPicksHour, building: false, picks: [] });
+  }
   try {
     const day  = smartDayKey();
     const rows = readSmartPicks(day);
@@ -11786,8 +11829,23 @@ function homeRowsLayout() {
   return out;
 }
 
+// A row whose FEATURE is switched off is not a layout choice, and the two must
+// not be confused. The user's stored `on` stays exactly as they left it — so
+// switching Smart Picks or Labels back on restores the Home screen they had —
+// while the row is off everywhere until then. Reported by the server rather
+// than worked out in the client, because the client would otherwise need to
+// know which rows belong to which feature.
+function homeRowUnavailable(id) {
+  if (id === "picks" && !smartPicksEnabled) return "Smart Picks is off in Settings";
+  if (id === "lotw"  && !labelsEnabled)     return "Labels is off in Settings";
+  return null;
+}
+
 app.get("/api/settings/home-rows", (req, res) => {
-  res.json({ rows: homeRowsLayout() });
+  res.json({
+    rows: homeRowsLayout().map(r =>
+      Object.assign({}, r, { unavailable: homeRowUnavailable(r.id) })),
+  });
 });
 app.post("/api/settings/home-rows", (req, res) => {
   const rows = (req.body || {}).rows;

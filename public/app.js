@@ -411,7 +411,20 @@
       // Rows that hide themselves when empty (History, Smart Picks, Label of
       // the week) get their emptiness respected: re-showing a row the layout
       // enables must not un-hide one that simply has nothing in it.
-      el.classList.toggle("hidden", !row.on || (row.on && rowHidesWhenEmpty(row.id) && !rowHasAnyContent(el)));
+      // `unavailable` beats the stored preference: the feature behind the row
+      // is switched off, so there is nothing for it to show. Kept separate from
+      // `on` so the user's own choice survives untouched until they turn the
+      // feature back on.
+      //
+      // Belt and braces, honestly labelled: the two rows that can currently be
+      // unavailable (picks, lotw) are also the two that hide themselves when
+      // empty, and with their feature off they ARE empty — so today this term
+      // changes nothing on its own. The gate that does the work is homeRowOn(),
+      // which stops the row's loader running at all. This one states the intent
+      // so a future unavailable row that does not hide-when-empty is covered.
+      const showable = row.on && !row.unavailable;
+      el.classList.toggle("hidden",
+        !showable || (showable && rowHidesWhenEmpty(row.id) && !rowHasAnyContent(el)));
     }
   }
   async function loadHomeLayout() {
@@ -428,7 +441,10 @@
   }
   function homeRowOn(id) {
     const r = homeLayout.find(x => x.id === id);
-    return !r || r.on;
+    // Gates the row's LOADER as well as its visibility — a row whose feature is
+    // off must not fetch either, or Smart Picks keeps polling a route that is
+    // now returning nothing.
+    return !r || (r.on && !r.unavailable);
   }
 
   // Topbar chrome per view: Back button (off Home), Refresh button (random /
@@ -3551,6 +3567,19 @@
           done = true;
           failed = true;
           more.classList.add("hidden");   // it would no-op; don't offer it
+          return;
+        }
+        // A playlist whose query needs a feature that is switched off. The
+        // server refuses to half-apply it: with Labels off, libraryView simply
+        // skips a saved Record-label filter, so the playlist would open, play,
+        // and return a completely different set of albums with nothing saying
+        // why. Named here instead.
+        if (j.unavailable) {
+          status.className = "playlist-empty is-unavailable";
+          status.textContent = j.unavailable;
+          done = true;
+          failed = true;
+          more.classList.add("hidden");
           return;
         }
 
@@ -9307,15 +9336,30 @@
       grip.setAttribute("aria-hidden", "true");
       grip.textContent = "⠿";
 
+      // A row whose FEATURE is off is not a layout choice. It reads as off and
+      // cannot be switched on here, because switching it on would do nothing —
+      // the row has no data to show. `row.on` is deliberately left ALONE, so
+      // turning Smart Picks or Labels back on restores the Home screen the user
+      // had rather than one this screen quietly rewrote.
+      const off = row.unavailable || null;
+      if (off) li.classList.add("is-unavailable");
+
       const name = document.createElement("span");
       name.className = "home-row-name";
       name.textContent = titles[row.id] || row.id;
+      if (off) {
+        const why = document.createElement("span");
+        why.className = "home-row-why";
+        why.textContent = off;
+        name.appendChild(why);
+      }
 
       const sw = document.createElement("label");
       sw.className = "switch";
       const cb = document.createElement("input");
       cb.type = "checkbox";
-      cb.checked = row.on !== false;
+      cb.checked = !off && row.on !== false;
+      cb.disabled = !!off;
       cb.setAttribute("aria-label", (titles[row.id] || row.id) + " row");
       cb.addEventListener("change", () => {
         row.on = cb.checked;

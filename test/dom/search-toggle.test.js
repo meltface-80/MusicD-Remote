@@ -375,3 +375,137 @@ test("the search glass sits at the right of the top bar at every width",
       });
     }
   });
+
+// ---------------------------------------------------------------------------
+// v1.7.59: a row whose FEATURE is switched off.
+//
+// Switching Smart Picks off stopped the daily build but left the carousel on
+// Home, still showing the last day it produced. The user's instruction was
+// plain: if Smart Picks is disabled it should not be on the Home screen at all,
+// and its toggle here should already be off.
+//
+// The part that is easy to get wrong is what happens to the STORED preference.
+// It must not be rewritten — switching Smart Picks back on has to restore the
+// Home screen the user had, not one this page silently changed while the
+// feature was unavailable.
+// ---------------------------------------------------------------------------
+const UNAVAIL_STUB = `
+window.__saved = [];
+window.__installFetch(function (url, opts) {
+  if (url.indexOf("/api/settings/home-rows") > -1) {
+    if (opts && opts.method === "POST") {
+      var body = JSON.parse(opts.body);
+      window.__saved.push(body.rows);
+      return window.__json({ ok: true, rows: body.rows.map(function (r) {
+        return { id: r.id, on: r.on !== false,
+                 unavailable: r.id === "picks" ? "Smart Picks is off in Settings" : null };
+      }) });
+    }
+    // Smart Picks is OFF as a feature, but the user's stored choice is ON.
+    return window.__json({ rows: [
+      { id: "unplayed", on: true }, { id: "history", on: true },
+      { id: "picks", on: true, unavailable: "Smart Picks is off in Settings" },
+      { id: "random", on: true },
+      { id: "library", on: true }, { id: "lotw", on: true },
+      { id: "genres", on: true }
+    ] });
+  }
+  if (url.indexOf("/api/smart-picks") > -1)
+    return window.__json({ enabled: false, picks: [], building: false });
+  if (url.indexOf("/api/random-albums") > -1)
+    return window.__json({ albums: [{ offset: 0, title: "A", subtitle: "B", image_key: "k" }], total: 1 });
+  if (url.indexOf("/api/library/albums") > -1)
+    return window.__json({ albums: [{ offset: 0, title: "A", subtitle: "B", image_key: "k" }], offset: 0, total: 1 });
+  if (url.indexOf("/api/zones") > -1)
+    return window.__json({ zones: [{ zone_id: "z1", display_name: "Z", state: "stopped", outputs: [] }] });
+  if (url.indexOf("/api/zone-state") > -1) return window.__json({ zone: null });
+  if (url.indexOf("/api/queue") > -1)      return window.__json({ items: [] });
+  if (url.indexOf("/api/filters") > -1)    return window.__json({ genres: [] });
+  if (url.indexOf("/api/home/") > -1)      return window.__json({ albums: [], label: null });
+  if (url.indexOf("/api/status") > -1)     return window.__json({ paired: true });
+  if (url.indexOf("/api/settings") > -1)   return window.__json({});
+  return undefined;
+});
+`;
+
+const UNAVAIL_DRIVER = `
+  await window.__sleep(500);
+  function section(id) { return document.querySelector('[data-row="' + id + '"]'); }
+  function shown(id) { var s = section(id); return !!s && !s.classList.contains("hidden"); }
+
+  T("picks_on_home", shown("picks"));
+  T("random_on_home", shown("random"));
+
+  document.getElementById("settings-toggle").click();
+  await window.__sleep(200);
+  Array.prototype.find.call(document.querySelectorAll(".settings-nav-item"),
+    function (b) { return b.getAttribute("data-pane") === "homescreen"; }).click();
+  await window.__sleep(300);
+
+  function li(id) {
+    return document.querySelector('#home-rows-list .home-row-item[data-row="' + id + '"]');
+  }
+  var p = li("picks");
+  var cb = p ? p.querySelector('input[type="checkbox"]') : null;
+  T("listed", !!p);
+  T("checked", cb ? cb.checked : null);
+  T("disabled", cb ? cb.disabled : null);
+  T("why", p ? (p.querySelector(".home-row-why") || {}).textContent || "" : "");
+
+  // An available row is untouched by any of this.
+  var rcb = li("random").querySelector('input[type="checkbox"]');
+  T("random_checked", rcb.checked);
+  T("random_disabled", rcb.disabled);
+
+  // Toggling a DIFFERENT row must not rewrite the unavailable one's stored value.
+  li("library").querySelector('input[type="checkbox"]').click();
+  await window.__sleep(300);
+  var last = window.__saved[window.__saved.length - 1] || [];
+  var sent = last.filter(function (r) { return r.id === "picks"; })[0];
+  T("picks_stored_on", sent ? sent.on : null);
+  // The load-bearing gate: the row's LOADER must not run either. Hiding an
+  // element that has already fetched its data still polls a feature the user
+  // switched off, once per Home visit, forever.
+  T("picks_fetched", window.__calls.some(function (u) { return u.indexOf("/api/smart-picks") > -1; }));
+`;
+
+test("a row whose feature is off is off here too, without losing the user's choice",
+  { concurrency: 1 }, async (t) => {
+    const r = harness.renderPage({
+      stub: UNAVAIL_STUB, driver: UNAVAIL_DRIVER, name: "home-rows-unavail",
+      windowSize: "390x844",
+    });
+    harness.assertNoPageError(assert, r);
+
+    await t.test("THE one: the carousel is not on the Home screen", () => {
+      assert.equal(r.picks_on_home, false,
+        "Smart Picks is switched off and its carousel is still on Home, showing " +
+        "whatever the last build produced before the switch was flipped");
+      assert.equal(r.random_on_home, true, "an unrelated row was hidden too");
+      assert.equal(r.picks_fetched, false,
+        "the Home screen still fetched /api/smart-picks for a feature that is " +
+        "switched off — hiding the row is not the same as not asking for it");
+    });
+
+    await t.test("its toggle reads off, and cannot be switched on", () => {
+      assert.equal(r.listed, true, "the row vanished from the settings list entirely");
+      assert.equal(r.checked, false, "the toggle still reads ON for a feature that is off");
+      assert.equal(r.disabled, true,
+        "the toggle can be switched on, which would do nothing — the row has no " +
+        "data to show while the feature is off");
+      assert.match(r.why, /Smart Picks is off/,
+        "nothing on the row says why it cannot be switched on");
+    });
+
+    await t.test("available rows are unaffected", () => {
+      assert.equal(r.random_checked, true);
+      assert.equal(r.random_disabled, false);
+    });
+
+    await t.test("THE other one: the stored preference survives", () => {
+      assert.equal(r.picks_stored_on, true,
+        "saving any other row wrote the unavailable row's preference to off — " +
+        "switching Smart Picks back on would restore a Home screen the user " +
+        "never chose");
+    });
+  });

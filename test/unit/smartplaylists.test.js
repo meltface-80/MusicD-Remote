@@ -242,3 +242,67 @@ test("mode and order are stored, defaulted and validated", async (t) => {
     assert.equal(r.order, "random");
   });
 });
+
+// ---------------------------------------------------------------------------
+// v1.7.59: a saved playlist whose query needs a feature that is switched off.
+//
+// libraryView only applies the facets libFacetDefs() currently publishes, so
+// with Labels off a saved Record-label filter is silently skipped. That is the
+// correct mechanical answer and a terrible thing to show somebody: the
+// playlist still opens, still plays, and returns a completely different set of
+// albums with nothing on screen to explain it. "Late Night on Blue Note"
+// quietly becomes "every album in the library".
+//
+// Naming it is the fix. The saved view is NOT rewritten — switching Labels
+// back on has to restore the playlist exactly as it was.
+// ---------------------------------------------------------------------------
+test("a playlist that needs a switched-off feature says so", async (t) => {
+  const build = (labels) => loadIndexFunctions(["smartPlaylistUnavailable"],
+    { labelsEnabled: labels });
+
+  const labelled = { id: "sp1", name: "Blue Note", view: { label: ["Blue Note"] } };
+
+  await t.test("THE one: Labels off makes a label playlist unavailable", () => {
+    const why = build(false).smartPlaylistUnavailable(labelled);
+    assert.ok(why, "the playlist opens and plays with its filter silently dropped");
+    assert.match(why, /record label/i, "the reason does not name what the query needs");
+    assert.match(why, /Labels is off in Settings/,
+      "the reason does not name the setting to change, which is the only thing " +
+      "the user can act on");
+  });
+
+  await t.test("with Labels on it is perfectly fine", () => {
+    assert.equal(build(true).smartPlaylistUnavailable(labelled), null);
+  });
+
+  await t.test("a playlist with no label filter is never blocked", () => {
+    // The common case. Blocking these would take the whole feature down with
+    // the Labels switch.
+    const F = build(false);
+    for (const view of [{}, { genre: ["Jazz"] }, { label: [] }, { decade: ["1970"] }]) {
+      assert.equal(F.smartPlaylistUnavailable({ id: "s", name: "n", view }), null,
+        "blocked a playlist that does not filter by label: " + JSON.stringify(view));
+    }
+  });
+
+  await t.test("a malformed or absent view does not throw", () => {
+    // These records come off a hand-editable settings.json.
+    const F = build(false);
+    for (const sp of [null, undefined, {}, { view: null }, { view: "nope" },
+                      { view: { label: "Blue Note" } }]) {
+      assert.doesNotThrow(() => F.smartPlaylistUnavailable(sp), JSON.stringify(sp));
+    }
+    // A hand-edited string is not a non-empty ARRAY, so it does not block —
+    // sanitizeLibView normalises it to one before the record is ever stored.
+    assert.equal(F.smartPlaylistUnavailable({ view: { label: "Blue Note" } }), null);
+  });
+
+  await t.test("the saved view is left alone", () => {
+    // Rewriting it would mean switching Labels back on no longer restores the
+    // playlist the user built.
+    const sp = { id: "sp1", name: "Blue Note", view: { label: ["Blue Note"] } };
+    build(false).smartPlaylistUnavailable(sp);
+    assert.deepEqual(sp.view.label, ["Blue Note"],
+      "the stored filter was stripped, so the playlist cannot come back");
+  });
+});

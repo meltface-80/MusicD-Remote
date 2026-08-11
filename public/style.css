@@ -2442,6 +2442,12 @@ input.vol-range::-moz-range-thumb {
 .playlist-sub { font-size: 14px; color: var(--text-dim); }
 .playlist-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .playlist-empty { font-size: 14px; color: var(--text-faint); }
+/* A playlist that cannot run because the feature behind its query is switched
+   off. Danger-coloured because it is the reason nothing is on screen, not a
+   quiet aside — and given room to wrap, since it names the setting to change. */
+.playlist-empty.is-unavailable {
+  color: var(--danger); line-height: 1.45; max-width: 46em; white-space: normal;
+}
 /* An albums playlist shows a wall of tiles, sized by .album-grid exactly as
    every other wall is. It sits inside .playlist-detail's flex column, so it
    must NOT inherit the grid-column span that container needed for itself. */
@@ -3863,6 +3869,15 @@ body.show-quality .album-quality { display: block; }
   cursor: grab; touch-action: none;   /* the drag owns the gesture, not the scroller */
 }
 .home-row-item.is-dragging .home-row-grip { cursor: grabbing; }
+/* Two lines once a row carries a reason, so the ellipsis has to go — a
+   truncated explanation is no explanation. */
+.home-row-item.is-unavailable .home-row-name {
+  display: flex; flex-direction: column; gap: 2px;
+  overflow: visible; white-space: normal; text-overflow: clip;
+}
+.home-row-item.is-unavailable .home-row-name,
+.home-row-item.is-unavailable .home-row-grip { opacity: .6; }
+.home-row-why { font-size: 12px; color: var(--text-dim); line-height: 1.3; }
 .home-row-name {
   flex: 1 1 auto; min-width: 0;
   font-size: 15px; color: var(--text);
