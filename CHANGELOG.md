@@ -2,6 +2,36 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.60] — 2026-08-11
+
+### Added — the MusicD duck is now the app icon, on every platform
+
+The app had **no PWA setup at all** — no manifest, no icons, no `apple-touch-icon`. "Add to Home
+Screen" saved a screenshot of the page, and the browser tab carried the default blank mark. This
+adds the whole thing, not just an image.
+
+The logo is generated into two families, which are not interchangeable:
+
+- **`any`** — the artwork edge to edge, at 192/256/384/512. Used by the browser tab, the desktop
+  install, and iOS, which applies its own rounded-rect mask *without* cropping into the art.
+- **`maskable`** — inset to 78% on the logo's own black, at 192/512. Android crops adaptive icons
+  to whatever shape the launcher uses and guarantees only the centre 80%, so the full-bleed version
+  would have lost the headphone cup and the quiff.
+
+The `apple-touch-icon` is pre-flattened with no alpha channel, because iOS composites transparency
+onto **white** — which would have haloed a logo drawn on black. The manifest declares
+`display: standalone` and a `background_color` matching the app's own ground, so the launch screen
+doesn't flash white before the first paint.
+
+The wall display (`/display`) gets the favicon only — it lives in a browser tab on a spare monitor
+and should never offer to install itself as the app.
+
+Eleven static assertions cover it, and they **measure** rather than trust: every manifest entry is
+opened and its real pixel dimensions compared against the `sizes` it claims, since an icon that
+lies about its size fails silently — the browser just falls back and nobody finds out until
+somebody installs it. One assertion exists purely to catch a regeneration without the safe-zone
+scale, by proving the maskable files are not byte-identical to the `any` ones.
+
 ## [1.7.59] — 2026-08-11
 
 ### Fixed — a switched-off feature no longer leaves its Home row and its playlists behind

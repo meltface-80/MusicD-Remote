@@ -9,6 +9,29 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
   <meta name="theme-color" content="#0e1012">
   <title>MusicD</title>
+
+  <!-- Installable app. Before this there was no manifest and no icons at all,
+       so "Add to Home Screen" saved a screenshot of the page instead of an
+       icon, and the browser tab had the default blank document mark.
+
+       The two icon families in the manifest are not redundant. `any` is the
+       artwork edge to edge — the tab, the desktop install, and iOS, which
+       applies its own rounded-rect mask WITHOUT cropping into the art.
+       `maskable` is inset to 78%, because Android crops adaptive icons to
+       whatever shape the launcher uses and guarantees only the centre 80%;
+       the full-bleed version would lose the headphone cup. -->
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/icons/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+  <!-- iOS reads only this one, ignores the manifest's icons, and composites
+       any transparency onto white — so it is pre-flattened onto the logo's
+       own black. -->
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="MusicD">
+
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
