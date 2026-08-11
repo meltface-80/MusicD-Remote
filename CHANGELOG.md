@@ -2,6 +2,44 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.57] — 2026-08-11
+
+### Changed — every "library is changing" message now explains itself
+
+The red messages you get while Roon is adding albums stopped at the symptom — *"Roon offered no
+playback options for this album"* — which reads as the extension being broken. Every message on
+that path now says three things: **why** it happened, **what the extension is doing about it**, and
+**the manual way out** if that doesn't work.
+
+> Roon offered no playback options for this album. Your Roon library changed after this list was
+> built — normally because albums are being added or identified. The extension re-checks every 10
+> minutes and refreshes itself once Roon settles, so this usually clears on its own. If it hasn't,
+> open the side menu and tap Rescan library.
+
+One shared builder, so the four places that raise this cannot drift apart: no playback options,
+Roon's own advisory (*"Library is being updated"*), a partial track list, and an empty one. Two
+cases deliberately do **not** carry it — Roon offering a different menu, and an unexpected browse
+action — because both would send you to a Rescan that cannot help.
+
+The wording keeps the distinction the code can actually prove. When the live album count contradicts
+the snapshot the change is stated as fact; when it is merely the likeliest explanation it is
+hedged. Overstating the second would be a guess dressed up as a diagnosis.
+
+### Fixed — those messages were unreadable, which would have made the rewrite pointless
+
+The toast was built for "Queued 12 albums": a pill, dismissed after 2.4 seconds. Measuring it at
+phone width showed the new text laid out **195px wide and 270px tall** — a narrow ribbon running up
+the middle of a 390px screen — and then removed before it could be read.
+
+The cause is not obvious from the stylesheet: `left: 50%` makes the containing block half the
+viewport, and a shrink-to-fit box cannot exceed it. `width: max-content` frees it and a max-width
+clamps it, giving 362px on a phone and 560px on a desktop. The lifetime now scales with length (11s
+over 120 characters), so ordinary confirmations are unchanged. The corner radius drops from a pill
+to 22px, which still reads as a pill on one line and as a rounded card once the text wraps.
+
+Six DOM assertions measure this at 390 and 1280px, including the narrow-column case specifically —
+the stylesheet gives no hint of it and only measurement catches it.
+
 ## [1.7.56] — 2026-08-11
 
 ### Fixed — the ten-minute watch would have re-walked the library forever on some installs

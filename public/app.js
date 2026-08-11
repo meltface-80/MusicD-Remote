@@ -1109,6 +1109,17 @@
   // menu — so there is one dropdown look in the app rather than a second one
   // that almost matches.
   // ---------------------------------------------------------------------
+  // Mirrors libraryChangingAdvice(false) on the server, for the two notes the
+  // client composes itself. Same three things every message on this path now
+  // carries: why it happened, what the extension is doing, and the manual way
+  // out if that doesn't work.
+  const LIBRARY_CHANGING_ADVICE =
+    " This usually means your Roon library changed after this list was built — " +
+    "normally because albums are being added or identified. The extension " +
+    "re-checks every 10 minutes and refreshes itself once Roon settles, so this " +
+    "usually clears on its own. If it hasn't, open the side menu and tap " +
+    "Rescan library.";
+
   const OVERFLOW_SVG =
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" ' +
     'aria-hidden="true">' +
@@ -4425,10 +4436,14 @@
     if (kind === "error") toast.classList.add("error");
     requestAnimationFrame(() => toast.classList.add("show"));
     clearTimeout(toastTimer);
+    // 2.4s is right for "Queued 12 albums" and nowhere near enough for the
+    // library-changed messages, which explain the cause, what happens next and
+    // the manual way out — roughly 330 characters, gone before they could be
+    // read. Scaled by length so short toasts are unchanged.
     toastTimer = setTimeout(() => {
       toast.classList.remove("show");
       setTimeout(() => toast.classList.add("hidden"), 250);
-    }, ms || 2400);
+    }, ms || (String(msg).length > 120 ? 11000 : 2400));
   }
   // One sentence describing what actually reached the queue: how many albums,
   // how many the cap left behind, and how many Roon refused. `pj` is
@@ -5579,17 +5594,16 @@
     if (j.partial) {
       const note = document.createElement("div");
       note.className = "modal-error";
-      note.textContent = j.declared_tracks
-        ? "Roon sent " + trackList.length + " of " + j.declared_tracks +
-          " tracks — your library is changing. Reopen this album shortly."
-        : "Roon sent an incomplete track list — your library is changing.";
+      note.textContent = (j.declared_tracks
+        ? "Roon sent " + trackList.length + " of " + j.declared_tracks + " tracks."
+        : "Roon sent an incomplete track list.") + LIBRARY_CHANGING_ADVICE;
       modalActs.appendChild(note);
     }
     if (trackList.length === 0) {
       if (!j.partial && j.library_moved) {
         const note = document.createElement("div");
         note.className = "modal-error";
-        note.textContent = "Roon returned no tracks — your library has changed since this list was built.";
+        note.textContent = "Roon returned no tracks for this album." + LIBRARY_CHANGING_ADVICE;
         modalActs.appendChild(note);
       }
       trackWrap.classList.add("hidden");

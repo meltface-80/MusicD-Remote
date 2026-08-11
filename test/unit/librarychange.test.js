@@ -36,7 +36,7 @@ const assert = require("node:assert/strict");
 const { loadIndexFunctions, indexSource } = require("../lib/extract");
 
 test("Roon's own words are surfaced, not discarded", async (t) => {
-  const F = loadIndexFunctions(["roonBrowseError"], {});
+  const F = loadIndexFunctions(["roonBrowseError", "libraryChangingAdvice"], {});
 
   await t.test("THE one: a message response carries Roon's text to the user", () => {
     const e = F.roonBrowseError(
@@ -143,20 +143,51 @@ test("the wording claims only what can be proved", async (t) => {
     // is running now — that costs four Core calls and a five-second sleep to
     // establish, which is not available on a play path. Saying "Roon is
     // importing" here would be a confident guess replacing an honest one.
-    assert.ok(/your library has\s*"?\s*\+?\s*"?\s*changed since this list was built/.test(src),
-      "the no-playback-options message no longer states the provable fact");
-    // Scoped to the album-open message itself. Elsewhere the codebase DOES
-    // say "Roon importing" — on the Roon Settings status line — and that one
-    // is entitled to, because libraryIsImporting() actually observed a moving
-    // count before it was set. The album-open path has no such evidence: it
-    // has a count mismatch and nothing more.
-    const at = src.indexOf("Roon offered no playback options for this album — your library has");
-    assert.ok(at > 0, "the album-open message moved");
-    const sentence = src.slice(at, at + 400);
-    assert.ok(!/importing/i.test(sentence),
-      "the album-open message asserts an import that nothing at that site observed");
-    assert.match(sentence, /has\s*"?\s*\+?\s*"?\s*changed/,
-      "the message stopped stating the change in the past tense");
+    const F = loadIndexFunctions(["libraryChangingAdvice"], {});
+    for (const sure of [true, false]) {
+      const say = F.libraryChangingAdvice(sure);
+      assert.match(say, /library changed after this list was built/,
+        "the advice no longer states the provable fact (sure=" + sure + ")");
+      // Elsewhere the codebase DOES say "Roon importing" — on the Roon Settings
+      // status line — and that one is entitled to, because libraryIsImporting()
+      // observed a moving count before it was set. This path has no such
+      // evidence: a count mismatch and nothing more.
+      assert.ok(!/\bis importing\b|\bis being imported\b/i.test(say),
+        "the advice asserts a live import that nothing at this site observed");
+    }
+    // And the two confidence levels stay distinguishable: a proven change must
+    // not be hedged, an unproven one must not be stated as fact.
+    assert.ok(!/usually means/.test(F.libraryChangingAdvice(true)),
+      "a PROVEN library change is hedged as if it were a guess");
+    assert.match(F.libraryChangingAdvice(false), /usually means/,
+      "an unproven cause is stated as established fact");
+  });
+
+  // v1.7.57: the symptom was all the user ever got.
+  await t.test("every message on this path says why, what next, and the way out", () => {
+    const F = loadIndexFunctions(
+      ["libraryChangingAdvice", "roonBrowseError", "noActionError"], {});
+
+    const shouldAdvise = [
+      ["no playback options at all", F.noActionError("play", [], "this album").message],
+      ["Roon's own advisory",
+       F.roonBrowseError({ action: "message", message: "Library is being updated" }, "x").message],
+    ];
+    for (const [label, msg] of shouldAdvise) {
+      assert.match(msg, /added or identified/,   label + ": does not say WHY");
+      assert.match(msg, /re-checks every 10 minutes/, label + ": does not say what happens NEXT");
+      assert.match(msg, /Rescan library/,
+        label + ": leaves the user with no way out if the automatic check does not clear it");
+    }
+
+    // Two cases must NOT carry it — both would send the user to a Rescan that
+    // cannot help, which is worse than saying nothing.
+    const otherMenu = F.noActionError("play", [{ title: "Add to library" }], "this album").message;
+    assert.ok(!/Rescan library/.test(otherMenu),
+      "Roon offering a DIFFERENT menu is a real answer, not a library-change symptom");
+    const bug = F.roonBrowseError({ action: "action_list" }, "x").message;
+    assert.ok(!/Rescan library/.test(bug),
+      "an unexpected browse action is a bug in this extension; a rescan cannot fix it");
   });
 
   await t.test("the two empty-action cases are told apart", () => {

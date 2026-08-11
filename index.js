@@ -1223,17 +1223,46 @@ async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
 // empty list when Roon had offered no menu at all — an internal diagnostic
 // shown to a human in a toast. Two different facts deserve two sentences:
 // Roon offered nothing, or Roon offered something else.
+// The tail every "the library moved underneath us" message now carries.
+//
+// These all used to stop at the symptom — "Roon offered no playback options" —
+// which reads as the extension being broken. Three things the user needs and
+// was not being told: WHY it happened, what the extension is doing about it,
+// and what to do if that doesn't work. `sure` separates the case where a count
+// mismatch PROVES the library changed from the one where it is the likeliest
+// explanation but unproven; overstating the second would be a guess dressed up
+// as a diagnosis.
+function libraryChangingAdvice(sure) {
+  return (sure
+    ? " Your Roon library changed after this list was built"
+    : " This usually means your Roon library changed after this list was built") +
+    " — normally because albums are being added or identified. The extension " +
+    "re-checks every 10 minutes and refreshes itself once Roon settles, so this " +
+    "usually clears on its own. If it hasn't, open the side menu and tap " +
+    "Rescan library.";
+}
+
 function noActionError(kind, actions, what) {
   const titles = (actions || []).map(a => a.title).filter(Boolean);
+  // Roon offering a DIFFERENT menu is not a library-change symptom — it is a
+  // real answer, and appending the advice would send the user to Rescan for
+  // something a rescan cannot fix.
   return new Error(titles.length
     ? "Roon offers no '" + kind + "' for " + what + ". It offers: " + titles.join(", ")
-    : "Roon offered no playback options for " + what + ".");
+    : "Roon offered no playback options for " + what + "." + libraryChangingAdvice(false));
 }
 
 function roonBrowseError(body, what) {
   const said = body && typeof body.message === "string" ? body.message.trim() : "";
+  // Roon explaining itself is nearly always the library mid-update, and its own
+  // wording ("Library is being updated") tells the user nothing about what
+  // happens next. An unexpected action is a bug, not a library state, so it
+  // gets no advice — pointing that one at Rescan would waste the user's time.
+  // Roon's own text rarely ends in punctuation, and running it straight into
+  // the next sentence read as one garbled line.
+  const saidEnded = /[.!?]$/.test(said) ? said : said + ".";
   const err = new Error(said
-    ? "Roon says: " + said
+    ? "Roon says: " + saidEnded + libraryChangingAdvice(false)
     : "Roon returned an unexpected " + (body && body.action) + " for " + what);
   // Roon's own advisories are transient by nature (a library mid-update, a
   // service reconnecting), so they are flagged the same way a stale offset is:
@@ -1333,9 +1362,8 @@ async function openAlbumByOffset(offset, zoneOrOutputId, invokeKind, filter, exp
           // AND its live album count no longer matches the snapshot, so the
           // list this offset came from is out of date. Past tense — a mismatch
           // proves the library CHANGED, not that an import is running now.
-          : new Error("Roon offered no playback options for this album — your library has " +
-                      "changed since this list was built, so it is being re-checked. " +
-                      "Try again shortly.");
+          : new Error("Roon offered no playback options for this album." +
+                      libraryChangingAdvice(true));
         // A library that has moved is a transient condition with a recheck
         // already scheduled, so it gets the same 409 "try again" contract a
         // stale offset does rather than a 500.

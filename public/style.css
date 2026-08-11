@@ -935,7 +935,21 @@ main {
   background: var(--bg-elev); color: var(--text);
   border: 1px solid var(--border);
   box-shadow: var(--shadow-modal);
-  padding: 12px 18px; border-radius: 999px;
+  padding: 12px 18px;
+  /* 22px is a full pill at the one-line height (44px) and a rounded card once
+     the text wraps. It was 999px, which is only a pill while the content fits
+     on one line — the library-changed messages explain themselves in three
+     sentences and need to wrap. */
+  border-radius: 22px;
+  /* `left: 50%` makes the containing block only half the viewport, and a
+     shrink-to-fit box cannot exceed it — so on a 390px phone a long message
+     was laid out in a 195px column 270px tall, running up the middle of the
+     screen. max-content frees it from that limit; the max-width then does the
+     clamping, keeping it clear of both edges on a phone and readable rather
+     than one enormous line on a desktop. Measured at 390 and 1280. */
+  width: max-content;
+  max-width: min(560px, calc(100vw - 28px));
+  text-align: left; line-height: 1.45;
   font-size: 14px; opacity: 0;
   transition: opacity .18s ease, transform .18s ease;
   z-index: 100;
