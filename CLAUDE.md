@@ -216,7 +216,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
 - The README contains version references (install commands, tarball URLs, `docker build` tags).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.7.0** (until the user says otherwise).
+- Current stable version in the README: **v1.7.59** (until the user says otherwise).
 - The extension is being renamed **MusicD Remote** ("for Roon" is descriptive, not part of the name). The Roon `extension_id` must NEVER change — it would force every user to re-authorize.
 
 ---
@@ -348,4 +348,12 @@ docker run -d \
 | v1.6.61 | superseded | Home screen flattened to Roon's layout — tinted panels + watermarks out, bold title over a hairline, carousels bleeding to the edge; CSS integrity pre-flight added after an unterminated comment silently ate a rule |
 | v1.6.62 | superseded | Album view + Queue flattened to match; queue rows edge-to-edge with a full-bleed now-playing block; the tinted-panel system and every watermark now gone from the app |
 | v1.6.63 | superseded | Two new themes from the docs-site palette (Copper dark, Brass light) as `data-palette` alongside the untouched originals; Settings theme picker with Apply; `--on-accent`/`--accent-text` tokens; fixed 28 dead showToast() calls in Settings |
-| v1.7.0  | **Latest (stable)** | Version jump for the UI overhaul (v1.6.61–63): flat interface throughout, four themes, contrast machine-checked in the suite; 291 tests — README points here |
+| v1.7.0  | stable (superseded) | Version jump for the UI overhaul (v1.6.61–63): flat interface throughout, four themes, contrast machine-checked in the suite; 291 tests |
+| v1.7.1–v1.7.44 | superseded | Zone grouping + device power, Roon playlists (read-only), smart playlists, genre/decade/source Focus facets, Smart Picks, playlist import/export, UI passes |
+| v1.7.45 | superseded | Playback no longer stops at the end of an album |
+| v1.7.46–v1.7.47 | superseded | Playlist import resolves against a new track-level index (edition twins, compilations); a partial answer from Roon could destroy an album's track record |
+| v1.7.48–v1.7.50 | superseded | Labels and Smart Picks opt-in; Settings → Home Screen (per-carousel toggle + drag reorder); Recently played row; search behind a magnifier; Library text filter |
+| v1.7.51–v1.7.53 | superseded | Labels off genuinely stops label scanning; Library control row matches Roon's |
+| v1.7.54–v1.7.56 | superseded | Automatic rescan repaired end to end: recheck budget could never refill, failed rebuilds reported success, "finished" meant only "not still adding"; periodic check 12h → 10 min; change probe compared against the filtered count |
+| v1.7.57–v1.7.58 | superseded | Library-change messages say why, what next, and the manual Rescan; each quotes the clock it actually waits on |
+| v1.7.59 | **Latest (stable)** | A switched-off feature no longer leaves its Home row or its playlists behind; 758 unit / 317 DOM / 42 static — README points here |
