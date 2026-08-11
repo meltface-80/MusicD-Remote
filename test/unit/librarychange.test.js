@@ -478,3 +478,141 @@ test("re-pairing with an existing snapshot asks again", async (t) => {
       "the unpair comment still describes a re-pair probe that was never written");
   });
 });
+
+// ---------------------------------------------------------------------------
+// v1.7.55: something has to NOTICE.
+//
+// v1.7.54 repaired the recheck chain — the loop that keeps asking once the
+// library is known to have moved. It did not fix the thing in front of it. The
+// only detector that fires within minutes is opportunistic: it rides along on
+// `nav.total` when a user opens an album. On a box sitting idle, or one used
+// only from Home and Now playing, it never fires at all, and the sole remaining
+// detector was a TWELVE-HOUR interval.
+//
+// So "I added albums to Roon and the extension did nothing" was not an edge
+// case, it was the normal experience, and every fix in v1.7.54 was downstream
+// of a question nobody was asking. The periodic check is now ten minutes.
+//
+// The tick body lives inside a setInterval in startIndexMaintenance, so the
+// test injects setInterval and captures the callback rather than asserting on
+// the source text.
+// ---------------------------------------------------------------------------
+function watchHarness(opts) {
+  opts = opts || {};
+  const checks = [];        // {reason, force} handed to checkAndMaybeRebuild
+  const armed = [];         // reasons handed to scheduleLibraryRecheck
+  const chained = [];       // statuses handed to kickPostRebuildChain
+  const timers = [];        // {fn, ms} handed to setInterval
+  const state = { next: opts.status || "fresh" };
+  const F = loadIndexFunctions(
+    ["startIndexMaintenance", "libraryCheckMs"],
+    {
+      stopIndexMaintenance: () => {},
+      _statusSync: "",
+      isIndexBuilt: () => opts.built !== false,
+      buildAlbumIndex: async () => {},
+      runFileMetadataScan: async () => {},
+      seedLabelsFromCache: () => {},
+      labelsEnabled: false,
+      DEBUG: false,
+      console: { log() {}, error() {} },
+      indexMaintTimer: null,
+      // The three guards, each settable per harness so the skip can be tested.
+      _libraryRecheckTimer: opts.recheckPending ? {} : null,
+      _rebuildInFlight: !!opts.rebuilding,
+      albumIndex: { building: !!opts.building, count: 10, builtAt: 1 },
+      scheduleLibraryRecheck: (why) => armed.push(why),
+      kickPostRebuildChain: (r) => chained.push(r && r.status),
+      checkAndMaybeRebuild: async (reason, force) => {
+        checks.push({ reason, force });
+        return { status: state.next };
+      },
+      setInterval: (fn, ms) => { timers.push({ fn, ms }); return { unref() {} }; },
+    });
+  F.startIndexMaintenance();
+  return {
+    checks, armed, chained, timers, everyMs: F.libraryCheckMs(),
+    tick: async () => {
+      assert.equal(timers.length, 1, "expected exactly one maintenance timer");
+      timers[0].fn();
+      await new Promise(r => setImmediate(r));
+    },
+  };
+}
+
+test("something asks Roon on its own, often enough to matter", async (t) => {
+  await t.test("THE one: the periodic check is minutes, not hours", () => {
+    const F = loadIndexFunctions(["libraryCheckMs"], {});
+    assert.ok(F.libraryCheckMs() <= 15 * 60 * 1000,
+      "the only detector that needs no user interaction runs every " +
+      Math.round(F.libraryCheckMs() / 60000) + " minutes. Adding albums to Roon " +
+      "and having the extension notice cannot depend on somebody happening to " +
+      "open an album — on an idle box that never happens, and this interval is " +
+      "the whole detection time");
+    assert.ok(F.libraryCheckMs() >= 2 * 60 * 1000,
+      "polling the Core faster than every couple of minutes is a probe storm");
+  });
+
+  await t.test("the timer is armed at that interval", () => {
+    const h = watchHarness();
+    assert.equal(h.timers.length, 1);
+    assert.equal(h.timers[0].ms, h.everyMs,
+      "the maintenance timer does not run at libraryCheckMs — the constant and " +
+      "the timer have drifted apart");
+  });
+
+  await t.test("a tick asks the real question", async () => {
+    const h = watchHarness({ status: "fresh" });
+    await h.tick();
+    assert.equal(h.checks.length, 1, "the tick never checked anything");
+    assert.equal(h.checks[0].force, false,
+      "the periodic check FORCES a rebuild — it would re-walk the whole library " +
+      "every ten minutes whether or not anything changed");
+  });
+
+  await t.test("a rebuild it causes drags its dependants with it", async () => {
+    const h = watchHarness({ status: "rebuilt" });
+    await h.tick();
+    assert.deepEqual(h.chained, ["rebuilt"]);
+  });
+
+  await t.test("arming on start is the re-pair recheck, not the tick", () => {
+    // Measured here so the hand-off test below can count the DELTA. With a
+    // snapshot already in memory, startIndexMaintenance arms one recheck
+    // because an unpair cleared any that was pending.
+    const h = watchHarness();
+    assert.deepEqual(h.armed, ["re-paired with an existing snapshot"]);
+    const first = watchHarness({ built: false });
+    assert.deepEqual(first.armed, [],
+      "a FIRST pair armed a recheck — there is no snapshot to re-verify, the " +
+      "initial build is already running");
+  });
+
+  await t.test("an unanswered check hands off instead of waiting a full tick", async () => {
+    for (const st of ["busy", "error"]) {
+      const h = watchHarness({ status: st });
+      const before = h.armed.length;
+      await h.tick();
+      assert.equal(h.armed.length - before, 1,
+        "a '" + st + "' tick lost the observation until the next tick");
+    }
+    const ok = watchHarness({ status: "fresh" });
+    const before = ok.armed.length;
+    await ok.tick();
+    assert.equal(ok.armed.length - before, 0, "a settled check armed a pointless recheck");
+  });
+
+  await t.test("it stands down while somebody else owns the library", async () => {
+    // Each of these means the question is already being asked, or answered.
+    // Probing underneath only adds Roon calls to a Core that is working.
+    for (const [label, opts] of [
+      ["a recheck is pending", { recheckPending: true }],
+      ["a rebuild is in flight", { rebuilding: true }],
+      ["the index is building",  { building: true }],
+    ]) {
+      const h = watchHarness(opts);
+      await h.tick();
+      assert.equal(h.checks.length, 0, "the tick probed while " + label);
+    }
+  });
+});

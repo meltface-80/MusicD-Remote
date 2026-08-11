@@ -5236,13 +5236,14 @@ const SEARCH_PAGE      = 500;              // albums per Roon load() page
 // render's browse + image traffic — a major sluggishness source after the
 // Home redesign.
 // The album index is a stable snapshot. Roon owns the library; the extension
-// scans it once on first pair, then re-checks only every 12 hours (or on a
-// manual Rescan from the side menu) — and NEVER rebuilds while Roon is actively
-// importing (a still-moving album count). This keeps the extension off a busy
-// Core entirely. Playback stays correct against a snapshot that's hours stale
-// because a stale offset is resolved LIVE by name at play time (see the search
-// fallback in loadAlbumSession), so an out-of-date snapshot never blocks a play.
-const INDEX_CHECK_MS   = 12 * 60 * 60 * 1000;   // re-check for new albums every 12h
+// scans it once on first pair, then asks every ten minutes whether anything
+// moved (a 2-3 call probe; see libraryCheckMs) — and NEVER rebuilds while Roon
+// is actively importing (a still-moving album count). The CHECK is frequent
+// because it is cheap; the REBUILD is rare because it is not. This keeps the
+// extension off a busy Core entirely. Playback stays correct against a snapshot
+// that's stale because a stale offset is resolved LIVE by name at play time
+// (see the search fallback in loadAlbumSession), so an out-of-date snapshot
+// never blocks a play.
 const IMPORT_SETTLE_MS = 5000;                  // album count must hold steady this long to count as "not importing"
 
 const albumIndex = {
@@ -5807,8 +5808,9 @@ async function harvestAlbumGenres(reason, force) {
   }
 }
 
-// Does a usable snapshot exist? (Freshness is no longer time-based: the index
-// is a deliberate snapshot refreshed only by the 12h check or a manual Rescan.)
+// Does a usable snapshot exist? (Freshness is not time-based: the index is a
+// deliberate snapshot, refreshed only when a check OBSERVES that the library
+// moved, or on a manual Rescan.)
 function isIndexBuilt() {
   return albumIndex.count > 0 && albumIndex.builtAt > 0;
 }
@@ -5826,13 +5828,6 @@ async function ensureAlbumIndex() {
   }
 }
 
-// One cheap library-change probe: 2-3 Roon round-trips (count + the first
-// and last albums' identities), triggering a full rebuild only when something
-// actually changed. Runs on the 5-minute maintenance interval AND once on
-// re-pair (instead of the unconditional full re-walk re-pairing used to cost).
-// One cheap library-change probe (2-3 count:1 round-trips): is the album count
-// or the first/last album different from our built snapshot? Returns true when
-// something changed. No side effects — the caller decides whether to rebuild.
 // All an Item gives us to recognise an album by. Shared so the change probe and
 // the import probe can never drift into recognising albums differently — one
 // asks "is this the library we indexed", the other "is this the library it was
@@ -5840,6 +5835,14 @@ async function ensureAlbumIndex() {
 function browseItemIdentity(it) {
   return it ? (it.title || "") + "||" + (it.subtitle || "") : "";
 }
+
+// One cheap library-change probe (2-3 count:1 round-trips): is the album count,
+// the first album or the last album different from our built snapshot? Returns
+// true when something changed. No side effects — the caller decides whether to
+// rebuild.
+//
+// This is the question the ten-minute watch repeats, and its cheapness is what
+// makes that interval affordable.
 async function libraryChangedSince() {
   return await withBrowseSession(async (sessionKey) => {
     await browse({ hierarchy: "albums", pop_all: true, multi_session_key: sessionKey });
@@ -5857,6 +5860,22 @@ async function libraryChangedSince() {
   });
 }
 
+// How often the extension asks Roon, entirely on its own, whether the library
+// moved.
+//
+// This is the ONLY detector that needs nobody. The other one is opportunistic —
+// it rides along on `nav.total` when a user opens an album — so on a box that
+// is sitting idle, or one being used only from Home and Now playing, it never
+// fires at all. This interval was TWELVE HOURS, which is why "I added albums to
+// Roon and the extension did nothing" was the normal experience rather than an
+// edge case: with nobody opening albums, twelve hours was the detection time.
+//
+// Ten minutes is affordable because the QUESTION is cheap and the answer is
+// almost always no: `libraryChangedSince()` is 2-3 browse round-trips (~430 a
+// day), and the expensive part — the settle probe and the full re-walk — still
+// only happens when something actually changed.
+function libraryCheckMs() { return 10 * 60 * 1000; }
+
 // How many samples the import probe takes, IMPORT_SETTLE_MS apart. Two is one
 // window and is not enough: Roon imports in bursts, and any burst gap longer
 // than the window reads as finished. Three costs another five seconds on a code
@@ -5865,9 +5884,11 @@ function importSettleReads() { return 3; }
 
 // Best-effort "is Roon importing right now?" — read the album count, wait a few
 // seconds, read it again; a changed count means the library is actively growing.
-// Cheap (two count:1 loads) and only called when we're about to start heavy
-// work, never in a loop. This is how the extension honors "never scan while
-// Roon is adding albums": a manual Rescan and the 12h check both consult it.
+// Only called when we're about to start heavy work, never in a loop — the
+// ten-minute watch runs the CHEAP probe (libraryChangedSince) and reaches this
+// one only once that says something moved. This is how the extension honors
+// "never scan while Roon is adding albums": the manual Rescan, the watch and
+// the recheck chain all consult it.
 async function libraryIsImporting() {
   if (!core) return false;
   try {
@@ -5969,9 +5990,9 @@ async function checkAndMaybeRebuild(reason, force) {
 }
 
 // Background maintenance: build the snapshot once on pair (if empty), then
-// re-check for new albums every 12h. No rebuild ever fires from a user action
-// or a play — only this timer or the manual Rescan button, and never while
-// Roon is importing.
+// watch for new albums every ten minutes. No rebuild ever fires from a user
+// action or a play — only this timer, the recheck chain it hands off to, or the
+// manual Rescan button, and never while Roon is importing.
 function startIndexMaintenance() {
   stopIndexMaintenance();
   _statusSync = "";
@@ -5994,10 +6015,25 @@ function startIndexMaintenance() {
     scheduleLibraryRecheck("re-paired with an existing snapshot");
   }
   indexMaintTimer = setInterval(() => {
-    checkAndMaybeRebuild("12h", false)
-      .then(kickPostRebuildChain)
-      .catch(e => console.error("[index] 12h check failed: " + e.message));
-  }, INDEX_CHECK_MS);
+    // Skip entirely while somebody else owns the library. A pending recheck is
+    // already asking this exact question on a schedule of its own, and a
+    // rebuild in flight would answer "busy" — probing underneath either only
+    // adds calls to a Core that is already working. The guard is read
+    // synchronously and checkAndMaybeRebuild sets _rebuildInFlight before its
+    // first await, so two ticks cannot both get past it.
+    if (_libraryRecheckTimer || _rebuildInFlight || albumIndex.building) return;
+    checkAndMaybeRebuild("watch", false)
+      .then(r => {
+        kickPostRebuildChain(r);
+        // Neither is an answer. Handing off to the recheck chain is what stops
+        // the observation being lost until the next tick — the same reason the
+        // importing branch hands off.
+        if (r && (r.status === "busy" || r.status === "error")) {
+          scheduleLibraryRecheck("watch check returned " + r.status);
+        }
+      })
+      .catch(e => console.error("[index] watch check failed: " + e.message));
+  }, libraryCheckMs());
   if (indexMaintTimer.unref) indexMaintTimer.unref();
 }
 

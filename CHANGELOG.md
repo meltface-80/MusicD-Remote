@@ -2,6 +2,45 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.55] — 2026-08-11
+
+### Fixed — the automatic rescan now actually fires, because something finally asks
+
+v1.7.54 repaired the recheck chain: the loop that keeps asking, backs off, and rebuilds once Roon
+settles. It did not fix the thing standing in front of that loop, and on its own the chain was
+worth very little — because **nothing was asking the question on a schedule that mattered**.
+
+There were exactly two detectors. One is opportunistic: it rides along on `nav.total` when a user
+opens or plays an album, costs nothing, and is genuinely fast — but it needs somebody to open an
+album. On a box sitting idle, or one used only from Home, the carousels and Now playing, it never
+fires at all. The other was a **twelve-hour `setInterval`**. That was the entire detection story.
+
+So "I added albums to Roon and the extension did nothing" was never an edge case. It was the
+expected behaviour of the design, and every repair in v1.7.54 was downstream of a question nobody
+was asking often enough to reach them.
+
+**The periodic check is now ten minutes.** The affordability argument is that the QUESTION and the
+ANSWER have wildly different costs and only the question is being repeated: `libraryChangedSince()`
+is 2-3 browse round-trips (about 430 a day) and almost always returns "no". The expensive parts —
+the settle probe and the full re-walk — still only happen when something has genuinely changed, and
+still never while Roon is importing.
+
+Detection to refreshed snapshot, with nobody touching the app: **≤10 minutes**, plus the 10-second
+settle probe, plus the walk. If Roon is still importing when the tick lands, the v1.7.54 recheck
+chain takes over at 5-minute intervals and the tick stands down while it runs.
+
+The tick also stands down while a rebuild is in flight, while the index is building, and while a
+recheck is already pending — each of those means the question is already being asked or answered,
+and probing underneath only adds calls to a Core that is working. A `busy` or `error` result is
+handed to the recheck chain rather than being lost until the next tick. The chain and the watcher
+now back each other up: if the chain's budget runs out, the watcher is still there.
+
+### Changed — comments that described the old twelve-hour design
+
+Four comments on the index path still told the reader the snapshot is "re-checked only every 12
+hours". They now describe the ten-minute watch, including the point that matters when reading this
+code: the check is frequent because it is cheap, the rebuild is rare because it is not.
+
 ## [1.7.54] — 2026-08-10
 
 ### Changed — the Home search magnifier moved to the right of the top bar
