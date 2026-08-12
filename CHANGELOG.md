@@ -2,6 +2,66 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.68] — 2026-08-12
+
+### Fixed — the volume slider jumped back a step, and the progress bar was jerky
+
+Two reports, one shape: the screen was painted with what the user just did, and then a poll
+overwrote it with what the server knew *before* they did it.
+
+**Volume.** The only thing protecting an optimistic paint was `userIsDraggingVolume`, set on the
+slider's `input` event and cleared on `change`. The −/+ buttons never touched it. So from the moment
+a tap painted 51 until Roon echoed 51 back — an HTTP round trip plus Roon's own ~1Hz event cadence —
+any poll tick wrote the pre-tap 50 straight back over it. The thumb retreated after +, and advanced
+after −, which is exactly how it was described. Worse, the *next* tap then computed its step from the
+reverted display, recomputed a value already sent, and the tap vanished.
+
+Absolute volume writes are now held until the server echoes them. The hold ends the instant the echo
+matches, and lapses on its own after 2s, so a change made in the Roon app or on a hardware knob still
+reaches the slider — held, not locked. `setVolume()` became the single choke point every caller goes
+through, so the guard cannot be forgotten at one of them the way it was for the buttons; it also
+serialises writes latest-wins, because these are absolute values issued over separate connections and
+a drag emitting 45, 52, 60 could have 52 land last.
+
+Two more things the buttons got wrong: they moved by a hardcoded 2 on outputs whose own step is 1
+(two positions per tap), and they ignored `soft_limit` — Roon's own ceiling, which the server has
+always sent and nothing ever read, so a request above it was clamped and the poll dragged the thumb
+back down, indistinguishable from the jitter. They now step by the zone's own step, once, and stop at
+the limit.
+
+**Progress bar.** A 1000ms ticker did `npPos += 1` while the 1500ms poll assigned the server's
+position unconditionally. Two unsynchronised timers writing one variable, realigning every 3s: the
+bar hopped forward a second, snapped back a second, then caught up two. That beat *is* the
+jerkiness.
+
+Position is now a base plus elapsed wall-clock — the model `display.js` has always used — painted
+four times a second. The painter paints; it does not advance, so a late or throttled tick cannot make
+the bar drift. The poll reconciles rather than snaps: what arrives is stale by up to ~2s (whole-second
+quantisation plus Roon's event cadence), so it re-baselines only on a disagreement bigger than that,
+which means a real event — a track change, a seek from another remote, a stall. Our own seeks set the
+base directly and hold off re-baselining for 1.5s, so the refresh that follows a scrub no longer yanks
+the bar back to where it was dragged from and then forward again.
+
+Also fixed while in here: the scrubber's fill was read back out of a `step="1"` input, so it could
+only ever move in whole-second jumps; the mini bar's line went on painting the old position for the
+whole duration of a drag; and a stream with no length could paint a fill under a thumb parked at zero.
+
+### Class of error
+
+Optimistic local state with no guard against the authoritative source arriving late. Both bugs were
+invisible to every existing test because the test server answered instantly and truthfully. The new
+assertions only have teeth because the stub now lags the way the real one does — an earlier draft
+froze the server's position instead, which made re-baselining *correct* and left the monotonicity
+assertion permanently green.
+
+### Tests
+
+16 DOM assertions in `test/dom/volume-row.test.js` (69 static / 701 unit / 333 DOM overall). Each was
+mutation-checked by reintroducing the specific defect and confirming it goes red: reverting the guard
+to `userIsDraggingVolume`, stepping by a raw delta of 2, making the hold permanent, dropping the
+re-baseline tolerance, disabling the snap entirely, and removing either half of the seek hold. Two
+assertions that passed under every mutation were found and dealt with rather than kept.
+
 ## [1.7.67] — 2026-08-11
 
 ### Fixed — the volume popover's row was 8px out of alignment
