@@ -2,6 +2,33 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.67] — 2026-08-11
+
+### Fixed — the volume popover's row was 8px out of alignment
+
+Reported from a screenshot as "the layout isn't aligned". It was, by 8px, and the cause is the kind
+that reads as perfectly correct in the source.
+
+`.vol-controls` is a flex row of three things: the readout (speaker icon + number), the slider
+wrapper, and the two step buttons, with `align-items: center`. The wrapper was a **column** — the
+slider stacked above the 0/100 scale — which made it about 20px taller than the slider itself.
+`center` then did exactly what it says and centred every sibling against the wrapper's *full*
+height, while the slider centred on itself. The readout and both buttons ended up sitting low
+against the track they belong to.
+
+Measured before: slider centre at 728, readout and both buttons at 736. After: all four at 719.
+
+The scale is positioned rather than stacked now, so the wrapper is exactly the slider's height and
+the row lines up on the track. The sheet's padding was also `18px` top against `12px` bottom, which
+tipped the whole row upward; it is even now, with room for the repositioned scale.
+
+Five DOM assertions, measured at 360 / 390 / 768 px: all four centre lines within 1px of the slider
+track, and the scale still visible, still labelled 0 and 100, still inside the sheet — hiding or
+clipping it is the obvious wrong way to make the alignment "pass". The pre-fix layout fails four of
+the five.
+
+Nothing in that CSS looked wrong, which is why it had to be measured rather than read.
+
 ## [1.7.66] — 2026-08-11
 
 ### Added — the iOS full-screen contract, written down and pinned

@@ -1742,7 +1742,9 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 18px 16px 12px;
+  /* Bottom padding leaves room for the absolutely-positioned 0/100 scale;
+     it was 12px against 18px top, which tipped the whole row upward. */
+  padding: 16px 16px 30px;
   border-radius: 16px;
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -1769,9 +1771,18 @@ main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
 }
 .vol-slider-wrap {
   flex: 1; min-width: 0;
-  display: flex; flex-direction: column; gap: 0;
+  /* The 0/100 scale is POSITIONED, not stacked. In flow it made this wrapper
+     about 20px taller than the slider itself, and `align-items: center` on the
+     row then centred the readout and the +/- buttons against slider-plus-scale
+     — so every one of them sat visibly low against the track it belongs to.
+     Out of flow, the wrapper is exactly the slider's height and the whole row
+     lines up on the track. */
+  position: relative;
+  display: flex; align-items: center;
 }
 .vol-scale {
+  position: absolute; left: 0; right: 0; top: 100%;
+  margin-top: 3px;
   display: flex; justify-content: space-between;
   font-size: 14px; color: var(--text-dim);
   font-variant-numeric: tabular-nums;
@@ -1851,7 +1862,7 @@ input.vol-range::-moz-range-thumb {
    its 10px padding / panel-2 background / 12px radius would beat .vol-sheet's
    on the now-playing sheet — repeat the sheet's shell at higher specificity. */
 .np-popover.vol-sheet {
-  padding: 18px 16px 12px;
+  padding: 16px 16px 30px;
   border-radius: 16px;
   background: var(--bg-elev);
   box-shadow: var(--shadow-modal);
