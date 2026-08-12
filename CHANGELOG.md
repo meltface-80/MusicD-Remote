@@ -2,6 +2,81 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.69] — 2026-08-12
+
+### Fixed — the defects an 8-angle review found in v1.7.68's own fix
+
+v1.7.68 fixed the reported volume and progress-bar jitter. A full review of it then found nine
+further defects, three of them introduced by that fix. This is that pass. Every item below is
+covered by an assertion that was mutation-checked — the specific defect reintroduced, the specific
+test confirmed red.
+
+**A CSS transition was fighting the new painter.** `.mt-progress-fill` carried
+`transition: width .4s linear`. The painter now runs every 250ms, so a 400ms transition is restarted
+before it can ever finish: the fill chased a target it never reached and sat permanently ~400ms
+behind the position just computed, continuously animating a property that is not
+compositor-accelerated. The transition made sense when the position advanced once a second and the
+transition *was* the interpolation; against a 4Hz painter it only fights it. Removed here and in
+`display.css` (`.bb-fill`, whose `.25s` was exactly its own tick).
+
+**Paused time was counted as playback.** The position clock is a base plus elapsed wall-clock, and
+nothing re-anchored it across a pause. A 2.5s pause left the bar permanently 2.5s ahead — silently,
+because one pause alone stays under the reconcile threshold. A few short pauses accumulated past it,
+at which point the reconcile fired and yanked the bar back by *more* than three seconds: a bigger
+version of the jerk v1.7.68 set out to remove, just rarer. The base is now carried forward using the
+play state that was in effect for the interval, and a play/pause transition takes the server's
+position outright, which is exact at that moment.
+
+**A track change was suppressed by our own seek hold.** The 1.5s hold that protects a scrub from the
+refresh that follows it also gated the track-change branch. Scrubbing to the end of a track — a
+normal way to skip on — opened the next track with the bar pinned at 100% until the hold lapsed. A
+track change is unambiguous new information and now re-baselines regardless.
+
+**The volume hold followed you between zones.** The hold was a bare value with no zone identity.
+Tapping + on one zone and switching to another inside the 2s window left the new zone's slider
+showing the *old* zone's number — and because the buttons step from what is displayed, the next tap
+sent that number, +1, as an absolute value to a zone the user never touched. A zone at 12 could be
+jumped to 42 by one tap. The hold is now keyed to the zone it was taken for.
+
+**A hung volume request killed volume for the whole session.** v1.7.68 serialised writes so only one
+is in flight at a time. Neither the request nor `/api/volume` has a timeout — the server answers only
+when Roon's callback fires — so a Core that drops mid-call left that promise unsettled forever, and
+every later write queued behind it. Volume dead until reload, where the old fire-and-forget code lost
+only the single request. Writes are now bounded by an abort at 5s.
+
+**A queued write could go to the wrong zone**, because the zone id was read from the current zone
+inside the send loop — which is after an await on every iteration but the first. It now travels with
+the value. A failed write also no longer discards a value already queued and already painted.
+
+**`soft_limit` is Roon's ceiling and now bounds the slider too**, not only the +/− buttons. Clamping
+one and not the other let a drag ask for a value the zone will never report back, leaving the hold
+waiting on an echo that could not arrive and then snapping.
+
+Also: the scrubber fill no longer drops out entirely on a NaN position; `stepVolume` reads the
+output's range from the output rather than from the slider's attributes (which are only a mirror of
+it); the echo now matches within half a step rather than exactly, so quantising outputs settle
+instead of stalling for the full hold; and the per-write refresh is coalesced, since the buttons have
+no debounce.
+
+### Class of error
+
+Optimistic local state that outlived the thing it was optimistic about. The zone-scoping and
+hung-request defects are the same shape as the bug v1.7.68 fixed, reintroduced one level up: state
+held on the user's behalf, with no bound on how long it may be believed.
+
+Two lessons recorded rather than fixed. A test can be green because the code is right or because the
+stub cannot express the failure — v1.7.68 shipped with a `start` sentinel that could not tell
+"rendered the server's value" from "never ran", because the stub and index.html both said 50. And
+some things this harness genuinely cannot observe: a CSS transition does not change the inline width
+the painter writes, so that one is pinned as a static assertion instead, honouring
+`MUSICD_PUBLIC_DIR` so a mutation run can actually reach it.
+
+### Tests
+
+70 static / 701 unit / 352 DOM. Nineteen new assertions across pause drift, zone-switch leakage,
+track change inside the seek hold, the soft limit, write ordering under out-of-order arrival, a
+never-answering request, mid-flight zone changes, and a stale debounced write landing after release.
+
 ## [1.7.68] — 2026-08-12
 
 ### Fixed — the volume slider jumped back a step, and the progress bar was jerky

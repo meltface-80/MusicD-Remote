@@ -27,15 +27,17 @@ const VOL = { type: "number", min: 0, max: 100, value: 13, step: 1, is_muted: fa
 const OUT = { output_id: "o1", display_name: "Zone", volume: VOL };
 
 // now_playing is FLAT (line1/line2/line3) — that is the shape renderZone reads.
-// The zone id is seeded into localStorage because selectedZoneId() reads the
-// topbar <select>, and with no stored zone fetchState() returns before it ever
-// calls renderZone: currentZone stays null, the slider keeps the static
-// value="50" out of index.html, and every volume handler early-returns.
+// Sending the nested `three_line` wrapper instead leaves every field undefined,
+// which renders but exercises nothing.
+//
+// The zone id is seeded into localStorage only to pin WHICH zone is selected.
+// loadZones() falls back to zones[0] on its own, so this is not what makes the
+// page work — it just removes the dependency on that fallback.
 const NP = { line1: "How to Be Dead", line2: "Snow Patrol", line3: "Final Straw",
              length: 200, image_key: "k" };
 
 const STUB = `
-try { localStorage.setItem("rra-zone", "z1"); } catch (e) {}
+try { localStorage.setItem("rra-zone", "z1"); } catch (e) {}  // storage optional
 window.__installFetch(function (u) {
   var z = { zone_id: "z1", display_name: "Zone", state: "playing", is_seek_allowed: true,
             outputs: [${JSON.stringify(OUT)}],
@@ -147,10 +149,11 @@ test("the volume row lines up on the slider track", { concurrency: 1 }, async (t
 //     A frozen position would make re-baselining correct and prove nothing.
 // ---------------------------------------------------------------------------
 const STALE_STUB = `
-window.__vol = 50;            // what the server admits to, moved by hand below
+window.__vol = 37;            // NOT index.html-s static 50 — see the start assertion
 window.__posts = [];
+window.__softLimit = undefined;   // set by the soft-limit driver
 window.__t0 = Date.now();
-try { localStorage.setItem("rra-zone", "z1"); } catch (e) {}
+try { localStorage.setItem("rra-zone", "z1"); } catch (e) {}  // storage optional
 window.__seekPend = null;
 window.__installFetch(function (u, opts) {
   if (u.indexOf("/api/volume") > -1 && opts && opts.method === "POST") {
@@ -172,7 +175,8 @@ window.__installFetch(function (u, opts) {
     window.__seekPend = null;
   }
   var out = { output_id: "o1", display_name: "Zone",
-              volume: { type: "number", min: 0, max: 100, value: window.__vol, step: 1, is_muted: false } };
+              volume: { type: "number", min: 0, max: 100, value: window.__vol,
+                        step: 1, soft_limit: window.__softLimit, is_muted: false } };
   // Whole seconds, and ~1.2s old by the time it is read — Roon quantises to
   // the second and emits on its own ~1Hz cadence, so the position reported is
   // always behind the one already painted. THAT is what an unconditional
@@ -232,26 +236,28 @@ test("the volume slider does not jump back when the server is behind",
     harness.assertNoPageError(assert, r);
 
     await t.test("a tap moves exactly one step", () => {
-      assert.equal(r.start, 50, "the slider never took the server's value — it is " +
-        "showing index.html's static default, so nothing below is exercising the app");
-      assert.equal(r.after_tap, 51,
+      assert.equal(r.start, 37,
+        "the slider shows " + r.start + ", not the server's 37. index.html ships " +
+        'value="50", so a stub that also said 50 could not tell "rendered the ' +
+        'server value" from "never ran at all" — which is why it says 37.');
+      assert.equal(r.after_tap, 38,
         "one tap moved to " + r.after_tap + ". The step is the zone's own (1 here), " +
         "not a hardcoded 2 that moves two positions on a step-1 output.");
     });
 
     await t.test("THE one: stale polls do not drag it back", () => {
-      assert.equal(r.after_stale_polls, 51,
+      assert.equal(r.after_stale_polls, 38,
         "the slider fell back to " + r.after_stale_polls + " after the poll " +
         "returned the server's pre-tap value. That is the reported jump-back: " +
         "the guard only ever covered a drag, never the +/- buttons.");
     });
 
     await t.test("the second tap is not swallowed", () => {
-      assert.equal(r.after_second_tap, 52,
+      assert.equal(r.after_second_tap, 39,
         "the second tap landed on " + r.after_second_tap + ". Stepping from the " +
         "painted value instead of the pending one recomputes a value already " +
         "sent, and the tap is lost.");
-      assert.deepEqual(r.sent, [51, 52],
+      assert.deepEqual(r.sent, [38, 39],
         "the writes sent were " + JSON.stringify(r.sent) + " — two taps must be " +
         "two distinct absolute values");
     });
@@ -374,3 +380,426 @@ test("our own seek is not yanked back by the refresh that follows it",
         JSON.stringify(r.after_seek));
     });
   });
+
+// ---------------------------------------------------------------------------
+// v1.7.69: the defects an 8-angle review found in v1.7.68's own fix.
+//
+// Each of these is a bug the previous version introduced or left behind, and
+// none of them was reachable by the assertions above — which is the point.
+// ---------------------------------------------------------------------------
+
+// A stub whose zone state the driver can rewrite between polls: play state,
+// track length, volume, and which zone is selected.
+const RIG = `
+window.__vol = 40;
+window.__softLimit = undefined;
+window.__state = "playing";
+window.__len = 200;
+window.__zoneId = "z1";
+window.__posts = [];
+window.__applied = [];
+window.__hang = false;
+window.__slow = false;
+window.__played = 0;             // ms of actual playback, the way a server counts
+window.__lastSample = Date.now();
+window.__lag = 1200;
+// Flip play state through this, so the accumulator closes off the interval at
+// the moment of the transition rather than at the next poll.
+window.__setState = function (s) {
+  var now = Date.now();
+  if (window.__state === "playing") window.__played += now - window.__lastSample;
+  window.__lastSample = now;
+  window.__state = s;
+};
+try { localStorage.setItem("rra-zone", "z1"); } catch (e) {}  // storage optional
+window.__installFetch(function (u, opts) {
+  if (u.indexOf("/api/volume") > -1 && opts && opts.method === "POST") {
+    var body = JSON.parse(opts.body);
+    window.__posts.push(body);
+    // Never settles on its own — but honours the abort signal, which is what a
+    // real fetch does and the only reason a bounded caller can recover.
+    if (window.__hang) return new Promise(function (res, rej) {
+      if (opts && opts.signal) {
+        opts.signal.addEventListener("abort", function () {
+          rej(new DOMException("Aborted", "AbortError"));
+        });
+      }
+    });
+    // Only the ordering test asks for slow responses; everything else wants a
+    // prompt server so its timings stay about the poll, not about the write.
+    // Lower values take longer, so a naive fire-and-forget burst lands out of
+    // order deterministically and the LAST value applied is the wrong one. The
+    // spread must exceed the gap between taps, or send order decides it anyway
+    // and a missing serialisation looks correct.
+    var delay = window.__slow ? Math.max(0, (100 - (body.value || 0)) * 40) : 0;
+    return new Promise(function (res) {
+      setTimeout(function () {
+        window.__applied.push(body.value);
+        res(new Response(JSON.stringify({ ok: true }),
+            { status: 200, headers: { "Content-Type": "application/json" } }));
+      }, delay);
+    });
+  }
+  var out = { output_id: "o1", display_name: "Zone",
+              volume: { type: "number", min: 0, max: 100, value: window.__vol,
+                        step: 1, soft_limit: window.__softLimit, is_muted: false } };
+  var extra = window.__state === "playing" ? (Date.now() - window.__lastSample) : 0;
+  var pos = Math.max(0, Math.floor((window.__played + extra - window.__lag) / 1000));
+  var z = { zone_id: window.__zoneId, display_name: "Zone", state: window.__state,
+            is_seek_allowed: true, outputs: [out],
+            now_playing: { line1: "T", line2: "A", line3: "Al",
+                           length: window.__len, seek_position: pos, image_key: "k" } };
+  if (u.indexOf("/api/zones") > -1)      return window.__json({ zones: [z] });
+  if (u.indexOf("/api/zone-state") > -1) return window.__json({ zone: z });
+  if (u.indexOf("/api/queue") > -1)      return window.__json({ items: [] });
+  if (u.indexOf("/api/status") > -1)     return window.__json({ paired: true });
+  if (u.indexOf("/api/") > -1)           return window.__json({});
+  return undefined;
+});
+`;
+
+const READY = `
+  await window.__sleep(700);
+  var bar = document.getElementById("mini-transport");
+  for (var w = 0; w < 40 && bar.classList.contains("hidden"); w++) await window.__sleep(100);
+  function pct() {
+    var f = document.getElementById("mt-progress-fill");
+    return f && f.style.width ? parseFloat(f.style.width) : null;
+  }
+`;
+
+// --- pause drift -----------------------------------------------------------
+// The position clock is base + elapsed. If the base is not re-anchored while
+// paused, the paused seconds are added on resume: the bar runs permanently
+// ahead, silently, because the error stays under the 3s reconcile threshold —
+// until enough short pauses accumulate past it and it yanks back by MORE than
+// three seconds.
+const PAUSE_DRIVER = READY + `
+  await window.__sleep(2000);
+  var samples = [];
+  function sample() { samples.push(pct()); }
+  sample();
+
+  // Three short pauses. Each is under the 3s reconcile threshold, so nothing
+  // corrects the drift each one causes — they accumulate until together they
+  // cross it, and THAT is when the bar snaps.
+  for (var i = 0; i < 3; i++) {
+    window.__setState("paused");
+    for (var a = 0; a < 8; a++) { await window.__sleep(280); sample(); }
+    window.__setState("playing");
+    for (var b = 0; b < 8; b++) { await window.__sleep(280); sample(); }
+  }
+  for (var c = 0; c < 6; c++) { await window.__sleep(280); sample(); }
+  T("samples", samples);
+`;
+
+test("paused time is not counted as playback", { concurrency: 1 }, async (t) => {
+  const r = harness.renderPage({
+    stub: RIG, driver: PAUSE_DRIVER, name: "seek-pause", windowSize: "390x844",
+  });
+  harness.assertNoPageError(assert, r);
+
+  await t.test("pausing settles the bar, it does not yank it", () => {
+    // THE assertion, and note what it does NOT say. Pausing legitimately moves
+    // the bar back a little: between the real pause and the poll that reports
+    // it, the local clock painted playback that never happened, and the
+    // server's position is the exact pause point. Correcting that is right, and
+    // it is bounded by the detection lag — about 0.4% here.
+    //
+    // What must never happen is the accumulating version. If npBaseAt is not
+    // re-anchored across a pause, each pause leaves the bar ahead by its own
+    // duration, silently, because one pause alone stays under the 3s reconcile
+    // threshold. Three together cross it and the reconcile yanks the bar back
+    // by more than three seconds — a bigger jerk than the ~1s one this whole
+    // release exists to remove, just rarer.
+    const s = r.samples.filter(v => typeof v === "number");
+    assert.ok(s.length >= 40, "not enough samples: " + JSON.stringify(r.samples));
+    let worst = 0, at = -1;
+    for (let i = 1; i < s.length; i++) {
+      const back = s[i - 1] - s[i];
+      if (back > worst) { worst = back; at = i; }
+    }
+    // 1% of a 200s track is 2s. A settle is ~0.4%; an accumulated-drift yank is
+    // over 2%. Nothing lands in between.
+    assert.ok(worst < 1,
+      "the bar jumped back " + worst.toFixed(2) + "% at sample " + at +
+      " — that is " + (worst * 2).toFixed(1) + "s, far more than the settle a " +
+      "pause justifies. Full sequence: " + JSON.stringify(s));
+  });
+
+  await t.test("and advances only by the time actually played", () => {
+    const s = r.samples.filter(v => typeof v === "number");
+    const moved = s[s.length - 1] - s[0];
+    // 3 x 2240ms playing plus a final 1680ms after the baseline sample, against
+    // 15.4s of wall clock over the same window: 4.2% versus 7.7%.
+    const expected = ((3 * 2240 + 1680) / 1000 / 200) * 100;
+    assert.ok(Math.abs(moved - expected) < 1.2,
+      "the bar moved " + moved.toFixed(2) + "% but only " + expected.toFixed(2) +
+      "% was played (wall clock over the same window would be " +
+      ((15400 / 1000 / 200) * 100).toFixed(2) + "%)");
+  });
+});
+
+// --- the volume hold must not survive a zone switch ------------------------
+const ZONESWITCH_DRIVER = READY + `
+  document.getElementById("mt-vol-popover").classList.remove("hidden");
+  await window.__sleep(200);
+  var sl = document.getElementById("mt-vol-slider");
+  T("start", parseFloat(sl.value));
+
+  document.getElementById("mt-vol-plus").click();   // 40 -> 41 on zone z1
+  await window.__sleep(120);
+  T("after_tap", parseFloat(sl.value));
+
+  // Switch to a different zone, sitting at a very different volume, INSIDE the
+  // 2s hold window.
+  window.__zoneId = "z2";
+  window.__vol = 12;
+  await window.__sleep(1000);
+  T("after_switch", parseFloat(sl.value));
+
+  window.__posts = [];
+  document.getElementById("mt-vol-plus").click();
+  await window.__sleep(150);
+  T("sent_after_switch", window.__posts.map(function (p) { return p.value; }));
+`;
+
+test("a volume hold does not follow you to another zone", { concurrency: 1 }, async (t) => {
+  const r = harness.renderPage({
+    stub: RIG, driver: ZONESWITCH_DRIVER, name: "vol-zoneswitch", windowSize: "390x844",
+  });
+  harness.assertNoPageError(assert, r);
+
+  await t.test("the new zone shows its own volume, not the old zone's", () => {
+    assert.equal(r.start, 40);
+    assert.equal(r.after_tap, 41);
+    assert.equal(r.after_switch, 12,
+      "after switching zones the slider still reads " + r.after_switch +
+      " — the previous zone's number. The hold is keyed to nothing, so it " +
+      "suppresses the new zone's value for the rest of its 2s window.");
+  });
+
+  await t.test("and the next tap steps from the new zone's volume", () => {
+    // This is the damaging half: stepping from a stale display sends an
+    // absolute value to a zone the user never touched.
+    assert.deepEqual(r.sent_after_switch, [13],
+      "tapping + on the new zone sent " + JSON.stringify(r.sent_after_switch) +
+      " instead of [13] — an absolute jump on a zone that was sitting at 12.");
+  });
+});
+
+// --- a track change must re-baseline even inside our own seek hold ---------
+const TRACKCHANGE_DRIVER = READY + `
+  document.querySelector(".mt-info").click();
+  await window.__sleep(500);
+  var sk = document.getElementById("np-seek");
+
+  // Scrub to near the end of the track — a normal way to skip on.
+  sk.value = 195;
+  sk.dispatchEvent(new Event("change", { bubbles: true }));
+  await window.__sleep(150);
+  T("after_scrub", pct());
+
+  // Roon moves to the next track well inside the 1.5s seek hold.
+  window.__len = 100;
+  window.__played = 0; window.__lastSample = Date.now();   // new track, from the top
+  await window.__sleep(1000);
+  T("during_hold", pct());
+`;
+
+test("a track change re-baselines even inside the seek hold", { concurrency: 1 }, async (t) => {
+  const r = harness.renderPage({
+    stub: RIG, driver: TRACKCHANGE_DRIVER, name: "seek-trackchange", windowSize: "390x844",
+  });
+  harness.assertNoPageError(assert, r);
+
+  await t.test("the next track does not open at 100%", () => {
+    assert.ok(r.after_scrub > 90, "the scrub did not take: " + r.after_scrub);
+    assert.ok(r.during_hold < 30,
+      "the new track opened at " + r.during_hold + "%. The seek hold was gating " +
+      "the track-change branch as well as the position branch, so the old " +
+      "track's 195s base was clamped against the new track's length and the " +
+      "bar sat pinned at 100% until the hold lapsed.");
+  });
+});
+
+// --- soft_limit is Roon's ceiling and must bound both paths ----------------
+const SOFTLIMIT_DRIVER = READY + `
+  window.__softLimit = 45;
+  window.__vol = 43;
+  await window.__sleep(1700);
+  document.getElementById("mt-vol-popover").classList.remove("hidden");
+  await window.__sleep(200);
+  var sl = document.getElementById("mt-vol-slider");
+  T("slider_max", parseFloat(sl.max));
+  T("scale_max", document.getElementById("mt-vol-max").textContent);
+
+  window.__posts = [];
+  for (var i = 0; i < 5; i++) { document.getElementById("mt-vol-plus").click(); await window.__sleep(60); }
+  T("sent", window.__posts.map(function (p) { return p.value; }));
+  T("final", parseFloat(sl.value));
+`;
+
+test("volume stops at Roon's soft limit", { concurrency: 1 }, async (t) => {
+  const r = harness.renderPage({
+    stub: RIG, driver: SOFTLIMIT_DRIVER, name: "vol-softlimit", windowSize: "390x844",
+  });
+  harness.assertNoPageError(assert, r);
+
+  await t.test("the buttons stop there", () => {
+    assert.equal(r.final, 45,
+      "five taps from 43 reached " + r.final + ", past the soft limit of 45. " +
+      "Roon clamps the request and the next poll drags the thumb back down, " +
+      "which is indistinguishable from the jitter this release is fixing.");
+    assert.ok(Math.max.apply(null, r.sent) <= 45,
+      "a value above the soft limit was sent: " + JSON.stringify(r.sent));
+  });
+
+  await t.test("and so does the slider itself", () => {
+    // Clamping only the buttons leaves dragging able to request a value the
+    // zone will never report back, so the hold waits on an echo that cannot
+    // arrive and then snaps.
+    assert.equal(r.slider_max, 45,
+      "the slider still spans to " + r.slider_max + ", so a drag can ask for " +
+      "more than the zone will accept");
+    assert.equal(r.scale_max, "45", "the scale label disagrees with the slider's range");
+  });
+});
+
+// --- the write queue, the debounce cancel, and a hung request -------------
+// The most intricate code in this change, and the part with no coverage until
+// now: absolute writes issued over separate connections, a 90ms debounce that
+// can outlive the gesture that scheduled it, and a serialisation gate that must
+// not be able to jam shut.
+
+const STALE_DEBOUNCE_DRIVER = READY + `
+  document.getElementById("mt-vol-popover").classList.remove("hidden");
+  await window.__sleep(200);
+  var sl = document.getElementById("mt-vol-slider");
+  window.__posts = []; window.__applied = [];
+
+  // Mid-drag value, then the release 40ms later — INSIDE the 90ms debounce, so
+  // the queued write for the old value is still pending when the final one is
+  // sent.
+  sl.value = 55; sl.dispatchEvent(new Event("input",  { bubbles: true }));
+  await window.__sleep(40);
+  sl.value = 78; sl.dispatchEvent(new Event("change", { bubbles: true }));
+  await window.__sleep(1200);
+  T("sent", window.__posts.map(function (p) { return p.value; }));
+`;
+
+test("a mid-drag write cannot land after the release", { concurrency: 1 }, async (t) => {
+  const r = harness.renderPage({
+    stub: RIG, driver: STALE_DEBOUNCE_DRIVER, name: "vol-debounce", windowSize: "390x844",
+  });
+  harness.assertNoPageError(assert, r);
+
+  await t.test("the released value is the last thing sent", () => {
+    assert.ok(r.sent.length >= 1, "the drag sent nothing: " + JSON.stringify(r.sent));
+    assert.equal(r.sent[r.sent.length - 1], 78,
+      "the writes were " + JSON.stringify(r.sent) + ". The debounced write for " +
+      "the mid-drag value was still pending at release; not cancelling it leaves " +
+      "the zone at a value the user dragged past, and the poll then faithfully " +
+      "drags the thumb back to it.");
+  });
+});
+
+const ORDER_DRIVER = READY + `
+  document.getElementById("mt-vol-popover").classList.remove("hidden");
+  await window.__sleep(200);
+  window.__posts = []; window.__applied = []; window.__slow = true;
+
+  // Four fast taps. stepVolume has no debounce, so these are four immediate
+  // absolute writes — the case the serialisation exists for.
+  for (var i = 0; i < 4; i++) {
+    document.getElementById("mt-vol-plus").click();
+    await window.__sleep(20);
+  }
+  await window.__sleep(9000);
+  T("sent", window.__posts.map(function (p) { return p.value; }));
+  T("applied", window.__applied.slice());
+`;
+
+// A write already in flight when the user changes zone must still be addressed
+// to the zone it was made for.
+const MIDFLIGHT_ZONE_DRIVER = READY + `
+  document.getElementById("mt-vol-popover").classList.remove("hidden");
+  await window.__sleep(200);
+  window.__posts = []; window.__applied = []; window.__slow = true;
+
+  document.getElementById("mt-vol-plus").click();   // in flight, slow
+  await window.__sleep(20);
+  document.getElementById("mt-vol-plus").click();   // queued behind it
+  window.__zoneId = "z2";                           // user switches zone now
+  await window.__sleep(9000);
+  T("zones", window.__posts.map(function (p) { return p.zone_or_output_id; }));
+`;
+
+test("a queued volume write keeps the zone it was made for", { concurrency: 1 }, async (t) => {
+  const r = harness.renderPage({
+    stub: RIG, driver: MIDFLIGHT_ZONE_DRIVER, name: "vol-midflight", windowSize: "390x844",
+  });
+  harness.assertNoPageError(assert, r);
+
+  await t.test("both writes go to the original zone", () => {
+    assert.ok(r.zones.length >= 2, "expected two writes, got " + JSON.stringify(r.zones));
+    assert.deepEqual(r.zones, r.zones.map(() => "z1"),
+      "the writes went to " + JSON.stringify(r.zones) + ". The zone id used to be " +
+      "read off currentZone inside the send loop, which is after an await on " +
+      "every iteration but the first — so changing zone mid-drag posted the " +
+      "queued value to the zone just switched TO.");
+  });
+});
+
+test("rapid taps are applied in the order they were made", { concurrency: 1 }, async (t) => {
+  const r = harness.renderPage({
+    stub: RIG, driver: ORDER_DRIVER, name: "vol-order", windowSize: "390x844",
+  });
+  harness.assertNoPageError(assert, r);
+
+  await t.test("the zone ends on the value the user asked for last", () => {
+    // Intermediate values are deliberately dropped — that is what latest-wins
+    // means. What matters is where the zone ENDS UP.
+    assert.equal(r.sent[r.sent.length - 1], 44,
+      "four taps from 40 sent " + JSON.stringify(r.sent) + "; the last must be 44");
+    assert.equal(r.applied[r.applied.length - 1], 44,
+      "the writes ARRIVED in the order " + JSON.stringify(r.applied) + ". These " +
+      "are absolute values over separate connections, so without one in flight " +
+      "at a time an earlier, slower write lands last and leaves the zone at a " +
+      "volume the user already moved past.");
+  });
+});
+
+const HANG_DRIVER = READY + `
+  document.getElementById("mt-vol-popover").classList.remove("hidden");
+  await window.__sleep(200);
+
+  // One request that never answers — a Core that drops mid-call. /api/volume
+  // has no timeout of its own; it replies only when Roon calls back.
+  window.__hang = true;
+  document.getElementById("mt-vol-plus").click();
+  await window.__sleep(500);
+  window.__hang = false;
+
+  // Well past the 5s abort. Volume must still work.
+  await window.__sleep(6000);
+  window.__posts = [];
+  document.getElementById("mt-vol-plus").click();
+  await window.__sleep(400);
+  T("sent_after_hang", window.__posts.map(function (p) { return p.value; }));
+`;
+
+test("a hung volume request does not wedge the control", { concurrency: 1 }, async (t) => {
+  const r = harness.renderPage({
+    stub: RIG, driver: HANG_DRIVER, name: "vol-hang", windowSize: "390x844",
+  });
+  harness.assertNoPageError(assert, r);
+
+  await t.test("later taps still reach the server", () => {
+    assert.ok(r.sent_after_hang.length > 0,
+      "after one request that never answered, no further volume write was ever " +
+      "sent. Serialising writes without bounding them means volInFlight stays " +
+      "true forever and every later tap queues behind a promise that will never " +
+      "settle — volume dead for the lifetime of the page.");
+  });
+});

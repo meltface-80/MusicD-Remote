@@ -1105,7 +1105,12 @@ main {
   height: 100%;
   width: 0%;
   background: var(--accent);
-  transition: width .4s linear;
+  /* No transition. JS paints this from the clock four times a second, and a
+     400ms width transition restarted every 250ms can never finish: the fill
+     chased a target it never reached and sat ~400ms behind the position just
+     computed, while continuously animating a non-composited property. The
+     transition was doing the smoothing back when the position advanced once a
+     second; now it only fights the painter. */
 }
 
 .mt-info {
