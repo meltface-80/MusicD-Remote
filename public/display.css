@@ -234,7 +234,9 @@ body.show-ui .controls { opacity: 1; pointer-events: auto; }
   height: 100%; width: 0%;
   border-radius: 2px;
   background: #f2f3f5;
-  transition: width .25s linear;
+  /* No transition — paintProgress() runs every 250ms, so a 250ms transition is
+     restarted exactly as it completes and the fill permanently trails the
+     position by a full tick. See .mt-progress-fill in style.css. */
 }
 
 .hidden { display: none !important; }

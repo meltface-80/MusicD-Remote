@@ -2,6 +2,168 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.69] — 2026-08-12
+
+### Fixed — the defects an 8-angle review found in v1.7.68's own fix
+
+v1.7.68 fixed the reported volume and progress-bar jitter. A full review of it then found nine
+further defects, three of them introduced by that fix. This is that pass. Every item below is
+covered by an assertion that was mutation-checked — the specific defect reintroduced, the specific
+test confirmed red.
+
+**A CSS transition was fighting the new painter.** `.mt-progress-fill` carried
+`transition: width .4s linear`. The painter now runs every 250ms, so a 400ms transition is restarted
+before it can ever finish: the fill chased a target it never reached and sat permanently ~400ms
+behind the position just computed, continuously animating a property that is not
+compositor-accelerated. The transition made sense when the position advanced once a second and the
+transition *was* the interpolation; against a 4Hz painter it only fights it. Removed here and in
+`display.css` (`.bb-fill`, whose `.25s` was exactly its own tick).
+
+**Paused time was counted as playback.** The position clock is a base plus elapsed wall-clock, and
+nothing re-anchored it across a pause. A 2.5s pause left the bar permanently 2.5s ahead — silently,
+because one pause alone stays under the reconcile threshold. A few short pauses accumulated past it,
+at which point the reconcile fired and yanked the bar back by *more* than three seconds: a bigger
+version of the jerk v1.7.68 set out to remove, just rarer. The base is now carried forward using the
+play state that was in effect for the interval, and a play/pause transition takes the server's
+position outright, which is exact at that moment.
+
+**A track change was suppressed by our own seek hold.** The 1.5s hold that protects a scrub from the
+refresh that follows it also gated the track-change branch. Scrubbing to the end of a track — a
+normal way to skip on — opened the next track with the bar pinned at 100% until the hold lapsed. A
+track change is unambiguous new information and now re-baselines regardless.
+
+**The volume hold followed you between zones.** The hold was a bare value with no zone identity.
+Tapping + on one zone and switching to another inside the 2s window left the new zone's slider
+showing the *old* zone's number — and because the buttons step from what is displayed, the next tap
+sent that number, +1, as an absolute value to a zone the user never touched. A zone at 12 could be
+jumped to 42 by one tap. The hold is now keyed to the zone it was taken for.
+
+**A hung volume request killed volume for the whole session.** v1.7.68 serialised writes so only one
+is in flight at a time. Neither the request nor `/api/volume` has a timeout — the server answers only
+when Roon's callback fires — so a Core that drops mid-call left that promise unsettled forever, and
+every later write queued behind it. Volume dead until reload, where the old fire-and-forget code lost
+only the single request. Writes are now bounded by an abort at 5s.
+
+**A queued write could go to the wrong zone**, because the zone id was read from the current zone
+inside the send loop — which is after an await on every iteration but the first. It now travels with
+the value. A failed write also no longer discards a value already queued and already painted.
+
+**`soft_limit` is Roon's ceiling and now bounds the slider too**, not only the +/− buttons. Clamping
+one and not the other let a drag ask for a value the zone will never report back, leaving the hold
+waiting on an echo that could not arrive and then snapping.
+
+Also: the scrubber fill no longer drops out entirely on a NaN position; `stepVolume` reads the
+output's range from the output rather than from the slider's attributes (which are only a mirror of
+it); the echo now matches within half a step rather than exactly, so quantising outputs settle
+instead of stalling for the full hold; and the per-write refresh is coalesced, since the buttons have
+no debounce.
+
+### Class of error
+
+Optimistic local state that outlived the thing it was optimistic about. The zone-scoping and
+hung-request defects are the same shape as the bug v1.7.68 fixed, reintroduced one level up: state
+held on the user's behalf, with no bound on how long it may be believed.
+
+Two lessons recorded rather than fixed. A test can be green because the code is right or because the
+stub cannot express the failure — v1.7.68 shipped with a `start` sentinel that could not tell
+"rendered the server's value" from "never ran", because the stub and index.html both said 50. And
+some things this harness genuinely cannot observe: a CSS transition does not change the inline width
+the painter writes, so that one is pinned as a static assertion instead, honouring
+`MUSICD_PUBLIC_DIR` so a mutation run can actually reach it.
+
+### Tests
+
+70 static / 701 unit / 352 DOM. Nineteen new assertions across pause drift, zone-switch leakage,
+track change inside the seek hold, the soft limit, write ordering under out-of-order arrival, a
+never-answering request, mid-flight zone changes, and a stale debounced write landing after release.
+
+## [1.7.68] — 2026-08-12
+
+### Fixed — the volume slider jumped back a step, and the progress bar was jerky
+
+Two reports, one shape: the screen was painted with what the user just did, and then a poll
+overwrote it with what the server knew *before* they did it.
+
+**Volume.** The only thing protecting an optimistic paint was `userIsDraggingVolume`, set on the
+slider's `input` event and cleared on `change`. The −/+ buttons never touched it. So from the moment
+a tap painted 51 until Roon echoed 51 back — an HTTP round trip plus Roon's own ~1Hz event cadence —
+any poll tick wrote the pre-tap 50 straight back over it. The thumb retreated after +, and advanced
+after −, which is exactly how it was described. Worse, the *next* tap then computed its step from the
+reverted display, recomputed a value already sent, and the tap vanished.
+
+Absolute volume writes are now held until the server echoes them. The hold ends the instant the echo
+matches, and lapses on its own after 2s, so a change made in the Roon app or on a hardware knob still
+reaches the slider — held, not locked. `setVolume()` became the single choke point every caller goes
+through, so the guard cannot be forgotten at one of them the way it was for the buttons; it also
+serialises writes latest-wins, because these are absolute values issued over separate connections and
+a drag emitting 45, 52, 60 could have 52 land last.
+
+Two more things the buttons got wrong: they moved by a hardcoded 2 on outputs whose own step is 1
+(two positions per tap), and they ignored `soft_limit` — Roon's own ceiling, which the server has
+always sent and nothing ever read, so a request above it was clamped and the poll dragged the thumb
+back down, indistinguishable from the jitter. They now step by the zone's own step, once, and stop at
+the limit.
+
+**Progress bar.** A 1000ms ticker did `npPos += 1` while the 1500ms poll assigned the server's
+position unconditionally. Two unsynchronised timers writing one variable, realigning every 3s: the
+bar hopped forward a second, snapped back a second, then caught up two. That beat *is* the
+jerkiness.
+
+Position is now a base plus elapsed wall-clock — the model `display.js` has always used — painted
+four times a second. The painter paints; it does not advance, so a late or throttled tick cannot make
+the bar drift. The poll reconciles rather than snaps: what arrives is stale by up to ~2s (whole-second
+quantisation plus Roon's event cadence), so it re-baselines only on a disagreement bigger than that,
+which means a real event — a track change, a seek from another remote, a stall. Our own seeks set the
+base directly and hold off re-baselining for 1.5s, so the refresh that follows a scrub no longer yanks
+the bar back to where it was dragged from and then forward again.
+
+Also fixed while in here: the scrubber's fill was read back out of a `step="1"` input, so it could
+only ever move in whole-second jumps; the mini bar's line went on painting the old position for the
+whole duration of a drag; and a stream with no length could paint a fill under a thumb parked at zero.
+
+### Class of error
+
+Optimistic local state with no guard against the authoritative source arriving late. Both bugs were
+invisible to every existing test because the test server answered instantly and truthfully. The new
+assertions only have teeth because the stub now lags the way the real one does — an earlier draft
+froze the server's position instead, which made re-baselining *correct* and left the monotonicity
+assertion permanently green.
+
+### Tests
+
+16 DOM assertions in `test/dom/volume-row.test.js` (69 static / 701 unit / 333 DOM overall). Each was
+mutation-checked by reintroducing the specific defect and confirming it goes red: reverting the guard
+to `userIsDraggingVolume`, stepping by a raw delta of 2, making the hold permanent, dropping the
+re-baseline tolerance, disabling the snap entirely, and removing either half of the seek hold. Two
+assertions that passed under every mutation were found and dealt with rather than kept.
+
+## [1.7.67] — 2026-08-11
+
+### Fixed — the volume popover's row was 8px out of alignment
+
+Reported from a screenshot as "the layout isn't aligned". It was, by 8px, and the cause is the kind
+that reads as perfectly correct in the source.
+
+`.vol-controls` is a flex row of three things: the readout (speaker icon + number), the slider
+wrapper, and the two step buttons, with `align-items: center`. The wrapper was a **column** — the
+slider stacked above the 0/100 scale — which made it about 20px taller than the slider itself.
+`center` then did exactly what it says and centred every sibling against the wrapper's *full*
+height, while the slider centred on itself. The readout and both buttons ended up sitting low
+against the track they belong to.
+
+Measured before: slider centre at 728, readout and both buttons at 736. After: all four at 719.
+
+The scale is positioned rather than stacked now, so the wrapper is exactly the slider's height and
+the row lines up on the track. The sheet's padding was also `18px` top against `12px` bottom, which
+tipped the whole row upward; it is even now, with room for the repositioned scale.
+
+Five DOM assertions, measured at 360 / 390 / 768 px: all four centre lines within 1px of the slider
+track, and the scale still visible, still labelled 0 and 100, still inside the sheet — hiding or
+clipping it is the obvious wrong way to make the alignment "pass". The pre-fix layout fails four of
+the five.
+
+Nothing in that CSS looked wrong, which is why it had to be measured rather than read.
+
 ## [1.7.66] — 2026-08-11
 
 ### Added — the iOS full-screen contract, written down and pinned

@@ -45,8 +45,10 @@
   let bioCycle      = 0;        // which credited artist's bio shows next (see buildSlide)
   let frontIsA      = false;    // which layer is currently visible
   let rotateTimer   = null;
-  let seekBase      = 0;        // last polled seek position (s)
-  let seekBaseAt    = 0;        // Date.now() at that poll
+  let seekBase      = 0;        // last known seek position (s)
+  let seekBaseAt    = 0;        // Date.now() when seekBase was taken
+  let trackLen      = 0;        // length of the track seekBase belongs to
+  let wasPlaying    = false;    // play state over the interval just elapsed
   let playing       = false;
 
   const fmt = (s) => {
@@ -135,8 +137,25 @@
       bbTitle.textContent  = np.line1 || "—";
       bbArtist.textContent = [np.line2, np.line3].filter(Boolean).join(" · ");
       bbTot.textContent    = fmt(np.length);
-      seekBase   = np.seek_position || 0;
+
+      // Reconcile, do not snap — the same fix app.js carries, for the same
+      // reason. Roon quantises the position to whole seconds and emits on its
+      // own ~1Hz cadence, so what arrives here is up to ~2s behind what the
+      // local clock has already painted. Assigning it every poll dragged the
+      // strip backwards on each tick. Re-baseline on a real event only: a track
+      // change (the length moves), a pause/resume, or a gap too big to be
+      // ordinary staleness.
+      const srvPos  = np.seek_position || 0;
+      const prevLen = trackLen;
+      trackLen = np.length || 0;
+      const localPos = seekBase + (wasPlaying ? (Date.now() - seekBaseAt) / 1000 : 0);
+      if (trackLen !== prevLen || playing !== wasPlaying || Math.abs(srvPos - localPos) > 3) {
+        seekBase = srvPos;
+      } else {
+        seekBase = localPos;      // carry forward, so paused time is not counted
+      }
       seekBaseAt = Date.now();
+      wasPlaying = playing;
 
       // Keyed per TRACK (line1), not just per album: the video is track-
       // specific, so a skip within the same album must reload content —

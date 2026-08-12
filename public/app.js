@@ -7332,11 +7332,22 @@
     if (npVolValue)  npVolValue.textContent = Math.round(v);
     paintVolFill(volSlider); paintVolFill(npVolSlider);
   }
+  // The highest value this output will actually accept. soft_limit is Roon's
+  // own ceiling: it has always been sent (index.js) and nothing read it, so a
+  // request above it was clamped by Roon and the next poll dragged the thumb
+  // back down — indistinguishable from the jitter. Applied to the slider's own
+  // max as well as the −/+ buttons, or dragging could still ask for a value the
+  // zone will never report back, leaving the hold waiting on an echo that can
+  // never match.
+  function volCeiling(v) {
+    const max = v.max != null ? v.max : 100;
+    return v.soft_limit != null ? Math.min(max, v.soft_limit) : max;
+  }
   // Scale labels show the output's real range (0/100 for number volumes,
   // e.g. -80/0 for dB volumes) — matches what the slider actually spans.
   function paintVolScale(minEl, maxEl, v) {
     if (minEl) minEl.textContent = Math.round(v.min != null ? v.min : 0);
-    if (maxEl) maxEl.textContent = Math.round(v.max != null ? v.max : 100);
+    if (maxEl) maxEl.textContent = Math.round(volCeiling(v));
   }
 
   // Now-playing screen (Roon-style) elements — shared modal, driven by the
@@ -7374,9 +7385,83 @@
   let pollTimer   = null;
   let lastNpImgKey = null;
   let userIsDraggingVolume = false;
+
+  // The volume the user last ASKED for, held until the server echoes it back.
+  //
+  // The only guard used to be userIsDraggingVolume, set on the slider's `input`
+  // event and cleared on `change`. The −/+ buttons never touched it, so from the
+  // moment a tap painted 51 until Roon echoed 51 (a round trip, plus Roon's own
+  // ~1Hz event cadence), any poll tick wrote the PRE-tap 50 straight back over
+  // it: the thumb retreating after +, advancing after −. That is the reported
+  // "increase it and it jumps back, vice versa".
+  //
+  // Held, not locked: the hold ends the moment the echo matches, and lapses on
+  // its own after volEchoMs() so a change made in the Roon app or on a hardware
+  // knob still reaches the slider.
+  const VOL_ECHO_MS   = 2000;
+  let volPending      = null;   // value written locally, not yet echoed
+  let volPendingUntil = 0;      // Date.now() after which we stop believing it
+  let volPendingZone  = null;   // the zone it was written to — see settleVolumeHold
+  function holdVolume(v) {
+    volPending = v;
+    volPendingUntil = Date.now() + VOL_ECHO_MS;
+    volPendingZone = currentZone && currentZone.zone_id;
+  }
+  function clearVolumeHold() { volPending = null; volPendingZone = null; }
+
+  // Retire the hold when it is spent. Called ONCE per poll, from renderZone.
+  //
+  // Kept separate from the predicate below because two render paths ask whether
+  // the volume is held (the mini bar, and the now-playing sheet), and a
+  // predicate that also retires the hold means whichever happens to ask first
+  // consumes it — a property neither call site can see.
+  function settleVolumeHold(serverValue, stepSz) {
+    if (volPending === null) return;
+    // A hold belongs to the zone it was taken for. Without this, tapping + on
+    // one zone and switching to another inside the window left the new zone's
+    // slider showing the OLD zone's number, and the next tap stepped from it —
+    // sending a wildly wrong absolute value to a zone never touched.
+    if (volPendingZone !== (currentZone && currentZone.zone_id)) { clearVolumeHold(); return; }
+    if (Date.now() > volPendingUntil) { clearVolumeHold(); return; }
+    // Match within half a step rather than exactly: Roon quantises to the
+    // output's own grid, so an exact compare never matches on a dB output and
+    // the hold runs its full 2s before snapping — the very symptom it exists
+    // to remove.
+    const tol = Math.max(0.001, (stepSz || 0) / 2);
+    if (serverValue != null && Math.abs(serverValue - volPending) < tol) clearVolumeHold();
+  }
+  // Pure — safe to call from any render path, in any order, any number of times.
+  function volumeHeld() {
+    if (userIsDraggingVolume) return true;
+    if (volPending === null) return false;
+    return Date.now() <= volPendingUntil;
+  }
+
   let userIsDraggingSeek   = false;
   let npLen = 0;                // current track length (s)
-  let npPos = 0;                // local seek position (s), advanced between polls
+  // The position is a BASE plus elapsed wall-clock, not a counter. It used to be
+  // `npPos += 1` on a 1000ms interval while the 1500ms poll assigned the server's
+  // value unconditionally: two unsynchronised timers writing one variable,
+  // realigning every 3s, so the bar hopped forward a second, snapped back a
+  // second, then caught up two. That beat IS the jerkiness. Wall-clock also
+  // survives a late or throttled timer, which a counter cannot.
+  // Same shape display.js has always used (seekBase / seekBaseAt).
+  let npBase   = 0;             // last known position (s)
+  let npBaseAt = 0;             // Date.now() when npBase was set
+  let npWasPlaying = false;     // play state over the interval just elapsed
+  let npSeekHold = 0;           // ignore server re-baselining until this time
+  function npPlaying() {
+    return !!currentZone && (currentZone.state === "playing" || currentZone.state === "loading");
+  }
+  // Current position: the base, plus real time since it was taken.
+  function npNow() {
+    const pos = npBase + (npPlaying() ? (Date.now() - npBaseAt) / 1000 : 0);
+    return npLen > 0 ? Math.max(0, Math.min(npLen, pos)) : Math.max(0, pos);
+  }
+  function npSetBase(seconds) {
+    npBase = Math.max(0, seconds || 0);
+    npBaseAt = Date.now();
+  }
 
   // Tap the album name on the now-playing screen to open that album's detail.
   // We must search the index first to find the album's offset — the now-playing
@@ -7488,7 +7573,7 @@
     currentZone = zone;
     const np = zone && zone.now_playing;
     if (!np) {
-      npLen = 0; npPos = 0;
+      npLen = 0; npSetBase(0);
       paintBarProgress();
       refreshVisibility();
       updateNpScreen();
@@ -7522,13 +7607,14 @@
 
     // Volume UI — every tick, NOT barSig-gated: a zone switch can leave the
     // signature unchanged, and the sheet must never keep serving the previous
-    // zone's range/type. userIsDraggingVolume still guards the value writes.
+    // zone's range/type. volumeHeld() still guards the value writes.
     if (volOutput) {
       const v = volOutput.volume;
       volSlider.min   = v.min   != null ? v.min  : 0;
-      volSlider.max   = v.max   != null ? v.max  : 100;
+      volSlider.max   = volCeiling(v);
       volSlider.step  = v.step  != null ? v.step : 1;
-      if (!userIsDraggingVolume) {
+      settleVolumeHold(v.value, v.step);   // once per poll, before either read
+      if (!volumeHeld()) {
         volSlider.value = v.value != null ? v.value : 0;
         volVal.textContent = v.value != null ? Math.round(v.value) : "—";
         paintVolFill(volSlider);
@@ -7542,9 +7628,49 @@
       btnVol.disabled = true;
     }
 
-    // Resync the local seek baseline used by the now-playing screen's ticker.
+    // Reconcile the local clock with the server — do NOT snap to it.
+    //
+    // What arrives here is always a little stale, by two independent amounts:
+    // Roon reports whole seconds (up to 1s of quantisation) on its own ~1Hz
+    // event cadence (up to another 1s of age). So the honest expectation is
+    // that `srv` sits up to ~2s behind the position already painted, with the
+    // two clocks advancing at the same rate thereafter. Assigning it
+    // unconditionally is what produced the visible backwards jerk.
+    //
+    // Re-baseline only when it disagrees by more than that expected lag, which
+    // means a real event: a track change, a seek from another remote, a stall.
+    // The threshold is deliberately WIDER than the lag it tolerates — too tight
+    // and normal staleness re-triggers the jerk this is here to remove. The
+    // cost is that an external seek of under ~3s is not followed until the next
+    // track change; nobody seeks by two seconds, and our own seeks are exact
+    // (npSeekHold below).
+    const prevLen = npLen;
     npLen = np.length || 0;
-    npPos = np.seek_position != null ? np.seek_position : 0;
+    const srv = np.seek_position != null ? np.seek_position : 0;
+
+    const playingNow   = npPlaying();
+    const stateChanged = playingNow !== npWasPlaying;
+
+    // Carry the base forward by the interval just elapsed, using the play state
+    // that was in effect FOR that interval, then restart the clock from now.
+    //
+    // Without this, npBaseAt kept its pre-pause timestamp across a pause and the
+    // paused seconds were counted as playback on resume. A 2.5s pause left the
+    // bar permanently 2.5s ahead — under the 3s threshold, so never corrected —
+    // and a few short pauses accumulated past it, at which point the reconcile
+    // fired and yanked the bar back by MORE than three seconds. A rarer, bigger
+    // version of the jerk this whole change exists to remove.
+    npSetBase(npBase + (npWasPlaying ? (Date.now() - npBaseAt) / 1000 : 0));
+    npWasPlaying = playingNow;
+
+    // A track change or a play/pause transition is unambiguous new information,
+    // so both take the server's position outright — it is exact at that moment
+    // and stale only by the usual fixed lag, whereas the local clock has just
+    // counted up to a poll interval of the wrong state. Both bypass the seek
+    // hold: gating the track change behind it meant scrubbing to the end of a
+    // track — a normal way to skip on — opened the next one pinned at 100%.
+    if (npLen !== prevLen || stateChanged) npSetBase(srv);
+    else if (Date.now() >= npSeekHold && Math.abs(srv - npNow()) > 3) npSetBase(srv);
     paintBarProgress();
 
     refreshVisibility();
@@ -7652,18 +7778,25 @@
     // Progress / seek (blue fill before the thumb, like Roon)
     const seekable = !!currentZone.is_seek_allowed && npLen > 0;
     npSeek.disabled = !seekable;
+    // The position the fill is painted from must be the one the thumb is at.
+    // A stream with no length pins the input to 0/max 100, and npNow() keeps
+    // counting regardless — passing it here would paint a fill under a thumb
+    // parked at zero.
+    let seekPos = 0;
     if (npLen > 0) {
       npSeek.max = npLen;
+      seekPos = userIsDraggingSeek ? (parseFloat(npSeek.value) || 0)
+                                   : Math.min(npNow(), npLen);
       if (!userIsDraggingSeek) {
-        npSeek.value = Math.min(npPos, npLen);
-        npCur.textContent = fmtTime(npPos);
+        npSeek.value = seekPos;
+        npCur.textContent = fmtTime(seekPos);
       }
       npTot.textContent = fmtTime(npLen);
     } else {
       npSeek.max = 100; npSeek.value = 0;
       npCur.textContent = "0:00"; npTot.textContent = "0:00";
     }
-    paintSeek();
+    paintSeek(seekPos);
 
     // Volume — show the controls only when the endpoint has a controllable
     // volume; otherwise show "Volume control is fixed" (matches Roon).
@@ -7671,9 +7804,9 @@
     if (volOutput) {
       const v = volOutput.volume;
       npVolSlider.min  = v.min  != null ? v.min  : 0;
-      npVolSlider.max  = v.max  != null ? v.max  : 100;
+      npVolSlider.max  = volCeiling(v);
       npVolSlider.step = v.step != null ? v.step : 1;
-      if (!userIsDraggingVolume) {
+      if (!volumeHeld()) {
         npVolSlider.value = v.value != null ? v.value : 0;
         if (npVolValue) npVolValue.textContent = v.value != null ? Math.round(v.value) : "—";
         paintVolFill(npVolSlider);
@@ -7692,17 +7825,27 @@
   }
 
   // Thin progress line along the top of the mini bar (Roon-style).
-  function paintBarProgress() {
+  // `pos` is optional and follows paintSeek's convention: pass the position
+  // being painted so both the line and the thumb are drawn from one number.
+  function paintBarProgress(pos) {
     if (!progFill) return;
-    const pct = npLen > 0 ? Math.max(0, Math.min(100, (npPos / npLen) * 100)) : 0;
-    progFill.style.width = pct + "%";
+    const at = Number.isFinite(pos) ? pos
+             : (userIsDraggingSeek ? (parseFloat(npSeek.value) || 0) : npNow());
+    const pct = npLen > 0 ? Math.max(0, Math.min(100, (at / npLen) * 100)) : 0;
+    progFill.style.width = pct.toFixed(2) + "%";
   }
 
   // Paint the elapsed portion of the scrubber blue (before the thumb).
-  function paintSeek() {
+  // `pos` is passed in rather than read back out of the input: the input is
+  // step-quantised, so round-tripping through it threw away the sub-second part
+  // and the fill could only ever move in whole-second jumps.
+  function paintSeek(pos) {
     if (!npSeek) return;
     const max = parseFloat(npSeek.max) || 0;
-    const val = parseFloat(npSeek.value) || 0;
+    // Number.isFinite, not `!= null`: NaN passes a null check and would reach
+    // the gradient string as "NaN%", which is invalid and drops the fill
+    // entirely rather than reading zero.
+    const val = Number.isFinite(pos) ? pos : (parseFloat(npSeek.value) || 0);
     const pct = max > 0 ? Math.max(0, Math.min(100, (val / max) * 100)) : 0;
     npSeek.style.setProperty("--seek-fill",
       "linear-gradient(to right, var(--accent) 0%, var(--accent) " + pct + "%, " +
@@ -7711,6 +7854,15 @@
 
   async function seek(seconds) {
     if (!currentZone) return;
+    // Believe our own seek, BEFORE the await so the caller can paint straight
+    // after this returns into its first suspension. The refresh scheduled below
+    // almost always arrives before Roon has applied the seek, so the pre-seek
+    // position came back and yanked the bar to where it had just been — then a
+    // later poll yanked it forward again. Two visible jumps for one drag.
+    // Base and hold are set together, here, so a future second caller cannot
+    // get one without the other and freeze the bar at a stale position.
+    npSetBase(seconds);
+    npSeekHold = Date.now() + 1500;   // longer than the refresh it guards
     try {
       await fetch("/api/seek", {
         method: "POST",
@@ -7813,15 +7965,70 @@
     }
   }
 
-  async function setVolume(value) {
-    if (!currentZone) return;
+  // The single choke point for every ABSOLUTE volume write — drag, release and
+  // the −/+ buttons — so the hold cannot be forgotten at one of them the way it
+  // was for the buttons. (The incremental branch of stepVolume sends a RELATIVE
+  // nudge and deliberately does not come through here; there is no absolute
+  // value to hold.)
+  //
+  // Serialised and latest-wins. These are absolute writes issued fire-and-forget
+  // over separate connections, so a drag from 40 to 60 could emit 45, 52, 60 and
+  // have 52 arrive last — leaving the zone at 52 and the poll then faithfully
+  // dragging the thumb backwards. One in flight at a time, with only the newest
+  // value queued behind it, makes that impossible.
+  let volInFlight = false, volQueued = null;
+
+  // The zone id travels WITH the value. It used to be read off currentZone
+  // inside the loop, which is after an await on every iteration but the first —
+  // so switching zones mid-drag posted the queued value to the zone just
+  // switched TO, and a switch to nothing threw a TypeError the catch swallowed
+  // as a network blip.
+  async function postVolume(zoneId, value) {
+    // Bounded, because neither this fetch nor /api/volume had any timeout: the
+    // server only answers once Roon's change_volume callback fires, and if the
+    // Core drops mid-call that promise never settles. volInFlight would then
+    // stay true for the lifetime of the page and every later write would queue
+    // behind it forever — volume dead until reload.
+    const ctl = typeof AbortController === "function" ? new AbortController() : null;
+    const t = ctl ? setTimeout(() => ctl.abort(), 5000) : null;
     try {
       await fetch("/api/volume", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ zone_or_output_id: currentZone.zone_id, value })
+        body: JSON.stringify({ zone_or_output_id: zoneId, value }),
+        signal: ctl ? ctl.signal : undefined
       });
-    } catch (e) { /* ignore */ }
+    } finally {
+      if (t) clearTimeout(t);
+    }
+  }
+
+  async function setVolume(value) {
+    if (!currentZone) return;
+    const zoneId = currentZone.zone_id;
+    holdVolume(value);                         // covers the drag AND the buttons
+    if (volInFlight) { volQueued = { zoneId, value }; return; }
+    volInFlight = true;
+    let job = { zoneId, value };
+    while (job) {
+      // Inside the loop, so one failed write does not abandon a value already
+      // queued and already painted — the user would be looking at a number
+      // nothing had been told about.
+      try { await postVolume(job.zoneId, job.value); }
+      catch (e) { /* blip or 5s timeout — the poll resyncs once the hold expires */ }
+      job = volQueued; volQueued = null;
+    }
+    volInFlight = false;
+    // Pull the echo rather than waiting up to 1.5s for it — the same pattern
+    // control() and toggleMute() use (they wait 200ms and 150ms). Coalesced:
+    // stepVolume has no debounce, so four fast taps would otherwise schedule
+    // four refreshes all landing within a few hundred ms of each other.
+    scheduleEchoFetch();
+  }
+  let volEchoTimer = null;
+  function scheduleEchoFetch() {
+    clearTimeout(volEchoTimer);
+    volEchoTimer = setTimeout(fetchState, 200);
   }
   async function toggleMute() {
     if (!currentZone) return;
@@ -7889,14 +8096,15 @@
     npSeek.addEventListener("input", () => {
       userIsDraggingSeek = true;
       npCur.textContent = fmtTime(parseFloat(npSeek.value));
-      paintSeek();
+      paintSeek(parseFloat(npSeek.value));
+      paintBarProgress();
     });
     npSeek.addEventListener("change", () => {
       const target = parseFloat(npSeek.value);
       userIsDraggingSeek = false;
-      npPos = target;
-      paintSeek();
-      seek(target);
+      seek(target);         // sets the base + hold synchronously, then posts
+      paintSeek(target);
+      paintBarProgress();   // the thumb and the mini bar's line must land together
     });
   }
 
@@ -7912,23 +8120,32 @@
     });
     npVolSlider.addEventListener("change", () => {
       userIsDraggingVolume = false;
+      // Drop the queued mid-drag write: it holds an older value and would land
+      // AFTER this final one, re-sending a position the user has moved past.
+      clearTimeout(npVolDebounce);
       setVolume(parseFloat(npVolSlider.value));
     });
   }
 
-  // Advance the now-playing progress bar smoothly between 1.5s polls.
+  // Paint the progress bar from the clock, four times a second.
+  //
+  // It PAINTS, it does not advance — npNow() derives the position from the base
+  // and elapsed time, so a late or throttled tick cannot make the bar drift, and
+  // missing ticks entirely just means it repaints correctly when it resumes.
+  // 250ms matches display.js; rAF would be waste, since the fill moves about a
+  // pixel and a half per second.
   setInterval(() => {
-    if (!currentZone || !currentZone.now_playing || userIsDraggingSeek) return;
-    const playing = currentZone.state === "playing" || currentZone.state === "loading";
-    if (!playing || npLen <= 0 || npPos >= npLen) return;
-    npPos += 1;
-    paintBarProgress();
+    // npPlaying() already null-checks currentZone, and no now_playing implies
+    // npLen === 0, so those two clauses are covered by what remains.
+    if (userIsDraggingSeek || !npPlaying() || npLen <= 0) return;
+    const pos = npNow();                 // already clamped to [0, npLen]
+    paintBarProgress(pos);
     if (onNowPlayingScreen()) {
-      npSeek.value = Math.min(npPos, npLen);
-      npCur.textContent = fmtTime(npPos);
-      paintSeek();
+      npSeek.value = pos;
+      paintSeek(pos);
+      npCur.textContent = fmtTime(pos);
     }
-  }, 1000);
+  }, 250);
 
   // Let the modal code refresh bar visibility + the now-playing screen on open,
   // tab switch, and close.
@@ -7962,6 +8179,7 @@
   });
   volSlider.addEventListener("change", () => {
     userIsDraggingVolume = false;
+    clearTimeout(volDebounce);   // see the NP slider's change handler
     setVolume(parseFloat(volSlider.value));
   });
 
@@ -8083,17 +8301,30 @@
       } catch (e) { /* best-effort, like setVolume */ }
       return;
     }
+    // Safe to step from the painted value: volumeHeld() keeps a stale poll from
+    // reverting it, so what is on screen IS what we last sent. Without that hold
+    // this read is what silently lost taps — the display having gone back to 50,
+    // a second + recomputed 51 and re-sent a value already sent.
     const cur = parseFloat(volSlider.value);
-    const min = parseFloat(volSlider.min);
-    const max = parseFloat(volSlider.max);
-    const next = Math.max(min, Math.min(max, cur + delta));
+    // Range and step come from the output itself, not from the slider's
+    // attributes. Those attributes are only a mirror written by renderZone, and
+    // reading state back out of a mirror is the exact thing currentVolOutput()
+    // exists to avoid.
+    const vol = vo.volume;
+    const min = vol.min != null ? vol.min : 0;
+    // The zone's own step, not a hardcoded 2: Roon `number` volumes step by 1,
+    // dB outputs commonly by 0.5, so a fixed 2 moved two or four positions.
+    // `delta * stepSz` rather than sign(delta), so a caller can still ask for a
+    // multi-step nudge later without rewriting this.
+    const stepSz = vol.step != null ? vol.step : 1;
+    const next = Math.max(min, Math.min(volCeiling(vol), cur + delta * stepSz));
     syncVolumeUI(next);
     setVolume(next);
   }
-  if (stepMinus)   stepMinus  .addEventListener("click", (e) => { e.stopPropagation(); stepVolume(-2); });
-  if (stepPlus)    stepPlus   .addEventListener("click", (e) => { e.stopPropagation(); stepVolume(+2); });
-  if (npStepMinus) npStepMinus.addEventListener("click", (e) => { e.stopPropagation(); stepVolume(-2); });
-  if (npStepPlus)  npStepPlus .addEventListener("click", (e) => { e.stopPropagation(); stepVolume(+2); });
+  if (stepMinus)   stepMinus  .addEventListener("click", (e) => { e.stopPropagation(); stepVolume(-1); });
+  if (stepPlus)    stepPlus   .addEventListener("click", (e) => { e.stopPropagation(); stepVolume(+1); });
+  if (npStepMinus) npStepMinus.addEventListener("click", (e) => { e.stopPropagation(); stepVolume(-1); });
+  if (npStepPlus)  npStepPlus .addEventListener("click", (e) => { e.stopPropagation(); stepVolume(+1); });
 
   // Polling: 1.5s when visible/playing, slower when not
   function startPolling() {
@@ -8105,8 +8336,17 @@
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) stopPolling();
-    else startPolling();
+    if (document.hidden) { stopPolling(); return; }
+    // Discard the elapsed time accumulated while hidden before anything paints.
+    // The poll stops when the page is hidden but the clock does not, so after a
+    // long background the first tick would compute a position minutes ahead,
+    // clamp it to the track length, and flash the bar at 100% with the full
+    // duration in the readout until the refresh landed. Holding the last known
+    // position instead is stale by the same amount but never absurd, and
+    // startPolling() corrects it within one round trip.
+    npSetBase(npBase);
+    npWasPlaying = npPlaying();
+    startPolling();
   });
 
   // Refresh when zone selector changes
