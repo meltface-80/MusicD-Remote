@@ -254,7 +254,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
 - The README contains version references (install commands, tarball URLs, `docker build` tags).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.7.66** (until the user says otherwise).
+- Current stable version in the README: **v1.7.69** (until the user says otherwise).
 - The extension is being renamed **MusicD Remote** ("for Roon" is descriptive, not part of the name). The Roon `extension_id` must NEVER change — it would force every user to re-authorize.
 
 ---
@@ -398,4 +398,7 @@ docker run -d \
 | v1.7.60 | superseded (caused the iOS regression) | PWA icon set from the MusicD duck — and three legacy Apple metas that stopped the app filling the display |
 | v1.7.61–v1.7.64 | superseded | Four attempts at the iOS band, three from a false premise; v1.7.62's `height:100%` on full-bleed panels and v1.7.63's toast insets are the parts worth keeping |
 | v1.7.65 | stable | Head reduced to v1.6.50's plus four inert icon lines; head allowlist test |
-| v1.7.66 | **Latest (stable)** | The iOS full-screen contract pinned: pre-flight step 6, head allowlist, shell rules checked against v1.6.50; 758 unit / 317 DOM / 69 static — README points here |
+| v1.7.66 | stable (superseded) | The iOS full-screen contract pinned: pre-flight step 6, head allowlist, shell rules checked against v1.6.50 |
+| v1.7.67 | superseded | Volume popover row alignment — the 0/100 scale made the wrapper taller than the slider, so `align-items: center` sat every sibling 8px low |
+| v1.7.68 | superseded (three defects of its own) | Volume jump-back and progress-bar jerk: writes held until the server echoes, position moved to base + elapsed wall-clock painted at 250ms, poll reconciles instead of snapping |
+| v1.7.69 | **Latest (stable)** | The nine defects an 8-angle review found in v1.7.68: a `transition: width .4s` fighting the 250ms painter, paused time counted as playback, track changes suppressed by the seek hold, the volume hold following you between zones, a hung request wedging volume for the session; 701 unit / 352 DOM / 70 static — README points here |
