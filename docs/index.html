@@ -293,7 +293,7 @@
      <a href="https://roon.app">Roon</a> — random-album browsing, instant whole-library
      search, rich label &amp; artist pages, and seamless playback with Roon Server at the heart.</p>
   <div class="badges">
-    <span class="badge" id="ver-badge">v1.7.69</span>
+    <span class="badge" id="ver-badge">v1.7.70</span>
     <span class="badge plain">Docker</span>
     <span class="badge plain">MIT licence</span>
     <span class="badge plain">Pairs with your Roon Core over the network</span>
@@ -316,7 +316,7 @@
       <div class="card"><h3><span class="em">💿</span>Detailed album pages</h3>
         <p>High-resolution artwork, track listing, release year, label, duration, multiple-artist support and Pitchfork reviews where available.</p></div>
       <div class="card"><h3><span class="em">📺</span>Full-screen wall display</h3>
-        <p>Turn a TV or tablet into a now-playing display: big artwork, artist photography, biographies, reviews, related albums and YouTube music videos with automatic rotation.</p></div>
+        <p>Turn a TV or tablet into a now-playing display: big artwork, artist photography, biographies, reviews and related albums from your library, with automatic rotation.</p></div>
       <div class="card"><h3><span class="em">🏷</span>Record label explorer</h3>
         <p>Label of the week, label artwork via Discogs and FanArt.tv, label merging with undo, and every release from a selected label.</p></div>
       <div class="card"><h3><span class="em">📻</span>Random Album Radio</h3>
@@ -398,9 +398,9 @@
             <button class="copy-btn" id="copy" type="button">Copy</button>
             <pre id="cmd">sudo mkdir -p /opt/musicd-remote
 cd /opt/musicd-remote
-sudo wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.7.69/MusicD-Remote-v1.7.69.tar.gz
-sudo tar -xzf MusicD-Remote-v1.7.69.tar.gz
-docker build -t musicd-remote:1.7.69 .
+sudo wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.7.70/MusicD-Remote-v1.7.70.tar.gz
+sudo tar -xzf MusicD-Remote-v1.7.70.tar.gz
+docker build -t musicd-remote:1.7.70 .
 
 # Run it
 docker run -d \
@@ -409,13 +409,13 @@ docker run -d \
   --network host \
   -v musicd-remote-data:/app/data \
   -v "/your/path/to/Music:/music:ro" \
-  musicd-remote:1.7.69</pre>
+  musicd-remote:1.7.70</pre>
           </div>
           <noscript><p class="after-note">JavaScript is off, so the configurator can't rebuild this
              command — what's shown is the standard Linux install. The macOS and streaming-only
              variants are in the <a href="https://github.com/meltface-80/MusicD-Remote#install-docker">README</a>.</p></noscript>
           <p class="after-note" id="after-note"></p>
-          <p class="after-note">Installing <b id="ver-line">v1.7.69</b> <span id="ver-note">(checking for the latest release…)</span>.
+          <p class="after-note">Installing <b id="ver-line">v1.7.70</b> <span id="ver-note">(checking for the latest release…)</span>.
              If your user isn't in the <code>docker</code> group, prefix the <code>docker</code>
              commands with <code>sudo</code>.</p>
           <div class="note"><b>One volume to rule them all.</b> The <code>musicd-remote-data</code>
@@ -447,23 +447,6 @@ docker run -d \
           <li>Copy the key</li>
           <li>In the app: gear icon → paste into <b>FanArt.tv key</b> → <b>Save</b></li>
         </ol>
-      </div>
-
-      <div class="api-card">
-        <div class="free">Free</div>
-        <h3>YouTube Data API v3</h3>
-        <p class="what">Music videos on the wall display. No billing account needed.</p>
-        <ol>
-          <li>Go to <a href="https://console.cloud.google.com">console.cloud.google.com</a> and sign in with any Google account</li>
-          <li>Project dropdown (top bar) → <b>New project</b> → name it anything (e.g. "MusicD Display") → <b>Create</b>, and make sure it's selected</li>
-          <li>Menu → <b>APIs &amp; Services → Library</b> → search "YouTube Data API v3" → <b>Enable</b></li>
-          <li><b>APIs &amp; Services → Credentials → + Create credentials → API key</b> — copy the key</li>
-          <li><i>Recommended:</i> Edit the key → <b>API restrictions → Restrict key</b> → tick only <b>YouTube Data API v3</b> → Save</li>
-          <li>In the app: gear icon → paste into <b>YouTube API key</b> → <b>Save</b></li>
-        </ol>
-        <p class="fine">The free quota (10,000 units/day) comfortably covers a home display —
-           roughly 90+ fresh tracks a day, and results are cached. If it's ever exhausted it
-           simply pauses until midnight Pacific, when the quota resets.</p>
       </div>
 
       <div class="api-card">
@@ -528,7 +511,7 @@ docker run -d \
 
   var IMAGE = "musicd-remote";
   var REPO  = "meltface-80/MusicD-Remote";
-  var FALLBACK_VERSION = "1.7.69";   // latest published release when this page was built
+  var FALLBACK_VERSION = "1.7.70";   // latest published release when this page was built
 
   var els = {
     modes:      document.getElementById("modes"),

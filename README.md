@@ -4,7 +4,7 @@
 
 </div>
 
-# MusicD Remote (for Roon) - v1.7.69
+# MusicD Remote (for Roon) - v1.7.70
 
 **📖 Install guide & command builder: [meltface-80.github.io/MusicD-Remote](https://meltface-80.github.io/MusicD-Remote/)**
 
@@ -109,13 +109,11 @@ Features include:
 * Related albums
 * Related artists
 * Record label information
-* YouTube music videos
 * Playback progress
 * Automatic information rotation
 * Multiple display modes
 
 Ideal for dedicated listening rooms.
-YouTube videos, if suitable and available will play automatically at the start of a track but may not be in sync to the music.
 
 ⸻
 
@@ -172,7 +170,6 @@ Supports information and artwork from:
 * Discogs
 * FanArt.tv
 * Pitchfork
-* YouTube
 
 ⸻
 
@@ -225,7 +222,7 @@ Designed specifically for large music libraries.
   
 ---
 
-## Setting up Discogs, FanArt.tv and YouTube API keys
+## Setting up Discogs and FanArt.tv API keys
 
 Both are free and significantly improve label logo coverage.
 
@@ -248,19 +245,6 @@ FanArt.tv provides high-quality label logos for labels that have a MusicBrainz M
 4. Copy the key shown there
 5. In the extension, tap the gear icon → paste into **FanArt.tv key** → tap **Save**
 
-### YouTube API key
-
-Optional: Getting a YouTube Data API v3 key (free)
-
-1. Go to console.cloud.google.com and sign in with any Google account.
-2. Create a project: click the project dropdown (top bar) → New project → name it anything (e.g. “MusicD Display”) → Create, and make sure it’s selected.
-3. Enable the API: menu → APIs & Services → Library → search “YouTube Data API v3” → open it → Enable.
-4. Create the key: APIs & Services → Credentials → + Create credentials → API key. Copy the key shown.
-5. (Recommended) Click Edit API key → under “API restrictions” choose Restrict key → tick only YouTube Data API v3 → Save. This makes the key useless for anything else if it ever leaks.
-6. Paste the key into MusicD → Settings → YouTube API key → Save.
-   
-No billing account is needed — the free quota (10,000 units/day) comfortably covers a home display: each new track costs about 100 units, and results are cached, so that’s roughly 90+ fresh tracks per day before it would ever pause until midnight (Pacific time), when the quota resets.
-
 ---
 
 > **Note on label accuracy** — an album may appear under a label that differs from the one shown in the album view. This could be correct: many albums could be released under multiple labels simultaneously (for example, Daughtry's *Baptized* was released under 19 Recordings, RCA, and Sony Music). The extension shows whichever label your file tags or the scan sources attribute to the album in the case of being a Qobuz or Tidal version.
@@ -272,9 +256,9 @@ No billing account is needed — the free quota (10,000 units/day) comfortably c
 ```bash
 sudo mkdir -p /opt/musicd-remote
 cd /opt/musicd-remote
-wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.7.69/MusicD-Remote-v1.7.69.tar.gz
-tar -xzf MusicD-Remote-v1.7.69.tar.gz
-docker build -t musicd-remote:1.7.69 .
+wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.7.70/MusicD-Remote-v1.7.70.tar.gz
+tar -xzf MusicD-Remote-v1.7.70.tar.gz
+docker build -t musicd-remote:1.7.70 .
 docker run -d \
   --name musicd-remote \
   --restart unless-stopped \
@@ -282,7 +266,7 @@ docker run -d \
   -v musicd-remote-data:/app/data \
 # remove the below line (and this line) if you only use Qobuz/Tidal
   -v /your/path/to/Music:/music:ro \
-  musicd-remote:1.7.69
+  musicd-remote:1.7.70
 ```
 
 > **The `musicd-remote-data` volume holds your Roon pairing, play history, and label cache — never rename it once created.** Point every future `docker run` at the same name and everything carries over; a different name makes Docker silently create a fresh empty volume (new pairing, lost history). **Upgrading from v1.6.31 or earlier?** Your data lives in the old `roon-random-albums-data` volume — move it once with the copy step in [Updating](#updating) below before using this command.
@@ -350,11 +334,11 @@ sudo systemctl disable roon-random-albums
 # 2. Create the build directory and download the tarball
 sudo mkdir -p /opt/musicd-remote
 cd /opt/musicd-remote
-wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.7.69/MusicD-Remote-v1.7.69.tar.gz
-tar -xzf MusicD-Remote-v1.7.69.tar.gz
+wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.7.70/MusicD-Remote-v1.7.70.tar.gz
+tar -xzf MusicD-Remote-v1.7.70.tar.gz
 
 # 3. Build and run
-docker build -t musicd-remote:1.7.69 .
+docker build -t musicd-remote:1.7.70 .
 docker run -d \
   --name musicd-remote \
   --restart unless-stopped \
@@ -362,7 +346,7 @@ docker run -d \
   -v musicd-remote-data:/app/data \
 # remove the below line (and this line) if you only use Qobuz/Tidal
   -v /your/path/to/Music:/music:ro \
-  musicd-remote:1.7.69
+  musicd-remote:1.7.70
 ```
 
 Confirm the extension appears in **Roon → Settings → Extensions** before removing the old install.
@@ -409,10 +393,10 @@ Open Terminal and run:
 ```
 mkdir -p ~/musicd-remote
 cd ~/musicd-remote
-curl -L -o MusicD-Remote-v1.7.69.tar.gz \
-https://github.com/meltface-80/MusicD-Remote/releases/download/v1.7.69/MusicD-Remote-v1.7.69.tar.gz
-tar -xzf MusicD-Remote-v1.7.69.tar.gz
-docker build -t musicd-remote:1.7.69 .
+curl -L -o MusicD-Remote-v1.7.70.tar.gz \
+https://github.com/meltface-80/MusicD-Remote/releases/download/v1.7.70/MusicD-Remote-v1.7.70.tar.gz
+tar -xzf MusicD-Remote-v1.7.70.tar.gz
+docker build -t musicd-remote:1.7.70 .
 ```
 
 ## 3. Run the container
@@ -426,7 +410,7 @@ docker run -d \
   -e ROON_CORE_IP=<IP_OF_YOUR_ROON_CORE> \
   -v musicd-remote-data:/app/data \
   -v /Users/yourusername/Music:/music:ro \
-  musicd-remote:1.7.69
+  musicd-remote:1.7.70
 ```
 
 Or if you only use Qobuz or TIDAL
@@ -438,7 +422,7 @@ docker run -d \
   -p 3399:3399 \
   -e ROON_CORE_IP=<IP_OF_YOUR_ROON_CORE> \
   -v musicd-remote-data:/app/data \
-  musicd-remote:1.7.69
+  musicd-remote:1.7.70
 ```
 
 ## 4. Open the extension
@@ -474,7 +458,7 @@ docker run --rm -v musicd-remote-data:/data alpine tar -czf - -C /data logs > mu
 Pass extra env vars with `-e` in the `docker run` command:
 
 ```bash
-docker run -d ... -e RRA_DEBUG=1 musicd-remote:1.7.69
+docker run -d ... -e RRA_DEBUG=1 musicd-remote:1.7.70
 ```
 
 ### Album metadata sources
