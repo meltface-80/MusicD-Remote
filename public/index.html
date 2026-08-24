@@ -1221,7 +1221,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
 
         <div class="settings-block">
           <div class="settings-row">
-            <span class="settings-label">Wall display <button class="settings-info-btn" data-info="A Roon-style always-on screen at http://<server-ip>:3399/display — point any tablet or TV browser at it. Rotates between album art, artist photos, an album review and a muted video clip (video needs a YouTube API key below), with a progress bar for the playing zone. When off, the page shows a notice and nothing is fetched." aria-label="Info">ⓘ</button></span>
+            <span class="settings-label">Wall display <button class="settings-info-btn" data-info="A Roon-style always-on screen at http://<server-ip>:3399/display — point any tablet or TV browser at it. Rotates between album art, artist photos, an album review, artist bios and grids from your library, with a progress bar for the playing zone. When off, the page shows a notice and nothing is fetched." aria-label="Info">ⓘ</button></span>
             <label class="switch">
               <input type="checkbox" id="display-toggle" aria-label="Wall display">
               <span class="switch-track"><span class="switch-thumb"></span></span>
@@ -1232,14 +1232,6 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             <input type="range" id="display-seconds" class="settings-range" min="5" max="60" step="1" value="10"
                    aria-label="Display rotation interval in seconds">
           </div>
-          <div class="settings-row">
-            <span class="settings-label">YouTube API key <button class="settings-info-btn" data-info="Optional — enables the display's muted video-clip slides. A free YouTube Data API v3 key from console.cloud.google.com. Without it, the display simply rotates without video." aria-label="Info">ⓘ</button></span>
-          </div>
-          <div class="settings-token-row">
-            <input id="youtube-key-input" type="text" class="settings-token-input" placeholder="Paste YouTube API key…" autocomplete="off" spellcheck="false">
-            <button id="youtube-key-save" class="settings-update-btn" type="button">Save</button>
-          </div>
-          <div id="youtube-key-status" class="settings-token-status"></div>
         </div>
       </div>
 

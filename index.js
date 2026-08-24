@@ -1744,10 +1744,6 @@ let displaySeconds = (() => {
   const s = parseInt(_persisted.displaySeconds, 10);
   return Number.isFinite(s) && s >= 5 && s <= 60 ? s : 10;
 })();
-// Optional YouTube Data API key — enables the display's muted video-clip
-// slides. Without it, video is simply omitted from the rotation.
-let youtubeKey = _persisted.youtubeKey || "";
-
 // Short-lived cache of a streaming service's favourited album ids, shared by
 // all of that service's browse routes so each page render doesn't re-fetch the
 // full favourites list (429 risk). Concurrent callers on a cold cache share
@@ -12438,9 +12434,12 @@ app.get("/api/album/extras", async (req, res) => {
 // Wall display (/display) — a Roon-style always-on screen that rotates
 // between album art, artist photos (fanart.tv), a review card (the same
 // legally-safe Qobuz/Wikipedia text the album modal shows — Pitchfork text
-// stays suppressed) and a muted video clip (YouTube, only when the user has
-// configured an API key). Everything is gated on the Settings toggle: when
-// off, the content endpoint refuses and no discovery work runs.
+// stays suppressed), artist bios and library grids. Everything is gated on
+// the Settings toggle: when off, the content endpoint refuses and no
+// discovery work runs.
+//
+// A muted YouTube clip was part of the rotation until v1.7.70. Matching a
+// track to the right video was too unreliable to keep — see the CHANGELOG.
 // ---------------------------------------------------------------------------
 
 // Artist name → MusicBrainz artist MBID (cached per session).
@@ -12504,107 +12503,6 @@ async function fetchArtistPhotos(artistName) {
   }
   artistPhotoCache.set(key, photos);
   return photos;
-}
-
-// Muted video clip via the YouTube Data API — only when the user supplied a
-// key in Settings. PRECISION-FIRST: the display shows the artist's official
-// music video or an official live performance, or NOTHING — never chat-show
-// clips, fan uploads, or " - Topic" auto-uploads (those are static album art
-// with audio: worthless on a muted screen). Candidates are scored on channel
-// ownership + title keywords and must clear a threshold; the survivors are
-// verified via videos.list (embeddable, public, not age-restricted — age
-// restriction never plays embedded). Cached per artist+track incl. negatives
-// (search.list costs 100 quota units of the 10k/day default).
-const displayVideoCache = new Map();
-function scoreDisplayVideo(item, artistN, trackTokens) {
-  const title    = (item.snippet && item.snippet.title        || "");
-  const channel  = (item.snippet && item.snippet.channelTitle || "");
-  const titleN   = normalize(title);
-  const channelN = normalize(channel);
-  // Hard rejects: auto-generated audio uploads and non-video content.
-  if (/ - topic$/i.test(channel)) return -1;
-  if (/\b(audio|lyric|lyrics|visuali[sz]er|cover|reaction|remix|sped|slowed|8d|karaoke|instrumental|full album|teaser|trailer|interview|behind the scenes|epk|shorts?)\b/i.test(title)) return -1;
-  // Every significant token of the track name must appear in the video title.
-  for (const t of trackTokens) if (titleN.indexOf(t) === -1) return -1;
-  let score = 0;
-  // The artist's OWN channel (or their VEVO) is trusted outright: real artist
-  // channels (e.g. Stereophonics) title their uploads plainly — "Artist -
-  // Track" with no "official" suffix — and those ARE the official videos.
-  // The v1.6.19 scorer demanded the keyword on top and rejected them.
-  const channelIsArtist = channelN === artistN || channelN === artistN + " vevo" ||
-                          channelN === artistN + " music" || channelN === artistN + " official" ||
-                          channelN.replace(/\s+/g, "") === artistN.replace(/\s+/g, "") + "vevo";
-  if (channelIsArtist) score += 70;
-  // Whole-name only: a raw substring let the "Kate Bush" channel score as
-  // artist-adjacent for the band Bush, and 40 + the "official video" keyword
-  // is exactly the threshold, so the wrong artist's video would play.
-  else if (namesEqualLoose(channelN, artistN) ||
-           namesEqualLoose(channelN.replace(/\s+(topic|official|music|band|tv|channel)$/, ""), artistN))
-    score += 40;                                          // artist-adjacent channel: needs the keyword too
-  else return -1;                                         // chat shows / fan uploads — reject outright
-  if (/\bofficial (music )?video\b/i.test(title)) score += 30;
-  else if (/\(official\b/i.test(title)) score += 20;
-  if (/\blive\b/i.test(title)) {
-    if (score >= 70) score += 20;                         // live on the artist's own channel — welcome
-    else return -1;                                       // random live bootleg — reject
-  }
-  return score;
-}
-async function fetchDisplayVideo(artistName, trackName) {
-  if (!youtubeKey || !artistName || !trackName) return null;
-  const key = normalize(artistName) + "||" + normalize(trackName);
-  const hit = displayVideoCache.get(key);
-  if (hit) {
-    // Positive verdicts hold for the session; a "no video" verdict expires
-    // after 30 min so transient API failures don't blank a track for good.
-    if (hit.video || (Date.now() - hit.at) < 30 * 60 * 1000) return hit.video;
-    displayVideoCache.delete(key);
-  }
-  let video = null;
-  try {
-    // Plain artist+track query, no category filter: recall is the search's
-    // job (artist channels titling uploads without "official" must surface);
-    // precision is the scorer's.
-    const q = `${artistName} ${trackName}`;
-    const searchUrl = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video" +
-      "&videoEmbeddable=true&videoSyndicated=true&maxResults=10" +
-      "&q=" + encodeURIComponent(q) + "&key=" + encodeURIComponent(youtubeKey);
-    const json = await httpJson(searchUrl);
-    const artistN = normalize(artistName);
-    const trackTokens = normalize(trackName).split(" ").filter(t => t.length > 2);
-    const scored = ((json && json.items) || [])
-      .filter(it => it && it.id && it.id.videoId && it.snippet)
-      .map(it => ({ id: it.id.videoId, score: scoreDisplayVideo(it, artistN, trackTokens) }))
-      .filter(c => c.score >= 70)
-      .sort((a, b) => b.score - a.score);
-    if (scored.length) {
-      const statusUrl = "https://www.googleapis.com/youtube/v3/videos?part=status,contentDetails,statistics" +
-        "&id=" + encodeURIComponent(scored.map(c => c.id).join(",")) +
-        "&key=" + encodeURIComponent(youtubeKey);
-      const st = await httpJson(statusUrl);
-      const playable = new Map(((st && st.items) || [])
-        .filter(v => v && v.status && v.status.embeddable && v.status.privacyStatus === "public" &&
-                     !(v.contentDetails && v.contentDetails.contentRating &&
-                       v.contentDetails.contentRating.ytRating === "ytAgeRestricted"))
-        .map(v => [v.id, parseInt((v.statistics && v.statistics.viewCount) || "0", 10)]));
-      // Highest score wins; view count breaks ties between equal scores.
-      const best = scored
-        .filter(c => playable.has(c.id))
-        .sort((a, b) => (b.score - a.score) || (playable.get(b.id) - playable.get(a.id)))[0];
-      if (best) {
-        video = {
-          videoId: best.id,
-          embedUrl: "https://www.youtube-nocookie.com/embed/" + best.id +
-            "?autoplay=1&mute=1&controls=0&modestbranding=1&playsinline=1&rel=0" +
-            "&loop=1&playlist=" + best.id + "&enablejsapi=1"
-        };
-      }
-    }
-  } catch (e) {
-    if (DEBUG) console.error("[display:youtube]", e.message);
-  }
-  displayVideoCache.set(key, { at: Date.now(), video });
-  return video;
 }
 
 // Display artist bios (Qobuz/Tidal album-matched first, then Wikipedia),
@@ -12718,10 +12616,9 @@ app.get("/api/display/content", async (req, res) => {
   if (hit && (Date.now() - hit.at) < DISPLAY_CONTENT_TTL_MS) return res.json(hit.data);
 
   try {
-    const [photos, bios, video] = await Promise.all([
+    const [photos, bios] = await Promise.all([
       fetchArtistPhotos(primaryArtist).catch(() => []),
-      album ? fetchAlbumBios(album, artist).catch(() => null) : Promise.resolve(null),
-      fetchDisplayVideo(primaryArtist, track).catch(() => null)
+      album ? fetchAlbumBios(album, artist).catch(() => null) : Promise.resolve(null)
     ]);
     // Review card: the album description when a displayable one exists
     // (Qobuz/Wikipedia — fetchAlbumBios nulls Pitchfork text for UK-law
@@ -12797,7 +12694,7 @@ app.get("/api/display/content", async (req, res) => {
       }
     }
     const data = {
-      artistPhotos: photos, review, bio, bios: bioList, video,
+      artistPhotos: photos, review, bio, bios: bioList,
       moreAlbums: {
         artist: moreArtist.length >= 3 ? { name: primaryArtist, albums: moreArtist } : null,
         label:  moreLabel
@@ -12828,17 +12725,6 @@ app.post("/api/settings/display", (req, res) => {
   }
   const ok = savePersistedSettings({ displayEnabled, displaySeconds });
   res.json({ ok, enabled: displayEnabled, seconds: displaySeconds });
-});
-
-// Optional YouTube Data API key (masked on read, like the fanart key).
-app.get("/api/settings/youtube-key", (req, res) => {
-  res.json({ set: !!youtubeKey, masked: youtubeKey ? youtubeKey.slice(0, 4) + "…" : "" });
-});
-app.post("/api/settings/youtube-key", (req, res) => {
-  youtubeKey = String((req.body && req.body.key) || "").trim();
-  displayVideoCache.clear();   // a new key may find videos the old one couldn't
-  const ok = savePersistedSettings({ youtubeKey });
-  res.json({ ok, set: !!youtubeKey });
 });
 
 // The wall page itself. Served regardless of the toggle — the page shows a
