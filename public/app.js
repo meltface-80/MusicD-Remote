@@ -8930,13 +8930,10 @@
     });
   }
 
-  // ----- Wall display (/display): toggle + rotation interval + YouTube key -----
+  // ----- Wall display (/display): toggle + rotation interval -----
   const displayToggle    = document.getElementById("display-toggle");
   const displaySeconds   = document.getElementById("display-seconds");
   const displaySecsValue = document.getElementById("display-seconds-value");
-  const youtubeKeyInput  = document.getElementById("youtube-key-input");
-  const youtubeKeySave   = document.getElementById("youtube-key-save");
-  const youtubeKeyStatus = document.getElementById("youtube-key-status");
 
   async function loadDisplaySettings() {
     try {
@@ -8948,11 +8945,6 @@
         if (displaySecsValue) displaySecsValue.textContent = j.seconds + "s";
       }
     } catch (_) { /* display-only status — if the fetch fails, the sheet just shows defaults */ }
-    try {
-      const r = await fetch("/api/settings/youtube-key");
-      const j = await r.json();
-      if (youtubeKeyStatus) youtubeKeyStatus.textContent = j.set ? ("Current: " + j.masked) : "Not set (video slides off)";
-    } catch (_) { /* same — status stays stale */ }
   }
 
   async function saveDisplaySettings() {
@@ -8980,33 +8972,6 @@
     });
     displaySeconds.addEventListener("change", saveDisplaySettings);
   }
-  if (youtubeKeySave) {
-    youtubeKeySave.addEventListener("click", async () => {
-      const key = youtubeKeyInput ? youtubeKeyInput.value.trim() : "";
-      if (!key) return;
-      youtubeKeySave.disabled = true;
-      try {
-        const r = await fetch("/api/settings/youtube-key", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key })
-        });
-        const j = await r.json();
-        if (j.ok) {
-          if (youtubeKeyInput) youtubeKeyInput.value = "";
-          showToast("YouTube key saved", "ok");
-          loadDisplaySettings();
-        } else {
-          showToast(j.error || "Failed to save key", "error");
-        }
-      } catch (e) {
-        showToast("Failed: " + e.message, "error");
-      } finally {
-        youtubeKeySave.disabled = false;
-      }
-    });
-  }
-
   const lfdInput  = document.getElementById("label-folder-depth-input");
   const lfdSave   = document.getElementById("label-folder-depth-save");
   const lfdStatus = document.getElementById("label-folder-depth-status");

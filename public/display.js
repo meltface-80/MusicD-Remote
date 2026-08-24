@@ -6,7 +6,7 @@
  * Read-only kiosk page:
  *  - follows the playing zone (?zone=<id or name> pins one; otherwise the
  *    first zone that is actually playing, re-scanned when it stops),
- *  - rotates between album art / artist photos / review card / muted video
+ *  - rotates between album art / artist photos / review card / artist bio
  *    (whatever /api/display/content found for the current album),
  *  - Nest-Hub-style progress strip along the bottom,
  *  - honours the Settings toggle: when off it fetches nothing and shows a
@@ -157,11 +157,9 @@
       seekBaseAt = Date.now();
       wasPlaying = playing;
 
-      // Keyed per TRACK (line1), not just per album: the video is track-
-      // specific, so a skip within the same album must reload content —
-      // without this the previous track's video kept playing after a skip.
-      // Album-level parts (photos/review/bio/library grids) are cached
-      // server-side, so per-track refetches are cheap.
+      // Keyed per TRACK (line1), not just per album, so a skip within an
+      // album still re-evaluates. Album-level parts (photos/review/bio/
+      // library grids) are cached server-side, so refetches are cheap.
       const key = (np.line1 || "") + "||" + (np.line2 || "") + "||" + (np.line3 || "") + "||" + (np.image_key || "");
       if (key !== albumKey) {
         albumKey = key;
@@ -221,7 +219,7 @@
       slideB.classList.remove("visible");
     }
     buildControls();
-    // Ask the server what else it can find (photos / review / video).
+    // Ask the server what else it can find (photos / review / bio).
     try {
       const j = await jget("/api/display/content?zone=" + encodeURIComponent(zoneId));
       if (albumKey !== myKey) return;   // album changed while fetching — result is stale
@@ -241,25 +239,14 @@
         extras.push({ kind: "more", heading: "More on " + more.label.name,
                       sub: "From your library", albums: more.label.albums });
       }
-      if (j.video && j.video.videoId && !deadVideos.has(j.video.videoId)) {
-        extras.push({ kind: "video", videoId: j.video.videoId, embedUrl: j.video.embedUrl });
-      }
       slides = base.concat(extras);
       if (!base.length && extras.length) { slideIdx = -1; nextSlide(); }   // no art: first visual is an extra
     } catch (e) { /* content is best-effort — art-only rotation is fine */ }
     if (albumKey !== myKey) return;
-    // Restore the user's pinned mode if the new track can honour it. With no
-    // manual pin, a track that HAS a video opens straight to it and stays
-    // there (it plays through, synced to the music) — tapping a chip is the
-    // only way off it; everything else rotates as usual.
+    // Restore the user's pinned mode if the new track can honour it;
+    // otherwise everything rotates as usual.
     if (userMode !== "auto" && slides.some(s => s.kind === userMode)) {
       setMode(userMode);
-    } else if (userMode === "auto" && slides.some(s => s.kind === "video")) {
-      mode = "video";        // auto-preference, not a user pin — userMode stays "auto"
-      slideIdx = -1;
-      nextSlide();
-      stopRotation();
-      buildControls();
     } else {
       mode = "auto";
       buildControls();
@@ -330,73 +317,9 @@
       card.append(h, sub, grid);
       return { node: card, full: false };
     }
-    if (s.kind === "video") {
-      const wrap = document.createElement("div");
-      wrap.className = "video-wrap";
-      // The IFrame Player API (not a bare iframe) so embed failures are
-      // DETECTED: the server verifies status.embeddable, but region blocks
-      // and takedowns still slip through and would sit on screen as a
-      // "Video unavailable" card. onError drops the video from rotation.
-      const holder = document.createElement("div");
-      wrap.appendChild(holder);
-      ensureYT().then((YT) => {
-        if (!wrap.isConnected) return;   // slide already rotated away
-        // Start the clip at the track's live position so video and music line
-        // up (best-effort — video edits rarely match track length exactly).
-        const trackPos = Math.max(0, Math.round(
-          seekBase + (playing ? (Date.now() - seekBaseAt) / 1000 : 0)));
-        const player = new YT.Player(holder, {
-          videoId: s.videoId,
-          host: "https://www.youtube-nocookie.com",
-          playerVars: { autoplay: 1, mute: 1, controls: 0, modestbranding: 1,
-                        playsinline: 1, rel: 0, loop: 1, playlist: s.videoId,
-                        start: trackPos },
-          events: {
-            onReady: (e) => { try { e.target.mute(); e.target.playVideo(); } catch (_) {} },
-            onError: () => dropVideo(s.videoId)
-          }
-        });
-        wrap._ytPlayer = player;
-      }).catch(() => dropVideo(s.videoId));
-      return { node: wrap, full: false };
-    }
     return { node: el, full: false };
   }
 
-  // Load the YouTube IFrame API once, on first use.
-  let ytPromise = null;
-  function ensureYT() {
-    if (window.YT && window.YT.Player) return Promise.resolve(window.YT);
-    if (ytPromise) return ytPromise;
-    ytPromise = new Promise((resolve, reject) => {
-      const prev = window.onYouTubeIframeAPIReady;
-      window.onYouTubeIframeAPIReady = () => {
-        if (typeof prev === "function") { try { prev(); } catch (_) {} }
-        resolve(window.YT);
-      };
-      const tag = document.createElement("script");
-      tag.src = "https://www.youtube.com/iframe_api";
-      tag.onerror = () => reject(new Error("YT API load failed"));
-      document.head.appendChild(tag);
-      setTimeout(() => reject(new Error("YT API timeout")), 10000);
-    });
-    return ytPromise;
-  }
-
-  // A video that can't actually play (region block, takedown) leaves the
-  // rotation for good; if it's on screen right now, advance immediately.
-  const deadVideos = new Set();
-  function dropVideo(videoId) {
-    deadVideos.add(videoId);
-    const eff = effectiveSlides();
-    const wasVisible = eff[slideIdx] && eff[slideIdx].kind === "video";
-    slides = slides.filter(s => !(s.kind === "video" && s.videoId === videoId));
-    if (mode === "video" && !slides.some(s => s.kind === "video")) mode = "auto";
-    buildControls();
-    slideIdx = Math.min(slideIdx, effectiveSlides().length - 1);
-    if (wasVisible) { slideIdx -= 1; nextSlide(); }
-    startRotation();
-  }
 
   // The slides the current mode rotates through: everything on "auto",
   // only the pinned kind otherwise (photos cycle within themselves).
@@ -415,28 +338,22 @@
     back.classList.toggle("full", full);
     back.classList.toggle("photo-slide", eff[slideIdx].kind === "photo");
     back.appendChild(node);
-    // Crossfade, then empty the hidden layer so a finished video/iframe
-    // doesn't keep loading behind the visible slide.
+    // Crossfade, then empty the hidden layer so nothing keeps rendering
+    // behind the visible slide.
     back.classList.add("visible");
     front.classList.remove("visible");
     frontIsA = !frontIsA;
     setTimeout(() => {
       if (front.classList.contains("visible")) return;
-      // Tear down any YT player cleanly before dropping its DOM.
-      front.querySelectorAll(".video-wrap").forEach(w => {
-        if (w._ytPlayer) { try { w._ytPlayer.destroy(); } catch (_) {} }
-      });
       front.innerHTML = "";
     }, 1200);
   }
 
   function startRotation() {
     stopRotation();
-    // A pinned video plays through in full (it loops); everything else
-    // rotates whenever there's more than one slide to rotate — or a single
+    // Rotates whenever there's more than one slide to rotate — or a single
     // bio card with several credited artists, which advances to the next
     // member each tick (rebuilding it steps bioCycle).
-    if (mode === "video") return;
     const eff = effectiveSlides();
     const multi = eff.length > 1 ||
       (eff.length === 1 && eff[0].kind === "bio" && eff[0].bios.length > 1);
@@ -454,8 +371,7 @@
     ["photo",  "Photos"],
     ["bio",    "Bio"],
     ["review", "Review"],
-    ["more",   "Library"],
-    ["video",  "Video"]
+    ["more",   "Library"]
   ];
   function setMode(m) {
     userMode = m;

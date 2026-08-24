@@ -2,6 +2,35 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.70] — 2026-08-17
+
+### Removed — the muted YouTube clip from the wall display
+
+Too hit and miss to keep. Matching a track to the right video is the hard part, and it was never
+reliable enough: the matcher was deliberately strict — it rejected `- Topic` auto-uploads, lyric
+videos, covers, karaoke and reactions, and required every significant word of the track title to
+appear in the video title — so the common outcome was no video at all, and the uncommon one was the
+wrong video. Precision that strict turns into absence; loosening it turns into embarrassment. Neither
+is worth a slide.
+
+Gone in full rather than switched off: the YouTube Data API v3 lookup, the candidate scorer, the
+per-artist+track cache, the `video` field on `/api/display/content`, the IFrame Player API loader and
+its dead-video fallback, the Video mode chip, the "video-first" behaviour that pinned a track to its
+clip instead of rotating, and the YouTube API key setting with its two routes. 275 lines out, 22 in.
+
+The stored key itself is left alone in `settings.json` — deleting a credential the user typed in is
+not this change's business.
+
+The display still rotates album art, artist photos, the review card, artist bios and the library
+grids, and the per-track content reload is kept: it was introduced for the video but a skip within an
+album should re-evaluate anyway.
+
+### Also
+
+The wall display's own progress strip lost its `transition: width .25s` in v1.7.69 but the section
+comment still described a video rotation — both the server-side banner and the display page's header
+comment now say what the page actually does.
+
 ## [1.7.69] — 2026-08-12
 
 ### Fixed — the defects an 8-angle review found in v1.7.68's own fix
