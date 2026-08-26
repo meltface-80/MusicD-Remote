@@ -2,6 +2,68 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.72] — 2026-08-26
+
+### Added — the dial, as a second installable page at `/dial`
+
+One server, two home-screen icons. A round control surface for a single zone: a volume ring you sweep
+with your thumb, the cover in the middle, transport under it. Ported from the Android build's
+`DialView`, which is the version both remotes track.
+
+The port is deliberately literal. 320° of rotation covers the output's full range whatever units it
+counts in, travel quantises to the output's own `step`, and the fraction below a step is carried
+rather than rounded away so a slow sweep still accumulates. Those three are what make it feel like a
+knob rather than a slider, and all three are invisible until they are wrong — so all three are pinned
+by assertions that were mutation-checked.
+
+It adds no state, no settings and no storage. It reads `/api/zone-state` and writes through the same
+`/api/control`, `/api/volume`, `/api/image` and `/api/zones` the app uses, and it shares the selected
+zone through the same `rra-zone` key — so picking a zone on one face picks it on the other.
+
+**`/api/volume` gained `relative_step`.** Roon's own "move N of this output's detents" primitive. The
+route had `value`, `relative` and `mute`; `relative` moves N *raw units*, which is a different
+distance on every device and wrong for a detented control. `relative_step` lets Roon do the
+arithmetic against the device's real scale, which matters most on dB outputs where a step is 0.5.
+
+**Three departures from the Android build, each deliberate:**
+
+*Muted state is read from the output, not the volume object.* This app's `/api/zone-state` puts
+`is_muted` on the output; the Kotlin model has it inside `Volume`. Copying the Kotlin literally would
+have meant mute silently never working.
+
+*The fourth transport slot is "open the full app", not voice.* iOS supports speech recognition in a
+Safari tab but **not** in an installed web app — the API object is present, so feature detection
+reports success and then nothing happens. This page exists to be installed on an iOS home screen, so
+a mic there would look live and do nothing on the one platform it is for. The slot keeps the shared
+four-control geometry and takes the other action the Android dial offers from its long-press menu.
+
+*Haptics are a no-op on iOS.* `navigator.vibrate` is unsupported in Safari, so the per-detent tick —
+the best part of the feel — does not port to iPhone. It fires on Android and desktop.
+
+The page is also reachable by keyboard and screen reader: a canvas is invisible to assistive tech, so
+every action it offers is a real focusable button, visually hidden but not `display: none`.
+
+### On saving it to an iOS home screen
+
+`/dial` installs exactly as the app does, with its own icon (a ring caught mid-sweep, so the two are
+distinguishable) and its own `apple-mobile-web-app-title`. It is **not** a widget and cannot be one:
+iOS widgets require WidgetKit, which is native-only and unavailable to any web app. Worth knowing
+that even a native widget could not be *this* — widgets take buttons and toggles, not continuous
+gestures, which is why the Android build's own `widgetMode` drops the sweep and substitutes ± taps.
+
+Its head is `index.html`'s, line for line, apart from the title and icon. That is not tidiness: iOS
+reads these at add-to-home-screen time and bakes the result into the shortcut, so a shortcut made
+against a bad head keeps the bad window forever. The head allowlist and pre-flight step 6 now cover
+`dial.html` too, and it has its own viewport-contract assertions rather than sharing index.html's.
+
+### Tests
+
+74 static / 701 unit / 366 DOM. The DOM harness gained a `page` option so it can drive pages other
+than the app; the dial's twelve assertions cover the full-range sweep, half-sweep, a dB output's
+step, the soft-limit ceiling, incremental nudges, the transport taps and two degradation paths
+(an output with no volume control, and no zone at all). Seven mutations were run and each turned the
+relevant assertion red.
+
 ## [1.7.71] — 2026-08-26
 
 ### Changed — album header and Roon Radio, matched to the Android build

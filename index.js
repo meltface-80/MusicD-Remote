@@ -12734,6 +12734,18 @@ app.get("/display", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "display.html"));
 });
 
+// The dial — a second installable page, its own icon on the home screen.
+//
+// Nothing gates it: it is a control surface for a zone, so it works whenever
+// the extension does. It needs no settings of its own and no state the app
+// does not already keep — it reads /api/zone-state and writes through the same
+// /api/control, /api/volume and /api/image the app uses, and it shares the
+// selected zone through the same localStorage key, so picking a zone on one
+// face picks it on the other.
+app.get("/dial", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "dial.html"));
+});
+
 // Pitchfork magazine — a browsable listing of recent album reviews or Best New
 // Music (?type=latest|best). See getPitchforkReviews for the data sources.
 app.get("/api/pitchfork/reviews", async (req, res) => {
@@ -13636,8 +13648,20 @@ app.post("/api/volume", (req, res) => {
       tasks.push(new Promise((resolve, reject) =>
         t.change_volume(o.output_id, "relative", v, err => err ? reject(err) : resolve())));
     }
+  } else if (req.body.relative_step !== undefined) {
+    // Move N of the OUTPUT'S OWN steps. Roon does the arithmetic against the
+    // device's real scale, which is what a detented control wants: the dial
+    // counts detents, not units, and a dB output's step is not 1.
+    // `relative` moves N raw units instead, which is a different distance on
+    // every device — right for an incremental control, wrong for this.
+    const v = parseFloat(req.body.relative_step);
+    if (!Number.isFinite(v)) return res.status(400).json({ error: "relative_step must be a number" });
+    for (const o of targetOutputs) {
+      tasks.push(new Promise((resolve, reject) =>
+        t.change_volume(o.output_id, "relative_step", v, err => err ? reject(err) : resolve())));
+    }
   } else {
-    return res.status(400).json({ error: "value, relative, or mute required" });
+    return res.status(400).json({ error: "value, relative, relative_step, or mute required" });
   }
 
   Promise.all(tasks)

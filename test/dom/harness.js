@@ -132,8 +132,12 @@ function driverWrapper(driverSource) {
 `;
 }
 
-function buildHtml({ stub, driver }) {
-  let html = fs.readFileSync(INDEX_HTML, "utf8");
+function buildHtml({ stub, driver, page }) {
+  // `page` names another file in public/ to drive instead of the app. The app
+  // is the default because almost every test wants it; /dial and /display are
+  // separate installable pages with their own scripts, and driving them
+  // through index.html would exercise neither.
+  let html = fs.readFileSync(page ? path.join(PUBLIC_DIR, page) : INDEX_HTML, "utf8");
 
   // Drop external resources — no network in CI, and a pending font request
   // only slows the run down.
@@ -168,14 +172,16 @@ function buildHtml({ stub, driver }) {
  *                                   Layout tests need this — Chromium's default
  *                                   800x600 is neither phone nor desktop, and
  *                                   vh/dvh-sized panels behave differently.
+ * @param {string} [opts.page]      a file in public/ to drive instead of
+ *                                   index.html, e.g. "dial.html".
  * @returns {object} the reported results; `__error` / `__pageErrors` if the page failed.
  */
-function renderPage({ stub, driver, budgetMs = 20000, name = "page", windowSize }) {
+function renderPage({ stub, driver, budgetMs = 20000, name = "page", windowSize, page }) {
   if (!available) throw new Error("no chromium binary found — set CHROMIUM_BIN");
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "musicd-dom-"));
   const file = path.join(dir, `${name}.html`);
-  fs.writeFileSync(file, buildHtml({ stub, driver }));
+  fs.writeFileSync(file, buildHtml({ stub, driver, page }));
 
   let dom;
   try {
