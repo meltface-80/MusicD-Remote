@@ -293,7 +293,7 @@
      <a href="https://roon.app">Roon</a> — random-album browsing, instant whole-library
      search, rich label &amp; artist pages, and seamless playback with Roon Server at the heart.</p>
   <div class="badges">
-    <span class="badge" id="ver-badge">v1.7.71</span>
+    <span class="badge" id="ver-badge">v1.7.72</span>
     <span class="badge plain">Docker</span>
     <span class="badge plain">MIT licence</span>
     <span class="badge plain">Pairs with your Roon Core over the network</span>
@@ -317,6 +317,8 @@
         <p>High-resolution artwork, track listing, release year, label, duration, multiple-artist support and Pitchfork reviews where available.</p></div>
       <div class="card"><h3><span class="em">📺</span>Full-screen wall display</h3>
         <p>Turn a TV or tablet into a now-playing display: big artwork, artist photography, biographies, reviews and related albums from your library, with automatic rotation.</p></div>
+      <div class="card"><h3><span class="em">🎛</span>The Dial</h3>
+        <p>A round control surface on its own home-screen icon: sweep the ring to change volume in the output's own steps, cover in the middle, transport under it. Shares the selected zone with the app.</p></div>
       <div class="card"><h3><span class="em">🏷</span>Record label explorer</h3>
         <p>Label of the week, label artwork via Discogs and FanArt.tv, label merging with undo, and every release from a selected label.</p></div>
       <div class="card"><h3><span class="em">📻</span>Random Album Radio</h3>
@@ -398,9 +400,9 @@
             <button class="copy-btn" id="copy" type="button">Copy</button>
             <pre id="cmd">sudo mkdir -p /opt/musicd-remote
 cd /opt/musicd-remote
-sudo wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.7.71/MusicD-Remote-v1.7.71.tar.gz
-sudo tar -xzf MusicD-Remote-v1.7.71.tar.gz
-docker build -t musicd-remote:1.7.71 .
+sudo wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.7.72/MusicD-Remote-v1.7.72.tar.gz
+sudo tar -xzf MusicD-Remote-v1.7.72.tar.gz
+docker build -t musicd-remote:1.7.72 .
 
 # Run it
 docker run -d \
@@ -409,13 +411,13 @@ docker run -d \
   --network host \
   -v musicd-remote-data:/app/data \
   -v "/your/path/to/Music:/music:ro" \
-  musicd-remote:1.7.71</pre>
+  musicd-remote:1.7.72</pre>
           </div>
           <noscript><p class="after-note">JavaScript is off, so the configurator can't rebuild this
              command — what's shown is the standard Linux install. The macOS and streaming-only
              variants are in the <a href="https://github.com/meltface-80/MusicD-Remote#install-docker">README</a>.</p></noscript>
           <p class="after-note" id="after-note"></p>
-          <p class="after-note">Installing <b id="ver-line">v1.7.71</b> <span id="ver-note">(checking for the latest release…)</span>.
+          <p class="after-note">Installing <b id="ver-line">v1.7.72</b> <span id="ver-note">(checking for the latest release…)</span>.
              If your user isn't in the <code>docker</code> group, prefix the <code>docker</code>
              commands with <code>sudo</code>.</p>
           <div class="note"><b>One volume to rule them all.</b> The <code>musicd-remote-data</code>
@@ -511,7 +513,7 @@ docker run -d \
 
   var IMAGE = "musicd-remote";
   var REPO  = "meltface-80/MusicD-Remote";
-  var FALLBACK_VERSION = "1.7.71";   // latest published release when this page was built
+  var FALLBACK_VERSION = "1.7.72";   // latest published release when this page was built
 
   var els = {
     modes:      document.getElementById("modes"),
