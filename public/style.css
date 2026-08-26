@@ -788,7 +788,7 @@ main {
    top of the display — under the status bar / dynamic island on a phone. Every
    pinned corner button therefore needs the inset the topbar already applies;
    env() is 0 where there is no inset, so nothing changes on desktop. */
-.modal-close { position: absolute; top: calc(12px + env(safe-area-inset-top)); right: 12px; z-index: 2; }
+.modal-close { position: absolute; top: calc(12px + env(safe-area-inset-top)); left: 12px; z-index: 2; }
 
 .modal-body {
   /* Positioned (NO z-index) so it paints above the #modal-ambient glow layer
@@ -1067,10 +1067,10 @@ main {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Modal share button (top-right, beside the close)                   */
+/*  Modal share button (top-right; Back holds the top-left corner)     */
 /* ------------------------------------------------------------------ */
 .modal-share {
-  position: absolute; top: calc(12px + env(safe-area-inset-top)); right: 60px; z-index: 2;
+  position: absolute; top: calc(12px + env(safe-area-inset-top)); right: 12px; z-index: 2;
 }
 /* ------------------------------------------------------------------ */
 /*  Mini transport (sticky now-playing bar)                            */
@@ -1428,11 +1428,11 @@ main {
 }
 .modal.np-mode .modal-tabs { margin-top: 0; }
 
-/* Corner buttons in np-mode: no × — the top-left Home button leaves the
-   screen (to Home), and Share moves into the ×'s top-right spot. */
+/* Corner buttons in np-mode: no Back — the top-left Home button leaves the
+   screen (to Home) and takes the corner Back holds elsewhere. Share is already
+   top-right in both modes, so it needs no override here. */
 .modal-home { display: none; }
 .modal.np-mode .modal-close { display: none; }
-.modal.np-mode .modal-share { right: 12px; }
 .modal.np-mode .modal-home {
   display: inline-flex;
   position: absolute; top: calc(12px + env(safe-area-inset-top)); left: 12px; z-index: 2;
@@ -3708,10 +3708,23 @@ body.show-quality .album-quality { display: block; }
 .overflow-menu { top: calc(100% + 6px); right: 0; }
 
 /* Parked inside the album view. The modal paints over the top bar, so the menu
-   moves into the modal's own header band — to the LEFT of Share and ×, which
-   sit at right:12px and right:60px. z-index clears those (2). */
+   moves into the modal's own header band, to the LEFT of Share. z-index clears
+   the corner buttons (2).
+
+   Inline with the back chevron and Share, and for the same reason they are:
+   the panel covers the whole screen INCLUDING the status bar, so a top of
+   plain 12px puts this under it. There the system takes the taps and the
+   button does nothing — which is exactly how it behaved. Every pinned control
+   on this panel measures from the same inset.
+
+   The right offset clears Share rather than guessing at it: one control width
+   plus the gap, from the same variable Share's own width comes from. It was
+   108px, which was right for whatever Share measured the day it was written. */
 .sel-menu-wrap.in-modal {
-  position: absolute; top: 12px; right: 108px; z-index: 3;
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top));
+  right: calc(12px + var(--ctl-h) + 10px);
+  z-index: 3;
   margin-left: 0;
 }
 .sel-menu-wrap.in-modal .sel-menu { right: 0; }

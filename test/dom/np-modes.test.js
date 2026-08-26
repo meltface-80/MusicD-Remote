@@ -79,8 +79,11 @@ const DRIVER = `
   var shuffle = document.getElementById("np-shuffle");
   var loop    = document.getElementById("np-loop");
   var badge   = document.getElementById("np-loop-badge");
-  var radio   = document.getElementById("np-radio");
-  T("buttons_exist", !!shuffle && !!loop && !!badge && !!radio);
+  // Roon Radio is NOT here any more — it moved to Settings -> Playback in
+  // v1.7.71, next to Random album radio. Asserting its absence is what stops
+  // it drifting back onto the transport row.
+  T("np_radio_absent", !document.getElementById("np-radio"));
+  T("buttons_exist", !!shuffle && !!loop && !!badge);
 
   function snap() {
     return {
@@ -89,7 +92,6 @@ const DRIVER = `
       loop_on: loop.classList.contains("is-on"),
       loop_label: loop.getAttribute("aria-label"),
       badge_hidden: badge.classList.contains("hidden"),
-      radio_on: radio.classList.contains("is-on"),
     };
   }
   // A click posts, then the code re-polls 200ms later; give both room.
@@ -107,24 +109,46 @@ const DRIVER = `
   await tap(loop); T("loop2", snap());
   await tap(loop); T("loop3", snap());
 
+  // Layout: measured while the now-playing screen is still open, BEFORE the
+  // settings navigation below — off that screen the row is hidden and every
+  // element measures 0, which reads as a pass for "fits on a phone".
+  var row = document.querySelector(".np-transport");
+  T("row_overflow", row.scrollWidth - row.clientWidth);
+  T("row_sizes", Array.prototype.map.call(row.children, function (c) {
+    var b = c.getBoundingClientRect();
+    return { id: c.id, w: Math.round(b.width), h: Math.round(b.height) };
+  }));
+  var rowBox = row.getBoundingClientRect();
+  T("row_inside_viewport", rowBox.left >= 0 && rowBox.right <= window.innerWidth + 0.5);
+
+  T("posts_np", window.__posts.slice());
+
+  // ---- Roon Radio now lives in Settings -> Playback ----------------------
   window.__standDown = true;
-  await tap(radio);
-  T("after_radio", snap());
+  document.getElementById("modal-home-btn").click();     // leave the NP screen
+  await window.__sleep(300);
+  document.getElementById("settings-toggle").click();
+  await window.__sleep(300);
+  document.querySelector('.settings-nav-item[data-pane="playback"]').click();
+  await window.__sleep(250);
+
+  var rr = document.getElementById("roon-radio-toggle");
+  T("rr_found", !!rr);
+  T("rr_in_playback", !!rr && !!rr.closest('[data-pane="playback"]'));
+  // It sits in the same block as Random album radio — the whole point of the
+  // move is that the two mutually exclusive switches are read together.
+  var ra = document.getElementById("radio-toggle");
+  T("rr_beside_random", !!rr && !!ra && rr.closest(".settings-block") === ra.closest(".settings-block"));
+  T("rr_checked_before", !!rr.checked);
+
+  rr.click();
+  await window.__sleep(600);
+  T("rr_checked_after", !!rr.checked);
   var toast = document.querySelector(".toast");
   T("radio_toast", toast ? toast.textContent : null);
 
   T("posts", window.__posts);
 
-  // Layout: the five-button row must fit without scrolling or squashing.
-  var row = document.querySelector(".np-transport");
-  T("row_overflow", row.scrollWidth - row.clientWidth);
-  var sizes = Array.prototype.map.call(row.children, function (c) {
-    var r = c.getBoundingClientRect();
-    return { id: c.id, w: Math.round(r.width), h: Math.round(r.height) };
-  });
-  T("row_sizes", sizes);
-  var rr = row.getBoundingClientRect();
-  T("row_inside_viewport", rr.left >= 0 && rr.right <= window.innerWidth + 0.5);
 `;
 
 test("shuffle, repeat and Roon Radio reflect and drive the zone (v1.7.1)", async (t) => {
@@ -140,9 +164,16 @@ test("shuffle, repeat and Roon Radio reflect and drive the zone (v1.7.1)", async
   });
   harness.assertNoPageError(assert, r);
 
-  await t.test("the now-playing screen opens with all three controls", () => {
+  await t.test("the now-playing screen opens with its transport controls", () => {
     assert.equal(r.np_open, true);
     assert.equal(r.buttons_exist, true);
+  });
+
+  await t.test("Roon Radio is not on the transport row", () => {
+    assert.equal(r.np_radio_absent, true,
+      "#np-radio is back on the now-playing screen. It moved to Settings → " +
+      "Playback in v1.7.71 to sit beside Random album radio, because the two " +
+      "answer the same question and are mutually exclusive.");
   });
 
   await t.test("they start off, matching the zone", () => {
@@ -151,7 +182,6 @@ test("shuffle, repeat and Roon Radio reflect and drive the zone (v1.7.1)", async
     assert.equal(r.initial.loop_on, false);
     assert.equal(r.initial.loop_label, "Repeat off");
     assert.equal(r.initial.badge_hidden, true);
-    assert.equal(r.initial.radio_on, false);
   });
 
   await t.test("shuffle lights up and turns back off", () => {
@@ -174,8 +204,19 @@ test("shuffle, repeat and Roon Radio reflect and drive the zone (v1.7.1)", async
     assert.equal(r.loop3.badge_hidden, true);
   });
 
-  await t.test("Roon Radio lights up and says the app's own radio stands down", () => {
-    assert.equal(r.after_radio.radio_on, true);
+  await t.test("Roon Radio drives the zone from Settings → Playback", () => {
+    assert.equal(r.rr_found, true, "#roon-radio-toggle is missing from Settings");
+    assert.equal(r.rr_in_playback, true, "the switch is not inside the Playback pane");
+    assert.equal(r.rr_beside_random, true,
+      "Roon Radio is not in the same block as Random album radio — the point " +
+      "of the move is that the two mutually exclusive switches are read together");
+    assert.equal(r.rr_checked_before, false);
+    assert.equal(r.rr_checked_after, true);
+  });
+
+  await t.test("and still says the app's own radio stands down", () => {
+    // The transport button raised this notice; the switch must too, or the
+    // other radio silently flips itself off with no explanation.
     assert.match(String(r.radio_toast), /Roon Radio on/);
     assert.match(String(r.radio_toast), /Random Album Radio/);
   });
@@ -183,17 +224,20 @@ test("shuffle, repeat and Roon Radio reflect and drive the zone (v1.7.1)", async
   await t.test("every click sends the concrete state it wants, never a toggle", () => {
     // This is the assertion that keeps the UI honest about a rejected change:
     // the client must not be tracking its own idea of the mode.
-    assert.deepEqual(r.posts, [
+    assert.deepEqual(r.posts_np, [
       { zone_or_output_id: "z1", shuffle: true },
       { zone_or_output_id: "z1", shuffle: false },
       { zone_or_output_id: "z1", loop: "loop" },
       { zone_or_output_id: "z1", loop: "loop_one" },
       { zone_or_output_id: "z1", loop: "disabled" },
-      { zone_or_output_id: "z1", auto_radio: true },
     ]);
+    // The switch sends the same concrete body the button did, from its own
+    // call site — it does not go through changeZoneSettings().
+    assert.deepEqual(r.posts[r.posts.length - 1],
+      { zone_or_output_id: "z1", auto_radio: true });
   });
 
-  await t.test("the five-button transport row fits a 360px phone", () => {
+  await t.test("the transport row fits a 360px phone", () => {
     assert.equal(r.row_overflow, 0,
       `.np-transport overflows by ${r.row_overflow}px — the row scrolls or clips`);
     assert.equal(r.row_inside_viewport, true, ".np-transport extends past the viewport");
