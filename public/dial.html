@@ -1,0 +1,80 @@
+<!doctype html>
+<!--
+  MusicD Dial — Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
+  Released under the MIT License. See the LICENSE file for details.
+
+  A second installable page: one server, two home-screen icons. The dial is a
+  round control surface for one zone — a volume ring you sweep, the cover in
+  the middle, transport under it — ported from the Android build's DialView,
+  which is the version both remotes track.
+
+  THE HEAD IS index.html's, LINE FOR LINE, apart from the title and the
+  app title. That is deliberate and it is not tidiness: iOS reads these at
+  ADD-TO-HOME-SCREEN time and bakes the result into the shortcut, so a shortcut
+  made against a bad head keeps the bad window forever and no later fix is
+  visible through it. v1.7.60-65 was six versions of learning that. The set
+  below is the one confirmed to fill an iPhone screen. Do not add to it — see
+  CLAUDE.md pre-flight step 6 and the head allowlist in
+  test/static/pwa-icons.test.js, which covers this file too.
+-->
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <meta name="theme-color" content="#07080A">
+  <title>MusicD Dial</title>
+
+  <!-- No manifest link, for the reason index.html gives at length: iOS 17+
+       reads it, and `display: standalone` with a `background_color` is exactly
+       the shape of thing that letterboxes a web app instead of letting
+       viewport-fit=cover fill the display. -->
+  <link rel="icon" href="/icons/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+  <!-- iOS takes the home-screen icon from here and ignores the manifest. -->
+  <link rel="apple-touch-icon" href="/icons/dial-touch-icon.png">
+  <meta name="apple-mobile-web-app-title" content="Dial">
+
+  <!-- DELIBERATELY ABSENT: apple-mobile-web-app-capable,
+       mobile-web-app-capable, apple-mobile-web-app-status-bar-style.
+       Adding those three is what put a black band in the safe areas on every
+       screen in v1.7.60. Modern iOS already opens a home-screen shortcut as a
+       standalone web app, and viewport-fit=cover already fills the display. -->
+
+  <link rel="stylesheet" href="/dial.css">
+</head>
+<body>
+  <canvas id="dial" aria-label="Volume dial and transport controls"></canvas>
+
+  <!-- Screen-reader and keyboard surface. The dial is a canvas, which is
+       invisible to assistive tech and unreachable by a keyboard, so every
+       action it offers is also a real focusable button here. Visually hidden
+       rather than display:none — display:none would take them out of the
+       accessibility tree too, which is the whole point of having them. -->
+  <div class="a11y-controls">
+    <button type="button" id="a11y-prev">Previous track</button>
+    <button type="button" id="a11y-playpause">Play or pause</button>
+    <button type="button" id="a11y-next">Next track</button>
+    <button type="button" id="a11y-voldown">Volume down</button>
+    <button type="button" id="a11y-volup">Volume up</button>
+    <button type="button" id="a11y-mute">Toggle mute</button>
+    <button type="button" id="a11y-zone">Choose zone</button>
+    <button type="button" id="a11y-open">Open the full app</button>
+  </div>
+
+  <!-- Sheets: zone picker and the long-press menu. Plain DOM rather than more
+       canvas, so they are focusable, scrollable and readable by a screen
+       reader without reinventing any of it. -->
+  <div id="sheet" class="sheet hidden" role="dialog" aria-modal="true" aria-label="Dial menu">
+    <div class="sheet-backdrop" data-sheet-close></div>
+    <div class="sheet-panel">
+      <h2 id="sheet-title">Play in</h2>
+      <div id="sheet-items" class="sheet-items"></div>
+      <button type="button" class="sheet-cancel" data-sheet-close>Cancel</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <script src="/dial.js"></script>
+</body>
+</html>
