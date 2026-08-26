@@ -7379,7 +7379,6 @@
   const npShuffle   = document.getElementById("np-shuffle");
   const npLoop      = document.getElementById("np-loop");
   const npLoopBadge = document.getElementById("np-loop-badge");
-  const npRadio     = document.getElementById("np-radio");
 
   let currentZone = null;       // server-side zone state
   let pollTimer   = null;
@@ -7930,12 +7929,6 @@
       npLoop.setAttribute("aria-label", LOOP_LABEL[loop]);
       if (npLoopBadge) npLoopBadge.classList.toggle("hidden", loop !== "loop_one");
     }
-    if (npRadio) {
-      npRadio.disabled = !live;
-      npRadio.classList.toggle("is-on", live && m.auto_radio);
-      npRadio.setAttribute("aria-pressed", String(live && m.auto_radio));
-      npRadio.setAttribute("aria-label", live && m.auto_radio ? "Roon Radio on" : "Roon Radio");
-    }
   }
 
   // Shuffle / repeat / Roon Radio. Mirrors control(): fire, then re-poll, so the
@@ -8055,13 +8048,6 @@
   // mirrored local flag) and sends the concrete state it wants.
   if (npShuffle) npShuffle.addEventListener("click", () => changeZoneSettings({ shuffle: !zoneModes().shuffle }));
   if (npLoop)    npLoop.addEventListener("click", () => changeZoneSettings({ loop: LOOP_NEXT[zoneModes().loop] }));
-  if (npRadio)   npRadio.addEventListener("click", (e) => {
-    // Radio lives in .np-secondary, whose popovers the document handler leaves
-    // alone — close them here so they don't sit over the row.
-    e.stopPropagation();
-    closeNpPopovers();
-    changeZoneSettings({ auto_radio: !zoneModes().auto_radio });
-  });
 
   // Volume popover: tap the speaker to reveal the slider (or the "fixed" note).
   if (npVolBtn && npVolPopover) {
@@ -8760,6 +8746,7 @@
   const overlay    = document.getElementById("settings-overlay");
   const versionEl  = document.getElementById("settings-version");
   const radioToggle = document.getElementById("radio-toggle");
+  const roonRadioToggle = document.getElementById("roon-radio-toggle");
   const zoneSelect  = document.getElementById("zone-select");
   const labelOrderSelect = document.getElementById("label-order-select");
   const labelMinSelect   = document.getElementById("label-min-select");
@@ -8785,12 +8772,25 @@
     });
   }
 
+  // The two radios for the selected zone. Both answer "what plays when this
+  // queue runs out", so both on means two things racing to fill one queue: the
+  // server switches the other off, and these read back from it rather than
+  // assuming it did — a change the Core rejects must not leave a switch lit.
   async function loadRadio() {
-    if (!radioToggle || !zoneSelect || !zoneSelect.value) return;
+    if (!zoneSelect || !zoneSelect.value) return;
+    const zone = zoneSelect.value;
     try {
-      const r = await fetch("/api/radio?zone=" + encodeURIComponent(zoneSelect.value), { cache: "no-store" });
-      if (r.ok) { const j = await r.json(); radioToggle.checked = !!j.enabled; }
+      const r = await fetch("/api/radio?zone=" + encodeURIComponent(zone), { cache: "no-store" });
+      if (r.ok && radioToggle) { const j = await r.json(); radioToggle.checked = !!j.enabled; }
     } catch (e) {} // network error loading radio state — toggle stays at default, non-critical
+    try {
+      const r = await fetch("/api/zone-state?zone=" + encodeURIComponent(zone), { cache: "no-store" });
+      if (r.ok && roonRadioToggle) {
+        const j = await r.json();
+        const settings = j && j.zone && j.zone.settings;
+        roonRadioToggle.checked = !!(settings && settings.auto_radio);
+      }
+    } catch (e) {} // same: non-critical, the switch stays where it was
   }
   if (radioToggle) {
     radioToggle.addEventListener("change", async () => {
@@ -8801,6 +8801,28 @@
           body: JSON.stringify({ zone: zoneSelect.value, enabled: radioToggle.checked })
         });
       } catch (e) {} // network error toggling radio — toggle UI already updated, best-effort
+      loadRadio();
+    });
+  }
+  if (roonRadioToggle) {
+    roonRadioToggle.addEventListener("change", async () => {
+      if (!zoneSelect || !zoneSelect.value) return;
+      try {
+        const r = await fetch("/api/zone-settings", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            zone_or_output_id: zoneSelect.value, auto_radio: roonRadioToggle.checked
+          })
+        });
+        // Same notice the transport button used to raise. The server decides
+        // which radio stands down; without this the other switch just flips
+        // itself on the next read with no explanation.
+        const j = await r.json().catch(() => ({}));
+        if (j && j.random_album_radio_stands_down && window.__showToast) {
+          window.__showToast("Roon Radio on — Random Album Radio stands down for this zone");
+        }
+      } catch (e) {} // best-effort; loadRadio below re-reads the truth either way
+      loadRadio();
     });
   }
 

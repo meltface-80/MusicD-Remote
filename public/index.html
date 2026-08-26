@@ -495,14 +495,17 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
            top of the panel so each album tints its own detail view (decorative
            only — hidden from AT, never intercepts taps). -->
       <img id="modal-ambient" class="modal-ambient hidden" alt="" aria-hidden="true">
-      <button class="modal-close icon-btn" data-close aria-label="Close">
+      <!-- A back chevron rather than an ×: this panel is somewhere you came
+           FROM the grid, so leaving it goes back rather than dismissing
+           something. It still closes the modal — data-close is unchanged. -->
+      <button class="modal-close icon-btn" data-close aria-label="Back" title="Back">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M18 6 6 18M6 6l12 12"/>
+          <polyline points="15 18 9 12 15 6"/>
         </svg>
       </button>
-      <!-- Now-playing mode only (CSS-gated): top-left Home button — the ×
-           is hidden there and Share takes its top-right spot. -->
+      <!-- Now-playing mode only (CSS-gated): top-left Home button — Back is
+           hidden there, so Home takes the corner it holds elsewhere. -->
       <button class="modal-home icon-btn" id="modal-home-btn" aria-label="Go to Home screen" title="Home">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -613,19 +616,6 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
                 <button class="np-popover-action" type="button" id="np-unmute-all">Unmute all zones</button>
               </div>
 
-              <!-- Roon Radio: Roon's own keep-playing-forever feature. Lives
-                   here rather than in the transport row because it changes what
-                   happens to the QUEUE, not how the current queue is played. -->
-              <button class="np-mini-btn" id="np-radio" aria-label="Roon Radio" aria-pressed="false">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <circle cx="12" cy="12" r="2"/>
-                  <path d="M7.76 16.24a6 6 0 0 1 0-8.49"/>
-                  <path d="M16.24 7.76a6 6 0 0 1 0 8.49"/>
-                  <path d="M4.93 19.07a10 10 0 0 1 0-14.14"/>
-                  <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
-                </svg>
-              </button>
 
               <!-- Volume: tap the speaker to reveal the slider (hidden when fixed) -->
               <div class="np-vol">
@@ -1048,11 +1038,20 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
 
         <div class="settings-divider"></div>
 
+        <!-- The two radios, together, because they answer the same question:
+             what plays when this zone's queue runs out. Only one can be on. -->
         <div class="settings-block">
           <div class="settings-row">
-            <span class="settings-label">Random album radio <button class="settings-info-btn" data-info="When this zone's queue ends and Roon Radio is off, keep playing whole random albums — a never-ending random album radio." aria-label="Info">ⓘ</button></span>
+            <span class="settings-label">Random album radio <button class="settings-info-btn" data-info="When this zone's queue ends, keep playing whole random albums — a never-ending random album radio. Turning this on turns Roon Radio off for the zone." aria-label="Info">ⓘ</button></span>
             <label class="switch">
               <input type="checkbox" id="radio-toggle" aria-label="Random album radio">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+          <div class="settings-row">
+            <span class="settings-label">Roon Radio <button class="settings-info-btn" data-info="Roon's own keep-playing-forever feature: when the queue ends it keeps going with similar tracks. Turning this on turns Random album radio off for the zone — both fill the same queue, so only one can run." aria-label="Info">ⓘ</button></span>
+            <label class="switch">
+              <input type="checkbox" id="roon-radio-toggle" aria-label="Roon Radio">
               <span class="switch-track"><span class="switch-thumb"></span></span>
             </label>
           </div>

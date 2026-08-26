@@ -2,6 +2,54 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.71] — 2026-08-26
+
+### Changed — album header and Roon Radio, matched to the Android build
+
+The Android sibling (`Android-Random-Remote`) ships a near-identical web UI, and it had moved on in
+two places. Both are brought across here; its feature-scope differences (no Qobuz/Tidal, no Labels,
+no wall display) are deliberately NOT.
+
+**The album view's header band.** The × became a back chevron and moved to the top-left, Share took
+the top-right corner outright, and the ⋯ menu moved in beside it. The reasoning is that this panel is
+somewhere you came *from* the grid — leaving it goes back rather than dismissing something — and back
+belongs in the corner your thumb already expects. Behaviour is unchanged: it is still `data-close`,
+it still closes the modal.
+
+Two things fell out of that. Share no longer needs its now-playing override, because it sits at
+`right: 12px` in both modes rather than sliding there when the × disappears. And the ⋯ menu's
+position was `top: 12px; right: 108px` — two magic numbers. The right offset is now computed from the
+control height (`12px + var(--ctl-h) + 10px`), so it tracks Share instead of guessing at it.
+
+The `top` is the more interesting half: it had no safe-area inset. The modal covers the whole screen
+*including* the status bar, so in the installed PWA that button sat under it, where the system takes
+the taps — the button did nothing, which is exactly how it behaved. Every other pinned control on
+that panel already measured from `env(safe-area-inset-top)`; this one didn't.
+
+**Roon Radio moved from the now-playing screen to Settings → Playback**, into the same block as
+Random album radio. The two answer the same question — what plays when this zone's queue runs out —
+and they are mutually exclusive, which is far clearer sitting together than one screen apart. Both
+tooltips now say so. The server already enforced the exclusivity and already reported which one stood
+down, so this is UI-only.
+
+The stand-down notice is kept on the new path. The transport button raised it via
+`changeZoneSettings()`; the settings switch posts directly, so it reads the response itself. Without
+that, turning one radio on would silently flip the other off with no explanation.
+
+### Tests
+
+`np-modes` rewritten for the new location: it now asserts `#np-radio` is *absent* from the transport
+row, that the switch is inside the Playback pane, and that it shares a `settings-block` with Random
+album radio — the grouping is the point of the move, so it is pinned rather than assumed. All three
+were mutation-checked.
+
+That rewrite also caught a vacuous assertion in the existing suite. The transport row's
+fits-on-a-phone measurements were taken at the end of the driver; once the driver navigated away from
+the now-playing screen, the row was hidden and every element measured 0px — which passed. The capture
+now happens while the screen is still open.
+
+70 static / 701 unit / 354 DOM.
+
 ## [1.7.70] — 2026-08-17
 
 ### Removed — the muted YouTube clip from the wall display
