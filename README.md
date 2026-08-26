@@ -1,6 +1,6 @@
 <div align="center">
 
-<img width="800" alt="MusicD" src="docs/docs/IMG_8974.jpeg" />
+<img width="800" alt="MusicD" src="docs/IMG_8974.jpeg" />
 
 </div>
 
