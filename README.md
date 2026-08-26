@@ -14,7 +14,7 @@ MusicD Remote is for Roon and is a feature-rich music discovery companion for Ro
 
 ## Features
 
-New - [Dial for Roon](https://github.com/meltface-80/MusicD-Remote/blob/main/README.md#new)
+## New - [Dial for Roon](https://github.com/meltface-80/MusicD-Remote/blob/main/README.md#new)
 
 🎵 Album Discovery
 
