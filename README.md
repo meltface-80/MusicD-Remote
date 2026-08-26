@@ -118,7 +118,7 @@ Ideal for dedicated listening rooms.
 Point any browser at `http://<server-ip>:3399/display`.
 
 ⸻
-
+** NEW
 🎛 The Dial
 
 A round control surface for one zone, on its own icon: a volume ring you sweep with your thumb, the
