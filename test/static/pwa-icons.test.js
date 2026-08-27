@@ -361,41 +361,10 @@ test("the iOS full-screen contract cannot be broken silently", async (t) => {
       "env(safe-area-inset-*) in the stylesheet.");
   });
 
-  // dial.html is the second installable page. Everything the contract above
-  // protects for index.html applies to it identically, because iOS treats a
-  // second home-screen shortcut as its own web app with its own baked-in
-  // window configuration — so it gets its own pinning, not a shared assertion
-  // that happens to pass because index.html is correct.
-  await t.test("the dial page carries the same viewport contract", () => {
-    const dialHtml = fs.readFileSync(path.join(PUBLIC, "dial.html"), "utf8");
-    const all = dialHtml.match(/<meta\s+name="viewport"[^>]*>/g) || [];
-    assert.equal(all.length, 1,
-      "dial.html has " + all.length + " viewport metas; a second silently " +
-      "overrides the first and viewport-fit=cover stops applying");
-    assert.match(all[0], /viewport-fit=cover/,
-      "dial.html's viewport lacks viewport-fit=cover, so every " +
-      "env(safe-area-inset-*) on that page resolves to 0");
-    // The dial is a full-screen control surface with a gesture on it; a
-    // shortcut that letterboxes it is the failure v1.7.60 shipped.
-    assert.ok(/<link rel="apple-touch-icon" href="\/icons\/dial-touch-icon\.png">/.test(dialHtml),
-      "dial.html must point at its OWN apple-touch-icon — iOS ignores the " +
-      "manifest for this, and without a distinct icon the two installed apps " +
-      "are indistinguishable on the home screen");
-    assert.ok(fs.existsSync(path.join(PUBLIC, "icons", "dial-touch-icon.png")),
-      "icons/dial-touch-icon.png is missing; iOS falls back to a screenshot " +
-      "of the page when the icon 404s");
-    assert.ok(!/rel="manifest"/.test(dialHtml),
-      "dial.html links a manifest. iOS 17+ reads it, and display:standalone " +
-      "with a background_color letterboxes the web app instead of letting " +
-      "viewport-fit=cover fill the display — the same reason index.html has none");
-  });
-
   await t.test("no legacy Apple web-app meta, in any file served to a browser", () => {
-    // Scoped wider than index.html on purpose: display.html never had these,
-    // and dial.html is a SECOND INSTALLABLE PAGE — the only other file whose
-    // head iOS reads at add-to-home-screen time and bakes into a shortcut.
-    // Neither must ever gain them.
-    for (const file of ["index.html", "display.html", "dial.html"]) {
+    // Scoped wider than index.html on purpose: display.html never had these and
+    // must never gain them either.
+    for (const file of ["index.html", "display.html"]) {
       // Comments stripped first. index.html carries a comment NAMING these three
       // and explaining why they are absent, so a raw includes() matches the
       // explanation rather than a live tag. Third time this trap has appeared in

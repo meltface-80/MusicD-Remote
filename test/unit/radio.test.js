@@ -293,3 +293,42 @@ test("the two verbs mean different things and must not be confused", async (t) =
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// v1.7.73: the two radios are mutually exclusive.
+//
+// Roon Radio and Random Album Radio both answer "what plays when this zone's
+// queue runs out", so only one can run. Before this, the server merely REPORTED
+// that ours would stand down; both switches could read ON with one of them
+// silently doing nothing, which looks like a broken toggle rather than a rule.
+//
+// The rule is two-directional, and the failure mode is implementing one
+// direction and believing you have done both — so both directions, and both
+// no-op cases, are pinned here.
+// ---------------------------------------------------------------------------
+const { radioToTurnOff } = require("../../lib/radio");
+
+test("only one radio can be on for a zone", async (t) => {
+  await t.test("turning one on switches the other off", () => {
+    assert.equal(radioToTurnOff("own", true, true), "roon",
+      "turning Random Album Radio on must switch Roon Radio off");
+    assert.equal(radioToTurnOff("roon", true, true), "own",
+      "turning Roon Radio on must switch Random Album Radio off");
+  });
+
+  await t.test("nothing happens when the other is already off", () => {
+    // The routes act on this, so a spurious "turn it off" is a wasted Core
+    // call on every toggle — and on the Roon side, a change_settings the user
+    // did not ask for.
+    assert.equal(radioToTurnOff("own", false, true), null);
+    assert.equal(radioToTurnOff("roon", true, false), null);
+  });
+
+  await t.test("switching a radio OFF does not start the other one", () => {
+    // The obvious over-reach: reading the rule as "exactly one is always on".
+    // It is "at most one" — both off is a perfectly ordinary state.
+    assert.equal(radioToTurnOff(null, true, true), null);
+    assert.equal(radioToTurnOff("", true, true), null);
+    assert.equal(radioToTurnOff("neither", true, true), null);
+  });
+});

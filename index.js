@@ -18,7 +18,8 @@ const RoonApiTransport = require("node-roon-api-transport");
 const RoonApiSettings  = require("node-roon-api-settings");
 
 const { createUpdater } = require("./lib/updater");
-const { radioDecision, radioResumeDecision, radioQueueFloor } = require("./lib/radio");
+const { radioDecision, radioResumeDecision, radioQueueFloor,
+        radioToTurnOff } = require("./lib/radio");
 const pkg = require("./package.json");
 // Parse "1.6.31" → display "MusicD Remote v1.6 (Build 31)"
 const [_vmaj, _vmin, _vpatch] = (pkg.version || "0.0.0").split(".");
@@ -12379,6 +12380,23 @@ app.post("/api/radio", (req, res) => {
   if (!zoneId) return res.status(400).json({ error: "zone required" });
   if (enabled) {
     radioZones.add(zoneId);
+    // Both radios answer the same question — what plays when this zone's queue
+    // runs out — so only one can run. Turning this on turns Roon Radio off for
+    // the zone, rather than leaving two switches both reading ON while one of
+    // them silently does nothing. Best-effort: if the Core refuses, the next
+    // poll shows the truth, which is why the client re-reads both switches
+    // after every change instead of assuming this worked.
+    const off = core && zones[zoneId]
+      ? radioToTurnOff("own", zoneSettings(zones[zoneId]).auto_radio, true)
+      : null;
+    if (off === "roon") {
+      core.services.RoonApiTransport.change_settings(zoneId, { auto_radio: false }, (err) => {
+        if (err) {
+          console.warn("[radio] could not turn Roon Radio off for " + zoneId + ": " +
+                       (typeof err === "string" ? err : JSON.stringify(err)));
+        }
+      });
+    }
   } else {
     radioZones.delete(zoneId);
     forgetRadioZone(zoneId);   // radio off means no episode to finish
@@ -12732,18 +12750,6 @@ app.post("/api/settings/display", (req, res) => {
 // Settings toggle brings a mounted wall tablet to life without a reload.
 app.get("/display", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "display.html"));
-});
-
-// The dial — a second installable page, its own icon on the home screen.
-//
-// Nothing gates it: it is a control surface for a zone, so it works whenever
-// the extension does. It needs no settings of its own and no state the app
-// does not already keep — it reads /api/zone-state and writes through the same
-// /api/control, /api/volume and /api/image the app uses, and it shares the
-// selected zone through the same localStorage key, so picking a zone on one
-// face picks it on the other.
-app.get("/dial", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "dial.html"));
 });
 
 // Pitchfork magazine — a browsable listing of recent album reviews or Best New
@@ -13278,7 +13284,8 @@ app.post("/api/zone-settings", (req, res) => {
   const zone = zones[zone_or_output_id]
     || (outputs[zone_or_output_id] && zones[outputs[zone_or_output_id].zone_id])
     || null;
-  const ownRadioStandsDown = !!(patch.auto_radio === true && zone && radioZones.has(zone.zone_id));
+  const ownRadioWasOn = patch.auto_radio === true && zone &&
+    radioToTurnOff("roon", true, radioZones.has(zone.zone_id)) === "own";
 
   core.services.RoonApiTransport.change_settings(zone_or_output_id, patch, (err) => {
     if (err) {
@@ -13286,7 +13293,16 @@ app.post("/api/zone-settings", (req, res) => {
       console.warn(`[zone-settings] failed: ${msg}`);
       return res.status(500).json({ error: msg });
     }
-    res.json({ ok: true, random_album_radio_stands_down: ownRadioStandsDown });
+    // The other direction of the same rule. Only once the Core has ACCEPTED
+    // auto_radio do we switch ours off: doing it first would leave the zone
+    // with neither radio on if the change were rejected.
+    if (ownRadioWasOn) {
+      radioZones.delete(zone.zone_id);
+      forgetRadioZone(zone.zone_id);   // no episode left to finish
+      persistRadio();
+      console.log(`[radio] Roon Radio on for ${zone.display_name || zone.zone_id} — random album radio off`);
+    }
+    res.json({ ok: true, random_album_radio_turned_off: ownRadioWasOn });
   });
 });
 
@@ -13648,20 +13664,8 @@ app.post("/api/volume", (req, res) => {
       tasks.push(new Promise((resolve, reject) =>
         t.change_volume(o.output_id, "relative", v, err => err ? reject(err) : resolve())));
     }
-  } else if (req.body.relative_step !== undefined) {
-    // Move N of the OUTPUT'S OWN steps. Roon does the arithmetic against the
-    // device's real scale, which is what a detented control wants: the dial
-    // counts detents, not units, and a dB output's step is not 1.
-    // `relative` moves N raw units instead, which is a different distance on
-    // every device — right for an incremental control, wrong for this.
-    const v = parseFloat(req.body.relative_step);
-    if (!Number.isFinite(v)) return res.status(400).json({ error: "relative_step must be a number" });
-    for (const o of targetOutputs) {
-      tasks.push(new Promise((resolve, reject) =>
-        t.change_volume(o.output_id, "relative_step", v, err => err ? reject(err) : resolve())));
-    }
   } else {
-    return res.status(400).json({ error: "value, relative, relative_step, or mute required" });
+    return res.status(400).json({ error: "value, relative, or mute required" });
   }
 
   Promise.all(tasks)

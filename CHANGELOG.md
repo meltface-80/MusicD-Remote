@@ -2,6 +2,54 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.73] — 2026-08-27
+
+### Changed — the two radios live together in Settings, and only one can be on
+
+**Roon Radio moved off the now-playing screen** into Settings → Playback, in the same block as Random
+album radio. The two answer the same question — what plays when this zone's queue runs out — and they
+are mutually exclusive, which is far clearer sitting together than one screen apart.
+
+**And now they really are exclusive.** Turning either one on switches the other off, and the switch
+you did not touch visibly moves. Before this the server only *reported* that Random Album Radio would
+stand down at runtime: both switches could read ON with one of them quietly doing nothing, which
+looks like a broken toggle rather than a rule. Both directions are enforced server-side —
+`/api/radio` turns Roon Radio off for the zone, and `/api/zone-settings` turns ours off — and the
+client re-reads both switches after every change rather than assuming its own write worked, so a
+change the Core rejects cannot leave a switch lit.
+
+The rule itself is a named decision in `lib/radio.js` rather than a line inside each route, because
+it is two-directional and implementing one direction while believing you have done both is the
+obvious way to get it wrong. Four cases are pinned: each direction, the no-op when the other is
+already off, and the over-reach of reading "at most one" as "exactly one is always on" — both off is
+an ordinary state.
+
+### Changed — the album view's header
+
+The × became a back chevron and moved to the top left; Share took the top-right corner. This panel is
+somewhere you arrived at *from* the grid, so leaving it goes back rather than dismissing something,
+and back belongs in the corner the thumb already expects. Behaviour is unchanged — it still closes
+the panel.
+
+Two things followed. Share no longer needs its now-playing override, because it sits at `right: 12px`
+in both modes instead of sliding there when the × disappears. And the ⋯ menu, which had sat at
+`top: 12px; right: 108px`, now computes its offset from the control height so it tracks Share instead
+of guessing at it — and gained the safe-area inset it never had. Without that inset it sat under the
+status bar in the installed PWA, where the system takes the taps: it was a button that did nothing.
+
+### Note on versions
+
+v1.7.71 and v1.7.72 were withdrawn — their releases and tags were deleted. The UI changes above were
+first written for v1.7.71 and never reached a release; they ship here. The dial that v1.7.72 added has
+been removed from the tree entirely, along with the `relative_step` volume mode that existed only to
+serve it.
+
+### Tests
+
+70 static / 705 unit / 354 DOM. Four new unit assertions on the exclusion rule, each mutation-checked
+— removing either direction, firing when the other is already off, and reading the rule as
+"exactly one" all turn it red.
+
 ## [1.7.72] — 2026-08-26
 
 > **Withdrawn.** The release and tag for this build were deleted. v1.7.70 is the current release; this entry is kept as a record only.
