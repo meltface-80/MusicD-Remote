@@ -4,6 +4,8 @@ All notable changes to MusicD Remote (formerly Roon Random Albums) are documente
 
 ## [1.7.72] — 2026-08-26
 
+> **Withdrawn.** The release and tag for this build were deleted. v1.7.70 is the current release; this entry is kept as a record only.
+
 ### Added — the dial, as a second installable page at `/dial`
 
 One server, two home-screen icons. A round control surface for a single zone: a volume ring you sweep
@@ -65,6 +67,8 @@ step, the soft-limit ceiling, incremental nudges, the transport taps and two deg
 relevant assertion red.
 
 ## [1.7.71] — 2026-08-26
+
+> **Withdrawn.** The release and tag for this build were deleted. v1.7.70 is the current release; this entry is kept as a record only.
 
 ### Changed — album header and Roon Radio, matched to the Android build
 
