@@ -7946,10 +7946,10 @@
       if (!r.ok) {
         console.warn("zone-settings failed:", j.error || r.status);
         if (window.__showToast) window.__showToast(j.error || "Could not change that", "error");
-      } else if (j.random_album_radio_stands_down && window.__showToast) {
-        // Roon Radio and the app's own Random Album Radio would fight over the
-        // same queue, so ours stands down. Say so instead of looking broken.
-        window.__showToast("Roon Radio on — Random Album Radio stands down for this zone");
+      } else if (j.random_album_radio_turned_off && window.__showToast) {
+        // Both radios fill the same queue, so the server switches ours off.
+        // Say so: a switch the user did not touch has just moved.
+        window.__showToast("Roon Radio on — Random Album Radio turned off for this zone");
       }
     } catch (e) {
       // Network blip. The finally below still re-polls, so the buttons resync.
@@ -8814,12 +8814,12 @@
             zone_or_output_id: zoneSelect.value, auto_radio: roonRadioToggle.checked
           })
         });
-        // Same notice the transport button used to raise. The server decides
-        // which radio stands down; without this the other switch just flips
-        // itself on the next read with no explanation.
+        // The server switches the other radio off, so say so: without this a
+        // switch the user did not touch simply flips on the next read, with no
+        // explanation for why.
         const j = await r.json().catch(() => ({}));
-        if (j && j.random_album_radio_stands_down && window.__showToast) {
-          window.__showToast("Roon Radio on — Random Album Radio stands down for this zone");
+        if (j && j.random_album_radio_turned_off && window.__showToast) {
+          window.__showToast("Roon Radio on — Random Album Radio turned off for this zone");
         }
       } catch (e) {} // best-effort; loadRadio below re-reads the truth either way
       loadRadio();

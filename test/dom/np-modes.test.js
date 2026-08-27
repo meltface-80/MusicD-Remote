@@ -40,7 +40,7 @@ const ZONE = {
 const STUB = `
 window.__zone = ${JSON.stringify(ZONE)};
 window.__posts = [];
-window.__standDown = false;
+window.__ownRadioOn = false;
 try { localStorage.setItem("rra-zone", "z1"); } catch (e) {}
 window.__installFetch(function (url, opts) {
   if (url.indexOf("/api/zone-settings") > -1) {
@@ -51,7 +51,7 @@ window.__installFetch(function (url, opts) {
     if (body.loop !== undefined)       s.loop = body.loop;
     if (body.auto_radio !== undefined) s.auto_radio = body.auto_radio;
     return window.__json({ ok: true,
-      random_album_radio_stands_down: !!(window.__standDown && body.auto_radio === true) });
+      random_album_radio_turned_off: !!(window.__ownRadioOn && body.auto_radio === true) });
   }
   if (url.indexOf("/api/zone-state") > -1) return window.__json({ zone: window.__zone });
   if (url.indexOf("/api/zones") > -1)      return window.__json({ zones: [window.__zone] });
@@ -124,7 +124,7 @@ const DRIVER = `
   T("posts_np", window.__posts.slice());
 
   // ---- Roon Radio now lives in Settings -> Playback ----------------------
-  window.__standDown = true;
+  window.__ownRadioOn = true;   // the app's own radio is on for this zone
   document.getElementById("modal-home-btn").click();     // leave the NP screen
   await window.__sleep(300);
   document.getElementById("settings-toggle").click();
@@ -214,11 +214,15 @@ test("shuffle, repeat and Roon Radio reflect and drive the zone (v1.7.1)", async
     assert.equal(r.rr_checked_after, true);
   });
 
-  await t.test("and still says the app's own radio stands down", () => {
-    // The transport button raised this notice; the switch must too, or the
-    // other radio silently flips itself off with no explanation.
+  await t.test("and says the app's own radio was turned off", () => {
+    // The server now genuinely switches the other radio off rather than
+    // letting it stand down at runtime, so a switch the user did not touch has
+    // moved. Saying so is the difference between a rule and a glitch.
     assert.match(String(r.radio_toast), /Roon Radio on/);
     assert.match(String(r.radio_toast), /Random Album Radio/);
+    assert.match(String(r.radio_toast), /turned off/,
+      "the notice still says the old 'stands down', which described the " +
+      "previous behaviour: both switches on, one of them quietly inert");
   });
 
   await t.test("every click sends the concrete state it wants, never a toggle", () => {
