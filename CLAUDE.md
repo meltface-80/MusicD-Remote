@@ -254,7 +254,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
 - The README contains version references (install commands, tarball URLs, `docker build` tags).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.7.73** (until the user says otherwise).
+- Current stable version in the README: **v1.7.74** (until the user says otherwise).
 - The extension is being renamed **MusicD Remote** ("for Roon" is descriptive, not part of the name). The Roon `extension_id` must NEVER change — it would force every user to re-authorize.
 
 ---
@@ -402,4 +402,7 @@ docker run -d \
 | v1.7.67 | superseded | Volume popover row alignment — the 0/100 scale made the wrapper taller than the slider, so `align-items: center` sat every sibling 8px low |
 | v1.7.68 | superseded (three defects of its own) | Volume jump-back and progress-bar jerk: writes held until the server echoes, position moved to base + elapsed wall-clock painted at 250ms, poll reconciles instead of snapping |
 | v1.7.69 | stable (superseded) | The nine defects an 8-angle review found in v1.7.68: a `transition: width .4s` fighting the 250ms painter, paused time counted as playback, track changes suppressed by the seek hold, the volume hold following you between zones, a hung request wedging volume for the session |
-| v1.7.70 | **Latest (stable)** | Wall-display YouTube clips removed outright — matching a track to the right video was too unreliable to keep, so strict matching meant no video and loose matching meant the wrong one. Server lookup, scorer, cache, IFrame player, Video chip, video-first mode and the API key setting all gone (275 lines out); README and docs-site copy stripped to match; 701 unit / 352 DOM / 70 static — README points here |
+| v1.7.70 | stable (superseded) | Wall-display YouTube clips removed outright — matching a track to the right video was too unreliable to keep, so strict matching meant no video and loose matching meant the wrong one. Server lookup, scorer, cache, IFrame player, Video chip, video-first mode and the API key setting all gone (275 lines out); README and docs-site copy stripped to match; 701 unit / 352 DOM / 70 static — README points here |
+| v1.7.71–v1.7.72 | withdrawn | Releases and tags deleted. The album-header and Roon Radio UI work first written for v1.7.71 shipped in v1.7.73 instead; the dial v1.7.72 added was removed from the tree entirely, along with the `relative_step` volume mode that existed only to serve it |
+| v1.7.73 | stable (superseded) | Both radios moved into Settings → Playback and made genuinely exclusive server-side — but the switches never showed it (see v1.7.74); album view header reworked |
+| v1.7.74 | **Latest (stable)** | The exclusivity rule made visible: v1.7.73 read the switches back from a zone cache that only refreshes on a Roon push, so a read issued straight after a write reported the state from before it. Both write routes now report BOTH radios after the Core acks, and the client paints both switches from that one answer. Same root cause fixed three more defects — the kickstart that never started, Roon Radio switched on from Roon's own apps, and the Roon settings panel bypassing the rule; the toast removed; 355 tests — README points here |
