@@ -2,6 +2,56 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.75] — 2026-08-28
+
+### Fixed — how the two radio switches react
+
+v1.7.74 made the exclusivity rule visible. It got the state right and the *reaction* wrong, in the
+three ways a control that waits on a remote Core can be wrong.
+
+**The other switch waited for the Core.** Tapping a radio flipped that switch instantly — the browser
+does that — but the other one only moved when Roon's `change_settings` callback came back. On a busy
+Core that is long enough to look broken, and what it displays in the meantime is both switches ON:
+the exact state the rule exists to prevent. The rule is deterministic and the client knows it, so it
+is now drawn on the tap and reconciled against the server's answer when it lands — the same trade the
+volume slider makes. A change the Core refuses still springs the switch back.
+
+**Two quick taps raced.** The switches write to two different endpoints and nothing held them apart,
+so tapping one then the other put two writes in flight at once. They finish in whatever order the
+Core answers, the older answer paints last, and the switches settle on the tap *before* last. Writes
+are now serialised latest-wins, and every paint carries a generation so an answer that arrives after
+a newer tap is discarded instead of undoing it. Serialising also closes a server-side interleaving —
+the two routes read and write the same zone set concurrently, and the order where each cancels the
+other's radio left **both** off.
+
+**A dropped Core wedged them.** Neither route answers until Roon's callback fires, so a Core that
+goes away mid-call never settles the request. Serialising made that fatal: every later tap queued
+behind one that would never return, and the switches were dead until reload. Writes are now bounded
+at 5s, the same fix `postVolume` carries for the same reason (v1.7.69).
+
+**The switches ignored the zone selector.** Nothing re-read them when the zone changed, so with the
+Playback pane open they kept showing the *previous* zone's radios — and the next tap wrote that stale
+reading to the new zone. They now follow the selection.
+
+**Class of error: a correct state machine with no model of time.** Every one of these is the same
+omission — the rule was implemented as though the server answered instantly, so nothing said what the
+UI should show while it had not answered yet, which answer wins when two are outstanding, or what
+happens when one never comes.
+
+### Also
+
+- Opening the pane read the two switches one after the other; they now load together instead of
+  painting a beat apart.
+
+### Tests
+
+- New `test/dom/radio-toggles.test.js` (13): the untouched switch moves inside a slow Core round
+  trip; fast alternating taps settle on the last one, with the first tap's endpoint made the slower
+  so a missing fix fails deterministically rather than by luck; a hung request does not stop a later
+  tap reaching the server; the switches follow the zone selector. Each was checked against a
+  deliberately broken build to confirm it fails for its own reason.
+- 762 unit / 368 DOM / 70 static.
+
 ## [1.7.74] — 2026-08-28
 
 ### Fixed — the radio switches now actually move, and the toast is gone

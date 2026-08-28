@@ -8775,78 +8775,144 @@
   // queue runs out", so both on means two things racing to fill one queue: the
   // server switches the other off, and these read back from it rather than
   // assuming it did — a change the Core rejects must not leave a switch lit.
-  async function loadRadio() {
-    if (!zoneSelect || !zoneSelect.value) return;
-    const zone = zoneSelect.value;
-    try {
-      const r = await fetch("/api/radio?zone=" + encodeURIComponent(zone), { cache: "no-store" });
-      if (r.ok && radioToggle) { const j = await r.json(); radioToggle.checked = !!j.enabled; }
-    } catch (e) {} // network error loading radio state — toggle stays at default, non-critical
-    try {
-      const r = await fetch("/api/zone-state?zone=" + encodeURIComponent(zone), { cache: "no-store" });
-      if (r.ok && roonRadioToggle) {
-        const j = await r.json();
-        const settings = j && j.zone && j.zone.settings;
-        roonRadioToggle.checked = !!(settings && settings.auto_radio);
-      }
-    } catch (e) {} // same: non-critical, the switch stays where it was
-  }
-  // Both switches, from one server answer.
   //
-  // Turning either radio on switches the other off, so every write moves BOTH
-  // switches and both write routes report both radios in this one shape.
-  // Painting from that answer rather than re-reading is the whole point:
-  // /api/zone-state is served from a zone cache the Core only refreshes by
-  // push, so a read issued straight after a write still reports the value from
-  // before it — which showed Roon Radio still lit next to the radio that had
-  // just replaced it, and flipped a freshly-enabled Roon Radio back off.
-  function paintRadios(j) {
-    const s = j && j.radios;
+  // Every paint and every write of the two switches is stamped with a
+  // generation. Only the newest may paint.
+  //
+  // Serialising the writes (below) stops two of them being in flight at once,
+  // but it cannot stop an answer arriving after the user has tapped again — and
+  // that answer, painted, drags both switches back to the state before the tap.
+  // Reads carry a generation for the same reason: loadRadio() is two round
+  // trips, and a tap during them must win.
+  let radioGen = 0, radioInFlight = false, radioQueued = null;
+
+  function paintRadios(s) {
     if (!s) return;
     if (radioToggle)     radioToggle.checked     = !!s.own;
     if (roonRadioToggle) roonRadioToggle.checked = !!s.roon;
   }
-  if (radioToggle) {
-    radioToggle.addEventListener("change", async () => {
-      if (!zoneSelect || !zoneSelect.value) return;
-      try {
-        const r = await fetch("/api/radio", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ zone: zoneSelect.value, enabled: radioToggle.checked })
-        });
-        const j = await r.json().catch(() => null);
-        // A refusal answers with an error and no radios block. Leaving the
-        // switch where the user put it would show a radio that isn't running.
-        if (r.ok && j && j.radios) paintRadios(j);
-        else loadRadio();
-      } catch (e) {
-        // Network error toggling radio: we don't know what the server did, so
-        // re-read both switches rather than leaving the one the user moved
-        // showing a change that may never have landed.
-        loadRadio();
+
+  // Read both switches for a zone. `gen` is passed by callers that already hold
+  // one (a write falling back to a re-read); anyone else is the newest intent
+  // and takes a fresh one.
+  async function loadRadio(zoneId, gen) {
+    if (!zoneSelect || !zoneSelect.value) return;
+    const zone = zoneId || zoneSelect.value;
+    const g = (gen === undefined) ? ++radioGen : gen;
+    // Together rather than one after the other: sequential awaits painted the
+    // two switches a beat apart every time the pane opened.
+    const [own, roon] = await Promise.all([
+      fetch("/api/radio?zone=" + encodeURIComponent(zone), { cache: "no-store" })
+        .then(r => (r.ok ? r.json() : null))
+        .then(j => (j ? !!j.enabled : null))
+        .catch(() => null),   // network error — null means "don't know", below
+      fetch("/api/zone-state?zone=" + encodeURIComponent(zone), { cache: "no-store" })
+        .then(r => (r.ok ? r.json() : null))
+        .then(j => {
+          const s = j && j.zone && j.zone.settings;
+          return j ? !!(s && s.auto_radio) : null;
+        })
+        .catch(() => null),
+    ]);
+    // A newer tap or read happened while these were in the air. Its answer is
+    // the current truth and this one would undo it.
+    if (g !== radioGen) return;
+    // null is "don't know" — leave that switch where it is rather than
+    // reporting a radio off because the request for it failed.
+    if (own  !== null && radioToggle)     radioToggle.checked     = own;
+    if (roon !== null && roonRadioToggle) roonRadioToggle.checked = roon;
+  }
+  // One radio write, bounded.
+  //
+  // Bounded for the reason postVolume is: neither route answers until Roon's
+  // change_settings callback fires, and a Core that drops mid-call never
+  // settles the promise. With the in-flight guard below that would leave the
+  // switches queueing behind a request that never returns — dead until reload,
+  // which is the v1.7.69 volume bug wearing a different hat.
+  //
+  // Returns the server's `radios` block, or null when it refused or failed —
+  // the caller re-reads rather than trusting the switch the user moved.
+  async function postRadio(which, on, zoneId) {
+    const ctl = typeof AbortController === "function" ? new AbortController() : null;
+    const t   = ctl ? setTimeout(() => ctl.abort(), 5000) : null;
+    try {
+      const r = await fetch(which === "own" ? "/api/radio" : "/api/zone-settings", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(which === "own"
+          ? { zone: zoneId, enabled: on }
+          : { zone_or_output_id: zoneId, auto_radio: on }),
+        signal: ctl ? ctl.signal : undefined,
+      });
+      const j = await r.json().catch(() => null);
+      return (r.ok && j && j.radios) ? j.radios : null;
+    } finally {
+      if (t) clearTimeout(t);
+    }
+  }
+
+  // Drive one switch. Serialised, latest-wins — the volume control's shape
+  // (v1.7.69), for its reasons and one of its own.
+  //
+  // The two switches write to DIFFERENT endpoints, so with nothing holding them
+  // apart a quick Random-on then Roon-on puts two requests in flight at once.
+  // They finish in whatever order the Core answers, the older answer paints
+  // last, and the switches settle on the tap before last. On the server the two
+  // routes are reading and writing the same zone set concurrently, and the
+  // interleaving where each cancels the other's radio leaves BOTH off.
+  async function writeRadio(which, on) {
+    if (!zoneSelect || !zoneSelect.value) return;
+    const zoneId = zoneSelect.value;
+
+    // Show the rule NOW: as this switch comes on, the other goes off. It is a
+    // rule the client knows and the server is about to confirm, and waiting for
+    // a Core round trip to draw it left the other switch lit for long enough to
+    // read as broken — displaying, of all things, the both-on state the rule
+    // exists to prevent. Reconciled against the server's answer below, the same
+    // trade the volume slider makes. Only for ON: the rule is "at most one",
+    // so switching a radio off says nothing about the other.
+    if (on) paintRadios(which === "own" ? { own: true, roon: false }
+                                        : { own: false, roon: true });
+
+    const gen = ++radioGen;
+    if (radioInFlight) { radioQueued = { which, on, zoneId, gen }; return; }
+    radioInFlight = true;
+    let job = { which, on, zoneId, gen };
+    try {
+      while (job) {
+        let radios = null;
+        // Inside the loop, so one failed write does not abandon a tap already
+        // queued behind it and already painted.
+        try { radios = await postRadio(job.which, job.on, job.zoneId); }
+        catch (e) { radios = null; }   // blip, or the 5s timeout above
+        // Superseded: a newer tap is queued or already painted, and this answer
+        // describes the state before it.
+        if (job.gen === radioGen) {
+          if (radios) paintRadios(radios);
+          // Refused or never landed. We don't know what the server did, so go
+          // and look rather than leave the switch showing a change that may
+          // never have happened.
+          else loadRadio(job.zoneId, job.gen);
+        }
+        job = radioQueued; radioQueued = null;
       }
-    });
+    } finally {
+      // In a finally so an unexpected throw cannot wedge every later tap.
+      radioInFlight = false;
+    }
+  }
+
+  if (radioToggle) {
+    radioToggle.addEventListener("change", () => writeRadio("own", radioToggle.checked));
   }
   if (roonRadioToggle) {
-    roonRadioToggle.addEventListener("change", async () => {
-      if (!zoneSelect || !zoneSelect.value) return;
-      try {
-        const r = await fetch("/api/zone-settings", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            zone_or_output_id: zoneSelect.value, auto_radio: roonRadioToggle.checked
-          })
-        });
-        const j = await r.json().catch(() => null);
-        // A refusal (no zone, Core gone) answers with an error and no radios
-        // block; paintRadios leaves both switches alone, so re-read the truth.
-        if (r.ok && j && j.radios) paintRadios(j);
-        else loadRadio();
-      } catch (e) {
-        loadRadio();   // same as above: unknown outcome, so go and look
-      }
-    });
+    roonRadioToggle.addEventListener("change", () => writeRadio("roon", roonRadioToggle.checked));
   }
+  // The switches belong to the selected zone, and nothing re-read them when it
+  // changed: with the Playback pane open, changing zone left both showing the
+  // PREVIOUS zone's radios — and the next tap wrote that stale reading to the
+  // new zone. Runs alongside the other two listeners on this select (the active
+  // zone, and the now-playing refresh); it only reads.
+  if (zoneSelect) zoneSelect.addEventListener("change", () => loadRadio());
 
   let versionLoaded = false;
   async function loadVersion() {
