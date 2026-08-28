@@ -2,6 +2,48 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.74] — 2026-08-28
+
+### Fixed — the radio switches now actually move, and the toast is gone
+
+**v1.7.73 enforced the exclusivity rule on the server but you could not see it.** Turning either
+radio on did switch the other off — and the switch you did not touch stayed exactly where it was.
+The rule was real; the screen just never showed it.
+
+The cause was reading back from the wrong place. Both handlers re-read their state after a write:
+Random album radio from `/api/radio`, Roon Radio from `/api/zone-state`. But `/api/zone-state` is
+served from a zone cache that Roon only refreshes by pushing a `zones_changed` event — so a read
+issued immediately after a write still reports the value from *before* it. Roon Radio therefore
+stayed lit next to the radio that had just replaced it, and a freshly-enabled Roon Radio was flipped
+back off by its own confirmation read. Nothing polls the Settings pane, so the wrong state simply
+stayed there until it was closed and reopened.
+
+**Error class: reading back from a cache that lags the write.** The re-read was added for a good
+reason — never assume your own write landed — but it was pointed at a source that could not yet know
+the answer. Both write routes now report the state of *both* radios in one shape, after the Core has
+acknowledged the change, and the client paints both switches from that single answer.
+
+Three further defects fell out of the same root cause:
+
+- **Turning Random album radio on over Roon Radio did not start anything.** The route asked the Core
+  to switch Roon Radio off, then kicked the radio off immediately without waiting — and the kickstart
+  reads the same stale `auto_radio`, which makes the radio stand down. It now waits for the Core's
+  acknowledgement first.
+- **Roon Radio switched on from Roon's own apps left both radios on.** Nothing outside this extension
+  consults the rule, and ours is the one that goes quiet — a switch sitting lit in Settings over a
+  radio that never runs. A zone reporting `auto_radio` now switches ours off as it arrives.
+- **Turning Random album radio on from Roon's own settings panel bypassed the rule entirely.** That
+  path wrote straight to the zone set. Both surfaces now go through one helper.
+
+**A Core that refuses to release Roon Radio no longer leaves both switches on.** Ours would stand
+down at runtime anyway, so the request reports the refusal and the switch springs back rather than
+claiming a change that did not happen.
+
+### Removed
+
+- **The "Roon Radio on — Random Album Radio turned off" toast.** The other switch visibly moving is
+  the explanation; the toast on top of it was noise.
+
 ## [1.7.73] — 2026-08-27
 
 ### Changed — the two radios live together in Settings, and only one can be on
