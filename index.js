@@ -385,8 +385,18 @@ const svc_settings = new RoonApiSettings(roon, {
     for (const [k, v] of Object.entries(vals)) {
       if (!k.startsWith("radio_")) continue;
       const zoneId = k.slice(6);
-      if (v === "yes") radioZones.add(zoneId);
-      else radioZones.delete(zoneId);
+      if (v === "yes") {
+        radioZones.add(zoneId);
+        // The same rule the web UI's switch obeys: only one radio can be on
+        // for a zone. Enforced here too, or turning ours on from Roon's own
+        // settings panel leaves both running — and the app's two switches then
+        // faithfully show the state this rule exists to prevent.
+        // Not on a dry run: that is a live preview of a layout, not a commit,
+        // and must not write to the Core.
+        if (!isdryrun) standDownRoonRadio(zoneId, () => {});
+      } else {
+        radioZones.delete(zoneId);
+      }
     }
     if (!isdryrun) persistRadio();
 
@@ -12108,6 +12118,83 @@ function forgetRadioZone(zoneId) {
   cancelRadioRecheck(zoneId);
 }
 
+// Mirror settings the Core has ACCEPTED into our cached copy of the zone.
+//
+// `zones` is only ever written by the subscribe_zones push, which arrives some
+// time after change_settings calls back. Until it does, every read of that zone
+// still reports the value from BEFORE the change — so /api/zone-state answers a
+// client that just turned Roon Radio on with auto_radio:false, and the switch
+// the user moved springs back. Worse, radioDecision() reads the same stale
+// auto_radio and refuses to start our radio on a zone whose Roon Radio we have
+// just switched off.
+//
+// Only ever called with a patch the Core has acknowledged, and the authoritative
+// push overwrites it moments later with the same values, so this narrows a
+// window rather than inventing state.
+//
+// The object is shared with the transport SDK's own `_zones` map. Safe: that
+// map is only ever written by whole-object replacement from the Core, and
+// nothing in it diffs old against new to decide what to report — so a mutation
+// here cannot mask a later update.
+function applyAcceptedZoneSettings(zone, patch) {
+  if (!zone || !patch) return;
+  if (!zone.settings) zone.settings = {};
+  for (const k of ["shuffle", "loop", "auto_radio"]) {
+    if (patch[k] !== undefined) zone.settings[k] = patch[k];
+  }
+}
+
+// Both of a zone's radios, as they actually stand right now.
+//
+// One shape, reported by BOTH write routes, because the client paints BOTH
+// switches from whichever one it called — turning either radio on moves the
+// other switch, so an answer that spoke only for the radio you asked about
+// would always leave the other one showing the state from before the rule ran.
+// Read from the live sources rather than from what the caller requested: a
+// change the Core refused must not come back as a switch that moved.
+function radioReport(zoneId) {
+  const zone = zoneId && zones[zoneId];
+  return {
+    own:  !!(zoneId && radioZones.has(zoneId)),
+    roon: zone ? zoneSettings(zone).auto_radio : false,
+  };
+}
+
+// Zones with a stand-down waiting on the Core right now. Between the request
+// and its ack the zone still reports auto_radio ON, and any ordinary push in
+// that window (a track change, a queue update) would send the yield guard in
+// handleRadioZone below the wrong way — switching off the radio we are in the
+// middle of turning on.
+const roonStandDownPending = new Set();
+
+// Turn Roon Radio off for a zone because our own radio is being turned on.
+//
+// The one place that direction of the exclusivity rule is implemented, so the
+// HTTP route and Roon's own settings panel cannot drift apart — from either
+// surface, "Random album radio on" means "Roon Radio off".
+//
+// Calls back with true when Roon Radio was on and is now off, false when there
+// was nothing to do or the Core refused. Deliberately does not throw: a Core
+// that rejects the change leaves ITS radio on, and the caller reports the real
+// state rather than a hoped-for one.
+function standDownRoonRadio(zoneId, cb) {
+  const zone = zoneId && zones[zoneId];
+  if (!core || !zone) return cb(false);
+  if (radioToTurnOff("own", zoneSettings(zone).auto_radio, true) !== "roon") return cb(false);
+  roonStandDownPending.add(zoneId);
+  core.services.RoonApiTransport.change_settings(zoneId, { auto_radio: false }, (err) => {
+    roonStandDownPending.delete(zoneId);
+    if (err) {
+      console.warn("[radio] could not turn Roon Radio off for " + zoneId + ": " +
+                   (typeof err === "string" ? err : JSON.stringify(err)));
+      return cb(false);
+    }
+    applyAcceptedZoneSettings(zone, { auto_radio: false });
+    console.log(`[radio] random album radio on for ${zone.display_name || zoneId} — Roon Radio off`);
+    cb(true);
+  });
+}
+
 // Log every genuine zone state change, ALWAYS — not behind DEBUG.
 //
 // Added because a report of "playback stops at the end of an album even when
@@ -12209,6 +12296,26 @@ async function radioTopUp(zoneId, mode) {
 
 function handleRadioZone(z, isInitial, allowPlay) {
   if (!z || !radioZones.has(z.zone_id)) return;
+
+  // Roon Radio can be switched on from Roon's own apps, which know nothing of
+  // our rule. Both radios are then on for this zone — and ours is the one that
+  // does nothing, because radioDecision() stands down while auto_radio is set.
+  // Left alone, that is a switch sitting lit in Settings over a radio that will
+  // never run: the "on but silently inert" state the whole rule exists to
+  // prevent, just arrived at from outside. Yield, because Roon Radio is the one
+  // the user just asked for.
+  //
+  // Not while our own stand-down is still in flight: until the Core acks it the
+  // zone still reports auto_radio ON, and this would switch off the radio that
+  // request is in the middle of turning on.
+  if (zoneSettings(z).auto_radio && !roonStandDownPending.has(z.zone_id)) {
+    radioZones.delete(z.zone_id);
+    forgetRadioZone(z.zone_id);   // no episode left to finish
+    persistRadio();
+    console.log(`[radio] Roon Radio on for ${z.display_name || z.zone_id} — random album radio off`);
+    return;
+  }
+
   const zid = z.zone_id;
   const st  = radioState(zid);
   const playing = z.state === "playing" || z.state === "loading";
@@ -12378,35 +12485,51 @@ app.post("/api/radio", (req, res) => {
   const zoneId  = (req.body && req.body.zone) || null;
   const enabled = !!(req.body && req.body.enabled);
   if (!zoneId) return res.status(400).json({ error: "zone required" });
+
+  // Answering only once the Core has settled, and reporting BOTH radios as they
+  // actually stand, because the client paints both switches from this response.
+  // Reporting the stand-down we ASKED for would light a switch over a radio
+  // that is still running whenever the Core refuses.
+  const finish = () => {
+    persistRadio();
+    const radios = radioReport(zoneId);
+    // `enabled` reports what the zone ENDED UP with, not what was asked for —
+    // the two differ when the Core would not release Roon Radio below.
+    res.json({ ok: true, enabled: radios.own, radios });
+    // React immediately: start if idle, or top up if already on the last track.
+    // allowPlay=true because the user explicitly just enabled radio. This runs
+    // AFTER the stand-down, never before: radioDecision() returns null while
+    // auto_radio is set, so kicking off first asks for a decision against the
+    // very state we are in the middle of changing — and gets "do nothing".
+    if (enabled && core && zones[zoneId]) {
+      try { handleRadioZone(zones[zoneId], false, true); } catch (e) {} // best-effort kickstart — radio will retry on next zone-state event
+    }
+  };
+
   if (enabled) {
     radioZones.add(zoneId);
     // Both radios answer the same question — what plays when this zone's queue
     // runs out — so only one can run. Turning this on turns Roon Radio off for
     // the zone, rather than leaving two switches both reading ON while one of
-    // them silently does nothing. Best-effort: if the Core refuses, the next
-    // poll shows the truth, which is why the client re-reads both switches
-    // after every change instead of assuming this worked.
-    const off = core && zones[zoneId]
-      ? radioToTurnOff("own", zoneSettings(zones[zoneId]).auto_radio, true)
-      : null;
-    if (off === "roon") {
-      core.services.RoonApiTransport.change_settings(zoneId, { auto_radio: false }, (err) => {
-        if (err) {
-          console.warn("[radio] could not turn Roon Radio off for " + zoneId + ": " +
-                       (typeof err === "string" ? err : JSON.stringify(err)));
-        }
-      });
-    }
+    // them silently does nothing.
+    standDownRoonRadio(zoneId, () => {
+      // Roon Radio is still on, so the Core refused to release it. Ours must
+      // not be left on beside it: it would stand down at runtime anyway, which
+      // is a lit switch over a radio that never runs. The response then reports
+      // the refusal honestly and the switch springs back, instead of claiming a
+      // change that did not happen. (Reading the zone rather than the callback
+      // flag, because "nothing to do" answers false too — and after that the
+      // zone correctly reads auto_radio OFF.)
+      if (zones[zoneId] && zoneSettings(zones[zoneId]).auto_radio) {
+        radioZones.delete(zoneId);
+        forgetRadioZone(zoneId);
+      }
+      finish();
+    });
   } else {
     radioZones.delete(zoneId);
     forgetRadioZone(zoneId);   // radio off means no episode to finish
-  }
-  persistRadio();
-  res.json({ ok: true, enabled });
-  // React immediately: start if idle, or top up if already on the last track.
-  // allowPlay=true because the user explicitly just enabled radio.
-  if (enabled && core && zones[zoneId]) {
-    try { handleRadioZone(zones[zoneId], false, true); } catch (e) {} // best-effort kickstart — radio will retry on next zone-state event
+    finish();
   }
 });
 
@@ -13293,6 +13416,11 @@ app.post("/api/zone-settings", (req, res) => {
       console.warn(`[zone-settings] failed: ${msg}`);
       return res.status(500).json({ error: msg });
     }
+    // The zone the Core just changed still reads as it did BEFORE the change
+    // until the subscription pushes it back, so the client that asked for this
+    // would poll and see its own switch spring back. Mirror what was accepted.
+    applyAcceptedZoneSettings(zone, patch);
+
     // The other direction of the same rule. Only once the Core has ACCEPTED
     // auto_radio do we switch ours off: doing it first would leave the zone
     // with neither radio on if the change were rejected.
@@ -13302,7 +13430,14 @@ app.post("/api/zone-settings", (req, res) => {
       persistRadio();
       console.log(`[radio] Roon Radio on for ${zone.display_name || zone.zone_id} — random album radio off`);
     }
-    res.json({ ok: true, random_album_radio_turned_off: ownRadioWasOn });
+    // Both radios as they now stand, in the same shape /api/radio uses, for the
+    // same reason: the client paints both switches from this one answer rather
+    // than re-reading a cache that lags the write.
+    res.json({
+      ok: true,
+      random_album_radio_turned_off: ownRadioWasOn,
+      radios: radioReport(zone && zone.zone_id),
+    });
   });
 });
 

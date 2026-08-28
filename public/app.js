@@ -7943,13 +7943,12 @@
         body: JSON.stringify(Object.assign({ zone_or_output_id: currentZone.zone_id }, patch))
       });
       const j = await r.json().catch(() => ({}));
+      // Shuffle and repeat only — Roon Radio moved to Settings → Playback in
+      // v1.7.71, where the exclusivity rule announces itself by the two
+      // switches moving. So a failure is the only thing left to report here.
       if (!r.ok) {
         console.warn("zone-settings failed:", j.error || r.status);
         if (window.__showToast) window.__showToast(j.error || "Could not change that", "error");
-      } else if (j.random_album_radio_turned_off && window.__showToast) {
-        // Both radios fill the same queue, so the server switches ours off.
-        // Say so: a switch the user did not touch has just moved.
-        window.__showToast("Roon Radio on — Random Album Radio turned off for this zone");
       }
     } catch (e) {
       // Network blip. The finally below still re-polls, so the buttons resync.
@@ -8792,16 +8791,40 @@
       }
     } catch (e) {} // same: non-critical, the switch stays where it was
   }
+  // Both switches, from one server answer.
+  //
+  // Turning either radio on switches the other off, so every write moves BOTH
+  // switches and both write routes report both radios in this one shape.
+  // Painting from that answer rather than re-reading is the whole point:
+  // /api/zone-state is served from a zone cache the Core only refreshes by
+  // push, so a read issued straight after a write still reports the value from
+  // before it — which showed Roon Radio still lit next to the radio that had
+  // just replaced it, and flipped a freshly-enabled Roon Radio back off.
+  function paintRadios(j) {
+    const s = j && j.radios;
+    if (!s) return;
+    if (radioToggle)     radioToggle.checked     = !!s.own;
+    if (roonRadioToggle) roonRadioToggle.checked = !!s.roon;
+  }
   if (radioToggle) {
     radioToggle.addEventListener("change", async () => {
       if (!zoneSelect || !zoneSelect.value) return;
       try {
-        await fetch("/api/radio", {
+        const r = await fetch("/api/radio", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ zone: zoneSelect.value, enabled: radioToggle.checked })
         });
-      } catch (e) {} // network error toggling radio — toggle UI already updated, best-effort
-      loadRadio();
+        const j = await r.json().catch(() => null);
+        // A refusal answers with an error and no radios block. Leaving the
+        // switch where the user put it would show a radio that isn't running.
+        if (r.ok && j && j.radios) paintRadios(j);
+        else loadRadio();
+      } catch (e) {
+        // Network error toggling radio: we don't know what the server did, so
+        // re-read both switches rather than leaving the one the user moved
+        // showing a change that may never have landed.
+        loadRadio();
+      }
     });
   }
   if (roonRadioToggle) {
@@ -8814,15 +8837,14 @@
             zone_or_output_id: zoneSelect.value, auto_radio: roonRadioToggle.checked
           })
         });
-        // The server switches the other radio off, so say so: without this a
-        // switch the user did not touch simply flips on the next read, with no
-        // explanation for why.
-        const j = await r.json().catch(() => ({}));
-        if (j && j.random_album_radio_turned_off && window.__showToast) {
-          window.__showToast("Roon Radio on — Random Album Radio turned off for this zone");
-        }
-      } catch (e) {} // best-effort; loadRadio below re-reads the truth either way
-      loadRadio();
+        const j = await r.json().catch(() => null);
+        // A refusal (no zone, Core gone) answers with an error and no radios
+        // block; paintRadios leaves both switches alone, so re-read the truth.
+        if (r.ok && j && j.radios) paintRadios(j);
+        else loadRadio();
+      } catch (e) {
+        loadRadio();   // same as above: unknown outcome, so go and look
+      }
     });
   }
 

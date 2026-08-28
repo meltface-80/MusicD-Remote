@@ -50,8 +50,27 @@ window.__installFetch(function (url, opts) {
     if (body.shuffle !== undefined)    s.shuffle = body.shuffle;
     if (body.loop !== undefined)       s.loop = body.loop;
     if (body.auto_radio !== undefined) s.auto_radio = body.auto_radio;
-    return window.__json({ ok: true,
-      random_album_radio_turned_off: !!(window.__ownRadioOn && body.auto_radio === true) });
+    // The server's rule: turning Roon Radio on switches the app's own radio
+    // off, and reports BOTH radios so one answer can paint both switches.
+    var turnedOff = !!(window.__ownRadioOn && body.auto_radio === true);
+    if (turnedOff) window.__ownRadioOn = false;
+    return window.__json({ ok: true, random_album_radio_turned_off: turnedOff,
+      radios: { own: window.__ownRadioOn, roon: !!s.auto_radio } });
+  }
+  if (url.indexOf("/api/radio") > -1) {
+    if (opts && opts.method === "POST") {
+      var rb = JSON.parse((opts && opts.body) || "{}");
+      window.__posts.push(rb);
+      window.__ownRadioOn = !!rb.enabled;
+      // The other direction of the same rule, and the reason this stub models
+      // it rather than echoing the request: the app must paint the OTHER switch
+      // from this answer. A stub that only reported the radio being asked about
+      // would pass whether or not the app ever looked at the other one.
+      if (window.__ownRadioOn) window.__zone.settings.auto_radio = false;
+      return window.__json({ ok: true, enabled: window.__ownRadioOn,
+        radios: { own: window.__ownRadioOn, roon: !!window.__zone.settings.auto_radio } });
+    }
+    return window.__json({ enabled: window.__ownRadioOn, zones: [] });
   }
   if (url.indexOf("/api/zone-state") > -1) return window.__json({ zone: window.__zone });
   if (url.indexOf("/api/zones") > -1)      return window.__json({ zones: [window.__zone] });
@@ -123,7 +142,12 @@ const DRIVER = `
 
   T("posts_np", window.__posts.slice());
 
-  // ---- Roon Radio now lives in Settings -> Playback ----------------------
+  // ---- The two radios, together, in Settings -> Playback -----------------
+  // They answer one question — what plays when this zone's queue runs out — so
+  // at most one can be on. The rule is two-directional and the way to get it
+  // wrong is to implement one side and believe you have done both, so both
+  // directions are driven here, each asserting the switch the user did NOT
+  // touch.
   window.__ownRadioOn = true;   // the app's own radio is on for this zone
   document.getElementById("modal-home-btn").click();     // leave the NP screen
   await window.__sleep(300);
@@ -133,19 +157,30 @@ const DRIVER = `
   await window.__sleep(250);
 
   var rr = document.getElementById("roon-radio-toggle");
-  T("rr_found", !!rr);
-  T("rr_in_playback", !!rr && !!rr.closest('[data-pane="playback"]'));
   // It sits in the same block as Random album radio — the whole point of the
   // move is that the two mutually exclusive switches are read together.
   var ra = document.getElementById("radio-toggle");
+  T("rr_found", !!rr);
+  T("ra_found", !!ra);
+  T("rr_in_playback", !!rr && !!rr.closest('[data-pane="playback"]'));
   T("rr_beside_random", !!rr && !!ra && rr.closest(".settings-block") === ra.closest(".settings-block"));
-  T("rr_checked_before", !!rr.checked);
+  // The pane reads both radios as it opens: ours on, Roon's off.
+  T("radios_before", { rr: !!rr.checked, ra: !!ra.checked });
 
+  // Roon Radio on -> Random album radio off, without touching that switch.
   rr.click();
   await window.__sleep(600);
-  T("rr_checked_after", !!rr.checked);
-  var toast = document.querySelector(".toast");
-  T("radio_toast", toast ? toast.textContent : null);
+  T("radios_after_roon_on", { rr: !!rr.checked, ra: !!ra.checked });
+
+  // The rule is announced by the switches moving, not by a toast.
+  var toastEl = document.querySelector(".toast");
+  T("radio_toast", { text: toastEl ? toastEl.textContent : null,
+                     shown: !!(toastEl && toastEl.classList.contains("show")) });
+
+  // ...and the same rule the other way round.
+  ra.click();
+  await window.__sleep(600);
+  T("radios_after_own_on", { rr: !!rr.checked, ra: !!ra.checked });
 
   T("posts", window.__posts);
 
@@ -206,23 +241,33 @@ test("shuffle, repeat and Roon Radio reflect and drive the zone (v1.7.1)", async
 
   await t.test("Roon Radio drives the zone from Settings → Playback", () => {
     assert.equal(r.rr_found, true, "#roon-radio-toggle is missing from Settings");
+    assert.equal(r.ra_found, true, "#radio-toggle is missing from Settings");
     assert.equal(r.rr_in_playback, true, "the switch is not inside the Playback pane");
     assert.equal(r.rr_beside_random, true,
       "Roon Radio is not in the same block as Random album radio — the point " +
       "of the move is that the two mutually exclusive switches are read together");
-    assert.equal(r.rr_checked_before, false);
-    assert.equal(r.rr_checked_after, true);
+    assert.deepEqual(r.radios_before, { rr: false, ra: true },
+      "the pane must read BOTH radios as it opens — Roon Radio from the zone, " +
+      "Random album radio from /api/radio");
   });
 
-  await t.test("and says the app's own radio was turned off", () => {
-    // The server now genuinely switches the other radio off rather than
-    // letting it stand down at runtime, so a switch the user did not touch has
-    // moved. Saying so is the difference between a rule and a glitch.
-    assert.match(String(r.radio_toast), /Roon Radio on/);
-    assert.match(String(r.radio_toast), /Random Album Radio/);
-    assert.match(String(r.radio_toast), /turned off/,
-      "the notice still says the old 'stands down', which described the " +
-      "previous behaviour: both switches on, one of them quietly inert");
+  await t.test("turning either radio on switches the other one off", () => {
+    // The rule, from the user's side: only one switch can be lit. Both
+    // directions, because implementing one and believing you have done both is
+    // how this gets shipped half-done.
+    assert.deepEqual(r.radios_after_roon_on, { rr: true, ra: false },
+      "Roon Radio was switched on and Random album radio stayed lit beside it");
+    assert.deepEqual(r.radios_after_own_on, { rr: false, ra: true },
+      "Random album radio was switched on and Roon Radio stayed lit beside it");
+  });
+
+  await t.test("the switches say it, not a toast", () => {
+    // The other switch visibly moving IS the explanation. A toast on top of it
+    // was noise, and the user asked for it gone.
+    assert.equal(r.radio_toast.shown, false,
+      `a toast appeared for the radio change: ${JSON.stringify(r.radio_toast.text)}`);
+    assert.equal(r.radio_toast.text, "",
+      "the toast element carries radio text — something still calls showToast");
   });
 
   await t.test("every click sends the concrete state it wants, never a toggle", () => {
@@ -235,10 +280,14 @@ test("shuffle, repeat and Roon Radio reflect and drive the zone (v1.7.1)", async
       { zone_or_output_id: "z1", loop: "loop_one" },
       { zone_or_output_id: "z1", loop: "disabled" },
     ]);
-    // The switch sends the same concrete body the button did, from its own
-    // call site — it does not go through changeZoneSettings().
-    assert.deepEqual(r.posts[r.posts.length - 1],
-      { zone_or_output_id: "z1", auto_radio: true });
+    // Each switch sends the same concrete body the buttons do, from its own
+    // call site — neither goes through changeZoneSettings(), and neither sends
+    // anything for the OTHER radio: switching that one off is the server's job,
+    // and a client that did it too would hide a server that had stopped.
+    assert.deepEqual(r.posts.slice(-2), [
+      { zone_or_output_id: "z1", auto_radio: true },
+      { zone: "z1", enabled: true },
+    ]);
   });
 
   await t.test("the transport row fits a 360px phone", () => {
