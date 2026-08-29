@@ -46,12 +46,25 @@ const READ_TOKENS = `
   function tokens() {
     var out = {};
     ["--bg","--bg-elev","--bg-elev-2","--border","--text","--text-dim","--text-faint",
-     "--accent","--accent-text","--on-accent","--danger","--bg-translucent"].forEach(function (n) {
+     "--accent","--accent-text","--on-accent","--danger",
+     // v1.7.86: --bg-translucent is gone. It existed only for the top bar's
+     // backdrop-filter, and that filter was blurring a flat colour — .topbar is
+     // a flex SIBLING of <main>, so nothing ever scrolled behind it. The bar
+     // uses the transport pill's surface now, which every palette must define.
+     "--glass-bg","--glass-edge"].forEach(function (n) {
       out[n] = tok(n);
     });
     return out;
   }
 `;
+
+// rgb(...) as reported by getComputedStyle -> #rrggbb, so a measured colour can
+// be compared with the hex a meta tag carries.
+function rgbToHex(v) {
+  const m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(String(v || "").trim());
+  if (!m) return String(v || "");
+  return "#" + [1, 2, 3].map(i => Number(m[i]).toString(16).padStart(2, "0")).join("");
+}
 
 // --- WCAG maths, in Node so the arithmetic is reviewable ---------------------
 function srgbToLin(c) {
@@ -82,6 +95,7 @@ function tokensFor(themeId) {
     T("tokens", tokens());
     T("meta_theme_color", (document.querySelector('meta[name="theme-color"]') || {})
       .getAttribute ? document.querySelector('meta[name="theme-color"]').getAttribute("content") : null);
+    T("topbar_bg", getComputedStyle(document.querySelector(".topbar")).backgroundColor);
   `;
   const stub = STUB + `try { localStorage.setItem("rra-theme-v2", ${JSON.stringify(themeId)}); } catch (e) {}\n`;
   return harness.renderPage({ stub, driver, name: "tokens-" + themeId, windowSize: "390x844" });
@@ -117,6 +131,26 @@ for (const id of THEMES) {
     await t.test("every token this theme needs is defined", () => {
       for (const [name, value] of Object.entries(k)) {
         assert.notEqual(value, "", `${name} is empty — the palette is missing a token`);
+      }
+    });
+
+    await t.test("elevated surfaces still sit ABOVE the ground", () => {
+      // v1.7.87 raised the dark grounds to meet the top bar, and had to raise
+      // --bg-elev / --bg-elev-2 by the same delta: in the classic dark palette
+      // the old --bg-elev (#16191c) is DARKER than the new ground (#1d2125), so
+      // lifting the page alone would have made every card, sheet and popover
+      // recede into a hole instead of floating. That is a whole-theme visual
+      // failure with no single screenshot that shows it, and nothing else in
+      // this suite would notice — the contrast floors get BETTER as a surface
+      // moves away from the text on it.
+      // Both families elevate the same way — by getting lighter. The brass
+      // palette says so explicitly in its own comment ("light theme (elev
+      // lighter than bg), so existing depth cues still work").
+      const ground = luminance(k["--bg"]);
+      for (const surf of ["--bg-elev", "--bg-elev-2"]) {
+        assert.ok(luminance(k[surf]) > ground,
+          `${surf} (${k[surf]}) is not lighter than --bg (${k["--bg"]}) — elevated ` +
+          `surfaces would read as recesses in this theme`);
       }
     });
 
@@ -165,9 +199,20 @@ for (const id of THEMES) {
     });
 
     await t.test("the browser chrome colour follows the theme", () => {
-      assert.equal(r.meta_theme_color, k["--bg"],
-        "the theme-color meta still holds a stale background — it was hard-coded " +
-        "to the dark palette and wrong in light theme before this change");
+      // iOS paints the status bar itself and fills it with theme-color; the app
+      // cannot render there and cannot make it translucent (the meta that would
+      // is the one banned by pre-flight step 6). What it can do is match the bar
+      // directly beneath it.
+      //
+      // Asserted against the bar's MEASURED colour, not against a token name:
+      // v1.7.86 had this compare to a composite of --glass-bg over --bg, and
+      // v1.7.87 made the bar plain --bg — a test naming either one has to be
+      // rewritten every time the bar is recoloured, and says nothing about the
+      // seam. What matters is that the two are the same colour.
+      assert.equal(rgbToHex(r.topbar_bg), r.meta_theme_color.toLowerCase(),
+        `the top bar renders ${r.topbar_bg} (${rgbToHex(r.topbar_bg)}) but ` +
+        `theme-color is ${r.meta_theme_color} — there will be a visible seam ` +
+        `between the iOS status bar and the app bar`);
     });
   });
 }

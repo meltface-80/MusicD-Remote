@@ -632,3 +632,102 @@ test("the progress line follows the pill's curve", async (t) => {
       `y=${r.popover.pill_top} — it is being clipped inside the bar`);
   });
 });
+
+test("floating things share one material; grounded things share one ground", async (t) => {
+  if (!harness.available) { t.skip("no chromium binary available"); return; }
+
+  // v1.7.86 put the top bar on the transport pill's material. v1.7.87 splits
+  // that in two, because they are not the same kind of surface:
+  //
+  //   FLOATING (--glass-bg, translucent): the transport pill and both volume
+  //   sheets. These really do sit over content and the translucency reads.
+  //
+  //   GROUNDED (--bg): the page, the top bar, and the full-screen panels
+  //   (album view, Now playing). .topbar is a flex SIBLING of <main>, so
+  //   nothing ever scrolls behind it — giving it a translucent material bought
+  //   nothing and left a visible seam between it and the page, which is what
+  //   was reported.
+  //
+  // Neither group may carry a backdrop-filter: saturate() brightens whatever
+  // shows through, which is the effect that made the pill change face on every
+  // scroll, twice (see the file header).
+  const r = harness.renderPage({
+    name: "ui-one-surface", windowSize: "390x844", stub: STUB,
+    driver: `
+      ${HELPERS}
+      function face(el) {
+        var c = getComputedStyle(el);
+        return { bg: c.backgroundColor,
+                 filter: c.backdropFilter || c.webkitBackdropFilter || "none" };
+      }
+      await window.__sleep(600);
+      await openRandomWall();
+      var bar = document.getElementById("mini-transport");
+      for (var i = 0; i < 40 && bar.classList.contains("hidden"); i++) await window.__sleep(100);
+
+      T("pill",   face(bar));
+      T("topbar", face(document.querySelector(".topbar")));
+      T("body",   face(document.body));
+
+      document.getElementById("mt-vol-btn").click();
+      await window.__sleep(300);
+      var mtVol = document.getElementById("mt-vol-popover");
+      T("mt_vol", face(mtVol));
+      T("mt_vol_open", !mtVol.classList.contains("hidden"));
+      document.getElementById("mt-vol-btn").click();
+      await window.__sleep(200);
+
+      document.querySelector(".mt-info").click();
+      await window.__sleep(1000);
+      T("panel", face(document.querySelector("#album-modal .modal-panel")));
+      document.getElementById("np-volbtn").click();
+      await window.__sleep(300);
+      var npVol = document.getElementById("np-vol-popover");
+      T("np_vol", face(npVol));
+      T("np_vol_open", !npVol.classList.contains("hidden"));
+    `,
+  });
+  harness.assertNoPageError(assert, r);
+
+  await t.test("both volume sheets actually opened", () => {
+    assert.equal(r.mt_vol_open, true, "the mini bar's volume sheet did not open");
+    assert.equal(r.np_vol_open, true, "the now-playing volume sheet did not open");
+  });
+
+  await t.test("the volume sheets are the pill's material", () => {
+    for (const [name, face] of [["the mini bar's volume sheet", r.mt_vol],
+                                ["the now-playing volume sheet", r.np_vol]]) {
+      assert.equal(face.bg, r.pill.bg,
+        `${name} is ${face.bg} and the transport pill is ${r.pill.bg} — they are ` +
+        `meant to read as one material, not two near-miss greys`);
+    }
+  });
+
+  await t.test("THE one: every screen is the same colour, header included", () => {
+    // The reported symptom: a step under the header on the album wall and on
+    // Home, and a third tone again on Now playing.
+    for (const [name, face] of [["the top bar", r.topbar],
+                                ["the Now playing / album panel", r.panel]]) {
+      assert.equal(face.bg, r.body.bg,
+        `${name} is ${face.bg} and the page is ${r.body.bg} — that difference is ` +
+        `a visible seam across the top of the screen`);
+    }
+  });
+
+  await t.test("...and the floating material still reads above that ground", () => {
+    assert.notEqual(r.pill.bg, r.body.bg,
+      `the transport pill is exactly the page colour (${r.pill.bg}) — it has ` +
+      `flattened into the background instead of floating over it`);
+  });
+
+  await t.test("and none of them has a backdrop-filter", () => {
+    for (const [name, face] of [["the transport pill", r.pill], ["the top bar", r.topbar],
+                                ["the mini bar's volume sheet", r.mt_vol],
+                                ["the now-playing volume sheet", r.np_vol]]) {
+      assert.ok(!/blur|saturate/.test(String(face.filter)),
+        `${name} has a backdrop-filter (${face.filter}) — saturate() brightens ` +
+        `whatever shows through, which is the effect that made the pill change ` +
+        `face on every scroll, twice`);
+    }
+  });
+});

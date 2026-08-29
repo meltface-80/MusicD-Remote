@@ -2,6 +2,86 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.87] — 2026-08-29
+
+### Changed — one ground, on every screen, in every theme
+
+The page, the top bar and the full-screen panels (album view, Now playing) were three different tones.
+That is the seam under the header on Home and on the album wall, and the third tone again behind Now
+playing. They are one colour now — `--bg` — everywhere.
+
+**The dark palettes come UP to meet the bar.** The ground is the colour the top bar was already
+showing and which was called out as the right one: **#1d2125** classic, **#2d3134** copper. The whole
+elevation ladder moved with it by the same delta — `--bg-elev`, `--bg-elev-2`, `--border` and
+`--glass-bg`. Lifting the ground alone would have left the old `--bg-elev` (#16191c) *darker* than the
+new page, so every card, sheet and popover would have read as a recess rather than a surface.
+Relative steps are unchanged.
+
+**The light palettes go the other way, and it is headroom, not inconsistency.** Their top bar was
+already `#fffffe` — four tenths of a level off pure white — so raising the ground to meet it would
+leave `--bg-elev` (the white the cards use) nowhere above to go and would flatten every elevated
+surface in the theme. The bar comes down to the ground instead, a step that was barely visible there
+to begin with. The outcome is the same in all four themes: page, bar and panels are one colour.
+
+**Secondary text moved with the ground.** Raising a background without raising what sits on it is
+exactly what the contrast floors exist to catch, and they caught it: `--text-dim` fell to 3.98:1 in
+classic dark and `--text-faint` to 2.11:1, with three more failures in copper. Both dark palettes'
+`--text-dim`/`--text-faint` and copper's `--accent-text` are lifted to clear their floors. Copper's
+`--text-dim` goes past its own minimum on purpose — solving each token in isolation closed the gap
+between the two text tiers to a single level.
+
+The top bar is `var(--bg)` rather than `--glass-bg`, so `theme-color` is a token read again and
+v1.7.86's composite helper is gone with the two-tone bar it existed to describe. `--glass-bg` remains
+the material for the things that genuinely float: the transport pill and the two volume sheets.
+
+### Added
+
+The invariant the ladder shift was protecting, which nothing would otherwise have noticed — the
+contrast floors get *better* as a surface moves away from the text on it, so a flattened elevation
+passes every existing check: **`--bg-elev` and `--bg-elev-2` must be lighter than `--bg` in every
+theme.** Verified against a build with each one left behind. The chrome test now compares
+`theme-color` with the top bar's *measured* colour rather than a token name — v1.7.86 compared it to a
+composite and v1.7.87 made it plain `--bg`; a test naming either has to be rewritten whenever the bar
+is recoloured and says nothing about the seam. 793 unit / 460 DOM / 73 static.
+
+## [1.7.86] — 2026-08-29
+
+### Changed — one material for every piece of app chrome
+
+The floating transport pill's surface — `--glass-bg`, no backdrop-filter — is now shared by **both
+volume sheets** (the one that pops out of the mini bar and the identical one on Now playing) and by
+**the top bar**. Three near-miss greys became one material. The volume sheets genuinely float over
+content, so the translucency reads there the way it does on the pill.
+
+**The top bar's blur was doing nothing.** `.topbar` is a flex *sibling* of `<main>`, not a layer over
+it — `html, body { overflow: hidden }` and the app shell mean only `<main>` scrolls, and it starts
+below the bar. So the only thing behind the top bar was the flat page background, and
+`saturate(160%) blur(14px)` was a compositing layer that produced the colour it started with. It is
+gone, and with it `--bg-translucent`, which had no other user.
+
+### Changed — the iOS status bar matches the bar beneath it
+
+**It cannot be made translucent.** iOS paints the status bar (clock, signal, battery) itself and
+fills it with `theme-color`; nothing the app renders can appear there. The one thing that *would* let
+the page show through is `apple-mobile-web-app-status-bar-style: black-translucent` — the exact meta
+that stopped the app filling the display in v1.7.60–65, banned by pre-flight step 6, and baked into
+the home-screen shortcut at add time, so shipping it wrong cannot be undone from the server.
+
+What it *can* be is the same colour as the bar directly beneath it, which removes the seam between
+them — visible in both screenshots as a darker band above the app bar. `theme-color` was `--bg`; it is
+now `--glass-bg` composited over `--bg`, which is exactly what the top bar resolves to (a fixed
+colour, precisely because nothing scrolls behind it). #1d2125 dark, #2d3134 copper, near-white in the
+two light palettes.
+
+### Added
+
+A DOM test that the pill, the top bar and both volume sheets report the *same* background and that
+none of them carries a backdrop-filter. The theme suite's chrome-colour assertion now derives the
+expected value by compositing, in a second implementation of the blend written in the test — a test
+that imports the code under test agrees with it by construction. Its required-token list swaps
+`--bg-translucent` for `--glass-bg`/`--glass-edge`. Every assertion verified against a build with each
+surface reverted individually. 793 unit / 454 DOM / 73 static.
+
 ## [1.7.85] — 2026-08-29
 
 ### Fixed — the transport has one appearance, permanently

@@ -181,9 +181,24 @@
     // The browser chrome colour was hard-coded to the dark background and
     // never updated, so it was already wrong in light theme. Read it back off
     // the applied palette instead of maintaining a second list of hexes.
+    //
+    // It is the TOP BAR's colour — which as of v1.7.87 is simply --bg, because
+    // the page, the top bar and every full-screen panel are one ground. iOS
+    // draws the status bar (clock, signal, battery) itself and fills it with
+    // theme-color; nothing this app renders can appear there. The one thing
+    // that WOULD let the page show through it is
+    // `apple-mobile-web-app-status-bar-style: black-translucent`, the exact
+    // meta that stopped the app filling the display in v1.7.60-65, banned by
+    // pre-flight step 6, and baked into the home screen shortcut at ADD time so
+    // a wrong one cannot be undone from the server. So the status bar cannot be
+    // translucent. What it can be is the colour of the bar beneath it, and one
+    // ground makes that a token read rather than a blend to keep in step.
+    // v1.7.86 composited --glass-bg over --bg here; that helper went with the
+    // two-tone bar it existed to describe.
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) {
-      const bg = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+      const bg = getComputedStyle(document.documentElement)
+        .getPropertyValue("--bg").trim();
       if (bg) meta.setAttribute("content", bg);
     }
     return t.id;
