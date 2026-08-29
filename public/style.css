@@ -234,8 +234,14 @@ button { font-family: inherit; }
   display: flex; align-items: center; justify-content: flex-start;
   gap: 10px;
 }
-/* Refresh sits at the far right of the top bar. */
+/* The right-hand cluster. Refresh carries the margin that pushes the group
+   over, and #topbar-view sits after it in the markup — so on the random wall
+   the pair lands at the right with the view control in the corner and Refresh
+   beside it. On the Library wall there is no Refresh, so the hidden one hands
+   the push to its neighbour and the view control takes the corner alone.
+   (`.hidden` is display:none, which a sibling selector still matches.) */
 #topbar-refresh { margin-left: auto; }
+#topbar-refresh.hidden + #topbar-view { margin-left: auto; }
 
 
 .album-count {
@@ -726,6 +732,10 @@ main {
 }
 .album-grid.as-list .album {
   display: flex;
+  /* .album is flex-direction: column for the grid, and `display: flex` alone
+     inherits it — which is why the first cut stacked the cover above the text
+     and `align-items: center` then centred the lot. A row has to say so. */
+  flex-direction: row;
   align-items: center;
   gap: 12px;
   width: 100%;
@@ -1164,7 +1174,7 @@ main {
 }
 /* The cover of what is playing. */
 .mt-art {
-  width: 42px; height: 42px;
+  width: 44px; height: 44px;
   flex: 0 0 auto;
   border-radius: 7px;
   object-fit: cover;
@@ -1271,7 +1281,7 @@ main {
 /* Push the main grid above the mini transport. The pill floats clear of the
    bottom edge, so this reserves its height plus that gap. */
 main {
-  padding-bottom: 98px;
+  padding-bottom: 84px;
 }
 
 /* On mobile, hide track info if the bar is cramped */
@@ -1921,28 +1931,36 @@ main {
 /*  Mini transport — Roon-style sizing                                 */
 /* ------------------------------------------------------------------ */
 .mini-transport {
-  padding: 10px 14px;
-  padding-bottom: calc(10px + env(safe-area-inset-bottom));
+  /* NO padding-bottom inset. The pill's `bottom` already lifts the whole thing
+     clear of the home indicator, and keeping the old full-bleed bar's inset as
+     well padded the safe area INSIDE the pill too — 34px of dead glass under
+     the text on any device that has one, which is the empty space the pill was
+     reported for. Lift or pad, never both. */
+  padding: 8px 10px;
 }
 .mt-info { gap: 13px; }
 .mt-info { cursor: pointer; }  /* tappable to open the now-playing screen */
 .mt-title  { font-size: 16px; font-weight: 700; }
 .mt-artist { font-size: 13px; }
 
-.mt-btn { width: 52px; height: 52px; }
-.mt-btn svg { width: 30px; height: 30px; }
-.mt-playpause { width: 54px; height: 54px; }
-.mt-playpause svg { width: 32px; height: 32px; }
+/* Sized so the ARTWORK sets the pill's height, not the buttons. At 54px the
+   play control was the tallest thing in it and drove a 76px bar; the cover is
+   44px, so nothing needs to be bigger than that. The width the buttons give
+   back goes to the title, which was truncating. */
+.mt-btn { width: 44px; height: 44px; }
+.mt-btn svg { width: 26px; height: 26px; }
+.mt-playpause { width: 46px; height: 46px; }
+.mt-playpause svg { width: 28px; height: 28px; }
 
-main { padding-bottom: calc(90px + env(safe-area-inset-bottom)); }
+main { padding-bottom: calc(84px + env(safe-area-inset-bottom)); }
 
 @media (max-width: 480px) {
-  .mt-info { gap: 11px; }
-  .mt-controls { gap: 2px; }
-  .mt-btn { width: 44px; height: 44px; }
-  .mt-btn svg { width: 26px; height: 26px; }
-  .mt-playpause { width: 46px; height: 46px; }
-  .mt-playpause svg { width: 28px; height: 28px; }
+  .mt-info { gap: 10px; }
+  .mt-controls { gap: 0; }
+  .mt-btn { width: 40px; height: 40px; }
+  .mt-btn svg { width: 24px; height: 24px; }
+  .mt-playpause { width: 42px; height: 42px; }
+  .mt-playpause svg { width: 26px; height: 26px; }
 }
 
 /* ------------------------------------------------------------------ */

@@ -2,6 +2,47 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.82] — 2026-08-29
+
+### Fixed — the five things v1.7.81 got wrong on a real screen
+
+**The list view was not a list.** `.album` is `flex-direction: column` for the grid, and the list rule
+set `display: flex` without saying `row` — so the axis never changed, the cover stayed stacked on top
+of the text, and `align-items: center` then centred the lot. It is a row now: small square cover at
+the left, title over artist beside it. *Class of error: a test that asserted a proxy instead of the
+thing.* The DOM test only checked that a row was wider than it was tall, which a full-width stacked
+block also is; it now measures that the cover ENDS before the text BEGINS and that the two are
+vertically level.
+
+**The grid/list control now sits in the top-right corner.** On the random wall Refresh sits beside it;
+on the Library wall, where there is nothing to reshuffle, the view control takes the corner alone.
+Refresh carries the margin that pushes the pair over and the view control follows it in the markup, so
+the corner belongs to the view control whenever both are shown — and a `#topbar-refresh.hidden +
+#topbar-view` rule hands the push on when Refresh is hidden.
+
+**The bottom of an album wall is no longer under the transport.** The floating pill overlays the page,
+so the room it needs has to be reserved by the scroller's bottom padding. That reserve was still sized
+for the old full-bleed bar and was ~14px short of the pill *plus* the gap it floats in, which put the
+last row's title behind the glass.
+
+**The pill was applying the home-indicator inset twice.** v1.7.81 moved the transport to a floating
+pill lifted clear of the indicator by its `bottom`, but a later `.mini-transport` block — the
+Roon-sizing one, 800 lines further down — still carried the old bar's `padding-bottom` inset. Both
+applied: the pill floated 34px above the indicator *and* reserved another 34px of empty glass inside
+itself, under the text. That is the wasted space. Removed, and the transport controls were resized so
+the 44px artwork is the tallest thing in the pill rather than a 54px play button — the bar loses 12px
+of height and the title gains 32px of width it was truncating.
+
+### Added — tests for what only a device could see
+
+The double inset is invisible in the DOM harness, where every safe-area inset reports 0, so it is
+pinned statically instead: the bottom inset must appear exactly once across **every**
+`.mini-transport` block. Taking only the first block is how the second one hid. Three DOM tests were
+added or strengthened alongside it — the list row's real geometry, the top-bar cluster's position on
+both walls, and the last album's clearance over the pill measured after scrolling to the end of a wall
+that is deliberately taller than the screen. Each was verified against a deliberately broken build.
+793 unit / 431 DOM / 72 static.
+
 ## [1.7.81] — 2026-08-29
 
 ### Changed — a glass transport, one grid, and a list view

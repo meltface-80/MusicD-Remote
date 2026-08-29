@@ -272,6 +272,41 @@ test("the iOS safe area is claimed and painted", async (t) => {
         "whichever comes last decides, so this is one edit away from regressing");
     }
   });
+
+  await t.test("...and applies the bottom inset exactly once", () => {
+    // v1.7.82. The two mechanisms above are alternatives, not a pair. v1.7.81
+    // moved the transport to a floating pill and added the `bottom` lift, but a
+    // LATER `.mini-transport { }` block — the Roon-sizing one, 800 lines further
+    // down — still carried the full-bleed bar's `padding-bottom` inset. Both
+    // applied: the pill floated 34px above the home indicator AND reserved
+    // another 34px of empty glass inside itself under the text.
+    //
+    // Headless Chromium reports every inset as 0, so the DOM suite measures a
+    // pill that looks perfectly proportioned and only a real iPhone shows the
+    // dead band. That is precisely the case for a static check.
+    //
+    // EVERY block, not the first: taking only `indexOf` is how the second one
+    // hid. The count is over selector-scoped rule bodies, so an inset used by
+    // some other element is not swept in.
+    const bare3 = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const bodies = [];
+    for (let at = bare3.indexOf(".mini-transport {"); at > -1;
+         at = bare3.indexOf(".mini-transport {", at + 1)) {
+      bodies.push(bare3.slice(at, bare3.indexOf("}", at)));
+    }
+    assert.ok(bodies.length > 0, "no .mini-transport rule at all");
+    const inset = /env\(safe-area-inset-bottom\)/;
+    const lifts = bodies.filter((b) => inset.test(b) && /(^|[;{\s])bottom:/.test(b)).length;
+    const pads  = bodies.filter((b) => inset.test(b) && /padding-bottom:/.test(b)).length;
+    assert.ok(lifts + pads > 0,
+      "no .mini-transport block honours the bottom safe area at all");
+    assert.equal(lifts + pads, 1,
+      "the bottom safe-area inset is applied " + (lifts + pads) + " times across " +
+      bodies.length + " .mini-transport blocks (" + lifts + " lift, " + pads +
+      " padding). Two of them stack: the pill lifts clear of the home indicator " +
+      "and then pads the same distance again inside itself, which on a device " +
+      "with an indicator is ~34px of empty glass under the text.");
+  });
 });
 
 // ---------------------------------------------------------------------------

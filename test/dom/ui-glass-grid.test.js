@@ -17,8 +17,12 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const harness = require("./harness");
 
+// Enough tiles that the wall is TALLER THAN THE SCREEN on a 390x844 phone.
+// The clearance test below scrolls to the bottom and measures what is under the
+// floating pill; with a wall that fits, there is nothing at the bottom to be
+// covered and the test passes without ever exercising the thing it names.
 const ALBUMS = [];
-for (let i = 0; i < 12; i++) {
+for (let i = 0; i < 30; i++) {
   ALBUMS.push({ offset: i, title: "Album " + i, subtitle: "Artist " + i, image_key: null });
 }
 const ZONE = {
@@ -43,11 +47,11 @@ try {
 } catch (e) {}
 window.__installFetch(function (u) {
   if (u.indexOf("/api/random-albums") > -1)
-    return window.__json({ albums: ${JSON.stringify(ALBUMS)}, total: 12, filtered: false });
+    return window.__json({ albums: ${JSON.stringify(ALBUMS)}, total: 30, filtered: false });
   if (u.indexOf("/api/library/albums") > -1)
-    return window.__json({ albums: ${JSON.stringify(ALBUMS)}, offset: 0, total: 12 });
+    return window.__json({ albums: ${JSON.stringify(ALBUMS)}, offset: 0, total: 30 });
   if (u.indexOf("/api/library/facets") > -1)
-    return window.__json({ total: 12, dated: 0, decades: [], sources: [], hasPlays: false });
+    return window.__json({ total: 30, dated: 0, decades: [], sources: [], hasPlays: false });
   if (u.indexOf("/api/zone-state") > -1) return window.__json({ zone: window.__zone });
   if (u.indexOf("/api/zones") > -1)      return window.__json({ zones: [window.__zone] });
   if (u.indexOf("/api/filters") > -1)    return window.__json({ genres: [] });
@@ -155,11 +159,30 @@ test("grid and list are one remembered choice", async (t) => {
       // on every tile (CLAUDE.md pre-flight step 4).
       T("same_node", tiles()[0] === before);
 
-      // Rows, not columns: a row is wider than it is tall.
-      var b = tiles()[0].getBoundingClientRect();
+      // The SHAPE OF THE ROW ITSELF, not just its bounding box. A tile whose
+      // children are still stacked in a column is a full-width block that is
+      // comfortably wider than it is tall, so an aspect-ratio check calls it a
+      // row and passes — which is exactly what shipped. What makes it a row is
+      // the cover and the text being SIDE BY SIDE.
+      var t0 = tiles()[0];
+      var b  = t0.getBoundingClientRect();
+      var a  = t0.querySelector(".album-art-wrap").getBoundingClientRect();
+      var mt = t0.querySelector(".album-meta").getBoundingClientRect();
       T("row_shape", { w: Math.round(b.width), h: Math.round(b.height) });
-      var a = tiles()[0].querySelector(".album-art-wrap").getBoundingClientRect();
       T("thumb", { w: Math.round(a.width), h: Math.round(a.height) });
+      T("lay", {
+        art_left:  Math.round(a.left),  art_right:  Math.round(a.right),
+        meta_left: Math.round(mt.left), meta_right: Math.round(mt.right),
+        art_mid:   Math.round(a.top + a.height / 2),
+        meta_top:  Math.round(mt.top),  meta_bottom: Math.round(mt.bottom),
+        row_left:  Math.round(b.left),  row_right:  Math.round(b.right),
+      });
+      T("rows_stack", (function () {
+        // Two consecutive rows must not sit beside each other — that is a grid.
+        var r0 = tiles()[0].getBoundingClientRect();
+        var r1 = tiles()[1].getBoundingClientRect();
+        return Math.round(r1.top - r0.top);
+      })());
 
       btn.click();
       await window.__sleep(200);
@@ -183,6 +206,27 @@ test("grid and list are one remembered choice", async (t) => {
       `a list row is ${JSON.stringify(r.row_shape)} — that is still a grid cell`);
     assert.ok(r.thumb.w > 0 && Math.abs(r.thumb.w - r.thumb.h) <= 2,
       `the list thumbnail is ${JSON.stringify(r.thumb)} — it should be a small square`);
+
+    // The cover is LEFT OF the text, not above it. This is the assertion the
+    // first cut needed and did not have: `display: flex` on a tile that is
+    // already flex-direction: column changes nothing about the axis, so the
+    // cover stayed on top and align-items: center then centred the lot.
+    const L = r.lay;
+    assert.ok(L.art_right <= L.meta_left,
+      `the cover ends at x=${L.art_right} and the text starts at x=${L.meta_left} — ` +
+      `they are stacked, not side by side (${JSON.stringify(L)})`);
+    // ...and beside means vertically level with it, not merely to one side.
+    assert.ok(L.art_mid > L.meta_top && L.art_mid < L.meta_bottom,
+      `the cover's middle (y=${L.art_mid}) is outside the text block ` +
+      `(${L.meta_top}..${L.meta_bottom}) — the row is not level`);
+    // The text takes the width the grid used to give the whole column.
+    assert.ok(L.meta_right - L.meta_left > (L.row_right - L.row_left) * 0.5,
+      `the text column is only ${L.meta_right - L.meta_left}px of a ` +
+      `${L.row_right - L.row_left}px row`);
+    // One row per line. In a grid, tile 1 sits beside tile 0 and this is 0.
+    assert.ok(r.rows_stack >= r.row_shape.h - 2,
+      `the next row starts ${r.rows_stack}px down a ${r.row_shape.h}px row — ` +
+      `the rows are still laid out in columns`);
     assert.equal(r.pressed, "true");
   });
 
@@ -291,5 +335,145 @@ test("the glass steps aside while the page scrolls", async (t) => {
   await t.test("and it comes back once the scroll stops", () => {
     assert.equal(r.settled_class, false, "the bar never leaves its scrolling state");
     assert.match(String(r.settled_filter), /blur/, "the glass never returns after a scroll");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.7.82 — the three follow-ups.
+//
+// All three are things a human saw on a device and this suite did not, which is
+// the point: each one is a MEASUREMENT of the finished layout, not a check that
+// some declaration is present. The list-mode bug above got through precisely
+// because the assertion tested a proxy (aspect ratio) rather than the thing.
+// ---------------------------------------------------------------------------
+
+test("the wall's controls sit in the top-right corner", async (t) => {
+  if (!harness.available) { t.skip("no chromium binary available"); return; }
+
+  const r = harness.renderPage({
+    name: "ui-topbar-cluster", windowSize: "390x844", stub: STUB,
+    driver: `
+      ${HELPERS}
+      function box(id) {
+        var el = document.getElementById(id);
+        if (!el) return { missing: true };
+        var b = el.getBoundingClientRect();
+        return { hidden: el.classList.contains("hidden"),
+                 left: Math.round(b.left), right: Math.round(b.right) };
+      }
+      function rowRight() {
+        var row = document.querySelector(".topbar-row");
+        return Math.round(row.getBoundingClientRect().right);
+      }
+      await window.__sleep(600);
+      await openRandomWall();
+      T("row_right", rowRight());
+      T("random_view", box("topbar-view"));
+      T("random_refresh", box("topbar-refresh"));
+
+      document.getElementById("topbar-back").click();
+      await window.__sleep(500);
+      document.getElementById("home-library-title").click();
+      await window.__sleep(800);
+      await waitForTiles(3);
+      T("library_view", box("topbar-view"));
+      T("library_refresh", box("topbar-refresh"));
+    `,
+  });
+  harness.assertNoPageError(assert, r);
+
+  // "in the corner" = its right edge is at the row's right edge, allowing for
+  // the button's own optical padding.
+  const CORNER = 8;
+
+  await t.test("on the random wall: view in the corner, refresh beside it", () => {
+    assert.equal(r.random_view.hidden, false, "no grid/list control on the random wall");
+    assert.equal(r.random_refresh.hidden, false, "no refresh control on the random wall");
+    assert.ok(r.row_right - r.random_view.right <= CORNER,
+      `the view control's right edge is at ${r.random_view.right}, the row ends at ` +
+      `${r.row_right} — it is not in the corner`);
+    assert.ok(r.random_refresh.right <= r.random_view.left,
+      `refresh (…${r.random_refresh.right}) is not to the left of the view control ` +
+      `(${r.random_view.left}… ) — the pair is in the wrong order`);
+    // Beside it, not marooned at the other end of the bar.
+    assert.ok(r.random_view.left - r.random_refresh.right <= 16,
+      `there are ${r.random_view.left - r.random_refresh.right}px between refresh and ` +
+      `the view control — they should read as one cluster`);
+  });
+
+  await t.test("on the Library wall: view takes the corner alone", () => {
+    assert.equal(r.library_view.hidden, false, "no grid/list control on the Library wall");
+    assert.equal(r.library_refresh.hidden, true,
+      "the Library wall is showing a shuffle button — there is nothing to reshuffle");
+    assert.ok(r.row_right - r.library_view.right <= CORNER,
+      `with refresh hidden the view control fell back to ${r.library_view.right} ` +
+      `instead of the row's edge at ${r.row_right} — the hidden sibling kept the push`);
+  });
+});
+
+test("nothing is left under the floating transport", async (t) => {
+  if (!harness.available) { t.skip("no chromium binary available"); return; }
+
+  // The pill floats over <main>, so the space it occupies has to be reserved by
+  // main's padding-bottom. Get that number wrong in either direction and it
+  // shows: too small and the last row's title is behind the glass (what was
+  // reported), too large and there is a band of nothing above the pill.
+  const r = harness.renderPage({
+    name: "ui-transport-clearance", windowSize: "390x844", stub: STUB,
+    driver: `
+      ${HELPERS}
+      await window.__sleep(600);
+      await openRandomWall();
+      var bar = document.getElementById("mini-transport");
+      for (var i = 0; i < 40 && bar.classList.contains("hidden"); i++) await window.__sleep(100);
+
+      var m = document.querySelector("main");
+      m.scrollTop = m.scrollHeight;
+      await window.__sleep(400);
+      T("scrolled", Math.round(m.scrollTop) > 0);
+      T("really_at_bottom",
+        Math.round(m.scrollHeight - m.scrollTop - m.clientHeight) <= 2);
+
+      var all = tiles();
+      var last = all[all.length - 1];
+      var meta = last.querySelector(".album-meta").getBoundingClientRect();
+      var pill = bar.getBoundingClientRect();
+      T("gap", Math.round(pill.top - meta.bottom));
+      T("pill", { top: Math.round(pill.top), h: Math.round(pill.height),
+                  left: Math.round(pill.left),
+                  bottom_gap: Math.round(window.innerHeight - pill.bottom) });
+      // How much of the pill is glass around its contents. The reported symptom
+      // was dead space, and the cover is the tallest thing inside it.
+      var art = document.getElementById("mt-art").getBoundingClientRect();
+      T("slack", Math.round(pill.height - art.height));
+    `,
+  });
+  harness.assertNoPageError(assert, r);
+
+  await t.test("the wall really did scroll to its end", () => {
+    assert.equal(r.scrolled, true, "the fixture wall fits on screen — nothing was tested");
+    assert.equal(r.really_at_bottom, true, "the scroller did not reach the bottom");
+  });
+
+  await t.test("the last album's details clear the pill", () => {
+    assert.ok(r.gap >= 0,
+      `the last album's text runs ${-r.gap}px underneath the transport — main's ` +
+      `padding-bottom does not reserve the pill's height`);
+  });
+
+  await t.test("and the reserve is not wildly generous either", () => {
+    assert.ok(r.gap <= 44,
+      `there are ${r.gap}px of empty page between the last album and the pill — ` +
+      `main is reserving far more room than the pill occupies (${r.pill.h}px)`);
+  });
+
+  await t.test("the pill is not mostly padding", () => {
+    // 44px of cover in a 76px bar was the reported "not getting best use of the
+    // space" — an inset applied twice, once as a lift and once as padding.
+    assert.ok(r.slack <= 24,
+      `the pill is ${r.pill.h}px tall around a 44px cover — ${r.slack}px of that ` +
+      `is empty glass`);
+    assert.ok(r.pill.left > 0 && r.pill.bottom_gap > 0,
+      `the pill is welded to an edge (${JSON.stringify(r.pill)}) — it should float`);
   });
 });
