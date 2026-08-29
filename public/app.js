@@ -67,20 +67,19 @@
   let zones = [];
   let selectedZoneId = null;
 
-  // Phone wall geometry (used by measurePhoneWall/computeAlbumCount below).
-  // Declared BEFORE the computeAlbumCount() call on the next line — it's a
-  // const, so referencing it from that call while it is still in its temporal
-  // dead zone would throw and abort the whole app (blank screen). TEXT_BLOCK/
-  // gaps mirror the .album-grid.phone-fit and phone .album-meta CSS.
-  const PHONE_WALL = {
-    COLS: 3,
-    ROW_GAP: 10,     // .album-grid.phone-fit row-gap
-    COL_GAP: 8,      // .album-grid.phone-fit column-gap
-    TEXT_BLOCK: 51,  // worst case: 5px meta margin + 2 title lines (12×1.25=30) + 1px gap + artist (~15) = 51
-                     // sized for the 2-line-title max so 4 rows never overflow into a scroll
-    MIN_ART: 96,     // don't shrink art below this — drop a row instead
-    TARGET_ROWS: 4
-  };
+  // How many albums a phone wall asks for.
+  //
+  // The random wall used to MEASURE the screen and shrink its artwork until
+  // exactly four rows fit without scrolling — the app's original "a screenful
+  // of random albums". That made it the one wall whose tiles were a different
+  // size from every other, which is the difference this replaced: every wall
+  // now uses the same natural third-of-width artwork as the Library, and they
+  // scroll. Three screens' worth, so there is something to scroll to.
+  //
+  // Declared BEFORE the computeAlbumCount() call on the next line — a `const`
+  // referenced from that call while still in its temporal dead zone throws and
+  // aborts the whole app (blank screen).
+  const PHONE_WALL_COUNT = 24;
   let albumCount = computeAlbumCount();
   let labelsActive = false;        // viewing the record-label browser?
   let unplayedWallActive = false;  // viewing the full "Not played in 6 months" grid?
@@ -232,68 +231,15 @@
   // the wall is width-limited, art is the natural third-of-width (no shrink);
   // when height-limited, art shrinks so the target rows still fit. Falls back
   // to 3 rows if 4 can't fit at a reasonable size.
-  function measurePhoneWall() {
-    const P = PHONE_WALL;
-    const mainEl = document.querySelector("main");
-    let innerW, innerH;
-    if (mainEl && mainEl.clientHeight > 0) {
-      const cs = window.getComputedStyle(mainEl);
-      // Subtract <main>'s padding — the bottom padding reserves the transport,
-      // so innerH is the true height the grid can occupy.
-      innerW = mainEl.clientWidth
-        - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
-      innerH = mainEl.clientHeight
-        - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
-    } else {
-      // Pre-layout fallback: ~110px top bar, ~94px <main> vertical padding.
-      innerW = window.innerWidth - 28;
-      innerH = window.innerHeight - 110 - 94;
-    }
-    const artW = (innerW - (P.COLS - 1) * P.COL_GAP) / P.COLS;
-    const artForRows = (r) => (innerH - (r - 1) * P.ROW_GAP - r * P.TEXT_BLOCK) / r;
-    let rows = P.TARGET_ROWS;
-    let art = Math.min(artW, artForRows(P.TARGET_ROWS));
-    if (art < P.MIN_ART) {
-      rows = 3;
-      art = Math.min(artW, artForRows(3));
-      if (art < P.MIN_ART) art = artW;   // very short screen: natural size, may scroll
-    }
-    return { rows, art: Math.max(1, Math.floor(art)) };
-  }
-
-  // Remove the phone-fit wall sizing (used when the labels browser takes over
-  // the shared grid, so label tiles use their own default layout).
-  function clearWallGridSizing() {
-    grid.classList.remove("phone-fit");
-    grid.style.removeProperty("--phone-art");
-  }
-
-  // Apply (or clear) the phone-fit sizing on the album wall grid. Called for
-  // the album wall only — the labels browser removes it so it keeps its own
-  // layout. Returns the album count for the wall, or null off-phone.
-  function applyWallGridSizing() {
-    if (Math.min(window.innerWidth, window.innerHeight) >= 768) {
-      grid.classList.remove("phone-fit");
-      grid.style.removeProperty("--phone-art");
-      return null;
-    }
-    const m = measurePhoneWall();
-    grid.style.setProperty("--phone-art", m.art + "px");
-    grid.classList.add("phone-fit");
-    return PHONE_WALL.COLS * m.rows;
-  }
-
   function computeAlbumCount() {
     const w = window.innerWidth;
     const h = window.innerHeight;
     const isLandscape = w > h;
     const minDim = Math.min(w, h);  // smallest dimension identifies phones vs tablets
 
-    // Phone (narrowest side < 768 px): 3 columns, rows measured to fill the
-    // screen (target 4) — see measurePhoneWall. Landscape is blocked via CSS.
-    if (minDim < 768) {
-      return Math.min(96, PHONE_WALL.COLS * measurePhoneWall().rows);  // 96 = server max
-    }
+    // Phone (narrowest side < 768 px): 3 columns of natural third-of-width
+    // artwork, the same as every other wall, and it scrolls.
+    if (minDim < 768) return PHONE_WALL_COUNT;
 
     // Desktop (width ≥ 1200 px)
     if (w >= 1200) return 45;       // 9×5
@@ -302,11 +248,11 @@
     return isLandscape ? 21 : 20;   // 7×3 or 5×4
   }
 
-  // Re-fit the phone wall when the viewport resizes (Safari chrome collapsing,
-  // iPad split view). Debounced; only applies to the actual phone-fit random
-  // wall — it must not fire while Home, an active search, the labels browser,
-  // or the "Not played" full grid are showing, since none of those are the
-  // phone-fit wall and loadRandom() would silently replace their content.
+  // A viewport change (Safari chrome collapsing, iPad split view) can change how
+  // many albums are worth holding. Debounced, and only for the RANDOM wall — it
+  // must not fire while Home, an active search, the labels browser, the artist
+  // view or the "Not played" grid are showing, because loadRandom() would
+  // silently replace their content with something else entirely.
   let _wallResizeTimer = null;
   window.addEventListener("resize", () => {
     clearTimeout(_wallResizeTimer);
@@ -320,8 +266,9 @@
       if (window.__searchActive && window.__searchActive()) return;
       if (Math.min(window.innerWidth, window.innerHeight) >= 768) return;
       const next = computeAlbumCount();
-      if (next !== albumCount) loadRandom();   // rows changed → refetch to fill exactly
-      else applyWallGridSizing();              // same rows → rescale art in place
+      // Nothing to rescale any more — the tiles are a plain third of the width
+      // at every size. Only a genuinely different count is worth a refetch.
+      if (next !== albumCount) loadRandom();
     }, 250);
   });
 
@@ -457,10 +404,60 @@
 
   // Topbar chrome per view: Back button (off Home), Refresh button (random /
   // genre grids), and the Search box (Home only, beside the hamburger).
-  function setTopbarNav(back, refresh, search) {
+  // Grid or list, for every album wall, remembered.
+  //
+  // One stored choice rather than one per screen: Random, Library, a genre and
+  // "Not played" are the same shelf seen through different filters, and a
+  // per-screen setting would mean setting it again on each of them.
+  const ALBUM_VIEW_KEY = "rra-album-view";
+  let albumViewList = false;
+  try { albumViewList = localStorage.getItem(ALBUM_VIEW_KEY) === "list"; }
+  catch (e) {} // localStorage optional (private browsing) — grid is the default
+
+  // Painted onto the grid itself, so it survives every re-render without each
+  // render path having to remember it.
+  function applyAlbumView() {
+    if (grid) grid.classList.toggle("as-list", albumViewList);
+    const btn  = document.getElementById("topbar-view");
+    const icoG = document.getElementById("topbar-view-grid");
+    const icoL = document.getElementById("topbar-view-list");
+    // The icon shows what a tap GIVES you, not what you are looking at — the
+    // same way the app's other mode buttons read.
+    if (icoG) icoG.classList.toggle("hidden",  albumViewList);
+    if (icoL) icoL.classList.toggle("hidden", !albumViewList);
+    if (btn) {
+      const label = albumViewList ? "Show as grid" : "Show as list";
+      btn.setAttribute("aria-label", label);
+      btn.setAttribute("title", label);
+      btn.setAttribute("aria-pressed", String(albumViewList));
+    }
+  }
+
+  function setTopbarNav(back, refresh, search, view) {
     if (topbarBack)    topbarBack.classList.toggle("hidden", !back);
     if (topbarRefresh) topbarRefresh.classList.toggle("hidden", !refresh);
     if (topbarSearch)  topbarSearch.classList.toggle("hidden", !search);
+    // Defaults to hidden: only the screens that actually show album tiles ask
+    // for it, so it never appears over a playlist's track list.
+    const vb = document.getElementById("topbar-view");
+    if (vb) vb.classList.toggle("hidden", !view);
+    applyAlbumView();
+  }
+
+  // Wired here, in the scope that owns albumViewList — it was briefly attached
+  // inside the mini-transport IIFE, where the state is not in scope at all and
+  // a tap would have thrown. `node --check` cannot see that; only running it
+  // can, which is what pre-flight step 3 is for.
+  {
+    const viewBtn = document.getElementById("topbar-view");
+    if (viewBtn) {
+      viewBtn.addEventListener("click", () => {
+        albumViewList = !albumViewList;
+        try { localStorage.setItem(ALBUM_VIEW_KEY, albumViewList ? "list" : "grid"); }
+        catch (e) {} // localStorage optional — the choice still holds for this session
+        applyAlbumView();
+      });
+    }
   }
 
   // Show the Home landing (hide the wall). The wall loads lazily when entered.
@@ -525,7 +522,7 @@
     if (window.__exitArtistView) window.__exitArtistView({ restore: false });
     if (homeView) homeView.classList.add("hidden");
     grid.classList.remove("hidden");
-    setTopbarNav(true, true, false);   // random / genre grid: Back + Refresh, no search
+    setTopbarNav(true, true, false, true);   // random / genre grid: Back + Refresh + view, no search
     // Home and the grid share <main>'s scroll container — without this, a
     // wall entered while Home was scrolled down (e.g. tapping a genre card
     // below the fold) opens mid-page/at-the-bottom instead of at the top.
@@ -1256,7 +1253,11 @@
   // leave other views, clear the filter, take over the shared grid, set the
   // topbar chrome + title, scroll to the top, paint skeletons. Both walls'
   // active flags are reset here; the caller sets its own to true afterwards.
-  function enterFullWall(title) {
+  // `albumWall` says whether this screen shows album TILES — the Library and
+  // "Not played" walls do; the playlist screens share the same container but
+  // list tracks, and offering a grid/list switch over those would be a control
+  // that does nothing.
+  function enterFullWall(title, albumWall) {
     unplayedWallActive = false;
     libraryWallActive = false;
     // Cleared here as well as by the caller: every other wall's entry point must
@@ -1273,8 +1274,7 @@
     if (homeView) homeView.classList.add("hidden");
     if (homeSections) homeSections.classList.remove("hidden");
     grid.classList.remove("hidden");
-    clearWallGridSizing();  // standard scrolling grid, not phone-fit wall
-    setTopbarNav(true, false, false);   // Back (to Home), no Refresh, no search
+    setTopbarNav(true, false, false, !!albumWall);   // Back (to Home), no Refresh, no search
     setCountText(title);
     const m = document.querySelector("main");
     if (m) m.scrollTop = 0;
@@ -1286,7 +1286,7 @@
   // header. Fills the main grid with a larger unplayed list (tiles open
   // unfiltered, like the Home row) and shows a Back button to Home.
   async function showUnplayedWall() {
-    enterFullWall("Not played in 6 months");
+    enterFullWall("Not played in 6 months", true);
     unplayedWallActive = true;
     try {
       const r = await fetch("/api/home/unplayed?months=6&count=96");
@@ -1671,7 +1671,6 @@
 
     setBanner(null);
     grid.innerHTML = "";
-    clearWallGridSizing();
 
     const wrap = document.createElement("div");
     wrap.className = "playlist-detail";
@@ -2246,7 +2245,6 @@
     const mySeq = ++userPlSeq;
     setBanner(null);
     grid.innerHTML = "";
-    clearWallGridSizing();
 
     let j = null;
     try {
@@ -3495,7 +3493,6 @@
 
     setBanner(null);
     grid.innerHTML = "";
-    clearWallGridSizing();
 
     const wrap = document.createElement("div");
     wrap.className = "playlist-detail";
@@ -4301,7 +4298,7 @@
   window.__openDevicePowerSheet = openDevicePowerSheet;
 
   async function showLibraryWall() {
-    const m = enterFullWall("Library");
+    const m = enterFullWall("Library", true);
     libraryWallActive = true;
     renderLibraryControls();
     libWall.seq++;
@@ -4921,10 +4918,7 @@
 
   async function loadRandom() {
     refreshBtn.disabled = true;
-    // Size the wall grid (phone-fit) and take its count in one measurement;
-    // off-phone applyWallGridSizing returns null and we use computeAlbumCount.
-    const wallCount = applyWallGridSizing();
-    albumCount = wallCount != null ? Math.min(96, wallCount) : computeAlbumCount();
+    albumCount = computeAlbumCount();
     renderSkeletons(albumCount);
     try {
       const r = await fetch(`/api/random-albums?count=${albumCount}${filterQS()}`);
@@ -7154,7 +7148,6 @@
       mode = "list";
       labelsActive = true;
       leaveLibraryWall();   // labels own the shared grid now — stop the wall's infinite scroll
-      clearWallGridSizing();   // labels grid uses its own layout, not the wall's phone-fit
       { const _hv = document.getElementById("home-view"); if (_hv) _hv.classList.add("hidden"); }
       grid.classList.remove("hidden");
       if (window.__setTopbarNav) window.__setTopbarNav(true, false, false);   // Back (to Home), no Refresh, no search
@@ -7334,7 +7327,6 @@
       mode = "albums";
       labelsActive = true;
       leaveLibraryWall();   // label albums own the shared grid now — stop the wall's infinite scroll
-      clearWallGridSizing();   // label-album grid uses its own layout, not the wall's phone-fit
       { const _hv = document.getElementById("home-view"); if (_hv) _hv.classList.add("hidden"); }
       grid.classList.remove("hidden");
       if (window.__setTopbarNav) window.__setTopbarNav(true, false, false);   // Back (to Home), no Refresh, no search
@@ -7619,6 +7611,7 @@
   const bar       = document.getElementById("mini-transport");
   const titleEl   = document.getElementById("mt-title");
   const artistEl  = document.getElementById("mt-artist");
+  const artEl     = document.getElementById("mt-art");
   const btnPP     = document.getElementById("mt-playpause");
   const btnZone   = document.getElementById("mt-zone");
   const zonePop   = document.getElementById("mt-zone-popover");
@@ -7878,6 +7871,23 @@
     } catch (e) {} // localStorage optional — transport bar persistence is best-effort
   }
 
+  // The cover for the playing track. Hidden rather than broken when the zone
+  // reports no art (a stream, a zone mid-handshake): an empty <img> draws the
+  // browser's broken-image glyph, which looks like a fault.
+  function paintTransportArt(imageKey) {
+    if (!artEl) return;
+    if (imageKey) {
+      const src = `/api/image/${encodeURIComponent(imageKey)}?size=120`;
+      // Guarded: assigning the same src restarts the request on some browsers,
+      // and this runs off a 1.5s poll.
+      if (artEl.getAttribute("src") !== src) artEl.setAttribute("src", src);
+      artEl.classList.remove("hidden");
+    } else {
+      artEl.removeAttribute("src");
+      artEl.classList.add("hidden");
+    }
+  }
+
   function restoreTransportState() {
     try {
       const saved = JSON.parse(localStorage.getItem("rra-transport") || "null");
@@ -7885,6 +7895,7 @@
       titleEl.textContent  = saved.line1;
       const sub = [saved.line2, saved.line3].filter(Boolean).join(" · ");
       artistEl.textContent = sub || "—";
+      paintTransportArt(saved.image_key);
       bar.classList.remove("hidden");
     } catch (e) {} // corrupt localStorage — transport bar stays hidden, no action needed
   }
@@ -7921,7 +7932,7 @@
     const volOutput = (zone.outputs || []).find(o => o.volume);
     const muted = (zone.outputs || []).some(o => o.is_muted);
     const playing = zone.state === "playing" || zone.state === "loading";
-    const barSig = [np.line1, np.line2, np.line3, zone.state, muted].join("|");
+    const barSig = [np.line1, np.line2, np.line3, np.image_key, zone.state, muted].join("|");
     if (barSig !== lastBarSig) {
       lastBarSig = barSig;
 
@@ -7929,6 +7940,7 @@
       titleEl.textContent  = np.line1 || "—";
       const sub = [np.line2, np.line3].filter(Boolean).join(" · ");
       artistEl.textContent = sub || "—";
+      paintTransportArt(np.image_key);
 
       // Play/pause state
       iconPlay .classList.toggle("hidden",  playing);
@@ -8672,6 +8684,16 @@
   // Refresh when zone selector changes
   const zoneSel = document.getElementById("zone-select");
   if (zoneSel) zoneSel.addEventListener("change", fetchState);
+
+  // v1.7.81 gave the pill a backdrop-filter and stripped it here for the
+  // duration of every scroll, so the look and the frame rate could coexist.
+  // Both halves of that are gone as of v1.7.85: `saturate()` brightens whatever
+  // shows through the pill, so the filtered and unfiltered states never looked
+  // alike no matter how opaque the background got, and the pill is now
+  // translucent with no filter at all. Nothing styles .is-scrolling any more,
+  // so the listener that set it — a capture-phase document scroll handler with
+  // a 260ms settle timer — has gone with it rather than being left to toggle a
+  // class on every scroll frame for nothing.
 
   // Boot — restore last known state instantly, then let the poll loop refresh it.
   restoreTransportState();

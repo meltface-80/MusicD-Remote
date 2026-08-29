@@ -36,6 +36,17 @@
      translucency, so it cannot use var(--bg) — which is why this used to be a
      hard-coded rgba that no new palette could reach. */
   --bg-translucent: rgba(14,16,18,.85);
+  /* Glass, for the floating transport pill. --glass-edge is the lit top edge
+     that makes a translucent surface read as a pane rather than a hole.
+     ALPHA IS DELIBERATELY HIGH (.62 -> .90 -> .94 across v1.7.84-85) and it is
+     now the ONLY thing making this surface read as glass: there is no
+     backdrop-filter on the pill any more and none may be added (see
+     .mini-transport for why). Nothing softens the fraction that shows through,
+     so that fraction has to be small enough that sharp album art behind it
+     reads as a tint rather than as clutter under the text.
+     Raise this if it ever looks busy. Never lower it. */
+  --glass-bg:   rgba(30,34,38,.94);
+  --glass-edge: rgba(255,255,255,.10);
   --danger:       #e06464;
   --panel-hairline: rgba(255,255,255,.07);  /* row separators on tinted panels */
   --shadow-card:  0 2px 6px rgba(0,0,0,.45), 0 10px 24px rgba(0,0,0,.35);
@@ -69,6 +80,8 @@
   --accent-soft:  rgba(31,143,193,.12);
   --on-accent:    #ffffff;
   --bg-translucent: rgba(246,245,242,.85);
+  --glass-bg:   rgba(255,255,255,.95);
+  --glass-edge: rgba(26,39,64,.12);
   --panel-hairline: rgba(26,39,64,.12);     /* row separators on tinted panels */
   --danger:       #c0392b;
   --shadow-card:  0 1px 2px rgba(0,0,0,.06), 0 6px 16px rgba(0,0,0,.08);
@@ -113,6 +126,8 @@
      read blue-shadowed. 5.74:1. */
   --on-accent:    #17120d;
   --bg-translucent: rgba(27,29,31,.85);
+  --glass-bg:   rgba(46,50,53,.94);
+  --glass-edge: rgba(255,255,255,.10);
   /* Hue 3 degrees against copper's 26, and light enough to clear 4.5:1 on
      every surface including the deepest (4.81). */
   --danger:       #e8776f;
@@ -145,6 +160,8 @@
   --accent-soft:  rgba(138,90,53,.12);
   --on-accent:    #fffdf8;
   --bg-translucent: rgba(247,244,237,.85);
+  --glass-bg:   rgba(255,253,248,.95);
+  --glass-edge: rgba(60,45,30,.14);
   --danger:       #b3271d;
   /* Warm brown rather than the classic light theme's cool blue-grey, which
      would grey the parchment. */
@@ -222,8 +239,14 @@ button { font-family: inherit; }
   display: flex; align-items: center; justify-content: flex-start;
   gap: 10px;
 }
-/* Refresh sits at the far right of the top bar. */
+/* The right-hand cluster. Refresh carries the margin that pushes the group
+   over, and #topbar-view sits after it in the markup — so on the random wall
+   the pair lands at the right with the view control in the corner and Refresh
+   beside it. On the Library wall there is no Refresh, so the hidden one hands
+   the push to its neighbour and the view control takes the corner alone.
+   (`.hidden` is display:none, which a sibling selector still matches.) */
 #topbar-refresh { margin-left: auto; }
+#topbar-refresh.hidden + #topbar-view { margin-left: auto; }
 
 
 .album-count {
@@ -704,19 +727,60 @@ main {
   .album-artist { font-size: 10.5px; }
 }
 
-/* Phone portrait: fill the visible wall with exactly N rows (target 4) without
-   scrolling. app.js (measurePhoneWall) sets --phone-art to the largest square
-   art size that lets the target rows fit the measured content box, and adds
-   .phone-fit. When the wall is width-limited the art is the natural third-of-
-   width (no shrink); when height-limited the art shrinks a little so the rows
-   still fit instead of overflowing. Class is added only for the album wall on
-   phones (removed in the labels browser and on tablet/desktop). */
-.album-grid.phone-fit {
-  grid-template-columns: repeat(3, var(--phone-art, 1fr));
-  justify-content: center;
-  column-gap: 8px;
-  row-gap: 10px;
+/* ── List mode ──────────────────────────────────────────────────────
+   Same tiles, same handlers, laid out as rows: a small square cover, the
+   title over the artist, and a chevron. Nothing in here rebuilds a tile —
+   the grid gets a class and the existing children reflow, so every listener
+   and closure on them survives (CLAUDE.md pre-flight step 4). */
+.album-grid.as-list {
+  display: block;
 }
+.album-grid.as-list .album {
+  display: flex;
+  /* .album is flex-direction: column for the grid, and `display: flex` alone
+     inherits it — which is why the first cut stacked the cover above the text
+     and `align-items: center` then centred the lot. A row has to say so. */
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 2px;
+  border-bottom: 1px solid var(--border);
+}
+.album-grid.as-list .album:last-child { border-bottom: 0; }
+/* The art stops being the full width of a column and becomes a fixed thumb.
+   aspect-ratio still holds it square. */
+.album-grid.as-list .album-art-wrap {
+  width: 52px;
+  flex: 0 0 52px;
+}
+.album-grid.as-list .album-meta {
+  margin-top: 0;
+  flex: 1 1 auto;
+  text-align: left;
+}
+/* One line each in a row — two-line clamping is a grid affordance and here it
+   just makes the rows different heights. */
+.album-grid.as-list .album-title {
+  display: block;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.album-grid.as-list .album-artist {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* The affordance that says a row opens something. Drawn in CSS rather than
+   added to every tile, so list mode stays a pure restyle of what is there. */
+.album-grid.as-list .album::after {
+  content: "";
+  flex: 0 0 auto;
+  width: 7px; height: 7px;
+  margin-right: 4px;
+  border-right: 2px solid var(--text-faint);
+  border-bottom: 2px solid var(--text-faint);
+  transform: rotate(-45deg);
+}
+/* The tile hover lift is a grid gesture; in a row it just wobbles the thumb. */
+.album-grid.as-list .album:hover .album-art-wrap { transform: none; }
 
 /* Skeleton */
 .album.skeleton .album-art-wrap {
@@ -801,7 +865,7 @@ main {
   padding: calc(64px + env(safe-area-inset-top)) 18px 40px;
   /* Leave room at the bottom so the mini transport (≈78px tall + safe area)
      stays visible / not overlapping the last bit of content. */
-  padding-bottom: calc(96px + env(safe-area-inset-bottom));
+  padding-bottom: calc(106px + env(safe-area-inset-bottom));
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
@@ -818,6 +882,71 @@ main {
   flex-shrink: 0;
 }
 .modal-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* ── The album-art hero (v1.7.84) ─────────────────────────────────────
+   The album view used to lead with a 280px square floating in the middle of a
+   padded column. It now leads with the cover itself, edge to edge, fading into
+   the page ground with the title sitting in the tail of that fade.
+
+   FULL-BLEED FROM INSIDE A PADDED COLUMN. .modal-body pads 18px either side and
+   the art is one of its flex children, so the art cancels that padding with a
+   negative margin and takes the width back. The arithmetic has to stay exact:
+   .modal-body declares overflow-y: auto, and a box with one axis scrollable and
+   the other `visible` computes the visible one to `auto` — so a bleed one pixel
+   WIDER than the padding it cancels does not spill, it gives the whole album
+   view a horizontal scrollport. test/dom/album-hero.test.js measures
+   scrollWidth against clientWidth for exactly that.
+
+   Scoped to :not(.np-mode) — the Now playing tab shares this element and sizes
+   it from leftover height instead (see the np-mode block). */
+.modal:not(.np-mode) .modal-body {
+  padding-top: 0;
+  gap: 0;
+}
+.modal:not(.np-mode) .modal-art {
+  width: calc(100% + 36px);
+  max-width: none;
+  margin: 0 -18px;
+  aspect-ratio: 1 / 1;
+  border-radius: 0;
+}
+/* The fade. A mask rather than an overlaid gradient, because the ground behind
+   it is a theme token: masking to transparent lets whatever --bg-elev is for
+   the current palette come through, so this works unchanged in all four
+   (an overlay would have to hard-code a colour to fade TO). */
+.modal:not(.np-mode) .modal-art img {
+  -webkit-mask-image: linear-gradient(to bottom,
+    #000 0 58%, rgba(0,0,0,.72) 78%, transparent 100%);
+          mask-image: linear-gradient(to bottom,
+    #000 0 58%, rgba(0,0,0,.72) 78%, transparent 100%);
+}
+/* THE TEXT STAYS OFF THE ARTWORK. The reference this is modelled on can put a
+   title over the bottom of a cover because its ground is always dark and the
+   art fades into that dark; two of this app's four palettes have a near-white
+   ground and near-black text, so the same overlap puts dark text on whatever
+   the sleeve happens to be — invisible on the first cover tried. The mask
+   below finishes the art at the element's own bottom edge, and the title
+   starts under it: the same dissolve, with no unknown image behind any text.
+   The track list keeps its own alignment — centring .modal-info would centre
+   every track row too. */
+.modal:not(.np-mode) .modal-info { margin-top: 0; }
+.modal:not(.np-mode) #modal-title,
+.modal:not(.np-mode) .modal-subtitle { text-align: center; }
+.modal:not(.np-mode) .modal-actions { justify-content: center; }
+
+/* Back and Share now sit ON the artwork, which can be any colour at all. A
+   scrim under each one is what makes them legible on a white sleeve as well as
+   a black one — and it is dark in every palette on purpose: white-on-dark is
+   the pair that survives an unknown image, whereas a theme-coloured button
+   would vanish into half the covers in a library. No backdrop-filter: the art
+   scrolls underneath these, which is the same per-frame re-blur the transport
+   pill has to avoid (v1.6.15). */
+.modal:not(.np-mode) .modal-close,
+.modal:not(.np-mode) .modal-share {
+  background: rgba(0,0,0,.42);
+  border-color: rgba(255,255,255,.24);
+  color: #fff;
+}
 
 .modal-info { display: flex; flex-direction: column; min-width: 0; }
 .modal-info h2 {
@@ -1077,34 +1206,91 @@ main {
 /* ------------------------------------------------------------------ */
 .mini-transport {
   position: fixed;
-  left: 0; right: 0;
-  bottom: 0;
   z-index: 70;   /* above modal (50) so it's visible even when an album sheet is open */
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
-  padding-bottom: calc(10px + env(safe-area-inset-bottom));
-  /* Solid, no backdrop blur: this bar floats over the scrolling <main>, and
-     iOS Safari re-samples + re-blurs the pixels beneath a backdrop-filter on
-     EVERY scroll frame — a major source of scroll jank whenever something is
-     playing. A solid elevated background reads near-identically. */
-  background: var(--bg-elev);
-  border-top: 1px solid var(--border);
-  box-shadow: 0 -6px 24px rgba(0,0,0,.22);
+  padding: 9px 12px;
+  /* A floating pill rather than a bar welded to the bottom edge.
+     The whole pill is lifted clear of the home indicator by its `bottom`,
+     which is what the full-bleed bar used a padding-bottom for — the inset is
+     still honoured, it just moves the element instead of padding it. */
+  left: 10px; right: 10px;
+  bottom: calc(8px + env(safe-area-inset-bottom));
+  border-radius: 18px;
+  border: 1px solid var(--glass-edge);
+  box-shadow: 0 8px 30px rgba(0,0,0,.34);
+
+  /* ONE APPEARANCE, ALWAYS. NO backdrop-filter — do not add one back.
+     v1.6.15 took backdrop blur off this exact bar because iOS Safari re-samples
+     and re-blurs everything beneath a backdrop-filter on every scroll frame,
+     and it was the main scroll-jank source while music was playing. v1.7.81
+     brought it back on the theory that the blur could be stripped for the
+     duration of a scroll and nobody would see the swap. Two builds of reports
+     say otherwise, and the second one shows why the "same background, only the
+     blur differs" version of that idea (v1.7.84) was still visibly two bars:
+
+       `saturate(180%)` DOES NOT ONLY SOFTEN THE BACKDROP, IT BRIGHTENS IT.
+       Whatever fraction of the page shows through the pill — a tenth, here —
+       is vivid and light while the filter is on and muted while it is off. The
+       alpha never changed; the thing being seen through it did. A wall of album
+       covers is the worst case for this and is exactly where it was reported.
+
+     There is no version of a conditional filter that is invisible, and an
+     unconditional one is the documented jank. So the pill is translucent and
+     nothing else: a fixed alpha over the page, identical at rest and in motion,
+     on every device. */
+  background: var(--glass-bg);
 }
+/* The cover of what is playing. */
+.mt-art {
+  /* The pill's height driver. It is deliberately the tallest thing in the bar
+     (see the control sizes further down), so this number IS the pill's height
+     less its padding — which is how the bar is made taller without the extra
+     room becoming empty glass. */
+  width: 54px; height: 54px;
+  flex: 0 0 auto;
+  border-radius: 9px;
+  object-fit: cover;
+  background: var(--bg-elev-2);
+  box-shadow: 0 2px 8px rgba(0,0,0,.3);
+}
+.mt-art.hidden { display: none; }
 
 /* Thin Roon-style progress line along the top edge of the bar */
 .mt-progress {
   position: absolute;
-  top: -1px; left: 0; right: 0;
-  height: 2px;
+  /* THE WHOLE PILL, not a 2px strip across the top of it.
+     A 2px-tall box cannot carry an 18px corner: CSS scales every radius down
+     until the two on a side fit that side's length, so `border-radius: 18px
+     18px 0 0` on a 2px strip became a 2px radius and the line ran straight on
+     past the glass at both ends — visible as a blue chord overhanging the
+     pill's top corners.
+     Clipping against a box the SHAPE OF THE PILL makes the line stop exactly
+     where the curve does, so it reads as following the edge.
+     Clipped here and not on .mini-transport: that element's overflow must stay
+     visible, because the zone and volume popovers open upwards out of it. They
+     are siblings of this element, so this clip never touches them. */
+  inset: 0;
   pointer-events: none;
+  /* 17px, not 18. This box is positioned against the padding box, i.e. inside
+     the pill's 1px border, and an inner corner's radius is the outer radius
+     less the border it sits inside. */
+  border-radius: 17px;
+  overflow: hidden;
 }
 .mt-progress-fill {
+  /* Full pill height, and the LINE IS ITS TOP BORDER — not a filled 2px block.
+     A border is drawn along the box's rounded outline, so the left end curves
+     down into the corner instead of ending square, and the clipper above cuts
+     the right end to the far curve as the fill approaches 100%.
+     box-sizing so the 100% height is the border box and the border does not
+     add to it. */
   height: 100%;
   width: 0%;
-  background: var(--accent);
+  box-sizing: border-box;
+  border-top: 2.5px solid var(--accent);
+  border-top-left-radius: 17px;
   /* No transition. JS paints this from the clock four times a second, and a
      400ms width transition restarted every 250ms can never finish: the fill
      chased a target it never reached and sat ~400ms behind the position just
@@ -1184,9 +1370,10 @@ main {
    .mt-vol-popover rules further down always overrode it. Removed when the
    popover became the shared Roon-style .vol-sheet.) */
 
-/* Push the main grid above the mini transport */
+/* Push the main grid above the mini transport. The pill floats clear of the
+   bottom edge, so this reserves its height plus that gap. */
 main {
-  padding-bottom: 88px;
+  padding-bottom: 94px;
 }
 
 /* On mobile, hide track info if the bar is cramped */
@@ -1586,17 +1773,33 @@ main {
   background: transparent; box-shadow: none;
   aspect-ratio: auto; border-radius: 0; overflow: visible;
 }
-.modal.np-mode.tab-album .modal-art img {
-  /* Height-driven: fills the leftover vertical space, capped at the usual
-     size; width follows the (square) cover's intrinsic ratio, so this needs
-     no aspect-ratio support. object-fit contain guards odd-shaped art. */
-  height: 100%;
-  max-height: min(400px, 92vw, calc(100vw - 36px));  /* never taller than the padded width — keeps shadow/radius on the art */
-  width: auto; max-width: 100%;
-  object-fit: contain;
-  border-radius: 8px;
-  box-shadow: var(--shadow-card);
+.modal.np-mode.tab-album .modal-art {
+  /* Full-bleed, like the album view's hero: cancel .modal-body's 18px. */
+  width: calc(100% + 36px);
+  margin: 0 -18px;
 }
+.modal.np-mode.tab-album .modal-art img {
+  /* Fills the leftover vertical space AND the full width, cropping rather than
+     letterboxing — the cover is the screen here, not a framed picture on it.
+     No radius and no shadow: both are how a floating card reads, and this is
+     no longer floating. The bottom fades into the ground so the title and the
+     controls sit in the tail of the image rather than under a hard edge.
+     (Landscape ≥720px puts art and controls side by side and puts all of this
+     back — see the grid block below.) */
+  height: 100%;
+  width: 100%; max-width: none; max-height: none;
+  object-fit: cover;
+  border-radius: 0;
+  box-shadow: none;
+  -webkit-mask-image: linear-gradient(to bottom,
+    #000 0 62%, rgba(0,0,0,.7) 82%, transparent 100%);
+          mask-image: linear-gradient(to bottom,
+    #000 0 62%, rgba(0,0,0,.7) 82%, transparent 100%);
+}
+/* Same rule as the album view: the live block sits UNDER the fade, never on the
+   artwork. .modal-art is flex: 1 1 0, so the art already takes every pixel the
+   controls do not — there is nothing to reclaim by overlapping them. */
+.modal.np-mode.tab-album .modal-info { margin-top: 0; }
 /* Very short viewports (small desktop windows — phone landscape is already
    blocked by the rotate overlay): let the body scroll again rather than
    clip the transport controls unreachably. */
@@ -1643,6 +1846,10 @@ main {
     min-height: 0;
     justify-self: end;
   }
+  .modal.np-mode.tab-album .modal-art {
+    /* Not full-bleed here — it is a column in a two-column grid. */
+    width: auto; margin: 0;
+  }
   .modal.np-mode.tab-album .modal-art img {
     /* Auto-size under BOTH max constraints (the grid row is definite, so the
        height cap works): the element box shrink-wraps the cover at its
@@ -1650,7 +1857,16 @@ main {
        and big screens get big art (the portrait 400px cap is dropped). */
     height: auto;
     max-height: calc(100% - 16px);
+    width: auto; max-width: 100%;
+    object-fit: contain;
+    /* The framed card comes back: nothing bleeds off a screen edge in this
+       layout, so a hard-edged crop would just look like a mistake. */
+    border-radius: 8px;
+    box-shadow: var(--shadow-card);
+    -webkit-mask-image: none;
+            mask-image: none;
   }
+  .modal.np-mode.tab-album .modal-info { margin-top: 0; }
   .modal.np-mode.tab-album .modal-info {
     grid-area: info;
     justify-self: start;
@@ -1836,28 +2052,36 @@ main {
 /*  Mini transport — Roon-style sizing                                 */
 /* ------------------------------------------------------------------ */
 .mini-transport {
-  padding: 10px 14px;
-  padding-bottom: calc(10px + env(safe-area-inset-bottom));
+  /* NO padding-bottom inset. The pill's `bottom` already lifts the whole thing
+     clear of the home indicator, and keeping the old full-bleed bar's inset as
+     well padded the safe area INSIDE the pill too — 34px of dead glass under
+     the text on any device that has one, which is the empty space the pill was
+     reported for. Lift or pad, never both. */
+  padding: 9px 11px;
 }
 .mt-info { gap: 13px; }
 .mt-info { cursor: pointer; }  /* tappable to open the now-playing screen */
 .mt-title  { font-size: 16px; font-weight: 700; }
 .mt-artist { font-size: 13px; }
 
-.mt-btn { width: 52px; height: 52px; }
-.mt-btn svg { width: 30px; height: 30px; }
-.mt-playpause { width: 54px; height: 54px; }
-.mt-playpause svg { width: 32px; height: 32px; }
+/* Sized so the ARTWORK sets the pill's height, not the buttons. At 54px the
+   play control was the tallest thing in it and drove a 76px bar; the cover is
+   44px, so nothing needs to be bigger than that. The width the buttons give
+   back goes to the title, which was truncating. */
+.mt-btn { width: 44px; height: 44px; }
+.mt-btn svg { width: 26px; height: 26px; }
+.mt-playpause { width: 46px; height: 46px; }
+.mt-playpause svg { width: 28px; height: 28px; }
 
-main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
+main { padding-bottom: calc(94px + env(safe-area-inset-bottom)); }
 
 @media (max-width: 480px) {
-  .mt-info { gap: 11px; }
-  .mt-controls { gap: 2px; }
-  .mt-btn { width: 44px; height: 44px; }
-  .mt-btn svg { width: 26px; height: 26px; }
-  .mt-playpause { width: 46px; height: 46px; }
-  .mt-playpause svg { width: 28px; height: 28px; }
+  .mt-info { gap: 10px; }
+  .mt-controls { gap: 0; }
+  .mt-btn { width: 40px; height: 40px; }
+  .mt-btn svg { width: 24px; height: 24px; }
+  .mt-playpause { width: 42px; height: 42px; }
+  .mt-playpause svg { width: 26px; height: 26px; }
 }
 
 /* ------------------------------------------------------------------ */

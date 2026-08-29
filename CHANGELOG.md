@@ -2,6 +2,214 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.85] — 2026-08-29
+
+### Fixed — the transport has one appearance, permanently
+
+v1.7.84 made the pill's background identical whether the page was moving or not, leaving the blur as
+the only difference, on the reasoning that two states differing only by a blur would be
+indistinguishable. They were not, and the reason is the part that was wrong twice:
+
+**`saturate(180%)` does not only soften the backdrop, it brightens it.** Whatever fraction of the page
+shows through the pill — a tenth, at v1.7.84's alpha — is vivid and light while the filter is on and
+muted while it is off. The alpha never changed between the two states; *what was being seen through
+it* did. A wall of album covers is the worst case for this, and a wall of album covers is where it was
+reported, both times. The polarity flipping between the two reports (transparent-while-scrolling,
+then transparent-while-still) is that same effect seen against the two different backgrounds v1.7.84
+sat between.
+
+There is no conditional filter that is invisible, and an unconditional one is the scroll jank v1.6.15
+removed on measurement. **So the pill has no backdrop-filter at all.** It is translucent and nothing
+else: a fixed alpha over the page, identical at rest and in motion, on every device. Alpha goes .90 →
+.94 (dark) / .92 → .95 (light) because nothing softens what shows through any more, so that fraction
+has to be smaller for sharp album art behind it to read as a tint rather than clutter under the title.
+
+The capture-phase scroll listener that toggled `.is-scrolling` is **removed** rather than left
+toggling a class nothing renders — a listener firing on every scroll frame for no visual effect is how
+the next conditional face gets added by accident.
+
+### Changed — the test now pins the absence
+
+The DOM test that asserted "blur at rest, none mid-scroll, blur returns" asserted a contract that no
+longer exists. It now asserts the contract that does: no backdrop-filter at *any* moment, the
+background and the class list identical across rest/scrolling/settled, and an alpha that is neither 1
+(a slab, not glass) nor below .9 (nothing blurs the page behind it now). Each of those was verified
+against a build with the filter put back, with the conditional filter put back, and with the alpha
+moved in both directions. 793 unit / 450 DOM / 73 static.
+
+## [1.7.84] — 2026-08-29
+
+### Fixed — the transport stops changing face when the page moves
+
+**One appearance, scrolling or still.** The bar swapped its background as well as its blur for the
+duration of every scroll — glass at rest, an opaque slab while moving — on the theory that a solid
+surface was the closest match to a blurred translucent one. It is not, and the swap was plainly
+visible: content behind a pane reads as frosted when it is blurred and see-through when it is not, so
+the bar appeared to lose its opacity the moment the page moved and get it back when it stopped. The
+background is now identical in both states and **the blur is the only thing that changes**.
+
+**And the bar is considerably more opaque** — .62 → .90 in the dark palettes, .68/.70 → .92 in the
+light ones. That is what makes the above work: the blur has to be dropped while a scroll is running
+(it is the documented iOS jank source, v1.6.15), so the background has to be doing the work on its
+own. At .90 a tenth of the backdrop still comes through and it still reads as glass; the blur is a
+refinement rather than the thing holding the bar together.
+
+### Changed — the album view and Now playing lead with the artwork
+
+Both screens now open with the cover **edge to edge**, dissolving into the page ground, with the title
+underneath. On the album view it is a full-width square running up under the status bar, with the
+title, artist and action row centred below it and the track list beneath that. On Now playing the
+cover fills the width and crops rather than letterboxing, with the track, seek bar and transport in
+the tail of the fade. Back and Share get a dark scrim so they stay legible on any sleeve.
+
+The fade is a **mask** rather than an overlaid gradient, so it fades to whatever `--bg-elev` is for
+the current palette — one rule that is correct in all four themes instead of a hard-coded colour to
+fade towards.
+
+**Text is never laid over the artwork**, which is the one place this departs from the design it is
+modelled on. That design can put a title over the bottom of a cover because its ground is always dark
+and the art fades into that dark; two of this app's four palettes have a near-white ground and
+near-black text, so the same overlap puts dark text on whatever the sleeve happens to be. The first
+cut did exactly that and the album title was invisible on the first cover tried.
+
+Landscape tablets and desktops (≥720px) keep the framed cover beside the controls — nothing bleeds off
+a screen edge in that layout, so a hard-cropped full-width cover would read as a mistake there.
+
+### Fixed — two tests that were asking the wrong question
+
+`safearea.test.js` looked up a rule with `indexOf` and read whichever block came first, so it asked
+"does the FIRST rule mentioning `.modal-share` carry the top inset" rather than "is `.modal-share`
+pinned with the inset at all". The new scrim rule sits earlier in the file and correctly has no `top`
+in it, and the test failed on a pin that was still there 200 lines further down. It now walks brace
+depth and collects **every** rule for a selector — which also means it can finally see rules declared
+inside an `@media` block, which the old lookup could not. Alongside it, a new assertion pins that the
+album view is the *only* screen allowed to give up the status-bar reserve, and a DOM assertion pins
+the reason it may: what ends up under the status bar there is artwork, never text.
+
+The mini-transport suite's alpha check parsed "the last number before the bracket", which reads the
+blue channel of an opaque `rgb(22, 25, 28)` as an alpha of 28. Hygiene rather than a caught defect —
+both forms happened to pass — but it was not measuring what it named. 793 unit / 451 DOM / 73 static.
+
+## [1.7.83] — 2026-08-29
+
+### Changed — a taller transport, and a progress line that follows the glass
+
+**The floating transport is a fifth taller, and the extra height is artwork.** 62px → 74px on a
+phone. The cover grew 44px → 54px and the padding by 1px either side, which is the whole of the
+change: the pill is deliberately sized by its artwork rather than by its buttons, so making the bar
+taller means making the cover bigger and the new room is cover, not glass. The scroller's bottom
+reserve grew with it (84px → 94px), leaving the same 12px between the last album's details and the
+top of the pill as before — the bottom of an album wall is still fully readable.
+
+**The progress line follows the pill's curve instead of cutting across it.** The line was a 2px strip
+stretched across the top with `border-radius: 18px 18px 0 0` on it — a radius that never existed. CSS
+scales every corner down until the two on a side fit that side's length, and a 2px-tall strip has a
+2px left side, so the 18px corner silently became a 2px one and the blue line ran on straight past
+the glass at both ends. The line is now drawn as the **top border of a box the shape of the pill**, so
+it curves down into the corner the way the edge does, and is clipped by that same shape at the far
+end as it approaches 100%. *Class of error: a declaration that was quietly rewritten by layout — the
+value in the file was never the value in use.*
+
+### Added
+
+A DOM test that states the root cause as a rule: a corner radius must FIT the box it is declared on
+(`radius * 2 <= height`), so the next 2px strip with an 18px corner fails at the assertion rather
+than on a device. Alongside it: the clip is the pill's shape and shares its radius, the line is a
+drawn border rather than a block (a background on a now-full-height fill would flood the whole pill
+with accent colour), and the volume popover still opens *upwards out of* the transport — the new clip
+is one element away from swallowing it.
+
+The "pill is not mostly padding" assertion became a **ratio** — the cover must be at least 65% of the
+pill's height — plus a check that nothing inside the bar is taller than the cover. A fixed slack
+threshold has to be renumbered every time the bar is resized, which is how a threshold quietly
+becomes whatever the current build happens to measure. 793 unit / 436 DOM / 72 static.
+
+## [1.7.82] — 2026-08-29
+
+### Fixed — the five things v1.7.81 got wrong on a real screen
+
+**The list view was not a list.** `.album` is `flex-direction: column` for the grid, and the list rule
+set `display: flex` without saying `row` — so the axis never changed, the cover stayed stacked on top
+of the text, and `align-items: center` then centred the lot. It is a row now: small square cover at
+the left, title over artist beside it. *Class of error: a test that asserted a proxy instead of the
+thing.* The DOM test only checked that a row was wider than it was tall, which a full-width stacked
+block also is; it now measures that the cover ENDS before the text BEGINS and that the two are
+vertically level.
+
+**The grid/list control now sits in the top-right corner.** On the random wall Refresh sits beside it;
+on the Library wall, where there is nothing to reshuffle, the view control takes the corner alone.
+Refresh carries the margin that pushes the pair over and the view control follows it in the markup, so
+the corner belongs to the view control whenever both are shown — and a `#topbar-refresh.hidden +
+#topbar-view` rule hands the push on when Refresh is hidden.
+
+**The bottom of an album wall is no longer under the transport.** The floating pill overlays the page,
+so the room it needs has to be reserved by the scroller's bottom padding. That reserve was still sized
+for the old full-bleed bar and was ~14px short of the pill *plus* the gap it floats in, which put the
+last row's title behind the glass.
+
+**The pill was applying the home-indicator inset twice.** v1.7.81 moved the transport to a floating
+pill lifted clear of the indicator by its `bottom`, but a later `.mini-transport` block — the
+Roon-sizing one, 800 lines further down — still carried the old bar's `padding-bottom` inset. Both
+applied: the pill floated 34px above the indicator *and* reserved another 34px of empty glass inside
+itself, under the text. That is the wasted space. Removed, and the transport controls were resized so
+the 44px artwork is the tallest thing in the pill rather than a 54px play button — the bar loses 12px
+of height and the title gains 32px of width it was truncating.
+
+### Added — tests for what only a device could see
+
+The double inset is invisible in the DOM harness, where every safe-area inset reports 0, so it is
+pinned statically instead: the bottom inset must appear exactly once across **every**
+`.mini-transport` block. Taking only the first block is how the second one hid. Three DOM tests were
+added or strengthened alongside it — the list row's real geometry, the top-bar cluster's position on
+both walls, and the last album's clearance over the pill measured after scrolling to the end of a wall
+that is deliberately taller than the screen. Each was verified against a deliberately broken build.
+793 unit / 431 DOM / 72 static.
+
+## [1.7.81] — 2026-08-29
+
+### Changed — a glass transport, one grid, and a list view
+
+**The mini transport is a floating glass pill, and it shows the cover.** Artwork for the playing
+track sits at the left of a rounded, translucent bar that floats clear of the screen edges rather
+than being welded to the bottom. Tapping the cover opens Now playing, like the text beside it. A zone
+with no artwork (a stream) hides the image rather than leaving a broken-image glyph.
+
+**The glass steps aside while you scroll — deliberately.** v1.6.15 *removed* backdrop blur from this
+exact bar: it floats over the scrolling page, iOS Safari re-samples and re-blurs everything beneath
+it on every scroll frame, and it was the main scroll-jank source while music was playing. The look
+and the frame rate only conflict *while a scroll is actually running*, which is the one moment nobody
+is admiring the bar — so the blur is dropped for the duration of a scroll and restored when it stops,
+swapping to a solid surface of the same colour so there is no flash either way.
+
+**Every album wall now uses the same tile size.** The random wall used to measure the screen and
+shrink its artwork until exactly four rows fitted without scrolling — the app's original "a screenful
+of random albums". That made it the one wall whose tiles were a different size from all the others.
+It now uses the same natural third-of-width artwork as the Library, and scrolls like everything else.
+*The screenful is gone as a consequence: the wall holds three screens of albums instead of exactly
+one.*
+
+**Grid or list, on every album wall.** A control in the top bar switches between the tile grid and
+rows — small square cover, title over artist, chevron. One stored choice for all the walls, because
+Random, Library, a genre and "Not played" are the same shelf seen through different filters. Switching
+restyles the tiles that are already on screen rather than rebuilding them, so every listener on them
+survives.
+
+### Fixed
+
+- Queue and transport reserves grew to match the floating pill, which stands taller than the old bar.
+
+### Tests
+
+- New `test/dom/ui-glass-grid.test.js` (15): the random wall's artwork now measures the same width as
+  the Library's; list mode makes rows of square thumbnails **without rebuilding the tiles**; the cover
+  appears, is square, sits inside the tap target that opens Now playing, and hides when the zone has
+  no art; and the blur is present at rest, gone mid-scroll, and back afterwards.
+- The safe-area test was reworked rather than relaxed. It asserted one *mechanism* — a
+  `padding-bottom` holding the inset — and a floating pill lifts itself with `bottom` instead. It now
+  accepts either, and additionally fails on a stray `bottom: 0` left beside the lift, which the old
+  version could not have caught.
+- 793 unit / 423 DOM / 71 static.
+
 ## [1.7.80] — 2026-08-29
 
 ### Fixed — the selection controls stay put while you scroll

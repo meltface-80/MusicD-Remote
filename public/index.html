@@ -241,6 +241,25 @@
           <path d="M3 21v-5h5"/>
         </svg>
       </button>
+      <!-- Grid ⇄ list for the album walls. One control, one stored choice: the
+           walls are the same shelf seen from different screens, and a per-screen
+           setting would mean finding it again on each of them. -->
+      <button id="topbar-view" class="icon-btn hidden" type="button"
+              aria-label="Show as list" title="Show as list" aria-pressed="false">
+        <svg id="topbar-view-grid" width="20" height="20" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true">
+          <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/>
+          <line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/>
+          <line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+        </svg>
+        <svg id="topbar-view-list" width="20" height="20" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+             aria-hidden="true" class="hidden">
+          <rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/>
+          <rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>
+        </svg>
+      </button>
     </div>
 
     <div id="scan-progress-bar" class="scan-progress-bar hidden" aria-hidden="true">
@@ -708,6 +727,9 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
     </button>
 
     <div class="mt-info">
+      <!-- Inside .mt-info, which is the region that opens Now playing: tapping
+           the cover of the thing you are listening to should get you to it. -->
+      <img id="mt-art" class="mt-art" alt="" aria-hidden="true">
       <div class="mt-text">
         <div id="mt-title"  class="mt-title">—</div>
         <div id="mt-artist" class="mt-artist">—</div>

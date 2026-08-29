@@ -238,9 +238,17 @@ test("the iOS safe area is claimed and painted", async (t) => {
       "paints over the Now Playing panel instead of behind it");
   });
 
-  await t.test("the bars pad their own backgrounds into the inset", () => {
+  await t.test("the transport keeps itself clear of the home indicator", () => {
     // With no strip, this is the ONLY thing keeping the transport's background
-    // and its controls clear of the home indicator.
+    // and its controls off the home indicator.
+    //
+    // TWO mechanisms are legitimate and the requirement is the same either way:
+    // a full-bleed bar sitting on the bottom edge pads the inset INTO itself
+    // (padding-bottom), and a floating pill lifts its whole self above it
+    // (bottom). v1.7.81 moved to the pill. What is NOT legitimate is either
+    // one without the inset in it — `bottom: 0` with no calc puts the pill's
+    // own corner under the indicator.
+    //
     // Bounded to the rule body. A [\s\S]*? between the selector and the
     // declaration walks straight past the closing brace and happily matches
     // some OTHER selector's padding, which is exactly what it did — the
@@ -249,8 +257,55 @@ test("the iOS safe area is claimed and painted", async (t) => {
     const at = bare2.indexOf(".mini-transport {");
     assert.ok(at > -1, ".mini-transport rule not found");
     const rule = bare2.slice(at, bare2.indexOf("}", at));
-    assert.match(rule, /padding-bottom:\s*calc\([^)]*env\(safe-area-inset-bottom\)/,
-      "the transport bar no longer insets its own controls above the home indicator");
+    const padded = /padding-bottom:\s*calc\([^)]*env\(safe-area-inset-bottom\)/.test(rule);
+    const lifted = /bottom:\s*calc\([^)]*env\(safe-area-inset-bottom\)/.test(rule);
+    assert.ok(padded || lifted,
+      "the transport neither pads nor lifts itself out of the bottom safe area, " +
+      "so its controls sit on the home indicator:\n" + rule);
+    // A pill that floats must not ALSO still be pinned flat to the edge — the
+    // last `bottom` wins, and a stray `bottom: 0` left behind would silently
+    // undo the lift.
+    if (lifted) {
+      const flat = rule.match(/bottom:\s*0\s*;/g) || [];
+      assert.equal(flat.length, 0,
+        "a bare `bottom: 0` is still in the rule alongside the safe-area lift — " +
+        "whichever comes last decides, so this is one edit away from regressing");
+    }
+  });
+
+  await t.test("...and applies the bottom inset exactly once", () => {
+    // v1.7.82. The two mechanisms above are alternatives, not a pair. v1.7.81
+    // moved the transport to a floating pill and added the `bottom` lift, but a
+    // LATER `.mini-transport { }` block — the Roon-sizing one, 800 lines further
+    // down — still carried the full-bleed bar's `padding-bottom` inset. Both
+    // applied: the pill floated 34px above the home indicator AND reserved
+    // another 34px of empty glass inside itself under the text.
+    //
+    // Headless Chromium reports every inset as 0, so the DOM suite measures a
+    // pill that looks perfectly proportioned and only a real iPhone shows the
+    // dead band. That is precisely the case for a static check.
+    //
+    // EVERY block, not the first: taking only `indexOf` is how the second one
+    // hid. The count is over selector-scoped rule bodies, so an inset used by
+    // some other element is not swept in.
+    const bare3 = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    const bodies = [];
+    for (let at = bare3.indexOf(".mini-transport {"); at > -1;
+         at = bare3.indexOf(".mini-transport {", at + 1)) {
+      bodies.push(bare3.slice(at, bare3.indexOf("}", at)));
+    }
+    assert.ok(bodies.length > 0, "no .mini-transport rule at all");
+    const inset = /env\(safe-area-inset-bottom\)/;
+    const lifts = bodies.filter((b) => inset.test(b) && /(^|[;{\s])bottom:/.test(b)).length;
+    const pads  = bodies.filter((b) => inset.test(b) && /padding-bottom:/.test(b)).length;
+    assert.ok(lifts + pads > 0,
+      "no .mini-transport block honours the bottom safe area at all");
+    assert.equal(lifts + pads, 1,
+      "the bottom safe-area inset is applied " + (lifts + pads) + " times across " +
+      bodies.length + " .mini-transport blocks (" + lifts + " lift, " + pads +
+      " padding). Two of them stack: the pill lifts clear of the home indicator " +
+      "and then pads the same distance again inside itself, which on a device " +
+      "with an indicator is ~34px of empty glass under the text.");
   });
 });
 
