@@ -633,14 +633,24 @@ test("the progress line follows the pill's curve", async (t) => {
   });
 });
 
-test("the chrome surfaces are all one surface", async (t) => {
+test("floating things share one material; grounded things share one ground", async (t) => {
   if (!harness.available) { t.skip("no chromium binary available"); return; }
 
-  // v1.7.86. The transport pill, the top bar and both volume sheets are the
-  // same material: --glass-bg, no backdrop-filter. Three separate near-miss
-  // greys is what it looked like before, and a filter on any of them
-  // reintroduces the brightening that made the pill change face on scroll (see
-  // the file header).
+  // v1.7.86 put the top bar on the transport pill's material. v1.7.87 splits
+  // that in two, because they are not the same kind of surface:
+  //
+  //   FLOATING (--glass-bg, translucent): the transport pill and both volume
+  //   sheets. These really do sit over content and the translucency reads.
+  //
+  //   GROUNDED (--bg): the page, the top bar, and the full-screen panels
+  //   (album view, Now playing). .topbar is a flex SIBLING of <main>, so
+  //   nothing ever scrolls behind it — giving it a translucent material bought
+  //   nothing and left a visible seam between it and the page, which is what
+  //   was reported.
+  //
+  // Neither group may carry a backdrop-filter: saturate() brightens whatever
+  // shows through, which is the effect that made the pill change face on every
+  // scroll, twice (see the file header).
   const r = harness.renderPage({
     name: "ui-one-surface", windowSize: "390x844", stub: STUB,
     driver: `
@@ -657,8 +667,8 @@ test("the chrome surfaces are all one surface", async (t) => {
 
       T("pill",   face(bar));
       T("topbar", face(document.querySelector(".topbar")));
+      T("body",   face(document.body));
 
-      // The mini bar's volume sheet.
       document.getElementById("mt-vol-btn").click();
       await window.__sleep(300);
       var mtVol = document.getElementById("mt-vol-popover");
@@ -667,9 +677,9 @@ test("the chrome surfaces are all one surface", async (t) => {
       document.getElementById("mt-vol-btn").click();
       await window.__sleep(200);
 
-      // ...and the now-playing screen's, which is the same component.
       document.querySelector(".mt-info").click();
       await window.__sleep(1000);
+      T("panel", face(document.querySelector("#album-modal .modal-panel")));
       document.getElementById("np-volbtn").click();
       await window.__sleep(300);
       var npVol = document.getElementById("np-vol-popover");
@@ -684,14 +694,30 @@ test("the chrome surfaces are all one surface", async (t) => {
     assert.equal(r.np_vol_open, true, "the now-playing volume sheet did not open");
   });
 
-  await t.test("every one of them is the pill's colour", () => {
-    for (const [name, face] of [["the top bar", r.topbar],
-                                ["the mini bar's volume sheet", r.mt_vol],
+  await t.test("the volume sheets are the pill's material", () => {
+    for (const [name, face] of [["the mini bar's volume sheet", r.mt_vol],
                                 ["the now-playing volume sheet", r.np_vol]]) {
       assert.equal(face.bg, r.pill.bg,
         `${name} is ${face.bg} and the transport pill is ${r.pill.bg} — they are ` +
-        `meant to read as one material, not three near-miss greys`);
+        `meant to read as one material, not two near-miss greys`);
     }
+  });
+
+  await t.test("THE one: every screen is the same colour, header included", () => {
+    // The reported symptom: a step under the header on the album wall and on
+    // Home, and a third tone again on Now playing.
+    for (const [name, face] of [["the top bar", r.topbar],
+                                ["the Now playing / album panel", r.panel]]) {
+      assert.equal(face.bg, r.body.bg,
+        `${name} is ${face.bg} and the page is ${r.body.bg} — that difference is ` +
+        `a visible seam across the top of the screen`);
+    }
+  });
+
+  await t.test("...and the floating material still reads above that ground", () => {
+    assert.notEqual(r.pill.bg, r.body.bg,
+      `the transport pill is exactly the page colour (${r.pill.bg}) — it has ` +
+      `flattened into the background instead of floating over it`);
   });
 
   await t.test("and none of them has a backdrop-filter", () => {

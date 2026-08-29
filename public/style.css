@@ -14,13 +14,25 @@
   --font-sans: "Helvetica Neue", Helvetica, Arial, system-ui, -apple-system,
                "Segoe UI", Roboto, sans-serif;
 
-  --bg:           #0e1012;
-  --bg-elev:      #16191c;
-  --bg-elev-2:    #1d2125;
-  --border:       #262a2f;
+  /* THE GROUND, and every screen is painted with it: the page, the top bar,
+     and the full-screen panels (album view, Now playing). It used to be
+     #0e1012, a step darker than the top bar, which is why every screen had a
+     visible seam under its header.
+     The whole ladder moved up by the same delta (+15,+17,+19) rather than the
+     ground alone — bg-elev and bg-elev-2 are what cards, sheets and popovers
+     sit on, and leaving them behind would have made every elevated surface
+     DARKER than the page it floats on. Relative steps are unchanged. */
+  --bg:           #1d2125;
+  --bg-elev:      #252a2f;
+  --bg-elev-2:    #2c3238;
+  --border:       #353b42;
   --text:         #e9eaec;
-  --text-dim:     #8a8f96;
-  --text-faint:   #5d6269;
+  /* Lifted with the ground (v1.7.87). Secondary text was tuned against a
+     #0e1012 page; on the new #1d2125 it measured 3.98:1 and 2.11:1, under this
+     theme's 4.5 / 2.6 floors. The suite failed on both — moving a background
+     without moving what sits on it is exactly what those floors are for. */
+  --text-dim:     #959aa1;
+  --text-faint:   #6d7279;
   --accent:       #4cb7e6;
   /* The accent used as TEXT. Identical to --accent in this palette, so nothing
      here changes — it exists because a fill colour and a text colour have
@@ -41,7 +53,7 @@
      so that fraction has to be small enough that sharp album art behind it
      reads as a tint rather than as clutter under the text.
      Raise this if it ever looks busy. Never lower it. */
-  --glass-bg:   rgba(30,34,38,.94);
+  --glass-bg:   rgba(45,51,57,.94);
   --glass-edge: rgba(255,255,255,.10);
   --danger:       #e06464;
   --panel-hairline: rgba(255,255,255,.07);  /* row separators on tinted panels */
@@ -63,6 +75,14 @@
   --ctl-radius: 999px;
 }
 
+/* THE LIGHT PALETTES GO THE OTHER WAY, and it is a headroom problem, not an
+   inconsistency: the outcome is the same in all four themes — page, top bar
+   and every full-screen panel are one colour. The dark palettes raise the
+   ground to the bar. Here the bar is ALREADY #fffffe, four tenths of a level
+   off pure white, so raising the ground to meet it would leave --bg-elev (the
+   white cards sit on it) nowhere above to go, and every elevated surface in
+   the theme would flatten into the page. The bar comes down to the ground
+   instead — a step that was barely visible in this palette to begin with. */
 [data-theme="light"] {
   --bg:           #f6f5f2;
   --bg-elev:      #ffffff;
@@ -101,26 +121,32 @@
 /* Copper dark — the MusicD site's palette. Eight of these are that site's
    values verbatim; the rest are derived to fit tokens it has no concept of. */
 [data-theme="dark"][data-palette="copper"] {
-  --bg:           #1b1d1f;
-  --bg-elev:      #232628;
-  --bg-elev-2:    #2a2d30;
-  --border:       #35393d;
+  /* Same move as the classic dark palette, delta (+18,+20,+21). #2d3134 is
+     the colour the copper top bar was already showing and the one the app is
+     now built around. */
+  --bg:           #2d3134;
+  --bg-elev:      #353a3d;
+  --bg-elev-2:    #3c4145;
+  --border:       #474d52;
   --text:         #e8e6e3;
-  --text-dim:     #a8a49e;
+  /* Lifted with the ground (v1.7.87), and past its own minimum: this theme
+     holds --text-faint to the full 4.5 too, so solving each in isolation
+     closed the gap between the two tiers to a single level. */
+  --text-dim:     #bdb9b3;
   /* The site has only two text tiers; this third one is derived from --text-dim
      and darkened until it clears 4.5:1 on the DEEPEST surface (4.61 on
      --bg-elev-2). The current dark theme's equivalent fails at 2.64. */
-  --text-faint:   #9a948c;
+  --text-faint:   #b2aca4;
   /* Copper for fills, a lighter copper for text. This is not a preference:
      #c47f4a as text on --bg-elev-2 measures 4.27:1, a real failure, while
      #d99a66 gives 5.78. The site itself splits them the same way. */
   --accent:       #c47f4a;
-  --accent-text:  #d99a66;
+  --accent-text:  #dfa06c;
   --accent-soft:  rgba(196,127,74,.15);
   /* Warm near-black rather than the cool #0b1418, so a copper fill doesn't
      read blue-shadowed. 5.74:1. */
   --on-accent:    #17120d;
-  --glass-bg:   rgba(46,50,53,.94);
+  --glass-bg:   rgba(64,70,74,.94);
   --glass-edge: rgba(255,255,255,.10);
   /* Hue 3 degrees against copper's 26, and light enough to clear 4.5:1 on
      every surface including the deepest (4.81). */
@@ -232,9 +258,15 @@ button { font-family: inherit; }
      saturate+blur of a flat colour is a compositing layer that produces the
      colour it started with. --glass-bg over --bg is that same blend, stated
      once, and it matches the pill instead of being a second near-miss grey.
-     Deterministic, too, which is what lets the iOS status bar be given the
-     exact same colour — see applyTheme() in app.js. */
-  background: var(--glass-bg);
+     v1.7.87: it is var(--bg), not --glass-bg. The bar and the page were two
+     tones and the seam between them showed at the top of every screen. They
+     are one colour now, which is also what makes the iOS status bar match —
+     theme-color is --bg and the bar is --bg, so there is nothing to composite
+     and nothing to drift (see applyTheme() in app.js).
+     --glass-bg is still the material for things that genuinely FLOAT over
+     content: the transport pill and the volume sheets. This bar does not
+     float — nothing scrolls behind it. */
+  background: var(--bg);
   border-bottom: 1px solid var(--border);
 }
 .topbar-row {
@@ -831,7 +863,10 @@ main {
      worse than everywhere else. Percentages of a fixed parent have no such
      ambiguity. */
   height: 100%; max-height: 100%;
-  background: var(--bg-elev); color: var(--text);
+  /* A SCREEN, not a card: the album view and Now playing fill the display, so
+     they take the ground like every other screen. --bg-elev made them a
+     different tone from the top bar directly above them. */
+  background: var(--bg); color: var(--text);
   border-radius: 0; border: 0;
   box-shadow: var(--shadow-modal);
   overflow: hidden;

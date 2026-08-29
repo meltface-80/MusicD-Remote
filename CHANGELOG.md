@@ -2,6 +2,48 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.87] — 2026-08-29
+
+### Changed — one ground, on every screen, in every theme
+
+The page, the top bar and the full-screen panels (album view, Now playing) were three different tones.
+That is the seam under the header on Home and on the album wall, and the third tone again behind Now
+playing. They are one colour now — `--bg` — everywhere.
+
+**The dark palettes come UP to meet the bar.** The ground is the colour the top bar was already
+showing and which was called out as the right one: **#1d2125** classic, **#2d3134** copper. The whole
+elevation ladder moved with it by the same delta — `--bg-elev`, `--bg-elev-2`, `--border` and
+`--glass-bg`. Lifting the ground alone would have left the old `--bg-elev` (#16191c) *darker* than the
+new page, so every card, sheet and popover would have read as a recess rather than a surface.
+Relative steps are unchanged.
+
+**The light palettes go the other way, and it is headroom, not inconsistency.** Their top bar was
+already `#fffffe` — four tenths of a level off pure white — so raising the ground to meet it would
+leave `--bg-elev` (the white the cards use) nowhere above to go and would flatten every elevated
+surface in the theme. The bar comes down to the ground instead, a step that was barely visible there
+to begin with. The outcome is the same in all four themes: page, bar and panels are one colour.
+
+**Secondary text moved with the ground.** Raising a background without raising what sits on it is
+exactly what the contrast floors exist to catch, and they caught it: `--text-dim` fell to 3.98:1 in
+classic dark and `--text-faint` to 2.11:1, with three more failures in copper. Both dark palettes'
+`--text-dim`/`--text-faint` and copper's `--accent-text` are lifted to clear their floors. Copper's
+`--text-dim` goes past its own minimum on purpose — solving each token in isolation closed the gap
+between the two text tiers to a single level.
+
+The top bar is `var(--bg)` rather than `--glass-bg`, so `theme-color` is a token read again and
+v1.7.86's composite helper is gone with the two-tone bar it existed to describe. `--glass-bg` remains
+the material for the things that genuinely float: the transport pill and the two volume sheets.
+
+### Added
+
+The invariant the ladder shift was protecting, which nothing would otherwise have noticed — the
+contrast floors get *better* as a surface moves away from the text on it, so a flattened elevation
+passes every existing check: **`--bg-elev` and `--bg-elev-2` must be lighter than `--bg` in every
+theme.** Verified against a build with each one left behind. The chrome test now compares
+`theme-color` with the top bar's *measured* colour rather than a token name — v1.7.86 compared it to a
+composite and v1.7.87 made it plain `--bg`; a test naming either has to be rewritten whenever the bar
+is recoloured and says nothing about the seam. 793 unit / 460 DOM / 73 static.
+
 ## [1.7.86] — 2026-08-29
 
 ### Changed — one material for every piece of app chrome
