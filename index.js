@@ -9482,6 +9482,35 @@ function resolveSharedAlbum(albumTitle, artist, trackTitle) {
 // different albums by the same artist (the original and the compilation) is a
 // coin flip, and the artist gate is what keeps a cover version by somebody
 // else out of it entirely.
+// Which library album a PLAYED track belongs to. Zero Roon calls.
+//
+// Two rungs, and the order is the whole point.
+//
+// The ALBUM NAME goes first. A history entry carries the album Roon was showing
+// while the track played, and that resolves against the index the library scan
+// built — which covers every album in the library, opened here or not.
+//
+// The track index is the FALLBACK. It only knows albums this extension has had
+// open, so a library played mostly from Roon's own apps resolves almost nothing
+// through it: that was the "not in your library" reported against albums
+// plainly in the library. It still earns its place as the second rung, for a
+// track whose album line does not match any album title — a compilation Roon
+// labels differently, or a single filed under another name.
+function resolvePlayedTrack(trackTitle, artist, albumTitle) {
+  const title = String(trackTitle || "").trim();
+  if (!title) return null;
+  const credit = String(artist || "");
+  const album  = String(albumTitle || "").trim();
+  // findSharedAlbum declines on ambiguity of its own accord — two albums with
+  // one title and no credit to separate them resolve to nothing rather than to
+  // a guess — so there is no need to second-guess it here.
+  if (album) {
+    const byAlbum = findSharedAlbum(album, credit);
+    if (byAlbum) return byAlbum;
+  }
+  return resolveSharedByTrackIndex(title, credit);
+}
+
 function resolveSharedByTrackIndex(trackTitle, artist) {
   const rows = albumKeysForTrack(trackTitle);
   if (!rows.length) return null;
@@ -13307,7 +13336,13 @@ app.get("/api/queue", (req, res) => {
         finish(() => {
           const items = ((msg && msg.items) || []).map(it => ({
             queue_item_id: it.queue_item_id,
-            title:    (it.one_line && it.one_line.line1) || (it.three_line && it.three_line.line1) || "",
+            // three_line FIRST. Roon's one_line.line1 is "Track - Artist" all
+            // in one string, and the row already prints the artist underneath
+            // as its subtitle — so it read "The Artist - Big Big Train" over
+            // "Big Big Train". The played-earlier rows come from the zone push,
+            // which is three_line, so the two halves of the same list also
+            // disagreed about how to write a track down.
+            title:    (it.three_line && it.three_line.line1) || (it.one_line && it.one_line.line1) || "",
             subtitle: (it.three_line && it.three_line.line2) || "",
             image_key: it.image_key || null,
             length:    it.length || null
@@ -13820,7 +13855,7 @@ app.post("/api/queue/play-history-next", async (req, res) => {
   const title = String(track || "").trim();
   if (!title) return res.status(400).json({ error: "track required" });
 
-  const hit = resolveSharedByTrackIndex(title, String(artist || ""));
+  const hit = resolvePlayedTrack(title, artist, album);
   if (!hit) {
     // A real outcome, not a failure: streamed radio, a track whose album has
     // left the library, or a title two albums share. Saying which is why the
@@ -13883,7 +13918,7 @@ app.post("/api/queue/history-multi", async (req, res) => {
   for (const t of tracks) {
     const title = String((t && t.track) || "").trim();
     if (!title) continue;
-    const hit = resolveSharedByTrackIndex(title, String((t && t.artist) || ""));
+    const hit = resolvePlayedTrack(title, (t && t.artist), (t && t.album));
     if (hit) resolved.push({ title, hit });
     else unresolved.push(title);
   }

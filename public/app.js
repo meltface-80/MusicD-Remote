@@ -5652,10 +5652,18 @@
       // Every part of a partial result is worth saying: which went, which the
       // library could not find, which Roon refused.
       let msg = `${kind === "queue" ? "Queued" : "Playing"} ${j.queued} track${j.queued === 1 ? "" : "s"}`;
+      // Name them. "1 not in your library" leaves the user to work out WHICH of
+      // their picks it meant, and the answer decides whether it is a real
+      // absence or something to report.
+      const named = (list, what) => {
+        if (!list || !list.length) return "";
+        const shown = list.slice(0, 3).map(t => `“${t}”`).join(", ");
+        return `, ${shown}${list.length > 3 ? ` and ${list.length - 3} more` : ""} ${what}`;
+      };
       const missed = (j.unresolved || []).length;
       const failed = (j.failed || []).length;
-      if (missed) msg += `, ${missed} not in your library`;
-      if (failed) msg += `, ${failed} Roon refused`;
+      msg += named(j.unresolved, "not in your library");
+      msg += named(j.failed, "refused by Roon");
       showToast(msg, (missed || failed) ? "error" : null, TOAST_REPORT_MS);
       historySelectMode = false;
       historySelected = [];

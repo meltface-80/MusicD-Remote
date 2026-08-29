@@ -2,6 +2,43 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.79] — 2026-08-29
+
+### Fixed — "not in your library" for albums that are plainly in the library
+
+Selecting two played tracks and adding them could report **"Queued 1 track, 1 not in your library"**
+for a track sitting in the library the whole time.
+
+A played track is resolved back to its album by name, and it was going straight to the track index —
+which is built from albums this extension has had **open**. Play your library from Roon's own apps,
+as most people do most of the time, and that index knows almost nothing, so resolution failed for
+records that were never missing.
+
+It now tries the **album name first**. Every history entry carries the album Roon was showing while
+the track played, and that resolves against the index the library scan built — which covers every
+album in the library, opened here or not. The track index stays as the second rung, where it earns
+its place: a track whose album line matches no album title, a compilation Roon labels differently.
+Both are still free of Roon calls.
+
+### Fixed
+
+- **The toast counted failures without naming them.** "1 not in your library" left you to work out
+  which of your picks it meant — and that answer is the difference between an ordinary absence and
+  something worth reporting. It now names them, up to three, then "and N more".
+- **Queue rows printed the artist twice.** Roon's `one_line` is "Track - Artist" in a single string,
+  and the row already prints the artist underneath as its subtitle — so a row read
+  "The Artist - Big Big Train" over "Big Big Train". Worse, the played-earlier rows come from the
+  zone push, which is `three_line`, so the two halves of one list wrote a track down differently.
+  Both now use `three_line`.
+
+### Tests
+
+- The batch assertion now pins the whole track object rather than just the titles: the album field
+  is what resolution leans on first, and dropping it would quietly send resolution back to failing
+  for anything played from Roon itself.
+- A new DOM test that a partial result names the tracks it could not use.
+- 793 unit / 403 DOM / 71 static.
+
 ## [1.7.78] — 2026-08-29
 
 ### Added — pick several played tracks, in the order you want them

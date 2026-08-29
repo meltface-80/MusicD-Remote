@@ -287,6 +287,10 @@ const MULTI_STUB = STUB.replace(
   'if (url.indexOf("/api/queue/play-history-next") > -1) {',
   `if (url.indexOf("/api/queue/history-multi") > -1) {
     window.__multi.push(JSON.parse((opts && opts.body) || "{}"));
+    if (window.__multiUnresolved) {
+      return window.__json({ ok: true, kind: "play_next", queued: 1, failed: [],
+                             unresolved: window.__multiUnresolved });
+    }
     return window.__json({ ok: true, kind: "play_next", queued: 2, failed: [], unresolved: [] });
   }
   if (url.indexOf("/api/queue/play-history-next") > -1) {`
@@ -404,6 +408,10 @@ test("several played tracks, picked in any order", async (t) => {
     assert.deepEqual(r.multi[0].tracks.map(t => t.track), ["First", "Third", "Second"],
       "the batch was sent in the rows' display order — the pick order is the " +
       "whole feature, and sorting it away looks identical on screen");
+    // The ALBUM is what the server resolves on first — the track index only
+    // knows albums opened in this app, so dropping this field quietly sends
+    // resolution back to failing for anything played from Roon itself.
+    assert.deepEqual(r.multi[0].tracks[0], { track: "First", artist: "Artist A", album: "Album A" });
   });
 
   await t.test("it batches rather than firing one request per track", () => {
@@ -469,5 +477,44 @@ test("tapping a row still plays it when not selecting", async (t) => {
     assert.equal(r.no_confirm_in_select, true, "a tap in select mode asked to play the track");
     assert.equal(r.single_in_select, 0, "a tap in select mode queued a track");
     assert.deepEqual(r.badge_in_select, ["", "1", ""]);
+  });
+});
+
+test("a partial result says which tracks it could not use", async (t) => {
+  if (!harness.available) { t.skip("no chromium binary available"); return; }
+
+  // "1 not in your library" leaves the user to work out which of their picks it
+  // meant — and that answer is the difference between an ordinary absence and
+  // something worth reporting.
+  const r = harness.renderPage({
+    name: "queue-history-partial", windowSize: "390x844",
+    stub: MULTI_STUB + `\nwindow.__multiUnresolved = ["Second"];\n`,
+    driver: `
+      ${SEL_HELPERS}
+      await window.__sleep(400);
+      await openQueue();
+      bar().click(); await window.__sleep(200);
+      selBtn().click(); await window.__sleep(150);
+      rowByTitle("First").click();  await window.__sleep(60);
+      rowByTitle("Second").click(); await window.__sleep(60);
+      actBtn("Play next").click();
+      await confirmYes();
+      var toast = document.querySelector(".toast");
+      T("toast", toast ? toast.textContent : "");
+      T("toast_is_error", toast ? toast.classList.contains("error") : false);
+    `,
+  });
+  harness.assertNoPageError(assert, r);
+
+  await t.test("it names the track rather than just counting it", () => {
+    assert.match(String(r.toast), /Second/,
+      "the toast counted the failure without naming it, so there is no way to " +
+      "tell which pick was dropped");
+    assert.match(String(r.toast), /not in your library/);
+    assert.match(String(r.toast), /1 track/, "it should still report what DID go");
+  });
+
+  await t.test("and flags it as something that went wrong", () => {
+    assert.equal(r.toast_is_error, true);
   });
 });
