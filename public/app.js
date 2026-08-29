@@ -5438,6 +5438,117 @@
     return (sel && sel.value) || selectedZoneId || currentSourceZoneId || null;
   }
 
+  // Collapsed by default, remembered for the session. Every play action on this
+  // screen re-pulls the queue, and a fold-out that shut itself on each of those
+  // would be unusable.
+  let queueHistoryOpen = false;
+
+  // What already played, above the live queue.
+  //
+  // Roon's queue reports the current track and what is coming; anything played
+  // or skipped past is gone from it, and there is no queue-history call in the
+  // extension API. These rows are what the extension watched leave the zone.
+  //
+  // They are a RECORD, not a rewindable queue, and the UI has to be honest
+  // about that: tapping one adds it after the current track. Restoring the
+  // queue around it would mean rebuilding every track after it through the
+  // browse hierarchy — roughly eight Core round trips each, behind a play_now
+  // that wipes the live queue first.
+  function renderQueueHistory(list, history) {
+    if (!history.length) return;
+    // The server sends newest first ("the last N"); on screen it reads
+    // oldest-at-the-top so the most recent sits against the Now playing
+    // divider, the way a queue is read.
+    const rows = history.slice().reverse();
+
+    const bar = document.createElement("li");
+    bar.className = "q-history-bar";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "q-history-toggle";
+    bar.appendChild(btn);
+
+    const rowEls = rows.map((h) => {
+      const li = document.createElement("li");
+      li.className = "q-hist-row is-tappable";
+
+      const art = document.createElement("img");
+      art.className = "q-art";
+      if (h.image_key) art.src = `/api/image/${encodeURIComponent(h.image_key)}?size=120`;
+      else art.style.visibility = "hidden";
+
+      const tx = document.createElement("div"); tx.className = "q-text";
+      const tt = document.createElement("div"); tt.className = "q-title";
+      tt.textContent = h.track || "";
+      const ts = document.createElement("div"); ts.className = "q-sub";
+      ts.textContent = [h.artist, h.album].filter(Boolean).join(" · ");
+      tx.appendChild(tt); tx.appendChild(ts);
+
+      const len = document.createElement("span");
+      len.className = "q-len";
+      // A skip is only legible next to how long the track was — "0:12" alone
+      // reads as a very short track. Anything that counted as played just
+      // shows its length, like every other row.
+      if (!h.played && h.elapsed > 0 && h.duration) {
+        len.textContent = `${fmtDuration(h.elapsed)} / ${fmtDuration(h.duration)}`;
+        len.classList.add("is-skipped");
+        li.classList.add("was-skipped");
+      } else if (h.duration) {
+        len.textContent = fmtDuration(h.duration);
+      }
+
+      li.appendChild(art); li.appendChild(tx); li.appendChild(len);
+      li.addEventListener("click", () => playHistoryNext(h));
+      return li;
+    });
+
+    const paint = () => {
+      btn.setAttribute("aria-expanded", String(queueHistoryOpen));
+      btn.textContent = (queueHistoryOpen ? "▾ " : "▸ ") +
+        `${rows.length} played earlier`;
+      for (const el of rowEls) el.classList.toggle("hidden", !queueHistoryOpen);
+    };
+    btn.addEventListener("click", () => { queueHistoryOpen = !queueHistoryOpen; paint(); });
+
+    // The control first, then what it discloses: collapsed it sits alone at the
+    // top of the list, and expanded the rows run down from it to finish against
+    // the Now playing divider — the order they were played in.
+    list.appendChild(bar);
+    for (const el of rowEls) list.appendChild(el);
+    paint();
+  }
+
+  // Add a played track back, after the current one.
+  async function playHistoryNext(h) {
+    const name = h.track || "this track";
+    if (!await confirmDialog(`Play "${name}" next?`)) return;
+    try {
+      const r = await fetch("/api/queue/play-history-next", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          // Re-read at tap time, exactly as the live rows do: these rows belong
+          // to whichever zone the screen is showing now.
+          zone_or_output_id: queueZoneId(),
+          track: h.track, artist: h.artist, album: h.album
+        })
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        // "Not in your library" is an outcome, not a fault — a stream, or an
+        // album since removed. Saying which stops it reading as a bug.
+        showToast(j.unresolved
+          ? `Can't play "${name}" again — it isn't in your library`
+          : "Couldn't play that: " + (j.error || `HTTP ${r.status}`), "error");
+        return;
+      }
+      showToast(`Playing "${j.track || name}" next`);
+      setTimeout(loadQueue, 600);
+    } catch (e) {
+      showToast("Couldn't reach the extension", "error");
+    }
+  }
+
   async function loadQueue() {
     const zoneId = queueZoneId();
     if (!zoneId) return;
@@ -5451,14 +5562,22 @@
       const r = await fetch(`/api/queue?zone=${encodeURIComponent(zoneId)}`);
       const j = await r.json();
       const items = j.items || [];
-      if (!items.length) {
+      const history = Array.isArray(j.history) ? j.history : [];
+      // Only truly empty when there is nothing either side of the divider. A
+      // queue that has run out but played twenty tracks is not an empty screen.
+      if (!items.length && !history.length) {
         summary.textContent = "";
         empty.classList.remove("hidden");
         return;
       }
       let totalSec = 0;
       for (const it of items) if (it.length) totalSec += it.length;
-      summary.textContent = `${items.length} track${items.length === 1 ? "" : "s"} · ${fmtDuration(totalSec)} remaining`;
+      summary.textContent = items.length
+        ? `${items.length} track${items.length === 1 ? "" : "s"} · ${fmtDuration(totalSec)} remaining`
+        : "Nothing more queued";
+
+      // Above the "Now playing" divider, because that is where it happened.
+      renderQueueHistory(list, history);
 
       for (let i = 0; i < items.length; i++) {
         const it = items[i];

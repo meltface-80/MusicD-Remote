@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Queue Rewind Problem</title>
+<meta name="description" content="Why Roon's extension API cannot rewind a queue, what it would cost to try, and what MusicD Remote does instead.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+  /* Charcoal and copper, inherited from the install page this sits beside.
+     Deliberately single-theme: the sibling page commits to dark, and a doc
+     that changed ground halfway through the site would read as a stray. */
+  :root {
+    --bg:         #1b1d1f;
+    --bg-deep:    #141618;
+    --panel:      #232628;
+    --panel-2:    #2a2d30;
+    --line:       #35393d;
+    --line-soft:  #2b2f33;
+    --text:       #e8e6e3;
+    --muted:      #a8a49e;
+    --faint:      #7d7973;
+    --copper:     #c47f4a;
+    --copper-hi:  #d99a66;
+    --copper-dim: #8a5a35;
+    --good:       #7fb47f;
+    /* Absence, in the same warm family as the accent so the two never fight. */
+    --absent:     #b06a62;
+    --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--copper-hi); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  a:focus-visible, button:focus-visible {
+    outline: 2px solid var(--copper); outline-offset: 3px; border-radius: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+
+  .wrap { max-width: 720px; margin: 0 auto; padding: 0 22px; }
+
+  /* ---------- masthead ---------- */
+  header.top {
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-deep);
+    padding: 54px 0 40px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--copper);
+    margin-bottom: 18px;
+  }
+  h1 {
+    font-size: clamp(30px, 6vw, 46px);
+    line-height: 1.1;
+    font-weight: 700;
+    letter-spacing: -.02em;
+    text-wrap: balance;
+    margin-bottom: 18px;
+  }
+  .standfirst {
+    font-size: 18px;
+    color: var(--muted);
+    max-width: 60ch;
+    text-wrap: pretty;
+  }
+  .stamp {
+    margin-top: 26px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--faint);
+    display: flex; flex-wrap: wrap; gap: 8px 16px;
+  }
+  .stamp b { color: var(--muted); font-weight: 500; }
+
+  /* ---------- flow ---------- */
+  main { padding: 12px 0 72px; }
+  section { padding-top: 44px; }
+  h2 {
+    font-size: 23px;
+    font-weight: 600;
+    letter-spacing: -.01em;
+    text-wrap: balance;
+    margin-bottom: 6px;
+  }
+  h2 + .sub {
+    color: var(--faint);
+    font-family: var(--mono);
+    font-size: 12.5px;
+    margin-bottom: 20px;
+  }
+  h3 {
+    font-size: 16px; font-weight: 600;
+    margin-bottom: 6px;
+  }
+  p { margin-bottom: 16px; max-width: 68ch; text-wrap: pretty; }
+  p:last-child { margin-bottom: 0; }
+  strong { font-weight: 600; color: #f4f2ef; }
+  code {
+    font-family: var(--mono);
+    font-size: .88em;
+    background: var(--panel-2);
+    border: 1px solid var(--line-soft);
+    border-radius: 4px;
+    padding: .1em .38em;
+    color: var(--copper-hi);
+    white-space: nowrap;
+  }
+
+  /* ---------- the verb ledger ---------- */
+  .ledger {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 22px;
+  }
+  .ledger-head {
+    padding: 13px 18px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-deep);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .verbs {
+    list-style: none;
+    display: flex; flex-wrap: wrap; gap: 7px;
+    padding: 18px;
+  }
+  .verbs li {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--faint);
+    border: 1px solid var(--line-soft);
+    border-radius: 5px;
+    padding: 3px 9px;
+  }
+  /* The three that touch a queue at all. Everything else is context. */
+  .verbs li.q {
+    color: var(--copper-hi);
+    border-color: var(--copper-dim);
+    background: rgba(196, 127, 74, .09);
+  }
+  .ledger-foot {
+    padding: 14px 18px;
+    border-top: 1px solid var(--line);
+    font-size: 14px;
+    color: var(--muted);
+  }
+
+  /* Absence carries more weight than presence here — it is the finding. */
+  .absent {
+    background: var(--bg-deep);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--absent);
+    border-radius: 8px;
+    padding: 20px 22px;
+    margin-bottom: 22px;
+  }
+  .absent h3 { color: var(--absent); margin-bottom: 12px; }
+  .absent ul { list-style: none; display: grid; gap: 9px; }
+  /* grid-template-columns with bare text in the <li> puts every text node in
+     its own cell — the copy then wraps one word per line. The <span> keeps the
+     row to exactly two items: the marker and the text. */
+  .absent li {
+    display: grid; grid-template-columns: 18px 1fr; gap: 10px;
+    font-size: 15px; color: var(--muted);
+  }
+  .absent li::before {
+    content: "\00d7";
+    color: var(--absent);
+    font-family: var(--mono);
+    line-height: 1.5;
+  }
+  .absent li b { color: var(--text); font-weight: 500; }
+
+  /* ---------- the queue band ---------- */
+  figure { margin-bottom: 22px; }
+  .band {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--panel);
+  }
+  .band-cell { padding: 16px 18px; min-width: 0; }
+  .band-cell.past { background: var(--bg-deep); }
+  .band-now {
+    background: rgba(196, 127, 74, .13);
+    border-left: 1px solid var(--line);
+    border-right: 1px solid var(--line);
+    padding: 16px 14px;
+    display: flex; align-items: center;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--copper-hi);
+    white-space: nowrap;
+  }
+  .band-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    margin-bottom: 9px;
+  }
+  .past .band-label { color: var(--absent); }
+  .future .band-label { color: var(--good); }
+  .band-cell p { font-size: 13.5px; color: var(--muted); margin: 0; max-width: none; }
+  .band-cell .tracks {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--faint);
+    margin-bottom: 8px;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .past .tracks { text-decoration: line-through; }
+  figcaption {
+    font-size: 13.5px;
+    color: var(--faint);
+    margin-top: 11px;
+    max-width: 68ch;
+  }
+  @media (max-width: 620px) {
+    .band { grid-template-columns: 1fr; }
+    .band-now { border: 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  }
+
+  /* ---------- cost ---------- */
+  .steps {
+    list-style: none;
+    font-family: var(--mono);
+    font-size: 13.5px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 0;
+    margin-bottom: 20px;
+  }
+  .steps li {
+    display: flex; justify-content: space-between; gap: 16px;
+    padding: 7px 18px;
+    color: var(--muted);
+  }
+  .steps li span:last-child { color: var(--faint); font-variant-numeric: tabular-nums; }
+  .steps li.total {
+    border-top: 1px solid var(--line);
+    margin-top: 6px; padding-top: 12px;
+    color: var(--text);
+  }
+  .steps li.total span:last-child { color: var(--copper-hi); }
+
+  .scroller { overflow-x: auto; margin-bottom: 20px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14.5px;
+    min-width: 380px;
+  }
+  th, td {
+    text-align: right;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line-soft);
+    font-variant-numeric: tabular-nums;
+  }
+  th:first-child, td:first-child { text-align: left; }
+  thead th {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--faint);
+    font-weight: 500;
+    border-bottom-color: var(--line);
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.calls { color: var(--absent); font-weight: 500; }
+
+  /* ---------- shipped ---------- */
+  .decision {
+    border-top: 1px solid var(--line);
+    padding: 20px 0;
+    display: grid;
+    grid-template-columns: 84px 1fr;
+    gap: 20px;
+  }
+  .decision:last-of-type { border-bottom: 1px solid var(--line); }
+  .decision .tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--copper);
+    padding-top: 3px;
+  }
+  .decision .tag.no { color: var(--absent); }
+  .decision p { font-size: 15px; color: var(--muted); margin: 0; }
+  @media (max-width: 560px) {
+    .decision { grid-template-columns: 1fr; gap: 6px; }
+  }
+
+  .callout {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--copper);
+    border-radius: 8px;
+    padding: 20px 22px;
+    margin-top: 8px;
+  }
+  .callout h3 { color: var(--copper-hi); }
+  .callout p { font-size: 15px; color: var(--muted); }
+
+  footer {
+    border-top: 1px solid var(--line);
+    background: var(--bg-deep);
+    padding: 30px 0 44px;
+    font-size: 14px;
+    color: var(--faint);
+  }
+  footer p { margin-bottom: 8px; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div class="eyebrow">MusicD Remote · design note</div>
+    <h1>The Queue Rewind Problem</h1>
+    <p class="standfirst">
+      Played tracks disappear from the Queue screen because Roon's extension API cannot look
+      backwards. Here is exactly what it can do, what rewinding would cost, and what the app
+      does instead.
+    </p>
+    <div class="stamp">
+      <span><b>Shipped</b> v1.7.77</span>
+      <span><b>Findings from</b> node-roon-api-transport</span>
+      <span><b>Status</b> one open question</span>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section>
+    <h2>What you see</h2>
+    <p class="sub">the reported behaviour</p>
+    <p>
+      A track finishes and it is gone from the queue. Pick a track further down the list and
+      everything you skipped over goes with it. The queue only ever shows what is playing and
+      what is coming — there is no way to look back at what just played, and no way to return
+      to it.
+    </p>
+    <p>
+      That is not a gap in the app. It is the shape of the API underneath it.
+    </p>
+  </section>
+
+  <section>
+    <h2>Everything Roon's transport API can do</h2>
+    <p class="sub">node-roon-api-transport, complete surface</p>
+
+    <div class="ledger">
+      <div class="ledger-head">22 verbs · the three that touch a queue are marked</div>
+      <ul class="verbs">
+        <li>change_settings</li>
+        <li>change_volume</li>
+        <li>control</li>
+        <li>convenience_switch</li>
+        <li>get_outputs</li>
+        <li>get_zones</li>
+        <li>group_outputs</li>
+        <li>mute</li>
+        <li>mute_all</li>
+        <li>pause_all</li>
+        <li class="q">play_from_here</li>
+        <li>seek</li>
+        <li>standby</li>
+        <li>subscribe_outputs</li>
+        <li class="q">subscribe_queue</li>
+        <li>subscribe_zones</li>
+        <li>toggle_standby</li>
+        <li class="q">transfer_zone</li>
+        <li>ungroup_outputs</li>
+        <li>zone_by_object</li>
+        <li>zone_by_output_id</li>
+        <li>zone_by_zone_id</li>
+      </ul>
+      <div class="ledger-foot">
+        <code>subscribe_queue</code> reads the queue forward from the current track.
+        <code>play_from_here</code> jumps to an item that is still in it. That is the whole of it.
+      </div>
+    </div>
+
+    <div class="absent">
+      <h3>What is not there</h3>
+      <ul>
+        <li><span><b>No queue history.</b> Nothing reports a track that has already left.</span></li>
+        <li><span><b>No remove.</b> A queued track cannot be taken out.</span></li>
+        <li><span><b>No insert or reorder.</b> Nothing can place a track at a position.</span></li>
+        <li><span><b>No clear.</b> The queue is only ever replaced, as a side effect of Play&nbsp;Now.</span></li>
+      </ul>
+    </div>
+
+    <p>
+      The only way to put anything into a queue is the browse hierarchy: navigate to the album,
+      open it, find the track, open its action menu, invoke Play&nbsp;Now, Add&nbsp;Next or Queue.
+      Every one of those is a round trip to the Core.
+    </p>
+  </section>
+
+  <section>
+    <h2>Where the tracks go</h2>
+    <p class="sub">the queue, as the API sees it</p>
+
+    <figure>
+      <div class="band">
+        <div class="band-cell past">
+          <div class="band-label">Played &amp; skipped</div>
+          <div class="tracks">First · Second · Third</div>
+          <p>Not in the subscription. Their queue ids are spent.</p>
+        </div>
+        <div class="band-now">▶ now</div>
+        <div class="band-cell future">
+          <div class="band-label">Reported</div>
+          <div class="tracks">Current · Up Next · …</div>
+          <p>What <code>subscribe_queue</code> returns, and all it returns.</p>
+        </div>
+      </div>
+      <figcaption>
+        A departed track is not merely hidden — the queue item that identified it no longer
+        exists, so <code>play_from_here</code> has nothing to aim at.
+      </figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>What rewinding would cost</h2>
+    <p class="sub">counted from the browse path, per track</p>
+
+    <p>
+      With no queue-write verb, restoring the queue around a played track means playing that
+      track and then re-queueing every track that followed it — each one a full browse
+      navigation:
+    </p>
+
+    <ul class="steps">
+      <li><span>navigate to the album list</span><span>2</span></li>
+      <li><span>resolve the album at its offset</span><span>1</span></li>
+      <li><span>open the album</span><span>1</span></li>
+      <li><span>load its tracks</span><span>1</span></li>
+      <li><span>open the track's action menu</span><span>2</span></li>
+      <li><span>invoke the action</span><span>1</span></li>
+      <li class="total"><span>per track</span><span>8 round trips</span></li>
+    </ul>
+
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th>Rewinding into a queue of…</th><th>Tracks to rebuild</th><th>Core calls</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>20 tracks</td><td>19</td><td class="calls">152</td></tr>
+          <tr><td>40 tracks</td><td>39</td><td class="calls">312</td></tr>
+          <tr><td>100 tracks</td><td>99</td><td class="calls">792</td></tr>
+          <tr><td>250 tracks</td><td>249</td><td class="calls">1,992</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      The call count is not even the worst of it. The rebuild has to open with Play&nbsp;Now,
+      which <strong>destroys the live queue before anything refills it</strong> — so an
+      interruption anywhere in the middle leaves the zone worse off than when you started.
+      The app already runs this pattern for playlist import, one track at a time behind a
+      progress toast, and that is with a queue nobody is standing in the middle of.
+    </p>
+  </section>
+
+  <section>
+    <h2>What shipped instead</h2>
+    <p class="sub">v1.7.77</p>
+
+    <div class="decision">
+      <div class="tag">Keep</div>
+      <div>
+        <h3>Played tracks are retained and folded away</h3>
+        <p>
+          A collapsed <strong>“N played earlier”</strong> disclosure above the Now&nbsp;playing
+          divider, newest sitting against it. A skipped track shows how far it got
+          (<code>0:12 / 3:20</code>) so a skip reads as a skip and not as a very short track.
+        </p>
+      </div>
+    </div>
+
+    <div class="decision">
+      <div class="tag">Free</div>
+      <div>
+        <h3>Built from a signal already arriving</h3>
+        <p>
+          Departures are recorded from the zone push the extension already handles, at the one
+          moment the outgoing track and how much of it played are both known. It costs no extra
+          Core calls at all. Resolving a track back to its library album is likewise free — an
+          index built from ordinary album opens.
+        </p>
+      </div>
+    </div>
+
+    <div class="decision">
+      <div class="tag">Limit</div>
+      <div>
+        <h3>Tapping one plays it next, not from there</h3>
+        <p>
+          A single browse navigation that inserts the track after the current one and leaves the
+          queue standing. It is honestly a different action from Roon's own, and the screen says
+          so rather than pretending to rewind.
+        </p>
+      </div>
+    </div>
+
+    <div class="decision">
+      <div class="tag no">Declined</div>
+      <div>
+        <h3>No queue rebuilding</h3>
+        <p>
+          Hundreds of Core calls, minutes of traffic, and a destroyed queue if it is interrupted.
+          The arithmetic above is the reason, and it does not improve with cleverness.
+        </p>
+      </div>
+    </div>
+
+    <p style="margin-top:22px">
+      The record is per zone and in memory. It describes a listening session; one that outlived a
+      restart would offer tracks the zone's queue has no relationship to any more. A zone that
+      disappears and comes back starts clean.
+    </p>
+  </section>
+
+  <section>
+    <h2>The open question</h2>
+    <p class="sub">one experiment, decisive either way</p>
+
+    <div class="callout">
+      <h3>Will <code>play_from_here</code> accept a queue id that has already been consumed?</h3>
+      <p>
+        Nothing in the API documents an answer, and it cannot be settled without a live Core. If
+        it works, retaining the original queue ids turns a perfect rewind into a
+        <strong>single call</strong> and everything above becomes unnecessary. If it errors — the
+        likelier outcome, since the queue item is gone — the design here stands as the honest
+        ceiling.
+      </p>
+      <p style="margin-bottom:0">
+        Worth running once before any further work on this.
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>MusicD Remote — a music-discovery companion and wall display for Roon.</p>
+    <p><a href="./">Install &amp; docs</a> · <a href="https://github.com/meltface-80/MusicD-Remote">Source on GitHub</a></p>
+  </div>
+</footer>
+
+</body>
+</html>

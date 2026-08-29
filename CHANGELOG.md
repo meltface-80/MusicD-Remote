@@ -2,6 +2,53 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.77] — 2026-08-29
+
+### Added — "played earlier" in the Queue tab
+
+Tracks that have played, and tracks skipped past when you pick something further down the queue, no
+longer vanish. They collect in a **"N played earlier"** fold-out above the Now playing divider,
+collapsed by default, newest sitting against the divider. A skipped track shows how much of it ran
+(`0:12 / 3:20`) so a skip is legible as a skip rather than as a very short track.
+
+**Why it had to be built rather than fetched.** Roon's queue subscription reports the current track
+and what is coming; anything already played is gone from it, and `subscribe_queue` and
+`play_from_here` are the entire queue API — there is no history call and no queue-write verb of any
+kind. So the record is assembled from the zone push the extension already handles, at the one moment
+the outgoing track and how much of it played are both known. It costs **no extra Core calls at all**.
+
+**Tapping a played track adds it after the current one — it does not rewind the queue.** That is a
+deliberate limit, not an oversight. A departed track's `queue_item_id` is spent, so `play_from_here`
+cannot reach it, and reproducing Roon's own behaviour would mean rebuilding every following track
+through the browse hierarchy at roughly eight Core round trips each — over three hundred calls for a
+forty-track queue — behind a `play_now` that destroys the live queue first, with an interruption
+anywhere in the middle leaving the zone worse off than before. Inserting the one track is a single
+browse navigation and leaves the queue standing.
+
+Resolving which library album a played track belongs to costs no Roon calls either: the track index
+built from ordinary album opens maps the title to its album, and the play is matched by title inside
+it. A track that cannot be resolved — a stream, an album since removed, or a title two albums share —
+says so plainly instead of guessing.
+
+**The record is per zone, in memory, and does not survive a restart** — it describes a listening
+session, and one that outlived a restart would offer tracks the zone's queue has no relationship to
+any more. A zone that disappears and returns starts clean, for the same reason its radio state does.
+
+### Fixed
+
+- The Queue tab reported itself empty when the queue had run out, even with tracks played this
+  session — the most interesting moment to look at the history was the one that showed nothing.
+- The scrobbler's "did this count as a play" rule existed twice, inline. It is now one named helper
+  shared with the skip badge, so the screen and the plays table cannot disagree about what a skip is.
+- Play recording no longer sits behind the scrobble database being available: a container with no
+  writable volume kept its queue history either way.
+
+### Tests
+
+- New `test/unit/queue-history.test.js` (23) and `test/dom/queue-history.test.js` (12), including a
+  guard that a single history tap makes **no** queue-rebuilding call.
+- 785 unit / 389 DOM / 71 static.
+
 ## [1.7.76] — 2026-08-29
 
 ### Fixed — the Home "Library" row follows the wall's Sort

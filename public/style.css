@@ -1388,6 +1388,36 @@ main {
   font-variant-numeric: tabular-nums;
   flex: 0 0 auto;
 }
+/* Played earlier — the fold-out above the live queue.
+   Built from what the extension watched leave the zone, because Roon's queue
+   subscription reports only the current track and what is coming. Styled a
+   step back from the live rows: it is a record of what happened, not part of
+   what is about to. */
+.queue-list li.q-history-bar {
+  border-bottom: none;
+  padding: 2px 0 6px;
+}
+.q-history-toggle {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 4px 2px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-radius: 6px;
+  transition: color .12s ease;
+}
+.q-history-toggle:hover { color: var(--text); }
+/* Keyboard users get the same ring the rest of the app uses. */
+.q-history-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Dimmed as a group rather than per element, so the art fades with the text
+   and the row reads as one past thing. */
+.queue-list li.q-hist-row { opacity: .62; }
+.queue-list li.q-hist-row:hover { opacity: 1; }
+.queue-list li.q-hist-row .q-len.is-skipped { color: var(--text-dim); }
+
 .queue-empty {
   color: var(--text-faint);
   font-size: 14px;
