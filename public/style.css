@@ -38,16 +38,14 @@
   --bg-translucent: rgba(14,16,18,.85);
   /* Glass, for the floating transport pill. --glass-edge is the lit top edge
      that makes a translucent surface read as a pane rather than a hole.
-     ALPHA IS DELIBERATELY HIGH (.62 -> .90 in v1.7.84). The blur behind it is
-     switched off for the duration of a scroll — it is the documented iOS jank
-     source (v1.6.15) — and at .62 that swap was plainly visible: blurred
-     content behind the pane reads as frosted, the same content sharp reads as
-     see-through, so the bar appeared to lose its opacity every time the page
-     moved and get it back when the page stopped. At .90 only a tenth of the
-     backdrop comes through, the blur is a refinement rather than the thing
-     doing the work, and losing it mid-scroll is not visible.
-     Raise this, never lower it, unless the blur becomes unconditional. */
-  --glass-bg:   rgba(30,34,38,.90);
+     ALPHA IS DELIBERATELY HIGH (.62 -> .90 -> .94 across v1.7.84-85) and it is
+     now the ONLY thing making this surface read as glass: there is no
+     backdrop-filter on the pill any more and none may be added (see
+     .mini-transport for why). Nothing softens the fraction that shows through,
+     so that fraction has to be small enough that sharp album art behind it
+     reads as a tint rather than as clutter under the text.
+     Raise this if it ever looks busy. Never lower it. */
+  --glass-bg:   rgba(30,34,38,.94);
   --glass-edge: rgba(255,255,255,.10);
   --danger:       #e06464;
   --panel-hairline: rgba(255,255,255,.07);  /* row separators on tinted panels */
@@ -82,7 +80,7 @@
   --accent-soft:  rgba(31,143,193,.12);
   --on-accent:    #ffffff;
   --bg-translucent: rgba(246,245,242,.85);
-  --glass-bg:   rgba(255,255,255,.92);
+  --glass-bg:   rgba(255,255,255,.95);
   --glass-edge: rgba(26,39,64,.12);
   --panel-hairline: rgba(26,39,64,.12);     /* row separators on tinted panels */
   --danger:       #c0392b;
@@ -128,7 +126,7 @@
      read blue-shadowed. 5.74:1. */
   --on-accent:    #17120d;
   --bg-translucent: rgba(27,29,31,.85);
-  --glass-bg:   rgba(46,50,53,.90);
+  --glass-bg:   rgba(46,50,53,.94);
   --glass-edge: rgba(255,255,255,.10);
   /* Hue 3 degrees against copper's 26, and light enough to clear 4.5:1 on
      every surface including the deepest (4.81). */
@@ -162,7 +160,7 @@
   --accent-soft:  rgba(138,90,53,.12);
   --on-accent:    #fffdf8;
   --bg-translucent: rgba(247,244,237,.85);
-  --glass-bg:   rgba(255,253,248,.92);
+  --glass-bg:   rgba(255,253,248,.95);
   --glass-edge: rgba(60,45,30,.14);
   --danger:       #b3271d;
   /* Warm brown rather than the classic light theme's cool blue-grey, which
@@ -1223,30 +1221,26 @@ main {
   border: 1px solid var(--glass-edge);
   box-shadow: 0 8px 30px rgba(0,0,0,.34);
 
-  /* GLASS, AND WHY IT IS CONDITIONAL.
-     v1.6.15 took backdrop blur OFF this exact bar: it floats over the scrolling
-     <main>, and iOS Safari re-samples and re-blurs everything beneath a
-     backdrop-filter on EVERY scroll frame. That was the main scroll-jank source
-     while music was playing, which is most of the time.
-     The look is worth having and the jank is not, and they are only ever in
-     conflict WHILE A SCROLL IS ACTUALLY RUNNING — which is the one moment
-     nobody is admiring the bar. So the blur lives here, and app.js strips it
-     for the duration of a scroll (see .is-scrolling below). At rest: glass.
-     Mid-scroll: a solid surface that costs nothing to composite. */
+  /* ONE APPEARANCE, ALWAYS. NO backdrop-filter — do not add one back.
+     v1.6.15 took backdrop blur off this exact bar because iOS Safari re-samples
+     and re-blurs everything beneath a backdrop-filter on every scroll frame,
+     and it was the main scroll-jank source while music was playing. v1.7.81
+     brought it back on the theory that the blur could be stripped for the
+     duration of a scroll and nobody would see the swap. Two builds of reports
+     say otherwise, and the second one shows why the "same background, only the
+     blur differs" version of that idea (v1.7.84) was still visibly two bars:
+
+       `saturate(180%)` DOES NOT ONLY SOFTEN THE BACKDROP, IT BRIGHTENS IT.
+       Whatever fraction of the page shows through the pill — a tenth, here —
+       is vivid and light while the filter is on and muted while it is off. The
+       alpha never changed; the thing being seen through it did. A wall of album
+       covers is the worst case for this and is exactly where it was reported.
+
+     There is no version of a conditional filter that is invisible, and an
+     unconditional one is the documented jank. So the pill is translucent and
+     nothing else: a fixed alpha over the page, identical at rest and in motion,
+     on every device. */
   background: var(--glass-bg);
-  backdrop-filter: saturate(180%) blur(20px);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
-}
-/* The scroll-time face. THE BACKGROUND DOES NOT CHANGE — only the filter goes.
-   It used to swap to var(--bg-elev), on the theory that a fully opaque surface
-   was the closest match to a blurred translucent one. It is not: the bar
-   visibly changed face every time the page moved, which is what "the transport
-   stops being opaque while scrolling" was. Two states that differ only by a
-   blur, over a background opaque enough that the blur is a refinement, are
-   indistinguishable in motion — which is the point. */
-.mini-transport.is-scrolling {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
 }
 /* The cover of what is playing. */
 .mt-art {

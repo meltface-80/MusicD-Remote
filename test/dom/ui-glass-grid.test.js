@@ -6,11 +6,22 @@
 //
 // The transport's backdrop blur was REMOVED in v1.6.15 because iOS Safari
 // re-blurs everything beneath it on every scroll frame, and it was the main
-// scroll-jank source while music was playing. Bringing the glass back is only
-// safe because the blur is dropped for the duration of a scroll. If that ever
-// stops happening the look will still be perfect and the app will be slow again
-// on a device none of this suite can measure — so the mechanism is pinned here,
-// where a change to it has to be deliberate.
+// scroll-jank source while music was playing. v1.7.81 brought it back and
+// stripped it for the duration of each scroll so the look and the frame rate
+// could coexist; v1.7.84 stopped the background changing with it, on the
+// reasoning that two states differing only by a blur would be invisible.
+//
+// They were not, and the reason is worth writing down, because it is the part
+// that was wrong twice: `saturate(180%)` DOES NOT ONLY SOFTEN THE BACKDROP, IT
+// BRIGHTENS IT. Whatever fraction of the page shows through the pill is vivid
+// while the filter is on and muted while it is off — so the bar visibly changed
+// face on every scroll no matter how opaque its background was. A wall of album
+// covers is the worst case and is where it was reported, twice.
+//
+// There is no conditional filter that is invisible, and an unconditional one is
+// the documented jank. So the pill has NO backdrop-filter, and that is pinned
+// below: this suite cannot measure iOS frame rates, but it can measure that the
+// bar has exactly one appearance.
 // ---------------------------------------------------------------------------
 
 const test = require("node:test");
@@ -282,11 +293,13 @@ test("the mini transport shows what is playing", async (t) => {
   });
 });
 
-test("the glass steps aside while the page scrolls", async (t) => {
+test("the transport has exactly one appearance", async (t) => {
   if (!harness.available) { t.skip("no chromium binary available"); return; }
 
   // THE one that matters for something this suite cannot measure. See the file
-  // header: the blur over scrolling content was the documented jank source.
+  // header: a conditional backdrop-filter changed the bar's face on every
+  // scroll, and an unconditional one is the documented iOS jank. So the pill
+  // has none, and nothing about it may vary with scroll state.
   const r = harness.renderPage({
     name: "ui-glass-scroll", windowSize: "390x844", stub: STUB,
     driver: `
@@ -296,83 +309,69 @@ test("the glass steps aside while the page scrolls", async (t) => {
       var bar = document.getElementById("mini-transport");
       for (var i = 0; i < 40 && bar.classList.contains("hidden"); i++) await window.__sleep(100);
 
-      var cs = getComputedStyle(bar);
-      T("rest_filter", cs.backdropFilter || cs.webkitBackdropFilter || "");
-      T("rest_radius", cs.borderTopLeftRadius);
+      function face() {
+        var c = getComputedStyle(bar);
+        return { bg: c.backgroundColor,
+                 filter: c.backdropFilter || c.webkitBackdropFilter || "none",
+                 cls: bar.className };
+      }
+      T("rest", face());
+      T("rest_radius", getComputedStyle(bar).borderTopLeftRadius);
       T("rest_left", Math.round(bar.getBoundingClientRect().left));
-      T("rest_bg", cs.backgroundColor);
 
       var m = document.querySelector("main");
       m.scrollTop = 200;
       m.dispatchEvent(new Event("scroll", { bubbles: false }));
       await window.__sleep(60);
-      var during = getComputedStyle(bar);
-      T("scrolling_class", bar.classList.contains("is-scrolling"));
-      T("scrolling_filter", during.backdropFilter || during.webkitBackdropFilter || "");
-      T("scrolling_bg", during.backgroundColor);
+      T("scrolling", face());
 
       await window.__sleep(700);
-      var after = getComputedStyle(bar);
-      T("settled_class", bar.classList.contains("is-scrolling"));
-      T("settled_filter", after.backdropFilter || after.webkitBackdropFilter || "");
+      T("settled", face());
     `,
   });
   harness.assertNoPageError(assert, r);
 
-  await t.test("it is glass, and it floats", () => {
-    assert.match(String(r.rest_filter), /blur/,
-      "the transport has no backdrop blur at rest — it is not glass");
+  await t.test("it is a translucent pane, and it floats", () => {
     assert.ok(parseFloat(r.rest_radius) >= 10,
       `corner radius is ${r.rest_radius} — a pill needs rounding`);
     assert.ok(r.rest_left > 0, "the bar is still welded to the left edge, not floating");
-  });
-
-  await t.test("a scroll takes the blur away", () => {
-    assert.equal(r.scrolling_class, true, "no is-scrolling class — nothing suspends the blur");
-    assert.ok(!/blur/.test(String(r.scrolling_filter)),
-      `the blur is still live mid-scroll (${r.scrolling_filter}) — this is the iOS ` +
-      `jank v1.6.15 removed, reintroduced`);
-  });
-
-  await t.test("...and NOTHING ELSE about the bar changes", () => {
-    // v1.7.84. The scroll state used to swap the background as well — glass to
-    // an opaque var(--bg-elev) — on the theory that a solid surface was the
-    // nearest match to a blurred translucent one. It is not, and the bar
-    // visibly changed face every time the page moved: "the transport stops
-    // being opaque while scrolling; stop scrolling and it becomes opaque".
-    // The blur is the ONLY thing allowed to differ between the two states.
-    assert.equal(r.scrolling_bg, r.rest_bg,
-      `the bar is ${r.rest_bg} at rest and ${r.scrolling_bg} while scrolling — it ` +
-      `changes appearance as soon as the page moves, which is the whole complaint`);
-    // And the one surviving difference has to be invisible, which is only true
-    // if the background does the work rather than the blur. Anything below
-    // ~.85 and losing the blur reads as the bar going see-through.
-    // Parse the whole colour, not "the last number before the bracket": that
-    // lazy form reads the BLUE channel of an opaque rgb(22, 25, 28) as an alpha
-    // of 28, so a fully opaque bar sails through the check below.
+    // Translucent, or it is a slab and not glass at all.
     const a = /^rgba?\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*(?:,\s*([\d.]+)\s*)?\)/
-      .exec(String(r.rest_bg));
+      .exec(String(r.rest.bg));
     const alpha = a ? (a[1] === undefined ? 1 : parseFloat(a[1])) : 1;
-    assert.ok(alpha >= 0.85,
-      `the pill's background is only ${alpha} opaque (${r.rest_bg}). The blur is ` +
-      `dropped for the duration of every scroll, so at this alpha the sharp page ` +
-      `shows through and the bar appears to lose its opacity whenever it moves`);
+    assert.ok(alpha < 1, `the pill is fully opaque (${r.rest.bg}) — it is a slab, not a pane`);
+    // ...but opaque enough that SHARP page content behind it reads as a tint.
+    // There is no blur to soften it any more, so this floor is higher than the
+    // one that applied while there was.
+    assert.ok(alpha >= 0.9,
+      `the pill is only ${alpha} opaque (${r.rest.bg}). Nothing blurs what shows ` +
+      `through it now, so at this alpha a wall of album covers reads as clutter ` +
+      `under the title`);
   });
 
-  await t.test("and it comes back once the scroll stops", () => {
-    assert.equal(r.settled_class, false, "the bar never leaves its scrolling state");
-    assert.match(String(r.settled_filter), /blur/, "the glass never returns after a scroll");
+  await t.test("THE one: no backdrop-filter, at any moment", () => {
+    for (const [when, face] of [["at rest", r.rest], ["mid-scroll", r.scrolling],
+                                ["after settling", r.settled]]) {
+      assert.ok(!/blur|saturate/.test(String(face.filter)),
+        `the pill has a backdrop-filter ${when} (${face.filter}). Unconditional, ` +
+        `that is the iOS scroll jank v1.6.15 removed; conditional, it changes the ` +
+        `bar's face on every scroll because saturate() brightens whatever shows ` +
+        `through it — which was reported twice`);
+    }
+  });
+
+  await t.test("and nothing else changes when the page moves", () => {
+    assert.equal(r.scrolling.bg, r.rest.bg,
+      `the bar is ${r.rest.bg} at rest and ${r.scrolling.bg} while scrolling`);
+    assert.equal(r.settled.bg, r.rest.bg,
+      `the bar is ${r.settled.bg} once the scroll stops and ${r.rest.bg} before it`);
+    // No state class either: one that nothing styles is a scroll-frame handler
+    // running for nothing, which is how the next conditional face gets added.
+    assert.equal(r.scrolling.cls, r.rest.cls,
+      `the bar's classes change on scroll (${r.rest.cls} -> ${r.scrolling.cls}) — ` +
+      `there is a scroll listener still toggling state nothing renders`);
   });
 });
-
-// ---------------------------------------------------------------------------
-// v1.7.82 — the three follow-ups.
-//
-// All three are things a human saw on a device and this suite did not, which is
-// the point: each one is a MEASUREMENT of the finished layout, not a check that
-// some declaration is present. The list-mode bug above got through precisely
-// because the assertion tested a proxy (aspect ratio) rather than the thing.
-// ---------------------------------------------------------------------------
 
 test("the wall's controls sit in the top-right corner", async (t) => {
   if (!harness.available) { t.skip("no chromium binary available"); return; }

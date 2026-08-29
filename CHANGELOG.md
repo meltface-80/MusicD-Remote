@@ -2,6 +2,41 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.85] — 2026-08-29
+
+### Fixed — the transport has one appearance, permanently
+
+v1.7.84 made the pill's background identical whether the page was moving or not, leaving the blur as
+the only difference, on the reasoning that two states differing only by a blur would be
+indistinguishable. They were not, and the reason is the part that was wrong twice:
+
+**`saturate(180%)` does not only soften the backdrop, it brightens it.** Whatever fraction of the page
+shows through the pill — a tenth, at v1.7.84's alpha — is vivid and light while the filter is on and
+muted while it is off. The alpha never changed between the two states; *what was being seen through
+it* did. A wall of album covers is the worst case for this, and a wall of album covers is where it was
+reported, both times. The polarity flipping between the two reports (transparent-while-scrolling,
+then transparent-while-still) is that same effect seen against the two different backgrounds v1.7.84
+sat between.
+
+There is no conditional filter that is invisible, and an unconditional one is the scroll jank v1.6.15
+removed on measurement. **So the pill has no backdrop-filter at all.** It is translucent and nothing
+else: a fixed alpha over the page, identical at rest and in motion, on every device. Alpha goes .90 →
+.94 (dark) / .92 → .95 (light) because nothing softens what shows through any more, so that fraction
+has to be smaller for sharp album art behind it to read as a tint rather than clutter under the title.
+
+The capture-phase scroll listener that toggled `.is-scrolling` is **removed** rather than left
+toggling a class nothing renders — a listener firing on every scroll frame for no visual effect is how
+the next conditional face gets added by accident.
+
+### Changed — the test now pins the absence
+
+The DOM test that asserted "blur at rest, none mid-scroll, blur returns" asserted a contract that no
+longer exists. It now asserts the contract that does: no backdrop-filter at *any* moment, the
+background and the class list identical across rest/scrolling/settled, and an alpha that is neither 1
+(a slab, not glass) nor below .9 (nothing blurs the page behind it now). Each of those was verified
+against a build with the filter put back, with the conditional filter put back, and with the alpha
+moved in both directions. 793 unit / 450 DOM / 73 static.
+
 ## [1.7.84] — 2026-08-29
 
 ### Fixed — the transport stops changing face when the page moves

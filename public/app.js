@@ -8685,35 +8685,17 @@
   const zoneSel = document.getElementById("zone-select");
   if (zoneSel) zoneSel.addEventListener("change", fetchState);
 
-  // Boot — restore last known state instantly, then let the poll loop refresh it.
-  // Glass at rest, solid while the page moves.
-  //
-  // The pill's backdrop-filter is the thing v1.6.15 removed from this bar: iOS
-  // Safari re-samples and re-blurs everything beneath it on every scroll frame,
-  // and it was the main scroll-jank source while music was playing. Rather than
-  // choose between the look and the frame rate, take the blur away for exactly
-  // as long as a scroll is running — nobody is studying the bar mid-flick, and
-  // the class swaps it to a solid surface of the same colour, so there is no
-  // flash either way.
-  //
-  // Passive + capture: capture because <main> and several overlays scroll
-  // independently and scroll does not bubble, passive because this must never
-  // be able to hold up a scroll it exists to protect.
-  (() => {
-    if (!bar) return;
-    let scrollIdle = null;
-    const settle = () => {
-      clearTimeout(scrollIdle);
-      // Long enough to cover momentum on iOS, which keeps firing scroll events
-      // well after the finger has gone.
-      scrollIdle = setTimeout(() => bar.classList.remove("is-scrolling"), 260);
-    };
-    document.addEventListener("scroll", () => {
-      if (!bar.classList.contains("is-scrolling")) bar.classList.add("is-scrolling");
-      settle();
-    }, { passive: true, capture: true });
-  })();
+  // v1.7.81 gave the pill a backdrop-filter and stripped it here for the
+  // duration of every scroll, so the look and the frame rate could coexist.
+  // Both halves of that are gone as of v1.7.85: `saturate()` brightens whatever
+  // shows through the pill, so the filtered and unfiltered states never looked
+  // alike no matter how opaque the background got, and the pill is now
+  // translucent with no filter at all. Nothing styles .is-scrolling any more,
+  // so the listener that set it — a capture-phase document scroll handler with
+  // a 260ms settle timer — has gone with it rather than being left to toggle a
+  // class on every scroll frame for nothing.
 
+  // Boot — restore last known state instantly, then let the poll loop refresh it.
   restoreTransportState();
   startPolling();
 })();
