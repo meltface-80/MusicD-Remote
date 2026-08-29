@@ -352,9 +352,9 @@
       does instead.
     </p>
     <div class="stamp">
-      <span><b>Shipped</b> v1.7.77</span>
+      <span><b>Shipped</b> v1.7.78</span>
       <span><b>Findings from</b> node-roon-api-transport</span>
-      <span><b>Status</b> one open question</span>
+      <span><b>Status</b> two open questions</span>
     </div>
   </div>
 </header>
@@ -498,7 +498,7 @@
 
   <section>
     <h2>What shipped instead</h2>
-    <p class="sub">v1.7.77</p>
+    <p class="sub">v1.7.77 — v1.7.78</p>
 
     <div class="decision">
       <div class="tag">Keep</div>
@@ -538,6 +538,19 @@
     </div>
 
     <div class="decision">
+      <div class="tag">Pick</div>
+      <div>
+        <h3>Several at once, in the order you choose</h3>
+        <p>
+          Selecting turns each row into a numbered pick, because the order you tap is not the order
+          the rows are shown in — and it is the order they will play in. The whole selection goes as
+          one request: separate ones would race and interleave into an arbitrary queue order, which
+          is the thing the feature exists to get right.
+        </p>
+      </div>
+    </div>
+
+    <div class="decision">
       <div class="tag no">Declined</div>
       <div>
         <h3>No queue rebuilding</h3>
@@ -570,6 +583,21 @@
       </p>
       <p style="margin-bottom:0">
         Worth running once before any further work on this.
+      </p>
+    </div>
+
+    <div class="callout" style="margin-top:18px">
+      <h3>Does a repeated <code>Add Next</code> stack, or keep its own order?</h3>
+      <p>
+        A multi-track “play next” only lands in the right order if the sends go out in the order that
+        <em>arrives</em> right. Add Next puts an item immediately after the current track, so issued
+        repeatedly it should stack each new one in front of the last — meaning the sends have to go
+        out <strong>backwards</strong>. That is what ships.
+      </p>
+      <p style="margin-bottom:0">
+        It cannot be settled by probing, because finding out costs a real insert and there is no verb
+        to remove one again. So it is an assumption in one named function, and if a queue ever comes
+        out reversed the fix is to stop reversing — one line, nothing else to change.
       </p>
     </div>
   </section>

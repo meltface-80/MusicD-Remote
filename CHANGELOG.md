@@ -2,6 +2,52 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.78] — 2026-08-29
+
+### Added — pick several played tracks, in the order you want them
+
+**Select** on the "played earlier" fold-out turns the rows into a selection. Tap them in any order —
+each gets a **number showing where it sits in the queue you are building**, because the order you tap
+is not the order the rows are shown in, and it is the order they will play in. Then **Play next** or
+**Add to queue**.
+
+Deselecting renumbers the rest. Closing the fold-out ends the selection with it: picks you cannot see
+are picks you cannot check before acting on them.
+
+**"Play next" sends the tracks backwards on purpose.** Roon's Add Next puts an item immediately after
+the *current* track, so issuing it repeatedly stacks each new one in front of the last — send A, B, C
+and the queue plays C, B, A. Sending them reversed is what makes them arrive the way they were
+picked. This is the one thing in the feature that **could not be verified without a live Core**, and
+it cannot be settled by probing either: finding out costs a real insert, and the API has no verb to
+remove one again. So it is an assumption, isolated to a single named function
+(`playNextSendOrder`) with the fix — return the list unreversed — documented beside it.
+
+*"Add to queue" needs no such trick: appending preserves order by definition.*
+
+The whole selection goes as one request. Separate requests would race and interleave into an
+arbitrary queue order, which is the thing this feature exists to get right. The server resolves
+every track against the library **before touching the Core**, so a selection containing something
+unplayable says so up front instead of stopping half way and leaving the queue holding an arbitrary
+prefix of what was asked for. One run at a time per zone, and at most 20 tracks — each is a full
+browse navigation of roughly eight Core round trips.
+
+Tapping a row outside select mode still plays that one track next, exactly as before.
+
+### Fixed
+
+- After sending a selection the Select button stayed lit and the action bar stayed open over an
+  empty selection until the queue reload landed 600ms later. The controls now repaint when the send
+  finishes, not when the refresh arrives.
+
+### Tests
+
+- 8 more unit tests pinning the send order — including that a single track is identical either way,
+  which is what stops a wrong strategy hiding behind a one-item selection.
+- 11 more DOM tests: badges follow tap order rather than row position, deselecting renumbers, the
+  request carries the tap order, select mode is a mode, and the controls are measured for a real
+  tappable box rather than assumed from their class names.
+- 793 unit / 400 DOM / 71 static.
+
 ## [1.7.77] — 2026-08-29
 
 ### Added — "played earlier" in the Queue tab

@@ -15,7 +15,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { HISTORY_MAX, playCounted, historyEntry, pushHistory, recentHistory } =
+const { HISTORY_MAX, MULTI_MAX, playCounted, historyEntry, pushHistory, recentHistory,
+        playNextSendOrder, queueSendOrder, sendOrderFor } =
   require("../../lib/queue-history");
 
 const prev = (o) => Object.assign(
@@ -162,5 +163,69 @@ test("what the screen is served", async (t) => {
   await t.test("nothing recorded is an empty list, never null", () => {
     assert.deepEqual(recentHistory(undefined, 5), []);
     assert.deepEqual(recentHistory([], 5), []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.7.78: several played tracks at once, in the order they were picked.
+//
+// Picking order is not display order, so the ONLY thing that makes the feature
+// correct is sending the tracks in whatever order causes them to arrive the way
+// they were chosen. That depends on how Roon's "Add Next" behaves when it is
+// issued repeatedly, which is the one thing here that could not be verified
+// without a live Core — and cannot be probed either, because finding out costs
+// a real insert and the API has no verb to remove one again.
+//
+// So it is an assumption, isolated to one function and pinned here. If a build
+// ever comes out backwards, this is the test that says exactly what to change.
+// ---------------------------------------------------------------------------
+test("the order tracks are sent in", async (t) => {
+  const picks = ["first", "second", "third"];
+
+  await t.test("play next goes out BACKWARDS, because it stacks", () => {
+    // Each Add Next lands immediately after the current track, in front of the
+    // one before it. Sending third, second, first is what leaves the queue
+    // playing first, second, third.
+    assert.deepEqual(playNextSendOrder(picks), ["third", "second", "first"]);
+  });
+
+  await t.test("adding to the end goes out forwards, because appending keeps order", () => {
+    assert.deepEqual(queueSendOrder(picks), ["first", "second", "third"]);
+  });
+
+  await t.test("one function decides it, and nothing else", () => {
+    assert.deepEqual(sendOrderFor("play_next", picks), playNextSendOrder(picks));
+    assert.deepEqual(sendOrderFor("queue", picks), queueSendOrder(picks));
+  });
+
+  await t.test("neither disturbs the caller's list", () => {
+    // The caller holds the selection and repaints from it after the send. An
+    // in-place reverse would leave the numbered badges disagreeing with what
+    // was actually queued.
+    const src = picks.slice();
+    playNextSendOrder(src); queueSendOrder(src); sendOrderFor("play_next", src);
+    assert.deepEqual(src, ["first", "second", "third"]);
+  });
+
+  await t.test("a single track is the same either way", () => {
+    // Worth stating: the single-tap path and a one-track selection must not
+    // behave differently, and a reversal of one item hides a wrong strategy.
+    assert.deepEqual(playNextSendOrder(["only"]), ["only"]);
+    assert.deepEqual(queueSendOrder(["only"]), ["only"]);
+  });
+
+  await t.test("nothing at all is an empty list, never null", () => {
+    for (const f of [playNextSendOrder, queueSendOrder]) {
+      assert.deepEqual(f([]), []);
+      assert.deepEqual(f(null), []);
+      assert.deepEqual(f(undefined), []);
+    }
+  });
+
+  await t.test("there is a cap, and it is a real number", () => {
+    // Each track is a full browse navigation. The cap is what stops one tap
+    // becoming minutes of Core traffic.
+    assert.ok(Number.isInteger(MULTI_MAX) && MULTI_MAX > 1 && MULTI_MAX <= 50,
+      "MULTI_MAX is " + MULTI_MAX);
   });
 });

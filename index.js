@@ -20,8 +20,8 @@ const RoonApiSettings  = require("node-roon-api-settings");
 const { createUpdater } = require("./lib/updater");
 const { radioDecision, radioResumeDecision, radioQueueFloor,
         radioToTurnOff } = require("./lib/radio");
-const { playCounted, historyEntry, pushHistory,
-        recentHistory } = require("./lib/queue-history");
+const { playCounted, historyEntry, pushHistory, recentHistory,
+        sendOrderFor, MULTI_MAX } = require("./lib/queue-history");
 const pkg = require("./package.json");
 // Parse "1.6.31" → display "MusicD Remote v1.6 (Build 31)"
 const [_vmaj, _vmin, _vpatch] = (pkg.version || "0.0.0").split(".");
@@ -13838,6 +13838,88 @@ app.post("/api/queue/play-history-next", async (req, res) => {
   } catch (e) {
     res.status(e.stale ? 409 : 500).json({ error: e.message });
   }
+});
+
+// Several played tracks at once, in the order they were picked.
+// body: { zone_or_output_id, kind: "play_next" | "queue", tracks: [{track, artist, album}] }
+//
+// `tracks` arrives in SELECTION order — the order the user tapped them, which
+// is not the order they are shown in. lib/queue-history decides the order to
+// send them in so they arrive that way; see playNextSendOrder for the one
+// assumption in it.
+//
+// Sequential by necessity, like every other multi-track path here: there is no
+// batch form on the Roon side, and firing these in parallel would interleave
+// into an arbitrary queue order — which is the whole thing this route exists
+// to get right.
+const historyMultiZones = new Set();
+
+app.post("/api/queue/history-multi", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  const { zone_or_output_id, kind, tracks } = req.body || {};
+  if (!zone_or_output_id) return res.status(400).json({ error: "zone_or_output_id required" });
+  if (kind !== "play_next" && kind !== "queue") {
+    return res.status(400).json({ error: "kind must be play_next or queue" });
+  }
+  if (!Array.isArray(tracks) || !tracks.length) {
+    return res.status(400).json({ error: "tracks required" });
+  }
+  if (tracks.length > MULTI_MAX) {
+    return res.status(400).json({ error: `at most ${MULTI_MAX} tracks at a time` });
+  }
+  // One run at a time per zone. Two interleaved runs would each be issuing
+  // ordered inserts into the same queue, and both would come out shuffled —
+  // the same reasoning as play-multi, which learned it the hard way.
+  if (historyMultiZones.has(zone_or_output_id)) {
+    return res.status(409).json({ error: "Still adding the last selection to this zone" });
+  }
+
+  // Resolve EVERY track before touching the Core. Resolution is free (the
+  // track index, in memory), so doing it up front means a selection with an
+  // unplayable track in it reports that instead of getting half way through
+  // and leaving the queue holding an arbitrary prefix of what was asked for.
+  const resolved = [];
+  const unresolved = [];
+  for (const t of tracks) {
+    const title = String((t && t.track) || "").trim();
+    if (!title) continue;
+    const hit = resolveSharedByTrackIndex(title, String((t && t.artist) || ""));
+    if (hit) resolved.push({ title, hit });
+    else unresolved.push(title);
+  }
+  if (!resolved.length) {
+    return res.status(404).json({
+      error: "None of those are in your library to play again",
+      unresolved, queued: 0,
+    });
+  }
+
+  historyMultiZones.add(zone_or_output_id);
+  let queued = 0, firstError = null;
+  const failed = [];
+  try {
+    for (const item of sendOrderFor(kind, resolved)) {
+      try {
+        await invokeTrackAction(item.hit.offset, 0, item.title, zone_or_output_id,
+                                kind, null, { title: item.hit.title, subtitle: item.hit.subtitle });
+        queued++;
+      } catch (e) {
+        // One refusal does not abandon the rest: the others are still tracks
+        // the user asked for, and stopping here would leave a partial insert
+        // with no explanation of where it stopped.
+        failed.push(item.title);
+        if (!firstError) firstError = e.message;
+      }
+    }
+  } finally {
+    historyMultiZones.delete(zone_or_output_id);
+  }
+
+  if (!queued) {
+    return res.status(500).json({ error: firstError || "Roon refused those tracks",
+                                  queued: 0, failed, unresolved });
+  }
+  res.json({ ok: true, kind, queued, failed, unresolved, error: firstError || undefined });
 });
 
 // Play from a specific queue item onwards.

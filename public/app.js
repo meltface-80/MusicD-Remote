@@ -5442,6 +5442,21 @@
   // screen re-pulls the queue, and a fold-out that shut itself on each of those
   // would be unusable.
   let queueHistoryOpen = false;
+  // Select mode, and the picks in the order they were MADE — which is the order
+  // they will be queued in, and is not the order they are shown in. Both are
+  // reset whenever the list is rebuilt: the rows are new nodes then, and a
+  // selection pointing at rows that no longer exist is worse than none.
+  let historySelectMode = false;
+  let historySelected = [];
+  // Mirrors lib/queue-history.js. Each track is a full browse navigation, so a
+  // large selection is minutes of Core traffic; the server enforces the same
+  // number and this is only here to say so before the request is made.
+  const HISTORY_MULTI_MAX = 20;
+  // Repaints the fold-out from the state above. Held here because the send
+  // finishes OUTSIDE the render that drew the rows, and without it the Select
+  // button stayed lit and the action bar stayed open over an empty selection
+  // until the queue reload landed 600ms later.
+  let repaintHistory = () => {};
 
   // What already played, above the live queue.
   //
@@ -5466,11 +5481,42 @@
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "q-history-toggle";
+    const selBtn = document.createElement("button");
+    selBtn.type = "button";
+    selBtn.className = "q-history-select";
     bar.appendChild(btn);
+    bar.appendChild(selBtn);
+
+    // The action bar sits inline in the list rather than floating over it.
+    // A bar positioned above the queue would be a new stacking context over a
+    // screen that already has the transport bar in it, which is exactly how
+    // v1.6.58's sheets ended up underneath something. Flowing with the list
+    // cannot collide with anything.
+    const actions = document.createElement("li");
+    actions.className = "q-hist-actions hidden";
+    const count = document.createElement("span");
+    count.className = "q-hist-count";
+    const mkAct = (label, cls) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "q-hist-act" + (cls ? " " + cls : "");
+      b.textContent = label;
+      return b;
+    };
+    const actNext  = mkAct("Play next", "primary");
+    const actQueue = mkAct("Add to queue");
+    const actClear = mkAct("Clear");
+    actions.append(count, actNext, actQueue, actClear);
 
     const rowEls = rows.map((h) => {
       const li = document.createElement("li");
       li.className = "q-hist-row is-tappable";
+
+      // The pick number. Selection order is not display order, so without a
+      // number on the row there is no way to see what order you chose — and
+      // the order is the entire point of selecting more than one.
+      const num = document.createElement("span");
+      num.className = "q-hist-num hidden";
 
       const art = document.createElement("img");
       art.className = "q-art";
@@ -5497,25 +5543,131 @@
         len.textContent = fmtDuration(h.duration);
       }
 
-      li.appendChild(art); li.appendChild(tx); li.appendChild(len);
-      li.addEventListener("click", () => playHistoryNext(h));
+      li.append(num, art, tx, len);
       return li;
     });
+
+    // Which rows are picked, and where each sits in the pick order. Rerun on
+    // every toggle because removing a pick renumbers everything after it.
+    const paintSelection = () => {
+      rowEls.forEach((el, i) => {
+        const at = historySelected.indexOf(i);
+        el.classList.toggle("is-picked", at !== -1);
+        const n = el.querySelector(".q-hist-num");
+        n.textContent = at === -1 ? "" : String(at + 1);
+        n.classList.toggle("hidden", at === -1 || !historySelectMode);
+      });
+      const n = historySelected.length;
+      count.textContent = n ? `${n} selected` : "Tap tracks in play order";
+      for (const b of [actNext, actQueue]) b.disabled = n === 0;
+    };
 
     const paint = () => {
       btn.setAttribute("aria-expanded", String(queueHistoryOpen));
       btn.textContent = (queueHistoryOpen ? "▾ " : "▸ ") +
         `${rows.length} played earlier`;
       for (const el of rowEls) el.classList.toggle("hidden", !queueHistoryOpen);
+      // Selecting is only offered while the rows are on screen — a Select
+      // button above a collapsed list acts on things you cannot see.
+      selBtn.classList.toggle("hidden", !queueHistoryOpen);
+      selBtn.textContent = historySelectMode ? "Done" : "Select";
+      selBtn.setAttribute("aria-pressed", String(historySelectMode));
+      actions.classList.toggle("hidden", !queueHistoryOpen || !historySelectMode);
+      for (const el of rowEls) el.classList.toggle("is-selecting", historySelectMode);
+      paintSelection();
     };
-    btn.addEventListener("click", () => { queueHistoryOpen = !queueHistoryOpen; paint(); });
+
+    btn.addEventListener("click", () => {
+      queueHistoryOpen = !queueHistoryOpen;
+      // Closing the fold-out ends the selection with it: picks that cannot be
+      // seen cannot be checked before acting on them.
+      if (!queueHistoryOpen) { historySelectMode = false; historySelected = []; }
+      paint();
+    });
+    selBtn.addEventListener("click", () => {
+      historySelectMode = !historySelectMode;
+      if (!historySelectMode) historySelected = [];
+      paint();
+    });
+    actClear.addEventListener("click", () => { historySelected = []; paintSelection(); });
+    actNext.addEventListener("click",  () => runHistoryMulti("play_next", rows));
+    actQueue.addEventListener("click", () => runHistoryMulti("queue", rows));
+
+    rowEls.forEach((el, i) => {
+      el.addEventListener("click", () => {
+        if (!historySelectMode) { playHistoryNext(rows[i]); return; }
+        const at = historySelected.indexOf(i);
+        if (at === -1) {
+          if (historySelected.length >= HISTORY_MULTI_MAX) {
+            showToast(`Up to ${HISTORY_MULTI_MAX} tracks at a time`, "error");
+            return;
+          }
+          historySelected.push(i);          // pushed, so the array IS the order
+        } else {
+          historySelected.splice(at, 1);
+        }
+        paintSelection();
+      });
+    });
 
     // The control first, then what it discloses: collapsed it sits alone at the
     // top of the list, and expanded the rows run down from it to finish against
     // the Now playing divider — the order they were played in.
     list.appendChild(bar);
+    list.appendChild(actions);
     for (const el of rowEls) list.appendChild(el);
+    repaintHistory = paint;
     paint();
+  }
+
+  // Send the selection, in the order it was picked.
+  async function runHistoryMulti(kind, rows) {
+    if (!historySelected.length) return;
+    const picks = historySelected.map(i => rows[i]).filter(Boolean);
+    const verb = kind === "queue" ? "Add" : "Play";
+    const what = picks.length === 1 ? `"${picks[0].track}"` : `${picks.length} tracks`;
+    if (!await confirmDialog(
+      `${verb} ${what} ${kind === "queue" ? "to the end of the queue" : "next"}?`)) return;
+
+    for (const b of document.querySelectorAll(".q-hist-act")) b.disabled = true;
+    showToast(`Adding ${picks.length} track${picks.length === 1 ? "" : "s"}…`,
+              null, TOAST_REPORT_MS);
+    try {
+      const r = await fetch("/api/queue/history-multi", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          zone_or_output_id: queueZoneId(),
+          kind,
+          // Selection order. The server decides what order to SEND them in so
+          // they land this way round — see playNextSendOrder.
+          tracks: picks.map(h => ({ track: h.track, artist: h.artist, album: h.album })),
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        showToast(j.error || `Couldn't add those: HTTP ${r.status}`, "error", TOAST_REPORT_MS);
+        return;
+      }
+      // Every part of a partial result is worth saying: which went, which the
+      // library could not find, which Roon refused.
+      let msg = `${kind === "queue" ? "Queued" : "Playing"} ${j.queued} track${j.queued === 1 ? "" : "s"}`;
+      const missed = (j.unresolved || []).length;
+      const failed = (j.failed || []).length;
+      if (missed) msg += `, ${missed} not in your library`;
+      if (failed) msg += `, ${failed} Roon refused`;
+      showToast(msg, (missed || failed) ? "error" : null, TOAST_REPORT_MS);
+      historySelectMode = false;
+      historySelected = [];
+      // Now, not when the reload lands: the send has finished and the controls
+      // have to say so immediately, or they sit there lit over nothing.
+      repaintHistory();
+      setTimeout(loadQueue, 600);
+    } catch (e) {
+      showToast("Couldn't reach the extension", "error");
+    } finally {
+      for (const b of document.querySelectorAll(".q-hist-act")) b.disabled = false;
+    }
   }
 
   // Add a played track back, after the current one.
@@ -5557,6 +5709,11 @@
     const empty   = document.getElementById("queue-empty");
     summary.textContent = "Loading queue…";
     list.innerHTML = "";
+    // The rows about to be discarded are the ones the picks point at, so the
+    // selection goes with them. Select MODE goes too: leaving it on with an
+    // empty selection shows an action bar over rows nobody has picked yet.
+    historySelectMode = false;
+    historySelected = [];
     empty.classList.add("hidden");
     try {
       const r = await fetch(`/api/queue?zone=${encodeURIComponent(zoneId)}`);
