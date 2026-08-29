@@ -2,6 +2,168 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.80] — 2026-08-29
+
+### Fixed — the selection controls stay put while you scroll
+
+Scrolling down through a long "played earlier" list carried the **Select / Play next / Add to queue /
+Clear** row off the top of the screen, so picking anything past the first few tracks meant scrolling
+back up to act on it. On the way out it also slid underneath the floating Home and Share buttons and
+sat there half-covered.
+
+The controls now pin to the top of the queue while the fold-out is open. Two details make that
+work properly rather than nearly:
+
+- They pin **below** the Home and Share buttons, not at the very top. Those are absolutely positioned
+  at 12px plus the safe-area inset and are 40px tall, so pinning at zero parks the bar underneath
+  them — the same half-covered row, now permanently.
+- The disclosure row and the action row became **one element**, and that is what sticks. Two sticky
+  rows would each need to know the other's height to stack without overlapping; one wrapper is
+  correct at any text size.
+
+Collapsed, it goes back to being an ordinary row — pinned, it would park a bar over the live queue
+for the whole scroll of it.
+
+### Tests
+
+- 5 more DOM tests, all measured against a 40-track history rather than inferred from class names:
+  the head computes to `sticky` while open and not while closed, it is still on screen after
+  scrolling with its buttons fully inside the viewport, it clears the Home button's bottom edge, and
+  its background is opaque enough that rows cannot scroll visibly through it.
+- Each was checked against a broken build: not sticky at all, and sticky at `top: 0` — the second
+  reproduces exactly the half-covered bar this fixes, and is caught by the clearance assertion.
+- 793 unit / 408 DOM / 71 static.
+
+## [1.7.79] — 2026-08-29
+
+### Fixed — "not in your library" for albums that are plainly in the library
+
+Selecting two played tracks and adding them could report **"Queued 1 track, 1 not in your library"**
+for a track sitting in the library the whole time.
+
+A played track is resolved back to its album by name, and it was going straight to the track index —
+which is built from albums this extension has had **open**. Play your library from Roon's own apps,
+as most people do most of the time, and that index knows almost nothing, so resolution failed for
+records that were never missing.
+
+It now tries the **album name first**. Every history entry carries the album Roon was showing while
+the track played, and that resolves against the index the library scan built — which covers every
+album in the library, opened here or not. The track index stays as the second rung, where it earns
+its place: a track whose album line matches no album title, a compilation Roon labels differently.
+Both are still free of Roon calls.
+
+### Fixed
+
+- **The toast counted failures without naming them.** "1 not in your library" left you to work out
+  which of your picks it meant — and that answer is the difference between an ordinary absence and
+  something worth reporting. It now names them, up to three, then "and N more".
+- **Queue rows printed the artist twice.** Roon's `one_line` is "Track - Artist" in a single string,
+  and the row already prints the artist underneath as its subtitle — so a row read
+  "The Artist - Big Big Train" over "Big Big Train". Worse, the played-earlier rows come from the
+  zone push, which is `three_line`, so the two halves of one list wrote a track down differently.
+  Both now use `three_line`.
+
+### Tests
+
+- The batch assertion now pins the whole track object rather than just the titles: the album field
+  is what resolution leans on first, and dropping it would quietly send resolution back to failing
+  for anything played from Roon itself.
+- A new DOM test that a partial result names the tracks it could not use.
+- 793 unit / 403 DOM / 71 static.
+
+## [1.7.78] — 2026-08-29
+
+### Added — pick several played tracks, in the order you want them
+
+**Select** on the "played earlier" fold-out turns the rows into a selection. Tap them in any order —
+each gets a **number showing where it sits in the queue you are building**, because the order you tap
+is not the order the rows are shown in, and it is the order they will play in. Then **Play next** or
+**Add to queue**.
+
+Deselecting renumbers the rest. Closing the fold-out ends the selection with it: picks you cannot see
+are picks you cannot check before acting on them.
+
+**"Play next" sends the tracks backwards on purpose.** Roon's Add Next puts an item immediately after
+the *current* track, so issuing it repeatedly stacks each new one in front of the last — send A, B, C
+and the queue plays C, B, A. Sending them reversed is what makes them arrive the way they were
+picked. This is the one thing in the feature that **could not be verified without a live Core**, and
+it cannot be settled by probing either: finding out costs a real insert, and the API has no verb to
+remove one again. So it is an assumption, isolated to a single named function
+(`playNextSendOrder`) with the fix — return the list unreversed — documented beside it.
+
+*"Add to queue" needs no such trick: appending preserves order by definition.*
+
+The whole selection goes as one request. Separate requests would race and interleave into an
+arbitrary queue order, which is the thing this feature exists to get right. The server resolves
+every track against the library **before touching the Core**, so a selection containing something
+unplayable says so up front instead of stopping half way and leaving the queue holding an arbitrary
+prefix of what was asked for. One run at a time per zone, and at most 20 tracks — each is a full
+browse navigation of roughly eight Core round trips.
+
+Tapping a row outside select mode still plays that one track next, exactly as before.
+
+### Fixed
+
+- After sending a selection the Select button stayed lit and the action bar stayed open over an
+  empty selection until the queue reload landed 600ms later. The controls now repaint when the send
+  finishes, not when the refresh arrives.
+
+### Tests
+
+- 8 more unit tests pinning the send order — including that a single track is identical either way,
+  which is what stops a wrong strategy hiding behind a one-item selection.
+- 11 more DOM tests: badges follow tap order rather than row position, deselecting renumbers, the
+  request carries the tap order, select mode is a mode, and the controls are measured for a real
+  tappable box rather than assumed from their class names.
+- 793 unit / 400 DOM / 71 static.
+
+## [1.7.77] — 2026-08-29
+
+### Added — "played earlier" in the Queue tab
+
+Tracks that have played, and tracks skipped past when you pick something further down the queue, no
+longer vanish. They collect in a **"N played earlier"** fold-out above the Now playing divider,
+collapsed by default, newest sitting against the divider. A skipped track shows how much of it ran
+(`0:12 / 3:20`) so a skip is legible as a skip rather than as a very short track.
+
+**Why it had to be built rather than fetched.** Roon's queue subscription reports the current track
+and what is coming; anything already played is gone from it, and `subscribe_queue` and
+`play_from_here` are the entire queue API — there is no history call and no queue-write verb of any
+kind. So the record is assembled from the zone push the extension already handles, at the one moment
+the outgoing track and how much of it played are both known. It costs **no extra Core calls at all**.
+
+**Tapping a played track adds it after the current one — it does not rewind the queue.** That is a
+deliberate limit, not an oversight. A departed track's `queue_item_id` is spent, so `play_from_here`
+cannot reach it, and reproducing Roon's own behaviour would mean rebuilding every following track
+through the browse hierarchy at roughly eight Core round trips each — over three hundred calls for a
+forty-track queue — behind a `play_now` that destroys the live queue first, with an interruption
+anywhere in the middle leaving the zone worse off than before. Inserting the one track is a single
+browse navigation and leaves the queue standing.
+
+Resolving which library album a played track belongs to costs no Roon calls either: the track index
+built from ordinary album opens maps the title to its album, and the play is matched by title inside
+it. A track that cannot be resolved — a stream, an album since removed, or a title two albums share —
+says so plainly instead of guessing.
+
+**The record is per zone, in memory, and does not survive a restart** — it describes a listening
+session, and one that outlived a restart would offer tracks the zone's queue has no relationship to
+any more. A zone that disappears and returns starts clean, for the same reason its radio state does.
+
+### Fixed
+
+- The Queue tab reported itself empty when the queue had run out, even with tracks played this
+  session — the most interesting moment to look at the history was the one that showed nothing.
+- The scrobbler's "did this count as a play" rule existed twice, inline. It is now one named helper
+  shared with the skip badge, so the screen and the plays table cannot disagree about what a skip is.
+- Play recording no longer sits behind the scrobble database being available: a container with no
+  writable volume kept its queue history either way.
+
+### Tests
+
+- New `test/unit/queue-history.test.js` (23) and `test/dom/queue-history.test.js` (12), including a
+  guard that a single history tap makes **no** queue-rebuilding call.
+- 785 unit / 389 DOM / 71 static.
+
 ## [1.7.76] — 2026-08-29
 
 ### Fixed — the Home "Library" row follows the wall's Sort

@@ -20,6 +20,8 @@ const RoonApiSettings  = require("node-roon-api-settings");
 const { createUpdater } = require("./lib/updater");
 const { radioDecision, radioResumeDecision, radioQueueFloor,
         radioToTurnOff } = require("./lib/radio");
+const { playCounted, historyEntry, pushHistory, recentHistory,
+        sendOrderFor, MULTI_MAX } = require("./lib/queue-history");
 const pkg = require("./package.json");
 // Parse "1.6.31" → display "MusicD Remote v1.6 (Build 31)"
 const [_vmaj, _vmin, _vpatch] = (pkg.version || "0.0.0").split(".");
@@ -162,6 +164,19 @@ let outputs   = {};
 // the zone feed keeps its original full ownership, so nothing regresses.
 let outputsFeedLive = false;
 const scrobbleState = new Map();
+// What each zone has already played, oldest first. See lib/queue-history.js for
+// why this has to be built from the zone push rather than read back from Roon.
+//
+// Declared beside scrobbleState because the same transition fills both, and
+// HERE rather than next to scrobbleUpdate() 12,000 lines down: the zone
+// subscription callbacks above reference it, and a `const` below its first
+// reference is a ReferenceError, not undefined (CLAUDE.md, declaration before
+// use).
+//
+// Memory only, and deliberately. It describes a listening session; a record
+// that outlived a restart would offer tracks the zone's queue has no
+// relationship to any more.
+const zoneHistory = new Map();
 
 // Roon pairing state must survive container rebuilds. node-roon-api's default
 // persistence writes ./config.json relative to CWD (= /app, wiped by every
@@ -245,6 +260,11 @@ const roon = new RoonApi({
           // inherit an episode from before, or a stranding latched then would
           // resume a queue nobody is listening to now.
           forgetRadioZone(zid);
+          // Same reasoning for what it played: a zone_id that comes back is a
+          // different queue, and presenting the old zone's tracks under it
+          // would offer to play next from a session that is over.
+          zoneHistory.delete(zid);
+          scrobbleState.delete(zid);
         });
       }
     });
@@ -286,6 +306,11 @@ const roon = new RoonApi({
     // has persisted but nobody is sitting in front of any more.
     Object.keys(radioBusy).forEach(forgetRadioZone);
     Object.keys(zoneLogPrev).forEach(k => delete zoneLogPrev[k]);
+    // What each zone played goes with the connection. It describes a session
+    // against a queue we can no longer see, and the elapsed time of whatever
+    // was playing when the Core went is lost with it either way.
+    zoneHistory.clear();
+    scrobbleState.clear();
     stopIndexMaintenance();
     // The album index is deliberately KEPT across an unpair: it's plain
     // offset/title data (no session-scoped item_keys), so it stays usable for
@@ -9457,6 +9482,35 @@ function resolveSharedAlbum(albumTitle, artist, trackTitle) {
 // different albums by the same artist (the original and the compilation) is a
 // coin flip, and the artist gate is what keeps a cover version by somebody
 // else out of it entirely.
+// Which library album a PLAYED track belongs to. Zero Roon calls.
+//
+// Two rungs, and the order is the whole point.
+//
+// The ALBUM NAME goes first. A history entry carries the album Roon was showing
+// while the track played, and that resolves against the index the library scan
+// built — which covers every album in the library, opened here or not.
+//
+// The track index is the FALLBACK. It only knows albums this extension has had
+// open, so a library played mostly from Roon's own apps resolves almost nothing
+// through it: that was the "not in your library" reported against albums
+// plainly in the library. It still earns its place as the second rung, for a
+// track whose album line does not match any album title — a compilation Roon
+// labels differently, or a single filed under another name.
+function resolvePlayedTrack(trackTitle, artist, albumTitle) {
+  const title = String(trackTitle || "").trim();
+  if (!title) return null;
+  const credit = String(artist || "");
+  const album  = String(albumTitle || "").trim();
+  // findSharedAlbum declines on ambiguity of its own accord — two albums with
+  // one title and no credit to separate them resolve to nothing rather than to
+  // a guess — so there is no need to second-guess it here.
+  if (album) {
+    const byAlbum = findSharedAlbum(album, credit);
+    if (byAlbum) return byAlbum;
+  }
+  return resolveSharedByTrackIndex(title, credit);
+}
+
 function resolveSharedByTrackIndex(trackTitle, artist) {
   const rows = albumKeysForTrack(trackTitle);
   if (!rows.length) return null;
@@ -12424,7 +12478,9 @@ function cancelRadioRecheck(zid) {
 // Scrobble / play tracking — records plays into SQLite for stats.
 // ---------------------------------------------------------------------------
 function scrobbleUpdate(z) {
-  if (!labelsDb || !stmtInsertPlay) return;
+  // NOT behind the labelsDb guard below. The queue history is in-memory and has
+  // nothing to do with the scrobble database — gating it on that would mean a
+  // zone with no database silently lost its history too.
   const np    = z && z.now_playing;
   const state = z && z.state;
   const zid   = z && z.zone_id;
@@ -12438,24 +12494,35 @@ function scrobbleUpdate(z) {
   const album  = tl.line3 || "";
 
   const prev = scrobbleState.get(zid);
+  // The plays table is optional — a container with no writable data volume
+  // still plays music. The queue history above is not gated on it.
+  const dbOn = !!(labelsDb && stmtInsertPlay && stmtCompletePlay);
 
   if (state === "playing" && np && track) {
     if (!prev || prev.track !== track || prev.album !== album) {
+      // The outgoing track has just left the queue, and Roon will never report
+      // it again — this transition is the only moment it and its elapsed time
+      // are both known. Recorded before anything below can touch `prev`.
+      if (prev) {
+        const entry = historyEntry(prev, Date.now());
+        if (entry) zoneHistory.set(zid, pushHistory(zoneHistory.get(zid), entry));
+      }
       // New track — complete previous if it qualifies
-      if (prev && prev.playId && prev.elapsed >= 30 &&
-          (prev.elapsed >= (prev.duration || 0) * 0.5 || prev.elapsed >= 240)) {
+      if (dbOn && prev && prev.playId && playCounted(prev)) {
         try { stmtCompletePlay.run(prev.playId); } catch (e) {} // scrobble DB optional — playback continues regardless
       }
       // Insert new play record
       let playId = null;
-      try {
-        const info = stmtInsertPlay.run(
-          Date.now(), z.display_name || zid,
-          track, artist, album,
-          np.image_key || "", np.length || 0
-        );
-        playId = info.lastInsertRowid;
-      } catch (e) {} // scrobble DB optional — null playId is handled below
+      if (dbOn) {
+        try {
+          const info = stmtInsertPlay.run(
+            Date.now(), z.display_name || zid,
+            track, artist, album,
+            np.image_key || "", np.length || 0
+          );
+          playId = info.lastInsertRowid;
+        } catch (e) {} // scrobble DB optional — null playId is handled below
+      }
       scrobbleState.set(zid, {
         track, artist, album,
         image_key: np.image_key || "", duration: np.length || 0,
@@ -12468,9 +12535,14 @@ function scrobbleUpdate(z) {
       prev.lastSeekPos = np.seek_position || 0;
     }
   } else if (prev && prev.playId) {
-    // Not playing (paused/stopped) — finalise if eligible
-    if (prev.elapsed >= 30 &&
-        (prev.elapsed >= (prev.duration || 0) * 0.5 || prev.elapsed >= 240)) {
+    // Not playing (paused/stopped) — finalise if eligible.
+    //
+    // Deliberately NOT a history departure. Pausing clears this state and
+    // resuming rebuilds it, so recording here would file the track you are
+    // still listening to as "played earlier" every time you paused it. A
+    // genuine track change is the only departure, which is why the only push
+    // is in the branch above.
+    if (dbOn && playCounted(prev)) {
       try { stmtCompletePlay.run(prev.playId); } catch (e) {} // scrobble DB optional — playback continues regardless
     }
     scrobbleState.delete(zid);
@@ -13264,12 +13336,23 @@ app.get("/api/queue", (req, res) => {
         finish(() => {
           const items = ((msg && msg.items) || []).map(it => ({
             queue_item_id: it.queue_item_id,
-            title:    (it.one_line && it.one_line.line1) || (it.three_line && it.three_line.line1) || "",
+            // three_line FIRST. Roon's one_line.line1 is "Track - Artist" all
+            // in one string, and the row already prints the artist underneath
+            // as its subtitle — so it read "The Artist - Big Big Train" over
+            // "Big Big Train". The played-earlier rows come from the zone push,
+            // which is three_line, so the two halves of the same list also
+            // disagreed about how to write a track down.
+            title:    (it.three_line && it.three_line.line1) || (it.one_line && it.one_line.line1) || "",
             subtitle: (it.three_line && it.three_line.line2) || "",
             image_key: it.image_key || null,
             length:    it.length || null
           }));
-          res.json({ items });
+          // What this zone already played, newest first, alongside the live
+          // queue so the screen needs one fetch. Roon cannot supply it — see
+          // lib/queue-history.js — so it comes from what we watched leave.
+          // Capped well below the ring: this is a fold-out, not an archive,
+          // and it rides on a response the queue screen opens constantly.
+          res.json({ items, history: recentHistory(zoneHistory.get(zoneId), 50) });
         });
       } else if (response && response !== "Changed" && response !== "Unsubscribed") {
         // An error name (e.g. "NetworkError") instead of a payload — fail fast
@@ -13741,6 +13824,137 @@ app.post("/api/transfer-zone", (req, res) => {
     console.log(`[transfer-zone] ok`);
     res.json({ ok: true });
   });
+});
+
+// Play a track from the zone's played-earlier list, NEXT.
+// body: { zone_or_output_id, track, artist, album }
+//
+// Not "play from here", and the difference is the whole design. A played track
+// is gone from Roon's queue, so its queue_item_id is spent and play_from_here
+// cannot reach it. Rebuilding the queue around it is the only way to reproduce
+// Roon's own behaviour, and the extension API has no queue-write verb to do it
+// with — every track would have to go back through the browse hierarchy at
+// roughly eight Core round trips each, after a play_now that destroys the live
+// queue first. A forty-track queue is well over three hundred calls, and an
+// interruption anywhere in the middle leaves the zone worse off than before.
+//
+// So: insert the one track after the current one. It is a single browse
+// navigation, it leaves the queue standing, and it is honest about being a
+// different thing from what Roon's own UI does.
+//
+// Resolution is by NAME because that is all a departed track leaves behind,
+// and it costs no Roon calls at all: album_tracks maps the title to the album,
+// the in-memory index maps that to an offset, and invokeTrackAction re-matches
+// the title inside the album anyway. resolveSharedByTrackIndex declines when
+// two albums hold the same title, so an ambiguous track reports that rather
+// than playing a coin flip.
+app.post("/api/queue/play-history-next", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  const { zone_or_output_id, track, artist, album } = req.body || {};
+  if (!zone_or_output_id) return res.status(400).json({ error: "zone_or_output_id required" });
+  const title = String(track || "").trim();
+  if (!title) return res.status(400).json({ error: "track required" });
+
+  const hit = resolvePlayedTrack(title, artist, album);
+  if (!hit) {
+    // A real outcome, not a failure: streamed radio, a track whose album has
+    // left the library, or a title two albums share. Saying which is why the
+    // client can explain it instead of showing "something went wrong".
+    return res.status(404).json({
+      error: "Couldn't find that track in your library to play it again",
+      unresolved: true,
+    });
+  }
+  try {
+    const r = await invokeTrackAction(
+      hit.offset, 0, title, zone_or_output_id, "play_next", null,
+      { title: hit.title, subtitle: hit.subtitle });
+    res.json({ ok: true, action: r.invoked, track: r.track, album: hit.title });
+  } catch (e) {
+    res.status(e.stale ? 409 : 500).json({ error: e.message });
+  }
+});
+
+// Several played tracks at once, in the order they were picked.
+// body: { zone_or_output_id, kind: "play_next" | "queue", tracks: [{track, artist, album}] }
+//
+// `tracks` arrives in SELECTION order — the order the user tapped them, which
+// is not the order they are shown in. lib/queue-history decides the order to
+// send them in so they arrive that way; see playNextSendOrder for the one
+// assumption in it.
+//
+// Sequential by necessity, like every other multi-track path here: there is no
+// batch form on the Roon side, and firing these in parallel would interleave
+// into an arbitrary queue order — which is the whole thing this route exists
+// to get right.
+const historyMultiZones = new Set();
+
+app.post("/api/queue/history-multi", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  const { zone_or_output_id, kind, tracks } = req.body || {};
+  if (!zone_or_output_id) return res.status(400).json({ error: "zone_or_output_id required" });
+  if (kind !== "play_next" && kind !== "queue") {
+    return res.status(400).json({ error: "kind must be play_next or queue" });
+  }
+  if (!Array.isArray(tracks) || !tracks.length) {
+    return res.status(400).json({ error: "tracks required" });
+  }
+  if (tracks.length > MULTI_MAX) {
+    return res.status(400).json({ error: `at most ${MULTI_MAX} tracks at a time` });
+  }
+  // One run at a time per zone. Two interleaved runs would each be issuing
+  // ordered inserts into the same queue, and both would come out shuffled —
+  // the same reasoning as play-multi, which learned it the hard way.
+  if (historyMultiZones.has(zone_or_output_id)) {
+    return res.status(409).json({ error: "Still adding the last selection to this zone" });
+  }
+
+  // Resolve EVERY track before touching the Core. Resolution is free (the
+  // track index, in memory), so doing it up front means a selection with an
+  // unplayable track in it reports that instead of getting half way through
+  // and leaving the queue holding an arbitrary prefix of what was asked for.
+  const resolved = [];
+  const unresolved = [];
+  for (const t of tracks) {
+    const title = String((t && t.track) || "").trim();
+    if (!title) continue;
+    const hit = resolvePlayedTrack(title, (t && t.artist), (t && t.album));
+    if (hit) resolved.push({ title, hit });
+    else unresolved.push(title);
+  }
+  if (!resolved.length) {
+    return res.status(404).json({
+      error: "None of those are in your library to play again",
+      unresolved, queued: 0,
+    });
+  }
+
+  historyMultiZones.add(zone_or_output_id);
+  let queued = 0, firstError = null;
+  const failed = [];
+  try {
+    for (const item of sendOrderFor(kind, resolved)) {
+      try {
+        await invokeTrackAction(item.hit.offset, 0, item.title, zone_or_output_id,
+                                kind, null, { title: item.hit.title, subtitle: item.hit.subtitle });
+        queued++;
+      } catch (e) {
+        // One refusal does not abandon the rest: the others are still tracks
+        // the user asked for, and stopping here would leave a partial insert
+        // with no explanation of where it stopped.
+        failed.push(item.title);
+        if (!firstError) firstError = e.message;
+      }
+    }
+  } finally {
+    historyMultiZones.delete(zone_or_output_id);
+  }
+
+  if (!queued) {
+    return res.status(500).json({ error: firstError || "Roon refused those tracks",
+                                  queued: 0, failed, unresolved });
+  }
+  res.json({ ok: true, kind, queued, failed, unresolved, error: firstError || undefined });
 });
 
 // Play from a specific queue item onwards.
