@@ -1174,9 +1174,13 @@ main {
 }
 /* The cover of what is playing. */
 .mt-art {
-  width: 44px; height: 44px;
+  /* The pill's height driver. It is deliberately the tallest thing in the bar
+     (see the control sizes further down), so this number IS the pill's height
+     less its padding — which is how the bar is made taller without the extra
+     room becoming empty glass. */
+  width: 54px; height: 54px;
   flex: 0 0 auto;
-  border-radius: 7px;
+  border-radius: 9px;
   object-fit: cover;
   background: var(--bg-elev-2);
   box-shadow: 0 2px 8px rgba(0,0,0,.3);
@@ -1186,19 +1190,37 @@ main {
 /* Thin Roon-style progress line along the top edge of the bar */
 .mt-progress {
   position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 2px;
+  /* THE WHOLE PILL, not a 2px strip across the top of it.
+     A 2px-tall box cannot carry an 18px corner: CSS scales every radius down
+     until the two on a side fit that side's length, so `border-radius: 18px
+     18px 0 0` on a 2px strip became a 2px radius and the line ran straight on
+     past the glass at both ends — visible as a blue chord overhanging the
+     pill's top corners.
+     Clipping against a box the SHAPE OF THE PILL makes the line stop exactly
+     where the curve does, so it reads as following the edge.
+     Clipped here and not on .mini-transport: that element's overflow must stay
+     visible, because the zone and volume popovers open upwards out of it. They
+     are siblings of this element, so this clip never touches them. */
+  inset: 0;
   pointer-events: none;
-  /* Rounded to match the pill, and clipped HERE rather than on
-     .mini-transport — that element's overflow must stay visible, because the
-     zone and volume popovers open upwards out of it. */
-  border-radius: 18px 18px 0 0;
+  /* 17px, not 18. This box is positioned against the padding box, i.e. inside
+     the pill's 1px border, and an inner corner's radius is the outer radius
+     less the border it sits inside. */
+  border-radius: 17px;
   overflow: hidden;
 }
 .mt-progress-fill {
+  /* Full pill height, and the LINE IS ITS TOP BORDER — not a filled 2px block.
+     A border is drawn along the box's rounded outline, so the left end curves
+     down into the corner instead of ending square, and the clipper above cuts
+     the right end to the far curve as the fill approaches 100%.
+     box-sizing so the 100% height is the border box and the border does not
+     add to it. */
   height: 100%;
   width: 0%;
-  background: var(--accent);
+  box-sizing: border-box;
+  border-top: 2.5px solid var(--accent);
+  border-top-left-radius: 17px;
   /* No transition. JS paints this from the clock four times a second, and a
      400ms width transition restarted every 250ms can never finish: the fill
      chased a target it never reached and sat ~400ms behind the position just
@@ -1281,7 +1303,7 @@ main {
 /* Push the main grid above the mini transport. The pill floats clear of the
    bottom edge, so this reserves its height plus that gap. */
 main {
-  padding-bottom: 84px;
+  padding-bottom: 94px;
 }
 
 /* On mobile, hide track info if the bar is cramped */
@@ -1936,7 +1958,7 @@ main {
      well padded the safe area INSIDE the pill too — 34px of dead glass under
      the text on any device that has one, which is the empty space the pill was
      reported for. Lift or pad, never both. */
-  padding: 8px 10px;
+  padding: 9px 11px;
 }
 .mt-info { gap: 13px; }
 .mt-info { cursor: pointer; }  /* tappable to open the now-playing screen */
@@ -1952,7 +1974,7 @@ main {
 .mt-playpause { width: 46px; height: 46px; }
 .mt-playpause svg { width: 28px; height: 28px; }
 
-main { padding-bottom: calc(84px + env(safe-area-inset-bottom)); }
+main { padding-bottom: calc(94px + env(safe-area-inset-bottom)); }
 
 @media (max-width: 480px) {
   .mt-info { gap: 10px; }

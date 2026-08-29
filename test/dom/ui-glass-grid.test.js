@@ -445,7 +445,20 @@ test("nothing is left under the floating transport", async (t) => {
       // How much of the pill is glass around its contents. The reported symptom
       // was dead space, and the cover is the tallest thing inside it.
       var art = document.getElementById("mt-art").getBoundingClientRect();
-      T("slack", Math.round(pill.height - art.height));
+      T("art_h", Math.round(art.height));
+      // The cover must be the pill's HEIGHT DRIVER — nothing inside taller than
+      // it. That is the rule that stops the bar growing by padding: to make it
+      // taller you make the artwork bigger, and the space is cover, not glass.
+      T("tallest_child", (function () {
+        var max = 0, who = "";
+        var kids = document.getElementById("mini-transport").querySelectorAll(
+          ".mt-art, .mt-btn, .mt-playpause, .mt-info, .mt-controls, .mt-text");
+        for (var i = 0; i < kids.length; i++) {
+          var h = kids[i].getBoundingClientRect().height;
+          if (h > max) { max = h; who = kids[i].className; }
+        }
+        return { h: Math.round(max), who: String(who) };
+      })());
     `,
   });
   harness.assertNoPageError(assert, r);
@@ -468,12 +481,128 @@ test("nothing is left under the floating transport", async (t) => {
   });
 
   await t.test("the pill is not mostly padding", () => {
-    // 44px of cover in a 76px bar was the reported "not getting best use of the
-    // space" — an inset applied twice, once as a lift and once as padding.
-    assert.ok(r.slack <= 24,
-      `the pill is ${r.pill.h}px tall around a 44px cover — ${r.slack}px of that ` +
-      `is empty glass`);
+    // A RATIO, not a fixed slack. v1.7.83 grew the pill by a fifth on purpose,
+    // and an absolute "no more than Npx of glass" would have to be renumbered
+    // every time the bar is resized — which is how a threshold quietly becomes
+    // whatever the current build happens to measure. What actually went wrong
+    // in v1.7.81 was the PROPORTION: 42px of cover in a 68px bar, because the
+    // home-indicator inset was applied twice.
+    const filled = r.art_h / r.pill.h;
+    assert.ok(filled >= 0.65,
+      `the cover is ${r.art_h}px in a ${r.pill.h}px pill (${(filled * 100).toFixed(0)}%) — ` +
+      `the rest is empty glass`);
+    // ...and the cover is what sets that height. A control taller than the
+    // artwork means the bar is sized by its buttons again.
+    assert.ok(r.tallest_child.h <= r.art_h,
+      `${r.tallest_child.who} is ${r.tallest_child.h}px, taller than the ${r.art_h}px ` +
+      `cover — the buttons are driving the pill's height, not the artwork`);
     assert.ok(r.pill.left > 0 && r.pill.bottom_gap > 0,
       `the pill is welded to an edge (${JSON.stringify(r.pill)}) — it should float`);
+  });
+});
+
+test("the progress line follows the pill's curve", async (t) => {
+  if (!harness.available) { t.skip("no chromium binary available"); return; }
+
+  // v1.7.83. The line used to be a 2px strip stretched across the top with
+  // `border-radius: 18px 18px 0 0` on it. That radius never existed: CSS scales
+  // every corner down until the two on a side fit that side's length, and the
+  // strip's left side is 2px long — so an 18px corner became a 2px one and the
+  // blue line ran on straight past the pill's glass at both ends.
+  //
+  // The clip is a real geometric constraint, and the harness cannot sample
+  // pixels — so what is asserted is the thing that made the radius unusable:
+  // a corner has to FIT the box it is on.
+  const r = harness.renderPage({
+    name: "ui-progress-curve", windowSize: "390x844", stub: STUB,
+    driver: `
+      ${HELPERS}
+      await window.__sleep(600);
+      await openRandomWall();
+      var bar = document.getElementById("mini-transport");
+      for (var i = 0; i < 40 && bar.classList.contains("hidden"); i++) await window.__sleep(100);
+
+      var prog = document.querySelector(".mt-progress");
+      var fill = document.getElementById("mt-progress-fill");
+      var pb = bar.getBoundingClientRect(), gb = prog.getBoundingClientRect();
+      var gs = getComputedStyle(prog), fs = getComputedStyle(fill);
+      T("clip", {
+        h: Math.round(gb.height), pill_h: Math.round(pb.height),
+        w: Math.round(gb.width),  pill_w: Math.round(pb.width),
+        radius: parseFloat(gs.borderTopLeftRadius) || 0,
+        pill_radius: parseFloat(getComputedStyle(bar).borderTopLeftRadius) || 0,
+        overflow: gs.overflowX,
+        pointer: gs.pointerEvents,
+      });
+      T("line", {
+        border_top: parseFloat(fs.borderTopWidth) || 0,
+        bg: fs.backgroundColor,
+        radius: parseFloat(fs.borderTopLeftRadius) || 0,
+        box: fs.boxSizing,
+      });
+      // The painter still drives it through style.width — unchanged, and three
+      // seek tests in volume-row.test.js read that property.
+      T("painted_width", fill.style.width);
+
+      // The popovers open UPWARDS out of the transport. A clip on the wrong
+      // element would swallow them, and the clip added here is one element away
+      // from doing exactly that.
+      document.getElementById("mt-vol-btn").click();
+      await window.__sleep(300);
+      var pop = document.getElementById("mt-vol-popover").getBoundingClientRect();
+      T("popover", { top: Math.round(pop.top), pill_top: Math.round(pb.top),
+                     h: Math.round(pop.height) });
+    `,
+  });
+  harness.assertNoPageError(assert, r);
+
+  await t.test("the clip is the shape of the pill, not a strip across its top", () => {
+    const c = r.clip;
+    assert.ok(c.h >= c.pill_h - 4,
+      `the progress clip is ${c.h}px tall inside a ${c.pill_h}px pill — it is still ` +
+      `a strip, and a strip cannot carry the pill's corner`);
+    assert.ok(c.w >= c.pill_w - 4, `the clip is ${c.w}px wide in a ${c.pill_w}px pill`);
+    assert.equal(c.overflow, "hidden", "nothing clips the line to the pill's outline");
+    assert.equal(c.pointer, "none", "the progress overlay is eating taps on the pill");
+  });
+
+  await t.test("...and its corner actually fits the box it is on", () => {
+    // THE root cause, stated directly. 18px of radius on a 2px-tall box is not
+    // an 18px corner, it is a 2px one — the browser scales it to fit and the
+    // declaration silently means something else.
+    const c = r.clip;
+    assert.ok(c.radius >= 12,
+      `the clip's corner radius is ${c.radius}px — too small to follow an ` +
+      `${c.pill_radius}px pill`);
+    assert.ok(c.radius * 2 <= c.h,
+      `a ${c.radius}px radius does not fit a ${c.h}px-tall box: CSS will scale it ` +
+      `down to ${(c.h / 2).toFixed(1)}px and the line will cut a straight chord ` +
+      `across the corner instead of following it`);
+    assert.ok(Math.abs(c.radius - c.pill_radius) <= 2,
+      `the clip curves at ${c.radius}px and the pill at ${c.pill_radius}px — the ` +
+      `line will not sit on the edge`);
+  });
+
+  await t.test("the line is a drawn edge, not a block filling the pill", () => {
+    // The clip is full-height now, so a fill that still painted a background
+    // would paint the WHOLE pill accent-coloured.
+    const l = r.line;
+    assert.ok(l.border_top >= 1.5,
+      `the fill has no top border (${l.border_top}px) — nothing draws the line`);
+    assert.match(String(l.bg), /rgba\(0, 0, 0, 0\)|transparent/,
+      `the fill has background ${l.bg} in a full-height clip — that floods the ` +
+      `entire pill with accent colour`);
+    assert.equal(l.box, "border-box",
+      "height:100% plus a top border on content-box makes the fill overflow the clip");
+    assert.ok(String(r.painted_width).endsWith("%"),
+      `app.js paints style.width and it reads ${JSON.stringify(r.painted_width)} — ` +
+      `the seek tests in volume-row.test.js read the same property`);
+  });
+
+  await t.test("and the popovers still escape the transport", () => {
+    assert.ok(r.popover.h > 0, "the volume popover did not open");
+    assert.ok(r.popover.top < r.popover.pill_top,
+      `the volume popover opens at y=${r.popover.top} but the pill starts at ` +
+      `y=${r.popover.pill_top} — it is being clipped inside the bar`);
   });
 });

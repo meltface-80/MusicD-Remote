@@ -2,6 +2,40 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.83] — 2026-08-29
+
+### Changed — a taller transport, and a progress line that follows the glass
+
+**The floating transport is a fifth taller, and the extra height is artwork.** 62px → 74px on a
+phone. The cover grew 44px → 54px and the padding by 1px either side, which is the whole of the
+change: the pill is deliberately sized by its artwork rather than by its buttons, so making the bar
+taller means making the cover bigger and the new room is cover, not glass. The scroller's bottom
+reserve grew with it (84px → 94px), leaving the same 12px between the last album's details and the
+top of the pill as before — the bottom of an album wall is still fully readable.
+
+**The progress line follows the pill's curve instead of cutting across it.** The line was a 2px strip
+stretched across the top with `border-radius: 18px 18px 0 0` on it — a radius that never existed. CSS
+scales every corner down until the two on a side fit that side's length, and a 2px-tall strip has a
+2px left side, so the 18px corner silently became a 2px one and the blue line ran on straight past
+the glass at both ends. The line is now drawn as the **top border of a box the shape of the pill**, so
+it curves down into the corner the way the edge does, and is clipped by that same shape at the far
+end as it approaches 100%. *Class of error: a declaration that was quietly rewritten by layout — the
+value in the file was never the value in use.*
+
+### Added
+
+A DOM test that states the root cause as a rule: a corner radius must FIT the box it is declared on
+(`radius * 2 <= height`), so the next 2px strip with an 18px corner fails at the assertion rather
+than on a device. Alongside it: the clip is the pill's shape and shares its radius, the line is a
+drawn border rather than a block (a background on a now-full-height fill would flood the whole pill
+with accent colour), and the volume popover still opens *upwards out of* the transport — the new clip
+is one element away from swallowing it.
+
+The "pill is not mostly padding" assertion became a **ratio** — the cover must be at least 65% of the
+pill's height — plus a check that nothing inside the bar is taller than the cover. A fixed slack
+threshold has to be renumbered every time the bar is resized, which is how a threshold quietly
+becomes whatever the current build happens to measure. 793 unit / 436 DOM / 72 static.
+
 ## [1.7.82] — 2026-08-29
 
 ### Fixed — the five things v1.7.81 got wrong on a real screen
