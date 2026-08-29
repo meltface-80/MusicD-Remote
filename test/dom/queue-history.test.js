@@ -88,8 +88,7 @@ const HELPERS = `
   // relative to the Now playing divider is observable.
   function listOrder() {
     return Array.prototype.map.call(document.querySelectorAll("#queue-list > li"), function (li) {
-      if (li.classList.contains("q-history-bar"))  return "[bar]";
-      if (li.classList.contains("q-hist-actions"))  return "[actions]";
+      if (li.classList.contains("q-history-head")) return "[head]";
       if (li.classList.contains("q-divider"))       return "[now playing]";
       var t = li.querySelector(".q-title");
       return (li.classList.contains("q-hist-row") ? "hist:" : "live:") + (t ? t.textContent : "?");
@@ -161,7 +160,7 @@ test("played tracks are kept, folded away above the queue", async (t) => {
       "nearest Now playing, the way a queue is read");
     assert.equal(r.expanded_attr_after, "true");
     assert.deepEqual(r.order, [
-      "[bar]", "[actions]", "hist:First", "hist:Second", "hist:Third",
+      "[head]", "hist:First", "hist:Second", "hist:Third",
       "[now playing]", "live:Current Track", "live:Up Next",
     ], "the fold-out must sit ABOVE the Now playing divider — that is where " +
        "those tracks happened");
@@ -299,6 +298,7 @@ const MULTI_STUB = STUB.replace(
 const SEL_HELPERS = HELPERS + `
   function selBtn() { return document.querySelector("#queue-list .q-history-select"); }
   function actionBar() { return document.querySelector("#queue-list .q-hist-actions"); }
+  function head()      { return document.querySelector("#queue-list .q-history-head"); }
   function actBtn(label) {
     return Array.prototype.slice.call(document.querySelectorAll("#queue-list .q-hist-act"))
       .filter(function (b) { return b.textContent === label; })[0];
@@ -516,5 +516,83 @@ test("a partial result says which tracks it could not use", async (t) => {
 
   await t.test("and flags it as something that went wrong", () => {
     assert.equal(r.toast_is_error, true);
+  });
+});
+
+test("the controls stay put while the played list scrolls", async (t) => {
+  if (!harness.available) { t.skip("no chromium binary available"); return; }
+
+  // A long list, so there is something to scroll past. The controls are only
+  // useful while you are picking through the rows, which is exactly when they
+  // were scrolling off the top.
+  const MANY = [];
+  for (let i = 0; i < 40; i++) {
+    MANY.push({ track: `Track ${String(i).padStart(2, "0")}`, artist: "Artist", album: "Album",
+                image_key: null, duration: 200, elapsed: 200, played: true, ts: 1000 + i * 3000 });
+  }
+  const r = harness.renderPage({
+    name: "queue-history-sticky", windowSize: "390x844",
+    stub: MULTI_STUB.replace(/history: \[[\s\S]*?\]\n    \}\);/,
+                             `history: ${JSON.stringify(MANY)}\n    });`),
+    driver: `
+      ${SEL_HELPERS}
+      await window.__sleep(400);
+      await openQueue();
+      bar().click(); await window.__sleep(250);
+      selBtn().click(); await window.__sleep(200);
+
+      var scroller = document.querySelector(".modal-body");
+      T("sticky_when_open", getComputedStyle(head()).position);
+      // Opaque, or the rows slide visibly through the control bar and neither
+      // is readable. A computed alpha of 0 is the failure.
+      T("head_bg", getComputedStyle(head()).backgroundColor);
+      var restTop = Math.round(head().getBoundingClientRect().top);
+
+      scroller.scrollTop = 600;
+      await window.__sleep(300);
+      var box = head().getBoundingClientRect();
+      T("after_scroll", { top: Math.round(box.top), h: Math.round(box.height) });
+      T("scrolled", scroller.scrollTop > 100);
+      T("rest_top", restTop);
+      // It must clear the panel's floating Home/Share buttons rather than sit
+      // underneath them — the collision this whole change is about.
+      var homeBtn = document.getElementById("modal-home-btn").getBoundingClientRect();
+      T("home_bottom", Math.round(homeBtn.bottom));
+      T("actions_visible", (function () {
+        var a = actionBar().getBoundingClientRect();
+        return a.height > 0 && a.top >= 0 && a.bottom <= window.innerHeight;
+      })());
+      // Collapsed it is an ordinary row again: pinned, it would park a bar over
+      // the live queue for the whole scroll of it.
+      scroller.scrollTop = 0; await window.__sleep(200);
+      bar().click(); await window.__sleep(200);
+      T("static_when_closed", getComputedStyle(head()).position);
+    `,
+  });
+  harness.assertNoPageError(assert, r);
+
+  await t.test("it is pinned while the fold-out is open", () => {
+    assert.equal(r.sticky_when_open, "sticky");
+    const alpha = /rgba?\([^)]*?,\s*([\d.]+)\s*\)/.exec(String(r.head_bg));
+    assert.ok(String(r.head_bg) !== "transparent" && (!alpha || Number(alpha[1]) > 0.9),
+      `the pinned bar is see-through (${r.head_bg}) — rows scroll visibly through it`);
+    assert.equal(r.scrolled, true, "the list never scrolled — the test proves nothing");
+  });
+
+  await t.test("and is still on screen after scrolling", () => {
+    assert.ok(r.after_scroll.h > 0, "the head collapsed to nothing");
+    assert.ok(r.after_scroll.top >= 0 && r.after_scroll.top < 400,
+      `the controls scrolled away (top=${r.after_scroll.top})`);
+    assert.equal(r.actions_visible, true, "the action buttons are off screen after scrolling");
+  });
+
+  await t.test("clear of the floating Home and Share buttons", () => {
+    assert.ok(r.after_scroll.top >= r.home_bottom - 1,
+      `the pinned controls sit under the Home button (head top ${r.after_scroll.top}, ` +
+      `button bottom ${r.home_bottom}) — that is the collision this fixes`);
+  });
+
+  await t.test("but an ordinary row once collapsed", () => {
+    assert.notEqual(r.static_when_closed, "sticky");
   });
 });

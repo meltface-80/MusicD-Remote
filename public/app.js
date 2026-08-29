@@ -5476,7 +5476,18 @@
     // divider, the way a queue is read.
     const rows = history.slice().reverse();
 
-    const bar = document.createElement("li");
+    // The disclosure and the actions are ONE element, and it is the element
+    // that sticks. Two sticky rows would each need to know the other's height
+    // to stack without overlapping; one wrapper just works, at any text size.
+    //
+    // Still inside the list rather than floating over it — a bar positioned
+    // above the queue would be a new stacking context on a screen that already
+    // has the transport bar in it, which is how v1.6.58's sheets ended up
+    // underneath something.
+    const head = document.createElement("li");
+    head.className = "q-history-head";
+
+    const bar = document.createElement("div");
     bar.className = "q-history-bar";
     const btn = document.createElement("button");
     btn.type = "button";
@@ -5487,12 +5498,7 @@
     bar.appendChild(btn);
     bar.appendChild(selBtn);
 
-    // The action bar sits inline in the list rather than floating over it.
-    // A bar positioned above the queue would be a new stacking context over a
-    // screen that already has the transport bar in it, which is exactly how
-    // v1.6.58's sheets ended up underneath something. Flowing with the list
-    // cannot collide with anything.
-    const actions = document.createElement("li");
+    const actions = document.createElement("div");
     actions.className = "q-hist-actions hidden";
     const count = document.createElement("span");
     count.className = "q-hist-count";
@@ -5507,6 +5513,7 @@
     const actQueue = mkAct("Add to queue");
     const actClear = mkAct("Clear");
     actions.append(count, actNext, actQueue, actClear);
+    head.append(bar, actions);
 
     const rowEls = rows.map((h) => {
       const li = document.createElement("li");
@@ -5573,6 +5580,10 @@
       selBtn.textContent = historySelectMode ? "Done" : "Select";
       selBtn.setAttribute("aria-pressed", String(historySelectMode));
       actions.classList.toggle("hidden", !queueHistoryOpen || !historySelectMode);
+      // Only pinned while the rows are showing. Collapsed, it is one line above
+      // the Now playing divider and pinning it would park a bar over the live
+      // queue for the whole scroll of it.
+      head.classList.toggle("is-open", queueHistoryOpen);
       for (const el of rowEls) el.classList.toggle("is-selecting", historySelectMode);
       paintSelection();
     };
@@ -5613,8 +5624,7 @@
     // The control first, then what it discloses: collapsed it sits alone at the
     // top of the list, and expanded the rows run down from it to finish against
     // the Now playing divider — the order they were played in.
-    list.appendChild(bar);
-    list.appendChild(actions);
+    list.appendChild(head);
     for (const el of rowEls) list.appendChild(el);
     repaintHistory = paint;
     paint();

@@ -2,6 +2,38 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.80] — 2026-08-29
+
+### Fixed — the selection controls stay put while you scroll
+
+Scrolling down through a long "played earlier" list carried the **Select / Play next / Add to queue /
+Clear** row off the top of the screen, so picking anything past the first few tracks meant scrolling
+back up to act on it. On the way out it also slid underneath the floating Home and Share buttons and
+sat there half-covered.
+
+The controls now pin to the top of the queue while the fold-out is open. Two details make that
+work properly rather than nearly:
+
+- They pin **below** the Home and Share buttons, not at the very top. Those are absolutely positioned
+  at 12px plus the safe-area inset and are 40px tall, so pinning at zero parks the bar underneath
+  them — the same half-covered row, now permanently.
+- The disclosure row and the action row became **one element**, and that is what sticks. Two sticky
+  rows would each need to know the other's height to stack without overlapping; one wrapper is
+  correct at any text size.
+
+Collapsed, it goes back to being an ordinary row — pinned, it would park a bar over the live queue
+for the whole scroll of it.
+
+### Tests
+
+- 5 more DOM tests, all measured against a 40-track history rather than inferred from class names:
+  the head computes to `sticky` while open and not while closed, it is still on screen after
+  scrolling with its buttons fully inside the viewport, it clears the Home button's bottom edge, and
+  its background is opaque enough that rows cannot scroll visibly through it.
+- Each was checked against a broken build: not sticky at all, and sticky at `top: 0` — the second
+  reproduces exactly the half-covered bar this fixes, and is caught by the clearance assertion.
+- 793 unit / 408 DOM / 71 static.
+
 ## [1.7.79] — 2026-08-29
 
 ### Fixed — "not in your library" for albums that are plainly in the library
