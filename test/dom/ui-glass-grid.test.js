@@ -632,3 +632,76 @@ test("the progress line follows the pill's curve", async (t) => {
       `y=${r.popover.pill_top} — it is being clipped inside the bar`);
   });
 });
+
+test("the chrome surfaces are all one surface", async (t) => {
+  if (!harness.available) { t.skip("no chromium binary available"); return; }
+
+  // v1.7.86. The transport pill, the top bar and both volume sheets are the
+  // same material: --glass-bg, no backdrop-filter. Three separate near-miss
+  // greys is what it looked like before, and a filter on any of them
+  // reintroduces the brightening that made the pill change face on scroll (see
+  // the file header).
+  const r = harness.renderPage({
+    name: "ui-one-surface", windowSize: "390x844", stub: STUB,
+    driver: `
+      ${HELPERS}
+      function face(el) {
+        var c = getComputedStyle(el);
+        return { bg: c.backgroundColor,
+                 filter: c.backdropFilter || c.webkitBackdropFilter || "none" };
+      }
+      await window.__sleep(600);
+      await openRandomWall();
+      var bar = document.getElementById("mini-transport");
+      for (var i = 0; i < 40 && bar.classList.contains("hidden"); i++) await window.__sleep(100);
+
+      T("pill",   face(bar));
+      T("topbar", face(document.querySelector(".topbar")));
+
+      // The mini bar's volume sheet.
+      document.getElementById("mt-vol-btn").click();
+      await window.__sleep(300);
+      var mtVol = document.getElementById("mt-vol-popover");
+      T("mt_vol", face(mtVol));
+      T("mt_vol_open", !mtVol.classList.contains("hidden"));
+      document.getElementById("mt-vol-btn").click();
+      await window.__sleep(200);
+
+      // ...and the now-playing screen's, which is the same component.
+      document.querySelector(".mt-info").click();
+      await window.__sleep(1000);
+      document.getElementById("np-volbtn").click();
+      await window.__sleep(300);
+      var npVol = document.getElementById("np-vol-popover");
+      T("np_vol", face(npVol));
+      T("np_vol_open", !npVol.classList.contains("hidden"));
+    `,
+  });
+  harness.assertNoPageError(assert, r);
+
+  await t.test("both volume sheets actually opened", () => {
+    assert.equal(r.mt_vol_open, true, "the mini bar's volume sheet did not open");
+    assert.equal(r.np_vol_open, true, "the now-playing volume sheet did not open");
+  });
+
+  await t.test("every one of them is the pill's colour", () => {
+    for (const [name, face] of [["the top bar", r.topbar],
+                                ["the mini bar's volume sheet", r.mt_vol],
+                                ["the now-playing volume sheet", r.np_vol]]) {
+      assert.equal(face.bg, r.pill.bg,
+        `${name} is ${face.bg} and the transport pill is ${r.pill.bg} — they are ` +
+        `meant to read as one material, not three near-miss greys`);
+    }
+  });
+
+  await t.test("and none of them has a backdrop-filter", () => {
+    for (const [name, face] of [["the transport pill", r.pill], ["the top bar", r.topbar],
+                                ["the mini bar's volume sheet", r.mt_vol],
+                                ["the now-playing volume sheet", r.np_vol]]) {
+      assert.ok(!/blur|saturate/.test(String(face.filter)),
+        `${name} has a backdrop-filter (${face.filter}) — saturate() brightens ` +
+        `whatever shows through, which is the effect that made the pill change ` +
+        `face on every scroll, twice`);
+    }
+  });
+});

@@ -2,6 +2,44 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.86] — 2026-08-29
+
+### Changed — one material for every piece of app chrome
+
+The floating transport pill's surface — `--glass-bg`, no backdrop-filter — is now shared by **both
+volume sheets** (the one that pops out of the mini bar and the identical one on Now playing) and by
+**the top bar**. Three near-miss greys became one material. The volume sheets genuinely float over
+content, so the translucency reads there the way it does on the pill.
+
+**The top bar's blur was doing nothing.** `.topbar` is a flex *sibling* of `<main>`, not a layer over
+it — `html, body { overflow: hidden }` and the app shell mean only `<main>` scrolls, and it starts
+below the bar. So the only thing behind the top bar was the flat page background, and
+`saturate(160%) blur(14px)` was a compositing layer that produced the colour it started with. It is
+gone, and with it `--bg-translucent`, which had no other user.
+
+### Changed — the iOS status bar matches the bar beneath it
+
+**It cannot be made translucent.** iOS paints the status bar (clock, signal, battery) itself and
+fills it with `theme-color`; nothing the app renders can appear there. The one thing that *would* let
+the page show through is `apple-mobile-web-app-status-bar-style: black-translucent` — the exact meta
+that stopped the app filling the display in v1.7.60–65, banned by pre-flight step 6, and baked into
+the home-screen shortcut at add time, so shipping it wrong cannot be undone from the server.
+
+What it *can* be is the same colour as the bar directly beneath it, which removes the seam between
+them — visible in both screenshots as a darker band above the app bar. `theme-color` was `--bg`; it is
+now `--glass-bg` composited over `--bg`, which is exactly what the top bar resolves to (a fixed
+colour, precisely because nothing scrolls behind it). #1d2125 dark, #2d3134 copper, near-white in the
+two light palettes.
+
+### Added
+
+A DOM test that the pill, the top bar and both volume sheets report the *same* background and that
+none of them carries a backdrop-filter. The theme suite's chrome-colour assertion now derives the
+expected value by compositing, in a second implementation of the blend written in the test — a test
+that imports the code under test agrees with it by construction. Its required-token list swaps
+`--bg-translucent` for `--glass-bg`/`--glass-edge`. Every assertion verified against a build with each
+surface reverted individually. 793 unit / 454 DOM / 73 static.
+
 ## [1.7.85] — 2026-08-29
 
 ### Fixed — the transport has one appearance, permanently

@@ -174,6 +174,27 @@
   const DEFAULT_THEME = "dark";
   const themeById = (id) => THEMES.find(t => t.id === id) || null;
 
+  // Composite a translucent colour over an opaque one and return the flat
+  // result as #rrggbb. Used for theme-color, which must be a solid colour: the
+  // status bar cannot be translucent, so it is given the colour the top bar
+  // actually resolves to.
+  // Returns "" for anything it cannot parse rather than guessing — the caller
+  // falls back to --bg, which is what it used before this existed.
+  function blendOver(fg, bg) {
+    const rgba = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/
+      .exec(String(fg || "").trim());
+    const hex = /^#([0-9a-f]{6})$/i.exec(String(bg || "").trim());
+    if (!rgba || !hex) return "";
+    const a = rgba[4] === undefined ? 1 : parseFloat(rgba[4]);
+    if (!Number.isFinite(a)) return "";
+    const back = [0, 2, 4].map(i => parseInt(hex[1].slice(i, i + 2), 16));
+    const out = [1, 2, 3].map((k, i) => {
+      const v = Math.round(parseFloat(rgba[k]) * a + back[i] * (1 - a));
+      return Math.max(0, Math.min(255, v)).toString(16).padStart(2, "0");
+    });
+    return "#" + out.join("");
+  }
+
   function applyTheme(id) {
     const t = themeById(id) || themeById(DEFAULT_THEME);
     document.documentElement.dataset.theme   = t.theme;
@@ -181,10 +202,26 @@
     // The browser chrome colour was hard-coded to the dark background and
     // never updated, so it was already wrong in light theme. Read it back off
     // the applied palette instead of maintaining a second list of hexes.
+    //
+    // It is the TOP BAR's colour, not --bg. iOS draws the status bar (clock,
+    // signal, battery) itself and fills it with theme-color; nothing this app
+    // renders can appear there. The one thing that WOULD let the page show
+    // through it is `apple-mobile-web-app-status-bar-style: black-translucent`,
+    // which is the exact meta that stopped the app filling the display in
+    // v1.7.60-65 and is banned by pre-flight step 6 — it is baked into the home
+    // screen shortcut at ADD time, so shipping it wrong cannot be undone from
+    // the server. So the status bar cannot be made translucent. What it CAN be
+    // is the same colour as the bar directly beneath it, which removes the seam
+    // between them and is the whole visible difference.
+    //
+    // .topbar is --glass-bg over the page, and nothing scrolls behind it (see
+    // its rule), so that blend is a fixed colour this can compute exactly.
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) {
-      const bg = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
-      if (bg) meta.setAttribute("content", bg);
+      const cs = getComputedStyle(document.documentElement);
+      const bg = cs.getPropertyValue("--bg").trim();
+      const chrome = blendOver(cs.getPropertyValue("--glass-bg").trim(), bg);
+      if (chrome || bg) meta.setAttribute("content", chrome || bg);
     }
     return t.id;
   }

@@ -46,12 +46,34 @@ const READ_TOKENS = `
   function tokens() {
     var out = {};
     ["--bg","--bg-elev","--bg-elev-2","--border","--text","--text-dim","--text-faint",
-     "--accent","--accent-text","--on-accent","--danger","--bg-translucent"].forEach(function (n) {
+     "--accent","--accent-text","--on-accent","--danger",
+     // v1.7.86: --bg-translucent is gone. It existed only for the top bar's
+     // backdrop-filter, and that filter was blurring a flat colour — .topbar is
+     // a flex SIBLING of <main>, so nothing ever scrolled behind it. The bar
+     // uses the transport pill's surface now, which every palette must define.
+     "--glass-bg","--glass-edge"].forEach(function (n) {
       out[n] = tok(n);
     });
     return out;
   }
 `;
+
+// --- Compositing, in Node for the same reason -------------------------------
+// Deliberately a SECOND implementation of app.js's blendOver rather than an
+// import: a test that reuses the code under test agrees with it by
+// construction. Nine lines of alpha blending is cheap to write twice.
+function blendOver(fg, bg) {
+  const m = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/
+    .exec(String(fg || "").trim());
+  const h = /^#([0-9a-f]{6})$/i.exec(String(bg || "").trim());
+  if (!m || !h) return "";
+  const a = m[4] === undefined ? 1 : parseFloat(m[4]);
+  const back = [0, 2, 4].map(i => parseInt(h[1].slice(i, i + 2), 16));
+  return "#" + [1, 2, 3]
+    .map((k, i) => Math.round(parseFloat(m[k]) * a + back[i] * (1 - a))
+      .toString(16).padStart(2, "0"))
+    .join("");
+}
 
 // --- WCAG maths, in Node so the arithmetic is reviewable ---------------------
 function srgbToLin(c) {
@@ -165,9 +187,20 @@ for (const id of THEMES) {
     });
 
     await t.test("the browser chrome colour follows the theme", () => {
-      assert.equal(r.meta_theme_color, k["--bg"],
-        "the theme-color meta still holds a stale background — it was hard-coded " +
-        "to the dark palette and wrong in light theme before this change");
+      // It is the TOP BAR's colour, not --bg. iOS paints the status bar itself
+      // and fills it with theme-color; the app cannot render there and cannot
+      // make it translucent (the meta that would is the one banned by
+      // pre-flight step 6). What it can do is match the bar directly beneath,
+      // so the two read as one surface — and .topbar's colour is a fixed blend
+      // because nothing scrolls behind it.
+      const want = blendOver(k["--glass-bg"], k["--bg"]);
+      assert.notEqual(want, "",
+        `could not composite --glass-bg (${k["--glass-bg"]}) over --bg (${k["--bg"]})`);
+      assert.equal(r.meta_theme_color.toLowerCase(), want,
+        `theme-color is ${r.meta_theme_color} but the top bar resolves to ${want} — ` +
+        `there will be a visible seam between the status bar and the app bar`);
+      assert.notEqual(r.meta_theme_color.toLowerCase(), String(k["--bg"]).toLowerCase(),
+        "theme-color is still the page background rather than the bar's colour");
     });
   });
 }

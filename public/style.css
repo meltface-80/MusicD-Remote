@@ -32,10 +32,6 @@
      different literals (#0b1418, #04121a and a bare #fff), three of which had
      no light-theme override at all and shipped white-on-cyan at 2.28:1. */
   --on-accent:    #0b1418;
-  /* --bg with alpha, for the blurred top bar. backdrop-filter needs the
-     translucency, so it cannot use var(--bg) — which is why this used to be a
-     hard-coded rgba that no new palette could reach. */
-  --bg-translucent: rgba(14,16,18,.85);
   /* Glass, for the floating transport pill. --glass-edge is the lit top edge
      that makes a translucent surface read as a pane rather than a hole.
      ALPHA IS DELIBERATELY HIGH (.62 -> .90 -> .94 across v1.7.84-85) and it is
@@ -79,7 +75,6 @@
   --accent-text:  #1f8fc1;
   --accent-soft:  rgba(31,143,193,.12);
   --on-accent:    #ffffff;
-  --bg-translucent: rgba(246,245,242,.85);
   --glass-bg:   rgba(255,255,255,.95);
   --glass-edge: rgba(26,39,64,.12);
   --panel-hairline: rgba(26,39,64,.12);     /* row separators on tinted panels */
@@ -125,7 +120,6 @@
   /* Warm near-black rather than the cool #0b1418, so a copper fill doesn't
      read blue-shadowed. 5.74:1. */
   --on-accent:    #17120d;
-  --bg-translucent: rgba(27,29,31,.85);
   --glass-bg:   rgba(46,50,53,.94);
   --glass-edge: rgba(255,255,255,.10);
   /* Hue 3 degrees against copper's 26, and light enough to clear 4.5:1 on
@@ -159,7 +153,6 @@
   --accent-text:  #8a5a35;
   --accent-soft:  rgba(138,90,53,.12);
   --on-accent:    #fffdf8;
-  --bg-translucent: rgba(247,244,237,.85);
   --glass-bg:   rgba(255,253,248,.95);
   --glass-edge: rgba(60,45,30,.14);
   --danger:       #b3271d;
@@ -230,9 +223,18 @@ button { font-family: inherit; }
   gap: 10px;
   padding: 12px 14px;
   padding-top: calc(12px + env(safe-area-inset-top));
-  background: var(--bg-translucent);
-  backdrop-filter: saturate(160%) blur(14px);
-  -webkit-backdrop-filter: saturate(160%) blur(14px);
+  /* The same surface as the floating transport pill, and for the same reason
+     (see .mini-transport): one appearance, no backdrop-filter.
+     The filter here was never doing anything anyway. .topbar is a flex SIBLING
+     of <main>, not a layer over it — `html, body { overflow: hidden }` and the
+     .app shell mean only <main> scrolls, and it starts below this bar. So the
+     only thing behind the top bar is the flat page background, and a
+     saturate+blur of a flat colour is a compositing layer that produces the
+     colour it started with. --glass-bg over --bg is that same blend, stated
+     once, and it matches the pill instead of being a second near-miss grey.
+     Deterministic, too, which is what lets the iOS status bar be given the
+     exact same colour — see applyTheme() in app.js. */
+  background: var(--glass-bg);
   border-bottom: 1px solid var(--border);
 }
 .topbar-row {
@@ -2099,8 +2101,12 @@ main { padding-bottom: calc(94px + env(safe-area-inset-bottom)); }
      it was 12px against 18px top, which tipped the whole row upward. */
   padding: 16px 16px 30px;
   border-radius: 16px;
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
+  /* The transport pill's surface, shared. This one really does float over
+     content — the page on the mini-bar's popover, the album art on the now
+     playing screen — so the translucency is visible here in a way it is not on
+     the top bar. Still no backdrop-filter: same rule as the pill. */
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-edge);
   box-shadow: var(--shadow-modal);
   animation: vol-in .14s ease-out;
 }
@@ -2217,7 +2223,8 @@ input.vol-range::-moz-range-thumb {
 .np-popover.vol-sheet {
   padding: 16px 16px 30px;
   border-radius: 16px;
-  background: var(--bg-elev);
+  background: var(--glass-bg);
+  border-color: var(--glass-edge);
   box-shadow: var(--shadow-modal);
 }
 
