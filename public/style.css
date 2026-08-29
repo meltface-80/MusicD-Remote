@@ -36,11 +36,18 @@
      translucency, so it cannot use var(--bg) — which is why this used to be a
      hard-coded rgba that no new palette could reach. */
   --bg-translucent: rgba(14,16,18,.85);
-  /* Glass, for the floating transport pill. Lower alpha than --bg-translucent
-     because a real blur sits behind it — the same opacity would read as a
-     solid slab and waste the effect. --glass-edge is the lit top edge that
-     makes a translucent surface read as a pane rather than a hole. */
-  --glass-bg:   rgba(30,34,38,.62);
+  /* Glass, for the floating transport pill. --glass-edge is the lit top edge
+     that makes a translucent surface read as a pane rather than a hole.
+     ALPHA IS DELIBERATELY HIGH (.62 -> .90 in v1.7.84). The blur behind it is
+     switched off for the duration of a scroll — it is the documented iOS jank
+     source (v1.6.15) — and at .62 that swap was plainly visible: blurred
+     content behind the pane reads as frosted, the same content sharp reads as
+     see-through, so the bar appeared to lose its opacity every time the page
+     moved and get it back when the page stopped. At .90 only a tenth of the
+     backdrop comes through, the blur is a refinement rather than the thing
+     doing the work, and losing it mid-scroll is not visible.
+     Raise this, never lower it, unless the blur becomes unconditional. */
+  --glass-bg:   rgba(30,34,38,.90);
   --glass-edge: rgba(255,255,255,.10);
   --danger:       #e06464;
   --panel-hairline: rgba(255,255,255,.07);  /* row separators on tinted panels */
@@ -75,7 +82,7 @@
   --accent-soft:  rgba(31,143,193,.12);
   --on-accent:    #ffffff;
   --bg-translucent: rgba(246,245,242,.85);
-  --glass-bg:   rgba(255,255,255,.68);
+  --glass-bg:   rgba(255,255,255,.92);
   --glass-edge: rgba(26,39,64,.12);
   --panel-hairline: rgba(26,39,64,.12);     /* row separators on tinted panels */
   --danger:       #c0392b;
@@ -121,7 +128,7 @@
      read blue-shadowed. 5.74:1. */
   --on-accent:    #17120d;
   --bg-translucent: rgba(27,29,31,.85);
-  --glass-bg:   rgba(46,50,53,.62);
+  --glass-bg:   rgba(46,50,53,.90);
   --glass-edge: rgba(255,255,255,.10);
   /* Hue 3 degrees against copper's 26, and light enough to clear 4.5:1 on
      every surface including the deepest (4.81). */
@@ -155,7 +162,7 @@
   --accent-soft:  rgba(138,90,53,.12);
   --on-accent:    #fffdf8;
   --bg-translucent: rgba(247,244,237,.85);
-  --glass-bg:   rgba(255,253,248,.70);
+  --glass-bg:   rgba(255,253,248,.92);
   --glass-edge: rgba(60,45,30,.14);
   --danger:       #b3271d;
   /* Warm brown rather than the classic light theme's cool blue-grey, which
@@ -878,6 +885,71 @@ main {
 }
 .modal-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
+/* ── The album-art hero (v1.7.84) ─────────────────────────────────────
+   The album view used to lead with a 280px square floating in the middle of a
+   padded column. It now leads with the cover itself, edge to edge, fading into
+   the page ground with the title sitting in the tail of that fade.
+
+   FULL-BLEED FROM INSIDE A PADDED COLUMN. .modal-body pads 18px either side and
+   the art is one of its flex children, so the art cancels that padding with a
+   negative margin and takes the width back. The arithmetic has to stay exact:
+   .modal-body declares overflow-y: auto, and a box with one axis scrollable and
+   the other `visible` computes the visible one to `auto` — so a bleed one pixel
+   WIDER than the padding it cancels does not spill, it gives the whole album
+   view a horizontal scrollport. test/dom/album-hero.test.js measures
+   scrollWidth against clientWidth for exactly that.
+
+   Scoped to :not(.np-mode) — the Now playing tab shares this element and sizes
+   it from leftover height instead (see the np-mode block). */
+.modal:not(.np-mode) .modal-body {
+  padding-top: 0;
+  gap: 0;
+}
+.modal:not(.np-mode) .modal-art {
+  width: calc(100% + 36px);
+  max-width: none;
+  margin: 0 -18px;
+  aspect-ratio: 1 / 1;
+  border-radius: 0;
+}
+/* The fade. A mask rather than an overlaid gradient, because the ground behind
+   it is a theme token: masking to transparent lets whatever --bg-elev is for
+   the current palette come through, so this works unchanged in all four
+   (an overlay would have to hard-code a colour to fade TO). */
+.modal:not(.np-mode) .modal-art img {
+  -webkit-mask-image: linear-gradient(to bottom,
+    #000 0 58%, rgba(0,0,0,.72) 78%, transparent 100%);
+          mask-image: linear-gradient(to bottom,
+    #000 0 58%, rgba(0,0,0,.72) 78%, transparent 100%);
+}
+/* THE TEXT STAYS OFF THE ARTWORK. The reference this is modelled on can put a
+   title over the bottom of a cover because its ground is always dark and the
+   art fades into that dark; two of this app's four palettes have a near-white
+   ground and near-black text, so the same overlap puts dark text on whatever
+   the sleeve happens to be — invisible on the first cover tried. The mask
+   below finishes the art at the element's own bottom edge, and the title
+   starts under it: the same dissolve, with no unknown image behind any text.
+   The track list keeps its own alignment — centring .modal-info would centre
+   every track row too. */
+.modal:not(.np-mode) .modal-info { margin-top: 0; }
+.modal:not(.np-mode) #modal-title,
+.modal:not(.np-mode) .modal-subtitle { text-align: center; }
+.modal:not(.np-mode) .modal-actions { justify-content: center; }
+
+/* Back and Share now sit ON the artwork, which can be any colour at all. A
+   scrim under each one is what makes them legible on a white sleeve as well as
+   a black one — and it is dark in every palette on purpose: white-on-dark is
+   the pair that survives an unknown image, whereas a theme-coloured button
+   would vanish into half the covers in a library. No backdrop-filter: the art
+   scrolls underneath these, which is the same per-frame re-blur the transport
+   pill has to avoid (v1.6.15). */
+.modal:not(.np-mode) .modal-close,
+.modal:not(.np-mode) .modal-share {
+  background: rgba(0,0,0,.42);
+  border-color: rgba(255,255,255,.24);
+  color: #fff;
+}
+
 .modal-info { display: flex; flex-direction: column; min-width: 0; }
 .modal-info h2 {
   margin: 14px 0 6px;
@@ -1165,10 +1237,14 @@ main {
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
 }
-/* The scroll-time face. Solid, so there is nothing to re-blur per frame, and
-   the same colour the glass settles to so the swap does not read as a flash. */
+/* The scroll-time face. THE BACKGROUND DOES NOT CHANGE — only the filter goes.
+   It used to swap to var(--bg-elev), on the theory that a fully opaque surface
+   was the closest match to a blurred translucent one. It is not: the bar
+   visibly changed face every time the page moved, which is what "the transport
+   stops being opaque while scrolling" was. Two states that differ only by a
+   blur, over a background opaque enough that the blur is a refinement, are
+   indistinguishable in motion — which is the point. */
 .mini-transport.is-scrolling {
-  background: var(--bg-elev);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
@@ -1703,17 +1779,33 @@ main {
   background: transparent; box-shadow: none;
   aspect-ratio: auto; border-radius: 0; overflow: visible;
 }
-.modal.np-mode.tab-album .modal-art img {
-  /* Height-driven: fills the leftover vertical space, capped at the usual
-     size; width follows the (square) cover's intrinsic ratio, so this needs
-     no aspect-ratio support. object-fit contain guards odd-shaped art. */
-  height: 100%;
-  max-height: min(400px, 92vw, calc(100vw - 36px));  /* never taller than the padded width — keeps shadow/radius on the art */
-  width: auto; max-width: 100%;
-  object-fit: contain;
-  border-radius: 8px;
-  box-shadow: var(--shadow-card);
+.modal.np-mode.tab-album .modal-art {
+  /* Full-bleed, like the album view's hero: cancel .modal-body's 18px. */
+  width: calc(100% + 36px);
+  margin: 0 -18px;
 }
+.modal.np-mode.tab-album .modal-art img {
+  /* Fills the leftover vertical space AND the full width, cropping rather than
+     letterboxing — the cover is the screen here, not a framed picture on it.
+     No radius and no shadow: both are how a floating card reads, and this is
+     no longer floating. The bottom fades into the ground so the title and the
+     controls sit in the tail of the image rather than under a hard edge.
+     (Landscape ≥720px puts art and controls side by side and puts all of this
+     back — see the grid block below.) */
+  height: 100%;
+  width: 100%; max-width: none; max-height: none;
+  object-fit: cover;
+  border-radius: 0;
+  box-shadow: none;
+  -webkit-mask-image: linear-gradient(to bottom,
+    #000 0 62%, rgba(0,0,0,.7) 82%, transparent 100%);
+          mask-image: linear-gradient(to bottom,
+    #000 0 62%, rgba(0,0,0,.7) 82%, transparent 100%);
+}
+/* Same rule as the album view: the live block sits UNDER the fade, never on the
+   artwork. .modal-art is flex: 1 1 0, so the art already takes every pixel the
+   controls do not — there is nothing to reclaim by overlapping them. */
+.modal.np-mode.tab-album .modal-info { margin-top: 0; }
 /* Very short viewports (small desktop windows — phone landscape is already
    blocked by the rotate overlay): let the body scroll again rather than
    clip the transport controls unreachably. */
@@ -1760,6 +1852,10 @@ main {
     min-height: 0;
     justify-self: end;
   }
+  .modal.np-mode.tab-album .modal-art {
+    /* Not full-bleed here — it is a column in a two-column grid. */
+    width: auto; margin: 0;
+  }
   .modal.np-mode.tab-album .modal-art img {
     /* Auto-size under BOTH max constraints (the grid row is definite, so the
        height cap works): the element box shrink-wraps the cover at its
@@ -1767,7 +1863,16 @@ main {
        and big screens get big art (the portrait 400px cap is dropped). */
     height: auto;
     max-height: calc(100% - 16px);
+    width: auto; max-width: 100%;
+    object-fit: contain;
+    /* The framed card comes back: nothing bleeds off a screen edge in this
+       layout, so a hard-edged crop would just look like a mistake. */
+    border-radius: 8px;
+    box-shadow: var(--shadow-card);
+    -webkit-mask-image: none;
+            mask-image: none;
   }
+  .modal.np-mode.tab-album .modal-info { margin-top: 0; }
   .modal.np-mode.tab-album .modal-info {
     grid-area: info;
     justify-self: start;

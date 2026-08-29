@@ -2,6 +2,59 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.84] — 2026-08-29
+
+### Fixed — the transport stops changing face when the page moves
+
+**One appearance, scrolling or still.** The bar swapped its background as well as its blur for the
+duration of every scroll — glass at rest, an opaque slab while moving — on the theory that a solid
+surface was the closest match to a blurred translucent one. It is not, and the swap was plainly
+visible: content behind a pane reads as frosted when it is blurred and see-through when it is not, so
+the bar appeared to lose its opacity the moment the page moved and get it back when it stopped. The
+background is now identical in both states and **the blur is the only thing that changes**.
+
+**And the bar is considerably more opaque** — .62 → .90 in the dark palettes, .68/.70 → .92 in the
+light ones. That is what makes the above work: the blur has to be dropped while a scroll is running
+(it is the documented iOS jank source, v1.6.15), so the background has to be doing the work on its
+own. At .90 a tenth of the backdrop still comes through and it still reads as glass; the blur is a
+refinement rather than the thing holding the bar together.
+
+### Changed — the album view and Now playing lead with the artwork
+
+Both screens now open with the cover **edge to edge**, dissolving into the page ground, with the title
+underneath. On the album view it is a full-width square running up under the status bar, with the
+title, artist and action row centred below it and the track list beneath that. On Now playing the
+cover fills the width and crops rather than letterboxing, with the track, seek bar and transport in
+the tail of the fade. Back and Share get a dark scrim so they stay legible on any sleeve.
+
+The fade is a **mask** rather than an overlaid gradient, so it fades to whatever `--bg-elev` is for
+the current palette — one rule that is correct in all four themes instead of a hard-coded colour to
+fade towards.
+
+**Text is never laid over the artwork**, which is the one place this departs from the design it is
+modelled on. That design can put a title over the bottom of a cover because its ground is always dark
+and the art fades into that dark; two of this app's four palettes have a near-white ground and
+near-black text, so the same overlap puts dark text on whatever the sleeve happens to be. The first
+cut did exactly that and the album title was invisible on the first cover tried.
+
+Landscape tablets and desktops (≥720px) keep the framed cover beside the controls — nothing bleeds off
+a screen edge in that layout, so a hard-cropped full-width cover would read as a mistake there.
+
+### Fixed — two tests that were asking the wrong question
+
+`safearea.test.js` looked up a rule with `indexOf` and read whichever block came first, so it asked
+"does the FIRST rule mentioning `.modal-share` carry the top inset" rather than "is `.modal-share`
+pinned with the inset at all". The new scrim rule sits earlier in the file and correctly has no `top`
+in it, and the test failed on a pin that was still there 200 lines further down. It now walks brace
+depth and collects **every** rule for a selector — which also means it can finally see rules declared
+inside an `@media` block, which the old lookup could not. Alongside it, a new assertion pins that the
+album view is the *only* screen allowed to give up the status-bar reserve, and a DOM assertion pins
+the reason it may: what ends up under the status bar there is artwork, never text.
+
+The mini-transport suite's alpha check parsed "the last number before the bracket", which reads the
+blue channel of an opaque `rgb(22, 25, 28)` as an alpha of 28. Hygiene rather than a caught defect —
+both forms happened to pass — but it was not measuring what it named. 793 unit / 451 DOM / 73 static.
+
 ## [1.7.83] — 2026-08-29
 
 ### Changed — a taller transport, and a progress line that follows the glass

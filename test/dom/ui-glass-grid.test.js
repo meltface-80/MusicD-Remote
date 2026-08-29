@@ -300,6 +300,7 @@ test("the glass steps aside while the page scrolls", async (t) => {
       T("rest_filter", cs.backdropFilter || cs.webkitBackdropFilter || "");
       T("rest_radius", cs.borderTopLeftRadius);
       T("rest_left", Math.round(bar.getBoundingClientRect().left));
+      T("rest_bg", cs.backgroundColor);
 
       var m = document.querySelector("main");
       m.scrollTop = 200;
@@ -308,6 +309,7 @@ test("the glass steps aside while the page scrolls", async (t) => {
       var during = getComputedStyle(bar);
       T("scrolling_class", bar.classList.contains("is-scrolling"));
       T("scrolling_filter", during.backdropFilter || during.webkitBackdropFilter || "");
+      T("scrolling_bg", during.backgroundColor);
 
       await window.__sleep(700);
       var after = getComputedStyle(bar);
@@ -330,6 +332,31 @@ test("the glass steps aside while the page scrolls", async (t) => {
     assert.ok(!/blur/.test(String(r.scrolling_filter)),
       `the blur is still live mid-scroll (${r.scrolling_filter}) — this is the iOS ` +
       `jank v1.6.15 removed, reintroduced`);
+  });
+
+  await t.test("...and NOTHING ELSE about the bar changes", () => {
+    // v1.7.84. The scroll state used to swap the background as well — glass to
+    // an opaque var(--bg-elev) — on the theory that a solid surface was the
+    // nearest match to a blurred translucent one. It is not, and the bar
+    // visibly changed face every time the page moved: "the transport stops
+    // being opaque while scrolling; stop scrolling and it becomes opaque".
+    // The blur is the ONLY thing allowed to differ between the two states.
+    assert.equal(r.scrolling_bg, r.rest_bg,
+      `the bar is ${r.rest_bg} at rest and ${r.scrolling_bg} while scrolling — it ` +
+      `changes appearance as soon as the page moves, which is the whole complaint`);
+    // And the one surviving difference has to be invisible, which is only true
+    // if the background does the work rather than the blur. Anything below
+    // ~.85 and losing the blur reads as the bar going see-through.
+    // Parse the whole colour, not "the last number before the bracket": that
+    // lazy form reads the BLUE channel of an opaque rgb(22, 25, 28) as an alpha
+    // of 28, so a fully opaque bar sails through the check below.
+    const a = /^rgba?\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*(?:,\s*([\d.]+)\s*)?\)/
+      .exec(String(r.rest_bg));
+    const alpha = a ? (a[1] === undefined ? 1 : parseFloat(a[1])) : 1;
+    assert.ok(alpha >= 0.85,
+      `the pill's background is only ${alpha} opaque (${r.rest_bg}). The blur is ` +
+      `dropped for the duration of every scroll, so at this alpha the sharp page ` +
+      `shows through and the bar appears to lose its opacity whenever it moves`);
   });
 
   await t.test("and it comes back once the scroll stops", () => {
