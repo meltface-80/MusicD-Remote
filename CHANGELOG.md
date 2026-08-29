@@ -2,6 +2,44 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.76] — 2026-08-29
+
+### Fixed — the Home "Library" row follows the wall's Sort
+
+Set the Library wall to **Recently added, newest first** and the Home screen's Library carousel
+carried on showing album-name order — the same list, under the same label, disagreeing with the
+screen its own header opens.
+
+The row and the wall read the same endpoint, but the row asked for it with **no sort at all**, so it
+always got the server's default (album name, A→Z). It now asks for the order the wall is set to, and
+it follows every later change to it.
+
+Asking correctly was only half of it. The row's freshness flag was a boolean — *it has tiles, never
+load it again* — on the reasoning that the library only changes when the library does. But its order
+is a setting, and a setting changes when the user says so: even once the row asked correctly, a sort
+chosen afterwards would not have reached Home for the rest of the session. The flag now records
+**which order** the row holds, so choosing a new one makes it stale exactly as new content would.
+Returning to Home in an order that has not changed still costs nothing — that is the reason the row
+loads once, and a page of library covers is the most expensive thing on the screen.
+
+Home also repaints from a saved copy before the network answers. For every other row "stale" means
+slightly old content; for this one it means the *wrong order*, so the cached row is now used only
+when it was saved in the order that is current — otherwise it would flash the previous sort on every
+cold open, which is the very thing the row is meant to be reflecting.
+
+**Focus is deliberately not mirrored, only Sort.** Focus narrows the wall in front of you; applied to
+a Home shelf labelled "Library" it could empty it from a setting made on another screen, and that row
+does not hide itself when empty.
+
+### Tests
+
+- New `test/dom/home-library-sort.test.js` (9): the row opens in the default order and says so in its
+  request; choosing Recently added reaches Home, and so does changing it back; an unchanged order
+  does not re-fetch; a cached row saved in a stale order is never painted. The stub returns a
+  genuinely different list per sort, so the assertions read what is on screen rather than only the
+  query string.
+- 762 unit / 377 DOM / 70 static.
+
 ## [1.7.75] — 2026-08-28
 
 ### Fixed — how the two radio switches react

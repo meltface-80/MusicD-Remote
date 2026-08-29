@@ -340,7 +340,15 @@
   const topbarSearch  = document.getElementById("topbar-search");
   let homeSectionsLoaded = false;
   let homeLotwLoaded = false;   // set once the label-of-the-week row populates
-  let homeLibraryLoaded = false; // set once the Library row populates
+  // The ORDER the Library row currently holds, or "" for nothing loaded yet.
+  //
+  // This was a boolean — "the row has tiles, never load it again", on the
+  // reasoning that the library only changes when the library changes. But the
+  // row's order is the wall's Sort setting, and that changes whenever the user
+  // says so: with a boolean the row stayed "fresh" for the session and a new
+  // sort never reached Home. Keyed by the order instead, so choosing a new one
+  // makes the row stale exactly like new content would.
+  let homeLibraryKey = "";
   // Smart Picks are built once a day on the server. The row is retried on each
   // Home visit until it populates (the first build runs in the background and
   // can take a minute), then left alone — the set does not change again today.
@@ -370,7 +378,7 @@
     { id: "random",   title: "Random albums",
       load: () => { loadHomeRandom(); }, isFresh: () => rowsTtlFresh() },
     { id: "library",  title: "Library",
-      load: () => { loadHomeLibrary(); }, isFresh: () => homeLibraryLoaded },
+      load: () => { loadHomeLibrary(); }, isFresh: () => homeLibraryKey === libSortKey() },
     { id: "lotw",     title: "Label of the week",
       load: () => { loadHomeLabelOfWeek(); }, isFresh: () => homeLotwLoaded },
     { id: "genres",   title: "Browse by genre",
@@ -718,31 +726,39 @@
     }
   }
 
-  // Library row — the first albums of the whole library in Roon's own order.
-  // Stable content (changes only when the library does), so it loads once per
-  // session and is retried each Home visit until it populates, like the label
-  // of the week. Tapping the header opens the full scrolling library wall.
+  // Library row — the first albums of the library in the order the user chose
+  // on the wall, so the row is the head of the same list its header opens.
+  // Re-reads whenever that order changes (see homeLibraryKey) and is otherwise
+  // retried each Home visit until it populates, like the label of the week.
   function renderHomeLibrary(albums) { renderAlbumRow(homeLibrary, albums); }
 
   async function loadHomeLibrary() {
     if (!homeLibrary) return;
     if (!rowHasContent(homeLibrary)) homeLibrary.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
+    // Captured BEFORE the request: the answer describes the order that was
+    // current when it was asked for, and the user can change Sort while it is
+    // in the air.
+    const key = libSortKey();
     try {
-      const r = await fetch("/api/library/albums?offset=0&count=30");
+      const r = await fetch("/api/library/albums?offset=0&count=30&" + key);
       // Any non-OK response (503 while the index builds, 500 on a transient
       // server error) keeps the cached tiles — a built index never legitimately
       // returns zero albums, so blanking the row to "No albums." would only
       // ever be showing an error as an empty state.
       if (!r.ok) {
         if (!rowHasContent(homeLibrary)) homeLibrary.innerHTML = '<div class="home-carousel-empty">Waiting for Roon Core…</div>';
-        return;   // retried on the next Home visit (homeLibraryLoaded stays false)
+        return;   // retried on the next Home visit (homeLibraryKey stays unset)
       }
       const j = await r.json();
       const albums = (j && j.albums) || [];
+      // The order changed while this was in flight. Painting it would put the
+      // previous order on screen and, worse, record it as the current one — so
+      // the row would look settled on an order the user had already replaced.
+      if (key !== libSortKey()) return;
       if (albums.length) {
         renderHomeLibrary(albums);
-        homeLibraryLoaded = true;   // populated — stop retrying on future visits
-        saveHomeCache({ library: albums });
+        homeLibraryKey = key;   // this order is loaded — don't refetch it
+        saveHomeCache({ library: albums, librarySort: key });
       } else if (!rowHasContent(homeLibrary)) {
         renderHomeLibrary([]);   // genuinely empty and nothing cached — show the empty state
       }
@@ -1428,11 +1444,27 @@
     try { localStorage.setItem(LIB_VIEW_KEY, JSON.stringify(libView)); }
     catch (e) { /* localStorage optional (private browsing) */ }
   }
-  function libViewQuery() {
+  // The ORDER half of the library view: the sort, its direction, and — when the
+  // sort IS a shuffle — the seed that fixes which shuffle.
+  //
+  // Split out of libViewQuery() because the Home Library row mirrors the order
+  // the user chose on the wall but NOT the Focus narrowing. Focus is a filter on
+  // the wall in front of them; applied to a Home shelf labelled "Library" it
+  // could empty it from a setting made on another screen, and that row does not
+  // hide itself when empty. One function so the two callers cannot drift on what
+  // "the order" means.
+  function libSortParams() {
     const p = new URLSearchParams();
     p.set("sort", libView.sort);
     p.set("dir", libView.dir);
     if (libView.sort === "random") p.set("seed", String(libView.seed));
+    return p;
+  }
+  // The order as one comparable string — what the Home row records so it can
+  // tell "already loaded" from "loaded in an order the user has since changed".
+  function libSortKey() { return libSortParams().toString(); }
+  function libViewQuery() {
+    const p = libSortParams();
     for (const id of LIB_FACET_IDS) {
       for (const v of (libView[id] || [])) p.append(id, v);
     }
@@ -4447,7 +4479,16 @@
     let painted = false;
     if (c.unplayed && homeUnplayed) { renderHomeUnplayed(c.unplayed.aotd, c.unplayed.albums); painted = rowHasContent(homeUnplayed) || painted; }
     if (c.random   && homeRandom)   { renderHomeRandom(c.random);                              painted = rowHasContent(homeRandom)   || painted; }
-    if (c.library  && homeLibrary)  { renderHomeLibrary(c.library); }
+    // Only when it was cached in the order that is current NOW. The other rows
+    // hydrate stale-then-revalidate, but "stale" here means the wrong ORDER —
+    // painting it would flash the previous sort on every cold open, which is
+    // the very thing the row is supposed to be reflecting. A cache written
+    // before this field existed has no librarySort, so it does not match and
+    // the row simply loads fresh: no cache-key bump needed for that.
+    if (c.library && homeLibrary && c.librarySort === libSortKey()) {
+      renderHomeLibrary(c.library);
+      homeLibraryKey = c.librarySort;   // hydrated in the current order — no refetch
+    }
     if (c.lotw     && homeLotw)     { renderHomeLotw(c.lotw.label, c.lotw.albums); }
     if (c.history  && homeHistory)  { renderHomeHistory(c.history); }
     if (c.genres   && homeGenres)   { renderHomeGenres(c.genres); }
