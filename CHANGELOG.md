@@ -2,6 +2,51 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.81] — 2026-08-29
+
+### Changed — a glass transport, one grid, and a list view
+
+**The mini transport is a floating glass pill, and it shows the cover.** Artwork for the playing
+track sits at the left of a rounded, translucent bar that floats clear of the screen edges rather
+than being welded to the bottom. Tapping the cover opens Now playing, like the text beside it. A zone
+with no artwork (a stream) hides the image rather than leaving a broken-image glyph.
+
+**The glass steps aside while you scroll — deliberately.** v1.6.15 *removed* backdrop blur from this
+exact bar: it floats over the scrolling page, iOS Safari re-samples and re-blurs everything beneath
+it on every scroll frame, and it was the main scroll-jank source while music was playing. The look
+and the frame rate only conflict *while a scroll is actually running*, which is the one moment nobody
+is admiring the bar — so the blur is dropped for the duration of a scroll and restored when it stops,
+swapping to a solid surface of the same colour so there is no flash either way.
+
+**Every album wall now uses the same tile size.** The random wall used to measure the screen and
+shrink its artwork until exactly four rows fitted without scrolling — the app's original "a screenful
+of random albums". That made it the one wall whose tiles were a different size from all the others.
+It now uses the same natural third-of-width artwork as the Library, and scrolls like everything else.
+*The screenful is gone as a consequence: the wall holds three screens of albums instead of exactly
+one.*
+
+**Grid or list, on every album wall.** A control in the top bar switches between the tile grid and
+rows — small square cover, title over artist, chevron. One stored choice for all the walls, because
+Random, Library, a genre and "Not played" are the same shelf seen through different filters. Switching
+restyles the tiles that are already on screen rather than rebuilding them, so every listener on them
+survives.
+
+### Fixed
+
+- Queue and transport reserves grew to match the floating pill, which stands taller than the old bar.
+
+### Tests
+
+- New `test/dom/ui-glass-grid.test.js` (15): the random wall's artwork now measures the same width as
+  the Library's; list mode makes rows of square thumbnails **without rebuilding the tiles**; the cover
+  appears, is square, sits inside the tap target that opens Now playing, and hides when the zone has
+  no art; and the blur is present at rest, gone mid-scroll, and back afterwards.
+- The safe-area test was reworked rather than relaxed. It asserted one *mechanism* — a
+  `padding-bottom` holding the inset — and a floating pill lifts itself with `bottom` instead. It now
+  accepts either, and additionally fails on a stray `bottom: 0` left beside the lift, which the old
+  version could not have caught.
+- 793 unit / 423 DOM / 71 static.
+
 ## [1.7.80] — 2026-08-29
 
 ### Fixed — the selection controls stay put while you scroll

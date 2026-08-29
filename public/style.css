@@ -36,6 +36,12 @@
      translucency, so it cannot use var(--bg) — which is why this used to be a
      hard-coded rgba that no new palette could reach. */
   --bg-translucent: rgba(14,16,18,.85);
+  /* Glass, for the floating transport pill. Lower alpha than --bg-translucent
+     because a real blur sits behind it — the same opacity would read as a
+     solid slab and waste the effect. --glass-edge is the lit top edge that
+     makes a translucent surface read as a pane rather than a hole. */
+  --glass-bg:   rgba(30,34,38,.62);
+  --glass-edge: rgba(255,255,255,.10);
   --danger:       #e06464;
   --panel-hairline: rgba(255,255,255,.07);  /* row separators on tinted panels */
   --shadow-card:  0 2px 6px rgba(0,0,0,.45), 0 10px 24px rgba(0,0,0,.35);
@@ -69,6 +75,8 @@
   --accent-soft:  rgba(31,143,193,.12);
   --on-accent:    #ffffff;
   --bg-translucent: rgba(246,245,242,.85);
+  --glass-bg:   rgba(255,255,255,.68);
+  --glass-edge: rgba(26,39,64,.12);
   --panel-hairline: rgba(26,39,64,.12);     /* row separators on tinted panels */
   --danger:       #c0392b;
   --shadow-card:  0 1px 2px rgba(0,0,0,.06), 0 6px 16px rgba(0,0,0,.08);
@@ -113,6 +121,8 @@
      read blue-shadowed. 5.74:1. */
   --on-accent:    #17120d;
   --bg-translucent: rgba(27,29,31,.85);
+  --glass-bg:   rgba(46,50,53,.62);
+  --glass-edge: rgba(255,255,255,.10);
   /* Hue 3 degrees against copper's 26, and light enough to clear 4.5:1 on
      every surface including the deepest (4.81). */
   --danger:       #e8776f;
@@ -145,6 +155,8 @@
   --accent-soft:  rgba(138,90,53,.12);
   --on-accent:    #fffdf8;
   --bg-translucent: rgba(247,244,237,.85);
+  --glass-bg:   rgba(255,253,248,.70);
+  --glass-edge: rgba(60,45,30,.14);
   --danger:       #b3271d;
   /* Warm brown rather than the classic light theme's cool blue-grey, which
      would grey the parchment. */
@@ -704,19 +716,56 @@ main {
   .album-artist { font-size: 10.5px; }
 }
 
-/* Phone portrait: fill the visible wall with exactly N rows (target 4) without
-   scrolling. app.js (measurePhoneWall) sets --phone-art to the largest square
-   art size that lets the target rows fit the measured content box, and adds
-   .phone-fit. When the wall is width-limited the art is the natural third-of-
-   width (no shrink); when height-limited the art shrinks a little so the rows
-   still fit instead of overflowing. Class is added only for the album wall on
-   phones (removed in the labels browser and on tablet/desktop). */
-.album-grid.phone-fit {
-  grid-template-columns: repeat(3, var(--phone-art, 1fr));
-  justify-content: center;
-  column-gap: 8px;
-  row-gap: 10px;
+/* ── List mode ──────────────────────────────────────────────────────
+   Same tiles, same handlers, laid out as rows: a small square cover, the
+   title over the artist, and a chevron. Nothing in here rebuilds a tile —
+   the grid gets a class and the existing children reflow, so every listener
+   and closure on them survives (CLAUDE.md pre-flight step 4). */
+.album-grid.as-list {
+  display: block;
 }
+.album-grid.as-list .album {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 2px;
+  border-bottom: 1px solid var(--border);
+}
+.album-grid.as-list .album:last-child { border-bottom: 0; }
+/* The art stops being the full width of a column and becomes a fixed thumb.
+   aspect-ratio still holds it square. */
+.album-grid.as-list .album-art-wrap {
+  width: 52px;
+  flex: 0 0 52px;
+}
+.album-grid.as-list .album-meta {
+  margin-top: 0;
+  flex: 1 1 auto;
+  text-align: left;
+}
+/* One line each in a row — two-line clamping is a grid affordance and here it
+   just makes the rows different heights. */
+.album-grid.as-list .album-title {
+  display: block;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.album-grid.as-list .album-artist {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* The affordance that says a row opens something. Drawn in CSS rather than
+   added to every tile, so list mode stays a pure restyle of what is there. */
+.album-grid.as-list .album::after {
+  content: "";
+  flex: 0 0 auto;
+  width: 7px; height: 7px;
+  margin-right: 4px;
+  border-right: 2px solid var(--text-faint);
+  border-bottom: 2px solid var(--text-faint);
+  transform: rotate(-45deg);
+}
+/* The tile hover lift is a grid gesture; in a row it just wobbles the thumb. */
+.album-grid.as-list .album:hover .album-art-wrap { transform: none; }
 
 /* Skeleton */
 .album.skeleton .album-art-wrap {
@@ -801,7 +850,7 @@ main {
   padding: calc(64px + env(safe-area-inset-top)) 18px 40px;
   /* Leave room at the bottom so the mini transport (≈78px tall + safe area)
      stays visible / not overlapping the last bit of content. */
-  padding-bottom: calc(96px + env(safe-area-inset-bottom));
+  padding-bottom: calc(106px + env(safe-area-inset-bottom));
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
@@ -1077,29 +1126,64 @@ main {
 /* ------------------------------------------------------------------ */
 .mini-transport {
   position: fixed;
-  left: 0; right: 0;
-  bottom: 0;
   z-index: 70;   /* above modal (50) so it's visible even when an album sheet is open */
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
-  padding-bottom: calc(10px + env(safe-area-inset-bottom));
-  /* Solid, no backdrop blur: this bar floats over the scrolling <main>, and
-     iOS Safari re-samples + re-blurs the pixels beneath a backdrop-filter on
-     EVERY scroll frame — a major source of scroll jank whenever something is
-     playing. A solid elevated background reads near-identically. */
-  background: var(--bg-elev);
-  border-top: 1px solid var(--border);
-  box-shadow: 0 -6px 24px rgba(0,0,0,.22);
+  padding: 9px 12px;
+  /* A floating pill rather than a bar welded to the bottom edge.
+     The whole pill is lifted clear of the home indicator by its `bottom`,
+     which is what the full-bleed bar used a padding-bottom for — the inset is
+     still honoured, it just moves the element instead of padding it. */
+  left: 10px; right: 10px;
+  bottom: calc(8px + env(safe-area-inset-bottom));
+  border-radius: 18px;
+  border: 1px solid var(--glass-edge);
+  box-shadow: 0 8px 30px rgba(0,0,0,.34);
+
+  /* GLASS, AND WHY IT IS CONDITIONAL.
+     v1.6.15 took backdrop blur OFF this exact bar: it floats over the scrolling
+     <main>, and iOS Safari re-samples and re-blurs everything beneath a
+     backdrop-filter on EVERY scroll frame. That was the main scroll-jank source
+     while music was playing, which is most of the time.
+     The look is worth having and the jank is not, and they are only ever in
+     conflict WHILE A SCROLL IS ACTUALLY RUNNING — which is the one moment
+     nobody is admiring the bar. So the blur lives here, and app.js strips it
+     for the duration of a scroll (see .is-scrolling below). At rest: glass.
+     Mid-scroll: a solid surface that costs nothing to composite. */
+  background: var(--glass-bg);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
 }
+/* The scroll-time face. Solid, so there is nothing to re-blur per frame, and
+   the same colour the glass settles to so the swap does not read as a flash. */
+.mini-transport.is-scrolling {
+  background: var(--bg-elev);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+/* The cover of what is playing. */
+.mt-art {
+  width: 42px; height: 42px;
+  flex: 0 0 auto;
+  border-radius: 7px;
+  object-fit: cover;
+  background: var(--bg-elev-2);
+  box-shadow: 0 2px 8px rgba(0,0,0,.3);
+}
+.mt-art.hidden { display: none; }
 
 /* Thin Roon-style progress line along the top edge of the bar */
 .mt-progress {
   position: absolute;
-  top: -1px; left: 0; right: 0;
+  top: 0; left: 0; right: 0;
   height: 2px;
   pointer-events: none;
+  /* Rounded to match the pill, and clipped HERE rather than on
+     .mini-transport — that element's overflow must stay visible, because the
+     zone and volume popovers open upwards out of it. */
+  border-radius: 18px 18px 0 0;
+  overflow: hidden;
 }
 .mt-progress-fill {
   height: 100%;
@@ -1184,9 +1268,10 @@ main {
    .mt-vol-popover rules further down always overrode it. Removed when the
    popover became the shared Roon-style .vol-sheet.) */
 
-/* Push the main grid above the mini transport */
+/* Push the main grid above the mini transport. The pill floats clear of the
+   bottom edge, so this reserves its height plus that gap. */
 main {
-  padding-bottom: 88px;
+  padding-bottom: 98px;
 }
 
 /* On mobile, hide track info if the bar is cramped */
@@ -1849,7 +1934,7 @@ main {
 .mt-playpause { width: 54px; height: 54px; }
 .mt-playpause svg { width: 32px; height: 32px; }
 
-main { padding-bottom: calc(80px + env(safe-area-inset-bottom)); }
+main { padding-bottom: calc(90px + env(safe-area-inset-bottom)); }
 
 @media (max-width: 480px) {
   .mt-info { gap: 11px; }
