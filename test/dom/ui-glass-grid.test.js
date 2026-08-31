@@ -358,9 +358,12 @@ test("the transport has exactly one appearance", async (t) => {
     const alpha = a ? (a[1] === undefined ? 1 : parseFloat(a[1])) : 1;
     assert.ok(alpha < 1, `the pill is fully opaque (${r.rest.bg}) — it is a slab, not a pane`);
     // ...but opaque enough that SHARP page content behind it reads as a tint.
-    // There is no blur to soften it any more, so this floor is higher than the
-    // one that applied while there was.
-    assert.ok(alpha >= 0.9,
+    // The floor is the same one the top bar answers to, because as of v1.7.89
+    // they are the same material (--bg-veil). What actually protects the text
+    // is measured per palette in themes.test.js: --text on the veil over a
+    // white sleeve and over a black one, which is the real worst case and is
+    // something a single number here cannot express.
+    assert.ok(alpha >= 0.7,
       `the pill is only ${alpha} opaque (${r.rest.bg}). Nothing blurs what shows ` +
       `through it now, so at this alpha a wall of album covers reads as clutter ` +
       `under the title`);
@@ -656,14 +659,15 @@ test("floating things share one material; grounded things share one ground", asy
   // v1.7.86 put the top bar on the transport pill's material. v1.7.87 splits
   // that in two, because they are not the same kind of surface:
   //
-  //   FLOATING (--glass-bg, translucent): the transport pill and both volume
-  //   sheets. These really do sit over content and the translucency reads.
+  //   TRANSLUCENT (--bg-veil — the ground WITH ALPHA): the top bar, the
+  //   transport pill and both volume sheets. One material as of v1.7.89; the
+  //   pill and the sheets were on a second, lighter one and the mismatch was
+  //   reported. Because it is the ground with alpha, each of these settles to
+  //   exactly the page colour wherever nothing is behind it, and tints with
+  //   whatever is.
   //
-  //   GROUNDED (--bg): the page, the top bar, and the full-screen panels
-  //   (album view, Now playing). .topbar is a flex SIBLING of <main>, so
-  //   nothing ever scrolls behind it — giving it a translucent material bought
-  //   nothing and left a visible seam between it and the page, which is what
-  //   was reported.
+  //   OPAQUE (--bg): the page itself and the full-screen panels (album view,
+  //   Now playing).
   //
   // Neither group may carry a backdrop-filter: saturate() brightens whatever
   // shows through, which is the effect that made the pill change face on every
@@ -683,6 +687,9 @@ test("floating things share one material; grounded things share one ground", asy
       for (var i = 0; i < 40 && bar.classList.contains("hidden"); i++) await window.__sleep(100);
 
       T("pill",   face(bar));
+      var pcs = getComputedStyle(bar);
+      T("pill_border", { w: pcs.borderTopWidth, c: pcs.borderTopColor });
+      T("pill_shadow", pcs.boxShadow);
       var tb = document.querySelector(".topbar");
       T("topbar", face(tb));
       T("body",   face(document.body));
@@ -814,10 +821,19 @@ test("floating things share one material; grounded things share one ground", asy
       `so the top of every screen opens hidden behind the header`);
   });
 
-  await t.test("...and the floating material still reads above that ground", () => {
-    assert.notEqual(r.pill.bg, r.body.bg,
-      `the transport pill is exactly the page colour (${r.pill.bg}) — it has ` +
-      `flattened into the background instead of floating over it`);
+  await t.test("...and the pill is still separated from that ground", () => {
+    // It used to be separated by TONE — a lighter translucent material than the
+    // page. v1.7.89 put it on the same veil as the top bar, at the user's
+    // request, so where nothing happens to be scrolled behind it the pill
+    // settles to exactly the page colour. Its border and its drop shadow are
+    // now the only things keeping it from reading as a hole, which makes both
+    // of them load-bearing rather than decorative.
+    assert.ok(parseFloat(r.pill_border.w) > 0 && !/rgba\(0, 0, 0, 0\)/.test(r.pill_border.c),
+      `the pill has no visible border (${JSON.stringify(r.pill_border)}) — it is ` +
+      `the page's own colour now, so without one it disappears wherever nothing ` +
+      `is scrolled behind it`);
+    assert.ok(/rgba?\(/.test(String(r.pill_shadow)) && r.pill_shadow !== "none",
+      `the pill has no drop shadow (${r.pill_shadow}) — same reason as the border`);
   });
 
   await t.test("and none of them has a backdrop-filter", () => {

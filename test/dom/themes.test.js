@@ -51,7 +51,7 @@ const READ_TOKENS = `
      // backdrop-filter, and that filter was blurring a flat colour — .topbar is
      // a flex SIBLING of <main>, so nothing ever scrolled behind it. The bar
      // uses the transport pill's surface now, which every palette must define.
-     "--glass-bg","--glass-edge","--bg-veil"].forEach(function (n) {
+     "--glass-edge","--bg-veil"].forEach(function (n) {
       out[n] = tok(n);
     });
     return out;
