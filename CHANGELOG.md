@@ -4,20 +4,26 @@ All notable changes to MusicD Remote (formerly Roon Random Albums) are documente
 
 ## [1.7.89] — 2026-08-31
 
-### Fixed — album covers that lost one race stayed lost
+### Fixed — a transient image failure was permanent
+
+**This did NOT turn out to be the cause of the "album covers aren't populating" report it was written
+for.** That was a stale installed PWA: deleting the home-screen shortcut and re-adding it fixed it with
+no code change, and a side-by-side of v1.7.87 against v1.7.89 in the DOM harness builds identical tiles
+and loads every cover in both. The entry is kept, and the fix with it, because the defect below is real
+on its own terms — it just was not what was being seen. See CLAUDE.md's rule about reinstalling the
+shortcut *before* diagnosing; it was written for `<head>` changes and applies to any iOS report.
 
 `/api/image` answers **503** whenever the extension is still connecting to the Roon Core and the art is
 not already in the on-disk store. A cold app open lands squarely in that window: Home repaints from its
 saved copy the instant the page loads — that is the whole point of the cache — while pairing takes a
-second or two. Every `<img>` that lost the race fired `onerror`, and `onerror` did this:
+second or two. An `<img>` that lost that race fired `onerror`, and `onerror` did this:
 
 ```js
 img.onerror = () => { wrap.classList.add("no-image"); img.remove(); };
 ```
 
 One failure, a music note for the life of the page, even though the art became available moments later
-and **nothing ever asked again**. Which rows were affected came down to which requests happened to be
-in flight, which is exactly why the same screen showed covers on some carousels and notes on others.
+and **nothing ever asked again**.
 
 Artwork now retries three times with a widening gap (1.2s, 3.5s, 8s) before falling back to the
 placeholder, and the album's art key is recorded on the tile so "was this given no artwork, or did its
@@ -55,8 +61,8 @@ match; its backdrop blur stays, because the rule against `backdrop-filter` is ab
 
 A DOM test that fails image loads **for a period of time** rather than for a number of requests — a
 count-based version had its failures consumed by a render that was then discarded, so the tiles it
-measured had never failed, and the mutant restoring the old give-up-immediately behaviour passed. Time
-is also what the real thing is. Plus a static test that recomputes the card's worst-case contrast from
+measured had never failed, and the mutant restoring the old give-up-immediately behaviour passed. Plus
+a static test that recomputes the card's worst-case contrast from
 the colour literals rather than trusting a number in a comment. 793 unit / 472 DOM / 78 static.
 
 ## [1.7.88] — 2026-08-31

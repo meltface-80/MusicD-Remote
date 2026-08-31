@@ -112,6 +112,23 @@ If step 3 cannot run (Roon not available), run steps 1 and 2 and explicitly note
   adds the shortcut, and cannot be undone by shipping a new build. **A "still broken" report after
   such a change is not evidence the fix failed**: the old window config is still in the shortcut
   until it is deleted and re-added. Ask the user to reinstall the shortcut BEFORE diagnosing.
+- **A stale installed PWA looks exactly like a regression. Rule it out FIRST.** The rule above says
+  this for `<head>` changes; it is not limited to them. iOS keeps a home-screen shortcut's app state
+  across updates, and a shortcut that has gone bad reproduces as "you broke X in version N" with
+  perfect consistency — the user is not wrong about what they see, and no amount of reading the diff
+  will find it. **v1.7.88–89**: "album covers aren't populating, v1.7.87 was fine". Two versions were
+  spent on it; a third of a session went into a root cause that did not exist, and a fix shipped under
+  a claim that turned out to be false. Deleting the shortcut and re-adding it fixed it with no code
+  change. What SHOULD have happened, in this order:
+    1. Ask for a delete-and-re-add of the shortcut before diagnosing anything.
+    2. Diff the suspect versions for code that could plausibly cause the symptom. If `index.js` and
+       the data path are untouched, a data-shaped symptom (missing artwork, empty rows, wrong counts)
+       is almost certainly not in the diff.
+    3. Reproduce it side by side. `git worktree add /tmp/vNN <tag>` plus
+       `MUSICD_PUBLIC_DIR=/tmp/vNN/public node --test <probe>` runs the harness against BOTH versions
+       from one script. Identical output is a real answer: the regression is not in the code.
+  A hypothesis that survives none of those three is not a root cause, and shipping a fix for it
+  attaches a false explanation to a real change.
 - **Device-only behaviour cannot be tested here.** The DOM harness is headless Chromium: no browser
   chrome, no safe areas, `dvh` == `vh` == `100%`. No assertion in this suite can observe iOS window
   behaviour, so writing more of them buys confidence and no coverage. What the suite CAN do is pin a
