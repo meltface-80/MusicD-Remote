@@ -1645,13 +1645,7 @@
       wrap.dataset.mosaic = String(use.length);
     }
     wrap.dataset.artKeys = use.join(",");
-    for (const k of use) {
-      const img = document.createElement("img");
-      img.loading = "lazy"; img.alt = "";
-      img.src = `/api/image/${encodeURIComponent(k)}?size=${TILE_IMG_SIZE}`;
-      img.onerror = () => img.remove();
-      wrap.appendChild(img);
-    }
+    for (const k of use) loadArt(wrap, k, TILE_IMG_SIZE);
     if (!use.length) wrap.classList.add("no-image");
   }
 
@@ -3752,11 +3746,8 @@
     // "which artwork was this row given" is answerable after the fact.
     if (t.image_key) art.dataset.artKey = t.image_key;
     if (t.image_key) {
-      const img = document.createElement("img");
-      img.loading = "lazy"; img.alt = "";
-      img.src = `/api/image/${encodeURIComponent(t.image_key)}?size=80`;
-      img.onerror = () => { art.classList.add("no-image"); img.remove(); };
-      art.appendChild(img);
+      loadArt(art, t.image_key, 80,
+        (img) => { art.classList.add("no-image"); img.remove(); });
     } else {
       art.classList.add("no-image");
     }
@@ -4698,6 +4689,52 @@
     return el;
   }
 
+  // ARTWORK, WITH A RETRY. `/api/image` answers 503 whenever the extension is
+  // still connecting to the Core and the art is not already in the disk store —
+  //
+  //     if (!core) return res.status(503).end();
+  //
+  // and a cold app open lands squarely in that window, because Home repaints
+  // from its saved copy immediately while pairing takes a second or two. Every
+  // <img> that lost the race fired onerror, and onerror did this:
+  //
+  //     img.onerror = () => { wrap.classList.add("no-image"); img.remove(); };
+  //
+  // — one failure, a music note for the life of the page, even though the art
+  // became available moments later and nothing ever asked again. Which rows
+  // were affected came down to which requests happened to be in flight, so the
+  // same screen would show covers on some carousels and notes on others.
+  //
+  // Retries with a widening gap, then gives up. `r` is not read by the server
+  // (it keys on the path and ?size); it is there so a retry is a genuinely new
+  // request rather than anything a cache could answer from the failure.
+  function loadArt(container, key, size, onGiveUp) {
+    // Inside the function on purpose. This is declared 3000 lines below two of
+    // its callers — hoisting makes the FUNCTION reachable from them, but a
+    // module-level `const` would not be, and CLAUDE.md's declaration-before-use
+    // rule exists because that distinction has bitten this file before.
+    const RETRY_MS = [1200, 3500, 8000];
+    const img = document.createElement("img");
+    img.loading = "lazy"; img.alt = "";
+    const url = `/api/image/${encodeURIComponent(key)}?size=${size}`;
+    let tries = 0;
+    img.onerror = () => {
+      if (tries >= RETRY_MS.length) {
+        if (onGiveUp) onGiveUp(img); else img.remove();
+        return;
+      }
+      const wait = RETRY_MS[tries++];
+      setTimeout(() => {
+        // The tile may have been replaced by a re-render in the meantime;
+        // retrying a detached <img> is a request nobody will ever see.
+        if (img.isConnected) img.src = url + "&r=" + tries;
+      }, wait);
+    };
+    img.src = url;
+    container.appendChild(img);
+    return img;
+  }
+
   // Build a single album tile. onClick defaults to opening the album modal,
   // but callers (e.g. the label browser) can override it to carry a filter.
   function buildAlbumTile(a, onClick, opts) {
@@ -4732,19 +4769,14 @@
       // Keys recorded on the element so "what artwork was this tile given" is
       // answerable even after a failed <img> removes itself.
       artWrap.dataset.artKeys = mosaic.slice(0, 4).join(",");
-      for (const k of mosaic.slice(0, 4)) {
-        const img = document.createElement("img");
-        img.loading = "lazy"; img.alt = "";
-        img.src = `/api/image/${encodeURIComponent(k)}?size=${TILE_IMG_SIZE}`;
-        img.onerror = () => img.remove();
-        artWrap.appendChild(img);
-      }
+      for (const k of mosaic.slice(0, 4)) loadArt(artWrap, k, TILE_IMG_SIZE);
     } else if (mosaic.length === 1 || a.image_key) {
-      const img = document.createElement("img");
-      img.loading = "lazy"; img.alt = "";
-      img.src = `/api/image/${encodeURIComponent(mosaic[0] || a.image_key)}?size=${TILE_IMG_SIZE}`;
-      img.onerror = () => { artWrap.classList.add("no-image"); img.remove(); };
-      artWrap.appendChild(img);
+      const key = mosaic[0] || a.image_key;
+      // The key stays on the tile even after a failed <img> removes itself, so
+      // "what artwork was this tile given" is answerable after the fact.
+      artWrap.dataset.artKey = key;
+      loadArt(artWrap, key, TILE_IMG_SIZE,
+        (img) => { artWrap.classList.add("no-image"); img.remove(); });
     } else {
       artWrap.classList.add("no-image");
     }
@@ -8713,6 +8745,46 @@
   // Boot — restore last known state instantly, then let the poll loop refresh it.
   restoreTransportState();
   startPolling();
+})();
+
+/* ------------------------------------------------------------------ */
+/*  Top bar height -> --topbar-h                                       */
+/* ------------------------------------------------------------------ */
+/* v1.7.88. The top bar overlays the scroller now, so album art passes under
+   it and shows through the veil. The cost of taking it out of the flow is that
+   <main> has to reserve its height itself, and that height is not a constant:
+   it grows with the status-bar inset, with the scan-progress strip appearing,
+   and with the search row opening.
+   So it is MEASURED rather than guessed. style.css carries a fallback for the
+   frame before this runs (and for no-JS); this replaces it with the real
+   number and keeps it current. .filter-bar sticks to the same variable, which
+   until now hard-coded 56px and had to be kept in step by hand. */
+(() => {
+  const bar = document.querySelector(".topbar");
+  const app = document.querySelector(".app");
+  if (!bar || !app) return;
+
+  let last = -1;
+  const publish = () => {
+    // Rounded UP: half a pixel short leaves a hairline of album art peeking
+    // above the first row, which reads as a rendering fault rather than a
+    // design. A pixel of extra reserve is invisible.
+    const h = Math.ceil(bar.getBoundingClientRect().height);
+    if (h > 0 && h !== last) {
+      last = h;
+      app.style.setProperty("--topbar-h", h + "px");
+    }
+  };
+  publish();
+
+  if (typeof ResizeObserver === "function") {
+    new ResizeObserver(publish).observe(bar);
+  } else {
+    // Safari < 13.1. Rotation and the search row are the changes that matter,
+    // and both fire one of these.
+    window.addEventListener("resize", publish, { passive: true });
+    window.addEventListener("orientationchange", publish, { passive: true });
+  }
 })();
 
 /* ------------------------------------------------------------------ */

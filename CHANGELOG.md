@@ -2,6 +2,106 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.89] — 2026-08-31
+
+### Fixed — album covers that lost one race stayed lost
+
+`/api/image` answers **503** whenever the extension is still connecting to the Roon Core and the art is
+not already in the on-disk store. A cold app open lands squarely in that window: Home repaints from its
+saved copy the instant the page loads — that is the whole point of the cache — while pairing takes a
+second or two. Every `<img>` that lost the race fired `onerror`, and `onerror` did this:
+
+```js
+img.onerror = () => { wrap.classList.add("no-image"); img.remove(); };
+```
+
+One failure, a music note for the life of the page, even though the art became available moments later
+and **nothing ever asked again**. Which rows were affected came down to which requests happened to be
+in flight, which is exactly why the same screen showed covers on some carousels and notes on others.
+
+Artwork now retries three times with a widening gap (1.2s, 3.5s, 8s) before falling back to the
+placeholder, and the album's art key is recorded on the tile so "was this given no artwork, or did its
+artwork fail?" is answerable after the fact. Retries stop if the tile has been replaced by a re-render.
+
+### Changed — one translucent material, everywhere
+
+The transport pill and both volume sheets move from `--glass-bg` to **`--bg-veil`**, the same material
+as the top bar. Two surfaces meant to look alike never quite did. `--glass-bg` had no users left and is
+gone from all four palettes.
+
+There is a consequence worth stating: `--bg-veil` is the *ground with alpha*, so where nothing is
+scrolled behind the pill it settles to exactly the page colour. Its border and drop shadow are now the
+only things keeping it from reading as a hole, which makes both load-bearing rather than decorative —
+and asserted as such.
+
+### Changed — the share card is the app's material now
+
+The card was a hard vertical split: art on the left half, a flat `#0e1012` slab on the right. It now
+reads the way the app does — **the artwork is the background**, softened and scrimmed, with a
+translucent pane on it holding the sharp cover and the text.
+
+The softening is a **downscale, not a blur**: `ctx.filter` is not dependable across the browsers this
+runs in, so the ground is the cover drawn into a 24px offscreen canvas and scaled back up, letting
+interpolation do the work. That is the same trick the app's own ambient layer uses, and it costs one
+tiny draw.
+
+The release line was `#7f868d`, which measures **2.31:1** on the surface a white album cover produces
+through the scrim and the pane — under even the large-text floor. It and the artist line are solved
+against that worst case now. The share sheet around the card takes `--bg-veil` and the lit edge to
+match; its backdrop blur stays, because the rule against `backdrop-filter` is about surfaces over a
+*scroller*, and nothing moves behind a modal.
+
+### Added
+
+A DOM test that fails image loads **for a period of time** rather than for a number of requests — a
+count-based version had its failures consumed by a render that was then discarded, so the tiles it
+measured had never failed, and the mutant restoring the old give-up-immediately behaviour passed. Time
+is also what the real thing is. Plus a static test that recomputes the card's worst-case contrast from
+the colour literals rather than trusting a number in a comment. 793 unit / 472 DOM / 78 static.
+
+## [1.7.88] — 2026-08-31
+
+### Changed — the top bar is genuinely see-through now
+
+v1.7.87 removed the seam by making the bar the same colour as the page. It still could not show
+anything *through* itself, and the reason was structural rather than cosmetic: `.topbar` was a flex
+**sibling** of `<main>`, so there was never anything behind it to be translucent about.
+
+It overlays the scroller now. `<main>` runs the full height of the shell and reserves the bar's height
+as padding, so album art passes underneath and shows through.
+
+**The bar is the ground WITH ALPHA, not a lighter translucent surface.** That distinction is the whole
+design: over an unscrolled page the backdrop *is* `--bg`, so `--bg-veil` composites to exactly `--bg`
+and there is no seam — and the moment the page moves, the covers tint it. A lighter translucent colour
+(what v1.7.86 used) brings the step straight back whenever nothing is behind it. No backdrop-filter,
+same rule as the transport pill.
+
+**The bar's height is measured, not guessed.** It changes with the status-bar inset, with the
+scan-progress strip, and with the search row opening, and `<main>` has to reserve exactly it. A
+`ResizeObserver` publishes it as `--topbar-h`; CSS carries a fallback for the frame before that and for
+no-JS. `.filter-bar` sticks to the same variable, having hard-coded `56px` until now.
+
+**The Docker-migration banner and the update toast moved inside `<main>`.** They were the app shell's
+other in-flow children, so an overlaid bar would have sat on top of them. Inside the scroller they
+take the same reserve as everything else and the shell has exactly one in-flow child. Both gain a
+corner radius, since they now sit within the page's padding rather than bleeding edge to edge.
+
+### Added
+
+Four assertions, each verified against a build with the change undone:
+
+- **`<main>` must begin at or above the bar.** Measured on the scroller's own box, not on a tile:
+  `getBoundingClientRect` knows nothing about a scroller's clip, so a tile scrolled out of view above
+  `<main>` reports a position "behind" the bar even when `<main>` starts entirely below it — a build
+  with the bar back in the flow passed the first version of this test for exactly that reason.
+- **The reserve is measured against the scroller's first child**, whatever it is. Using the first
+  album tile made it vacuous whenever a notice sat above the grid.
+- **The bar must be translucent** — an opaque one resolves to the ground too, and passes the no-seam
+  check while showing nothing.
+- **The header's text must survive what scrolls under it.** There is no blur, so `--text` on the veil
+  over a white sleeve and over a black one are the cases that decide readability; both now have to
+  clear the theme's floor. 793 unit / 465 DOM / 73 static.
+
 ## [1.7.87] — 2026-08-29
 
 ### Changed — one ground, on every screen, in every theme

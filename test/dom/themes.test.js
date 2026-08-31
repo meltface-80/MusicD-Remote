@@ -51,12 +51,28 @@ const READ_TOKENS = `
      // backdrop-filter, and that filter was blurring a flat colour — .topbar is
      // a flex SIBLING of <main>, so nothing ever scrolled behind it. The bar
      // uses the transport pill's surface now, which every palette must define.
-     "--glass-bg","--glass-edge"].forEach(function (n) {
+     "--glass-edge","--bg-veil"].forEach(function (n) {
       out[n] = tok(n);
     });
     return out;
   }
 `;
+
+// Flatten a translucent token over an opaque backdrop, so a surface that is
+// only defined as "the ground with alpha" can be measured against the thing it
+// will actually be seen over.
+function composite(fg, bg) {
+  const m = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/
+    .exec(String(fg || "").trim());
+  const h = /^#([0-9a-f]{6})$/i.exec(String(bg || "").trim());
+  if (!m || !h) return String(fg);
+  const a = m[4] === undefined ? 1 : parseFloat(m[4]);
+  const back = [0, 2, 4].map(i => parseInt(h[1].slice(i, i + 2), 16));
+  return "#" + [1, 2, 3]
+    .map((k, i) => Math.round(parseFloat(m[k]) * a + back[i] * (1 - a))
+      .toString(16).padStart(2, "0"))
+    .join("");
+}
 
 // rgb(...) as reported by getComputedStyle -> #rrggbb, so a measured colour can
 // be compared with the hex a meta tag carries.
@@ -131,6 +147,22 @@ for (const id of THEMES) {
     await t.test("every token this theme needs is defined", () => {
       for (const [name, value] of Object.entries(k)) {
         assert.notEqual(value, "", `${name} is empty — the palette is missing a token`);
+      }
+    });
+
+    await t.test("the top bar's text survives whatever scrolls under it", () => {
+      // v1.7.88 made the bar translucent so album art passes beneath it. The
+      // bar's title and count are drawn on --text, and what backs them is now
+      // the veil over an ARBITRARY IMAGE. There is no blur to soften it, so the
+      // two extremes an album cover can present — a white sleeve and a black
+      // one — are the cases that decide whether the header stays readable.
+      for (const [what, backdrop] of [["a white sleeve", "#ffffff"],
+                                      ["a black sleeve", "#000000"]]) {
+        const bar = composite(k["--bg-veil"], backdrop);
+        const c = contrast(k["--text"], bar);
+        assert.ok(c >= floor.text,
+          `with ${what} under the header the bar renders ${bar} and --text ` +
+          `(${k["--text"]}) measures ${c.toFixed(2)}:1 on it, need ${floor.text}`);
       }
     });
 

@@ -44,16 +44,20 @@
      different literals (#0b1418, #04121a and a bare #fff), three of which had
      no light-theme override at all and shipped white-on-cyan at 2.28:1. */
   --on-accent:    #0b1418;
-  /* Glass, for the floating transport pill. --glass-edge is the lit top edge
-     that makes a translucent surface read as a pane rather than a hole.
-     ALPHA IS DELIBERATELY HIGH (.62 -> .90 -> .94 across v1.7.84-85) and it is
-     now the ONLY thing making this surface read as glass: there is no
-     backdrop-filter on the pill any more and none may be added (see
-     .mini-transport for why). Nothing softens the fraction that shows through,
-     so that fraction has to be small enough that sharp album art behind it
-     reads as a tint rather than as clutter under the text.
-     Raise this if it ever looks busy. Never lower it. */
-  --glass-bg:   rgba(45,51,57,.94);
+  /* The lit edge that makes a translucent surface read as a pane rather than a
+     hole. It is doing more work than it looks: as of v1.7.89 every translucent
+     surface in the app is --bg-veil, the ground with alpha, so where nothing
+     happens to be behind one it settles to exactly the page colour and this
+     border plus the drop shadow are the only things separating it from the
+     page. (--glass-bg, a lighter translucent surface, was removed with its last
+     user — two materials that were meant to look alike never quite did.) */
+  /* The top bar. It is the GROUND WITH ALPHA, not a lighter surface: over an
+     unscrolled page the backdrop IS --bg, so this composites to exactly --bg
+     and there is no seam — and once the page moves, the album art passes
+     underneath and tints it. A lighter translucent colour would show a step
+     at the top of every screen the moment nothing was behind it, which is
+     what v1.7.86 did. No backdrop-filter, same rule as the pill. */
+  --bg-veil:    rgba(29,33,37,.84);
   --glass-edge: rgba(255,255,255,.10);
   --danger:       #e06464;
   --panel-hairline: rgba(255,255,255,.07);  /* row separators on tinted panels */
@@ -73,6 +77,11 @@
   --tap-min: 44px;
   --ctl-pad-x: 16px;
   --ctl-radius: 999px;
+
+  /* How much of the scroller the top bar covers. app.js measures the real bar
+     and writes this onto .app; the value here is what the layout uses for the
+     one frame before that happens, and if scripting is off entirely. */
+  --topbar-h: calc(56px + env(safe-area-inset-top));
 }
 
 /* THE LIGHT PALETTES GO THE OTHER WAY, and it is a headroom problem, not an
@@ -95,7 +104,7 @@
   --accent-text:  #1f8fc1;
   --accent-soft:  rgba(31,143,193,.12);
   --on-accent:    #ffffff;
-  --glass-bg:   rgba(255,255,255,.95);
+  --bg-veil:    rgba(246,245,242,.84);
   --glass-edge: rgba(26,39,64,.12);
   --panel-hairline: rgba(26,39,64,.12);     /* row separators on tinted panels */
   --danger:       #c0392b;
@@ -146,7 +155,7 @@
   /* Warm near-black rather than the cool #0b1418, so a copper fill doesn't
      read blue-shadowed. 5.74:1. */
   --on-accent:    #17120d;
-  --glass-bg:   rgba(64,70,74,.94);
+  --bg-veil:    rgba(45,49,52,.84);
   --glass-edge: rgba(255,255,255,.10);
   /* Hue 3 degrees against copper's 26, and light enough to clear 4.5:1 on
      every surface including the deepest (4.81). */
@@ -179,7 +188,7 @@
   --accent-text:  #8a5a35;
   --accent-soft:  rgba(138,90,53,.12);
   --on-accent:    #fffdf8;
-  --glass-bg:   rgba(255,253,248,.95);
+  --bg-veil:    rgba(247,244,237,.84);
   --glass-edge: rgba(60,45,30,.14);
   --danger:       #b3271d;
   /* Warm brown rather than the classic light theme's cool blue-grey, which
@@ -243,8 +252,13 @@ button { font-family: inherit; }
 /*  Top bar                                                            */
 /* ------------------------------------------------------------------ */
 .topbar {
-  position: relative; z-index: 20;
-  flex: 0 0 auto;
+  /* OVER the scroller, not above it in the flow. It was a flex sibling of
+     <main>, which is why it could never be see-through: nothing was ever
+     behind it to show. <main> now runs the full height of .app and reserves
+     this bar's height as padding, so the album art scrolls underneath and the
+     veil shows it. .app is position: fixed, so this anchors to it. */
+  position: absolute; top: 0; left: 0; right: 0;
+  z-index: 20;
   display: flex; flex-direction: column;
   gap: 10px;
   padding: 12px 14px;
@@ -256,17 +270,17 @@ button { font-family: inherit; }
      .app shell mean only <main> scrolls, and it starts below this bar. So the
      only thing behind the top bar is the flat page background, and a
      saturate+blur of a flat colour is a compositing layer that produces the
-     colour it started with. --glass-bg over --bg is that same blend, stated
-     once, and it matches the pill instead of being a second near-miss grey.
-     v1.7.87: it is var(--bg), not --glass-bg. The bar and the page were two
+     colour it started with, so the bar simply IS the ground.
+     v1.7.88: it is var(--bg-veil) — the ground WITH ALPHA, so it still resolves to
+     exactly --bg over an unscrolled page (no seam) while letting album art
+     through once the page moves. v1.7.87 had it flat var(--bg). The bar and the page were two
      tones and the seam between them showed at the top of every screen. They
      are one colour now, which is also what makes the iOS status bar match —
      theme-color is --bg and the bar is --bg, so there is nothing to composite
      and nothing to drift (see applyTheme() in app.js).
-     --glass-bg is still the material for things that genuinely FLOAT over
-     content: the transport pill and the volume sheets. This bar does not
-     float — nothing scrolls behind it. */
-  background: var(--bg);
+     v1.7.89: the transport pill and the volume sheets take --bg-veil too, so
+     every translucent surface in the app is one material. */
+  background: var(--bg-veil);
   border-bottom: 1px solid var(--border);
 }
 .topbar-row {
@@ -504,8 +518,10 @@ button { font-family: inherit; }
 /* ------------------------------------------------------------------ */
 .update-toast {
   display: none;
-  flex: 0 0 auto;
+  /* No flex:0 0 auto — it is inside <main> now (see .docker-banner), where a
+     flex-child property does nothing. */
   flex-direction: column;
+  border-radius: 12px; margin-bottom: 14px;
   padding: 10px 14px;
   padding-left: max(14px, env(safe-area-inset-left));
   padding-right: max(14px, env(safe-area-inset-right));
@@ -573,6 +589,13 @@ main {
 }
 @media (min-width: 768px) { main { padding: 18px; } }
 @media (min-width: 1200px) { main { padding: 22px; } }
+/* The reserve for the overlaid top bar. Separate from the shorthands above so
+   it survives them — each of those resets padding-top, so this has to come
+   after all three and add the bar's height to whatever inset that breakpoint
+   chose. */
+main { padding-top: calc(var(--topbar-h) + 14px); }
+@media (min-width: 768px)  { main { padding-top: calc(var(--topbar-h) + 18px); } }
+@media (min-width: 1200px) { main { padding-top: calc(var(--topbar-h) + 22px); } }
 
 .album-grid {
   display: grid;
@@ -1277,7 +1300,16 @@ main {
      unconditional one is the documented jank. So the pill is translucent and
      nothing else: a fixed alpha over the page, identical at rest and in motion,
      on every device. */
-  background: var(--glass-bg);
+  /* v1.7.89: --bg-veil, the SAME material as the top bar. It was --glass-bg, a
+     lighter translucent surface, and the two bars did not match.
+     The ground-with-alpha reads differently here than it does on the top bar,
+     and deliberately so: this pill floats over the wall with content behind it
+     almost all of the time, so the covers tint it. Where nothing is behind it —
+     the very bottom of a short page — it settles to exactly --bg, and the
+     border and the drop shadow are what keep it reading as a floating pane
+     rather than a hole. That is why both of those are load-bearing here and are
+     asserted in test/dom/ui-glass-grid.test.js. */
+  background: var(--bg-veil);
 }
 /* The cover of what is playing. */
 .mt-art {
@@ -1433,7 +1465,7 @@ main {
 }
 .share-backdrop {
   position: absolute; top: 0; right: 0; bottom: 0; left: 0;
-  background: rgba(0,0,0,.65);
+  background: rgba(0,0,0,.55);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
 }
@@ -1443,9 +1475,13 @@ main {
   max-height: calc(100vh - 40px);
   max-height: calc(100dvh - 40px);
   overflow-y: auto;
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 14px;
+  /* The app's own material (v1.7.89): --bg-veil and the lit edge, like the
+     transport pill and the volume sheets. The backdrop-filter below stays —
+     the rule against it is about surfaces that sit over a SCROLLER and get
+     re-blurred every frame; this is a modal, nothing moves behind it. */
+  background: var(--bg-veil);
+  border: 1px solid var(--glass-edge);
+  border-radius: 20px;
   box-shadow: var(--shadow-modal);
   padding: 24px 18px 18px;
   animation: modal-in .18s ease-out;
@@ -1453,10 +1489,13 @@ main {
 .share-close { position: absolute; top: 12px; right: 12px; }
 .share-frame {
   margin-top: 26px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 16px;
   overflow: hidden;
-  background: #000;
+  /* The card is dark in every theme (it is a standalone image, seen outside
+     the app), so the frame behind it is too — a light frame around a dark card
+     reads as a mistake in the light palettes. */
+  background: #12151a;
   display: flex; align-items: center; justify-content: center;
 }
 .share-frame img {
@@ -1496,7 +1535,7 @@ main {
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
-  border: 1px solid var(--border);
+  border: 1px solid var(--glass-edge);
   background: var(--bg-elev-2);
   color: var(--text);
   text-decoration: none;
@@ -2136,11 +2175,11 @@ main { padding-bottom: calc(94px + env(safe-area-inset-bottom)); }
      it was 12px against 18px top, which tipped the whole row upward. */
   padding: 16px 16px 30px;
   border-radius: 16px;
-  /* The transport pill's surface, shared. This one really does float over
-     content — the page on the mini-bar's popover, the album art on the now
-     playing screen — so the translucency is visible here in a way it is not on
-     the top bar. Still no backdrop-filter: same rule as the pill. */
-  background: var(--glass-bg);
+  /* The transport pill's surface, shared — --bg-veil as of v1.7.89, so the
+     sheet, the pill it opens from and the top bar are all one material. It
+     really does float over content, so the translucency reads here. Still no
+     backdrop-filter: same rule as the pill. */
+  background: var(--bg-veil);
   border: 1px solid var(--glass-edge);
   box-shadow: var(--shadow-modal);
   animation: vol-in .14s ease-out;
@@ -2258,7 +2297,7 @@ input.vol-range::-moz-range-thumb {
 .np-popover.vol-sheet {
   padding: 16px 16px 30px;
   border-radius: 16px;
-  background: var(--glass-bg);
+  background: var(--bg-veil);
   border-color: var(--glass-edge);
   box-shadow: var(--shadow-modal);
 }
@@ -2268,7 +2307,9 @@ input.vol-range::-moz-range-thumb {
 /* ------------------------------------------------------------------ */
 .filter-bar {
   position: sticky;
-  top: calc(56px + env(safe-area-inset-top));  /* under the topbar */
+  /* Was a hard-coded 56px + inset — a guess at the bar's height kept in step by
+     hand. It is measured now. */
+  top: var(--topbar-h);
   z-index: 15;
   margin: 0 -14px 16px;            /* bleed into main's horizontal padding */
   padding: 8px 14px 10px;
@@ -2687,7 +2728,17 @@ input.vol-range::-moz-range-thumb {
 /* ------------------------------------------------------------------ */
 /*  Docker migration banner                                            */
 /* ------------------------------------------------------------------ */
-.docker-banner { background: #7c5500; color: #fff; padding: 16px 20px; font-size: 14px; line-height: 1.6; }
+/* Inside <main> as of v1.7.88, not a flex child of .app. The top bar overlays
+   the scroller now, so anything left in the shell's flow would sit underneath
+   it — moving the two notices into the scroller means the bar has exactly one
+   thing to sit over and the reserve lives in one place. They take main's
+   padding rather than bleeding edge to edge, so a radius makes that read as
+   intended rather than as a band that failed to reach the sides. */
+.docker-banner {
+  background: #7c5500; color: #fff; padding: 16px 20px;
+  font-size: 14px; line-height: 1.6;
+  border-radius: 12px; margin-bottom: 14px;
+}
 .docker-banner.hidden { display: none; }
 .docker-banner-body { max-width: 900px; margin: 0 auto; }
 .docker-banner-body strong { font-weight: 700; }

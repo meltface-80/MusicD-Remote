@@ -53,7 +53,6 @@
        The icon does not need any of them: iOS reads rel="apple-touch-icon",
        and the manifest covers Android and desktop. -->
 
-
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -345,6 +344,7 @@
     </nav>
   </div>
 
+  <main>
   <div id="docker-migration-banner" class="docker-banner hidden" role="alert">
     <div class="docker-banner-body">
       <strong>Switch to Docker</strong> — Updates are now Docker-only. Download the latest release from
@@ -359,7 +359,6 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
       <button id="docker-migration-dismiss" class="docker-banner-dismiss" type="button">Got it</button>
     </div>
   </div>
-
   <div id="update-toast" class="update-toast" role="status" aria-live="polite">
     <div class="update-toast-top">
       <svg class="update-ico" width="18" height="18" viewBox="0 0 24 24" fill="none"
@@ -376,8 +375,6 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
     </div>
     <div id="update-notes" class="update-notes hidden"></div>
   </div>
-
-  <main>
     <div id="labels-bar" class="labels-bar hidden">
       <button id="labels-back" class="labels-back" type="button" aria-label="Back to all labels">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -634,7 +631,6 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
                 <button class="np-popover-action" type="button" id="np-mute-all">Mute all zones</button>
                 <button class="np-popover-action" type="button" id="np-unmute-all">Unmute all zones</button>
               </div>
-
 
               <!-- Volume: tap the speaker to reveal the slider (hidden when fixed) -->
               <div class="np-vol">
