@@ -2,6 +2,49 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.88] — 2026-08-31
+
+### Changed — the top bar is genuinely see-through now
+
+v1.7.87 removed the seam by making the bar the same colour as the page. It still could not show
+anything *through* itself, and the reason was structural rather than cosmetic: `.topbar` was a flex
+**sibling** of `<main>`, so there was never anything behind it to be translucent about.
+
+It overlays the scroller now. `<main>` runs the full height of the shell and reserves the bar's height
+as padding, so album art passes underneath and shows through.
+
+**The bar is the ground WITH ALPHA, not a lighter translucent surface.** That distinction is the whole
+design: over an unscrolled page the backdrop *is* `--bg`, so `--bg-veil` composites to exactly `--bg`
+and there is no seam — and the moment the page moves, the covers tint it. A lighter translucent colour
+(what v1.7.86 used) brings the step straight back whenever nothing is behind it. No backdrop-filter,
+same rule as the transport pill.
+
+**The bar's height is measured, not guessed.** It changes with the status-bar inset, with the
+scan-progress strip, and with the search row opening, and `<main>` has to reserve exactly it. A
+`ResizeObserver` publishes it as `--topbar-h`; CSS carries a fallback for the frame before that and for
+no-JS. `.filter-bar` sticks to the same variable, having hard-coded `56px` until now.
+
+**The Docker-migration banner and the update toast moved inside `<main>`.** They were the app shell's
+other in-flow children, so an overlaid bar would have sat on top of them. Inside the scroller they
+take the same reserve as everything else and the shell has exactly one in-flow child. Both gain a
+corner radius, since they now sit within the page's padding rather than bleeding edge to edge.
+
+### Added
+
+Four assertions, each verified against a build with the change undone:
+
+- **`<main>` must begin at or above the bar.** Measured on the scroller's own box, not on a tile:
+  `getBoundingClientRect` knows nothing about a scroller's clip, so a tile scrolled out of view above
+  `<main>` reports a position "behind" the bar even when `<main>` starts entirely below it — a build
+  with the bar back in the flow passed the first version of this test for exactly that reason.
+- **The reserve is measured against the scroller's first child**, whatever it is. Using the first
+  album tile made it vacuous whenever a notice sat above the grid.
+- **The bar must be translucent** — an opaque one resolves to the ground too, and passes the no-seam
+  check while showing nothing.
+- **The header's text must survive what scrolls under it.** There is no blur, so `--text` on the veil
+  over a white sleeve and over a black one are the cases that decide readability; both now have to
+  clear the theme's floor. 793 unit / 465 DOM / 73 static.
+
 ## [1.7.87] — 2026-08-29
 
 ### Changed — one ground, on every screen, in every theme

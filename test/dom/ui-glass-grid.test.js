@@ -28,6 +28,23 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const harness = require("./harness");
 
+// getComputedStyle gives "rgb(a, b, c)" or "rgba(a, b, c, x)". These two turn
+// that into a comparable flat colour so a translucent surface can be checked
+// against what it actually paints as.
+function parse(v) {
+  const m = /^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*(?:,\s*([\d.]+)\s*)?\)$/
+    .exec(String(v || "").trim());
+  if (!m) return null;
+  return { r: +m[1], g: +m[2], b: +m[3], a: m[4] === undefined ? 1 : +m[4] };
+}
+const norm = (v) => { const c = parse(v); return c ? `rgb(${Math.round(c.r)}, ${Math.round(c.g)}, ${Math.round(c.b)})` : String(v); };
+function over(fg, bg) {
+  const f = parse(fg), b = parse(bg);
+  if (!f || !b) return String(fg);
+  const mix = (x, y) => Math.round(x * f.a + y * (1 - f.a));
+  return `rgb(${mix(f.r, b.r)}, ${mix(f.g, b.g)}, ${mix(f.b, b.b)})`;
+}
+
 // Enough tiles that the wall is TALLER THAN THE SCREEN on a 390x844 phone.
 // The clearance test below scrolls to the bottom and measures what is under the
 // floating pill; with a wall that fits, there is nothing at the bottom to be
@@ -666,8 +683,42 @@ test("floating things share one material; grounded things share one ground", asy
       for (var i = 0; i < 40 && bar.classList.contains("hidden"); i++) await window.__sleep(100);
 
       T("pill",   face(bar));
-      T("topbar", face(document.querySelector(".topbar")));
+      var tb = document.querySelector(".topbar");
+      T("topbar", face(tb));
       T("body",   face(document.body));
+      var tbb = tb.getBoundingClientRect();
+      T("topbar_box", { top: Math.round(tbb.top), h: Math.round(tbb.height) });
+      T("topbar_h", parseFloat(getComputedStyle(document.querySelector(".app"))
+        .getPropertyValue("--topbar-h")) || 0);
+      // main's OWN box, and its first child whatever that is. Using the first
+      // album tile made this vacuous whenever a notice was above the grid: the
+      // tile is far down the page either way, so the reserve could be missing
+      // entirely and the assertion still passed.
+      var mmEl = document.querySelector("main");
+      T("main_top", Math.round(mmEl.getBoundingClientRect().top));
+      T("first_child_top",
+        Math.round(mmEl.firstElementChild.getBoundingClientRect().top));
+
+      // Scroll into the middle of the wall, then ask whether any tile actually
+      // OCCUPIES the strip the bar covers — not whether one particular tile
+      // ended up above it, which a tile scrolled far off the top satisfies for
+      // the wrong reason.
+      var mm = document.querySelector("main");
+      mm.scrollTop = Math.round(mm.scrollHeight / 2);
+      await window.__sleep(150);
+      var tb2 = tb.getBoundingClientRect();
+      T("behind_bar", (function () {
+        var all = tiles(), n = 0;
+        for (var k = 0; k < all.length; k++) {
+          var b = all[k].getBoundingClientRect();
+          if (b.top < tb2.bottom && b.bottom > tb2.top) n++;
+        }
+        return n;
+      })());
+      T("bar_moved", Math.round(tb2.top) !== Math.round(tbb.top));
+      T("scrolled", Math.round(mm.scrollTop));
+      mm.scrollTop = 0;
+      await window.__sleep(150);
 
       document.getElementById("mt-vol-btn").click();
       await window.__sleep(300);
@@ -703,15 +754,64 @@ test("floating things share one material; grounded things share one ground", asy
     }
   });
 
-  await t.test("THE one: every screen is the same colour, header included", () => {
+  await t.test("THE one: every screen RESOLVES to the same colour", () => {
     // The reported symptom: a step under the header on the album wall and on
     // Home, and a third tone again on Now playing.
-    for (const [name, face] of [["the top bar", r.topbar],
-                                ["the Now playing / album panel", r.panel]]) {
-      assert.equal(face.bg, r.body.bg,
-        `${name} is ${face.bg} and the page is ${r.body.bg} — that difference is ` +
-        `a visible seam across the top of the screen`);
-    }
+    //
+    // "Resolves to", not "equals": as of v1.7.88 the top bar is translucent so
+    // album art can pass under it, which means its computed backgroundColor is
+    // an rgba() and never string-equal to the page's rgb(). What has to hold is
+    // that it composites onto the page as the page — i.e. the veil is the
+    // GROUND with alpha, not some lighter colour with alpha. A lighter one
+    // brings the seam straight back the moment nothing is behind it, which is
+    // the whole complaint. Compositing catches the wrong hue as well as the
+    // wrong tone; string equality could not have.
+    assert.equal(over(r.topbar.bg, r.body.bg), norm(r.body.bg),
+      `the top bar (${r.topbar.bg}) over the page (${r.body.bg}) resolves to ` +
+      `${over(r.topbar.bg, r.body.bg)} — with nothing scrolled behind it that is ` +
+      `a visible step across the top of every screen`);
+    assert.equal(over(r.panel.bg, r.body.bg), norm(r.body.bg),
+      `the Now playing / album panel is ${r.panel.bg} against a ${r.body.bg} page`);
+
+    // ...and the bar has to be genuinely translucent, or the whole overlay is
+    // pointless: an opaque bar resolves to the ground too and passes the check
+    // above while showing nothing of what scrolls beneath it.
+    const veil = parse(r.topbar.bg);
+    assert.ok(veil && veil.a < 1,
+      `the top bar is opaque (${r.topbar.bg}) — the page passes underneath it now ` +
+      `and none of it can be seen`);
+    assert.ok(veil.a >= 0.7,
+      `the top bar is only ${veil.a} opaque — with no blur to soften it, a bright ` +
+      `sleeve scrolling under the header washes out the title on it`);
+  });
+
+  await t.test("...and the page really does pass underneath the bar", () => {
+    // The other half of the ask, and the reason the bar had to leave the flow:
+    // it was a flex SIBLING of <main>, so there was never anything behind it to
+    // be translucent about.
+    assert.ok(r.scrolled > 0, "the wall never scrolled — nothing was tested");
+    // THE structural fact, and the one that has to be measured directly: the
+    // scroller's box has to START at or above the bar. A tile's own rect is not
+    // enough — getBoundingClientRect knows nothing about the scroller's clip, so
+    // a tile scrolled out of view above <main> reports a position "behind" the
+    // bar even when <main> begins entirely below it. That is exactly what a
+    // build with the bar back in the flow does, and it passed.
+    assert.ok(r.main_top <= r.topbar_box.top,
+      `<main> starts at y=${r.main_top} and the bar at y=${r.topbar_box.top} — the ` +
+      `scroller begins below the bar, so nothing can ever pass underneath it`);
+    assert.ok(r.behind_bar > 0,
+      `after scrolling ${r.scrolled}px, not one album tile occupies the strip the ` +
+      `bar covers`);
+    assert.equal(r.bar_moved, false,
+      "the top bar scrolled away with the content — it is not pinned");
+    // The reserve has to be the bar's real height, or the first row is either
+    // clipped at rest or floating below a gap.
+    assert.ok(Math.abs(r.topbar_h - r.topbar_box.h) <= 1,
+      `--topbar-h is ${r.topbar_h}px but the bar measures ${r.topbar_box.h}px`);
+    assert.ok(r.first_child_top >= r.topbar_box.h - 1,
+      `at scroll 0 the scroller's first child starts at y=${r.first_child_top}, ` +
+      `under a ${r.topbar_box.h}px bar — <main> is not reserving the bar's height, ` +
+      `so the top of every screen opens hidden behind the header`);
   });
 
   await t.test("...and the floating material still reads above that ground", () => {

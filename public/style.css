@@ -54,6 +54,13 @@
      reads as a tint rather than as clutter under the text.
      Raise this if it ever looks busy. Never lower it. */
   --glass-bg:   rgba(45,51,57,.94);
+  /* The top bar. It is the GROUND WITH ALPHA, not a lighter surface: over an
+     unscrolled page the backdrop IS --bg, so this composites to exactly --bg
+     and there is no seam — and once the page moves, the album art passes
+     underneath and tints it. A lighter translucent colour would show a step
+     at the top of every screen the moment nothing was behind it, which is
+     what v1.7.86 did. No backdrop-filter, same rule as the pill. */
+  --bg-veil:    rgba(29,33,37,.84);
   --glass-edge: rgba(255,255,255,.10);
   --danger:       #e06464;
   --panel-hairline: rgba(255,255,255,.07);  /* row separators on tinted panels */
@@ -73,6 +80,11 @@
   --tap-min: 44px;
   --ctl-pad-x: 16px;
   --ctl-radius: 999px;
+
+  /* How much of the scroller the top bar covers. app.js measures the real bar
+     and writes this onto .app; the value here is what the layout uses for the
+     one frame before that happens, and if scripting is off entirely. */
+  --topbar-h: calc(56px + env(safe-area-inset-top));
 }
 
 /* THE LIGHT PALETTES GO THE OTHER WAY, and it is a headroom problem, not an
@@ -96,6 +108,7 @@
   --accent-soft:  rgba(31,143,193,.12);
   --on-accent:    #ffffff;
   --glass-bg:   rgba(255,255,255,.95);
+  --bg-veil:    rgba(246,245,242,.84);
   --glass-edge: rgba(26,39,64,.12);
   --panel-hairline: rgba(26,39,64,.12);     /* row separators on tinted panels */
   --danger:       #c0392b;
@@ -147,6 +160,7 @@
      read blue-shadowed. 5.74:1. */
   --on-accent:    #17120d;
   --glass-bg:   rgba(64,70,74,.94);
+  --bg-veil:    rgba(45,49,52,.84);
   --glass-edge: rgba(255,255,255,.10);
   /* Hue 3 degrees against copper's 26, and light enough to clear 4.5:1 on
      every surface including the deepest (4.81). */
@@ -180,6 +194,7 @@
   --accent-soft:  rgba(138,90,53,.12);
   --on-accent:    #fffdf8;
   --glass-bg:   rgba(255,253,248,.95);
+  --bg-veil:    rgba(247,244,237,.84);
   --glass-edge: rgba(60,45,30,.14);
   --danger:       #b3271d;
   /* Warm brown rather than the classic light theme's cool blue-grey, which
@@ -243,8 +258,13 @@ button { font-family: inherit; }
 /*  Top bar                                                            */
 /* ------------------------------------------------------------------ */
 .topbar {
-  position: relative; z-index: 20;
-  flex: 0 0 auto;
+  /* OVER the scroller, not above it in the flow. It was a flex sibling of
+     <main>, which is why it could never be see-through: nothing was ever
+     behind it to show. <main> now runs the full height of .app and reserves
+     this bar's height as padding, so the album art scrolls underneath and the
+     veil shows it. .app is position: fixed, so this anchors to it. */
+  position: absolute; top: 0; left: 0; right: 0;
+  z-index: 20;
   display: flex; flex-direction: column;
   gap: 10px;
   padding: 12px 14px;
@@ -258,7 +278,9 @@ button { font-family: inherit; }
      saturate+blur of a flat colour is a compositing layer that produces the
      colour it started with. --glass-bg over --bg is that same blend, stated
      once, and it matches the pill instead of being a second near-miss grey.
-     v1.7.87: it is var(--bg), not --glass-bg. The bar and the page were two
+     v1.7.88: it is var(--bg-veil) — the ground WITH ALPHA, so it still resolves to
+     exactly --bg over an unscrolled page (no seam) while letting album art
+     through once the page moves. v1.7.87 had it flat var(--bg). The bar and the page were two
      tones and the seam between them showed at the top of every screen. They
      are one colour now, which is also what makes the iOS status bar match —
      theme-color is --bg and the bar is --bg, so there is nothing to composite
@@ -266,7 +288,7 @@ button { font-family: inherit; }
      --glass-bg is still the material for things that genuinely FLOAT over
      content: the transport pill and the volume sheets. This bar does not
      float — nothing scrolls behind it. */
-  background: var(--bg);
+  background: var(--bg-veil);
   border-bottom: 1px solid var(--border);
 }
 .topbar-row {
@@ -504,8 +526,10 @@ button { font-family: inherit; }
 /* ------------------------------------------------------------------ */
 .update-toast {
   display: none;
-  flex: 0 0 auto;
+  /* No flex:0 0 auto — it is inside <main> now (see .docker-banner), where a
+     flex-child property does nothing. */
   flex-direction: column;
+  border-radius: 12px; margin-bottom: 14px;
   padding: 10px 14px;
   padding-left: max(14px, env(safe-area-inset-left));
   padding-right: max(14px, env(safe-area-inset-right));
@@ -573,6 +597,13 @@ main {
 }
 @media (min-width: 768px) { main { padding: 18px; } }
 @media (min-width: 1200px) { main { padding: 22px; } }
+/* The reserve for the overlaid top bar. Separate from the shorthands above so
+   it survives them — each of those resets padding-top, so this has to come
+   after all three and add the bar's height to whatever inset that breakpoint
+   chose. */
+main { padding-top: calc(var(--topbar-h) + 14px); }
+@media (min-width: 768px)  { main { padding-top: calc(var(--topbar-h) + 18px); } }
+@media (min-width: 1200px) { main { padding-top: calc(var(--topbar-h) + 22px); } }
 
 .album-grid {
   display: grid;
@@ -2268,7 +2299,9 @@ input.vol-range::-moz-range-thumb {
 /* ------------------------------------------------------------------ */
 .filter-bar {
   position: sticky;
-  top: calc(56px + env(safe-area-inset-top));  /* under the topbar */
+  /* Was a hard-coded 56px + inset — a guess at the bar's height kept in step by
+     hand. It is measured now. */
+  top: var(--topbar-h);
   z-index: 15;
   margin: 0 -14px 16px;            /* bleed into main's horizontal padding */
   padding: 8px 14px 10px;
@@ -2687,7 +2720,17 @@ input.vol-range::-moz-range-thumb {
 /* ------------------------------------------------------------------ */
 /*  Docker migration banner                                            */
 /* ------------------------------------------------------------------ */
-.docker-banner { background: #7c5500; color: #fff; padding: 16px 20px; font-size: 14px; line-height: 1.6; }
+/* Inside <main> as of v1.7.88, not a flex child of .app. The top bar overlays
+   the scroller now, so anything left in the shell's flow would sit underneath
+   it — moving the two notices into the scroller means the bar has exactly one
+   thing to sit over and the reserve lives in one place. They take main's
+   padding rather than bleeding edge to edge, so a radius makes that read as
+   intended rather than as a band that failed to reach the sides. */
+.docker-banner {
+  background: #7c5500; color: #fff; padding: 16px 20px;
+  font-size: 14px; line-height: 1.6;
+  border-radius: 12px; margin-bottom: 14px;
+}
 .docker-banner.hidden { display: none; }
 .docker-banner-body { max-width: 900px; margin: 0 auto; }
 .docker-banner-body strong { font-weight: 700; }

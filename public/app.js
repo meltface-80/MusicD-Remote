@@ -8716,6 +8716,46 @@
 })();
 
 /* ------------------------------------------------------------------ */
+/*  Top bar height -> --topbar-h                                       */
+/* ------------------------------------------------------------------ */
+/* v1.7.88. The top bar overlays the scroller now, so album art passes under
+   it and shows through the veil. The cost of taking it out of the flow is that
+   <main> has to reserve its height itself, and that height is not a constant:
+   it grows with the status-bar inset, with the scan-progress strip appearing,
+   and with the search row opening.
+   So it is MEASURED rather than guessed. style.css carries a fallback for the
+   frame before this runs (and for no-JS); this replaces it with the real
+   number and keeps it current. .filter-bar sticks to the same variable, which
+   until now hard-coded 56px and had to be kept in step by hand. */
+(() => {
+  const bar = document.querySelector(".topbar");
+  const app = document.querySelector(".app");
+  if (!bar || !app) return;
+
+  let last = -1;
+  const publish = () => {
+    // Rounded UP: half a pixel short leaves a hairline of album art peeking
+    // above the first row, which reads as a rendering fault rather than a
+    // design. A pixel of extra reserve is invisible.
+    const h = Math.ceil(bar.getBoundingClientRect().height);
+    if (h > 0 && h !== last) {
+      last = h;
+      app.style.setProperty("--topbar-h", h + "px");
+    }
+  };
+  publish();
+
+  if (typeof ResizeObserver === "function") {
+    new ResizeObserver(publish).observe(bar);
+  } else {
+    // Safari < 13.1. Rotation and the search row are the changes that matter,
+    // and both fire one of these.
+    window.addEventListener("resize", publish, { passive: true });
+    window.addEventListener("orientationchange", publish, { passive: true });
+  }
+})();
+
+/* ------------------------------------------------------------------ */
 /*  Settings info-icon toasts                                         */
 /* ------------------------------------------------------------------ */
 (() => {
