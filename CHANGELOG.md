@@ -2,6 +2,45 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.2] — 2026-09-02
+
+### Fixed — the zone dump could answer with nothing and look complete
+
+v1.8.1's endpoint picked "a zone that is playing, else the first zone", and the first zone can be
+idle. A stopped zone carries no `now_playing` and no queue at all, so the dump came back full of
+settings and output names — a complete-looking answer to a question it could not address. The whole
+point of the endpoint is the fields that exist only while a track is loaded.
+
+- The zone is now chosen by whether it **has a track loaded**, not merely whether it is playing — a
+  paused zone carries the `now_playing` this exists to inspect; a stopped one carries nothing.
+- When the chosen zone is idle the response **says so first**, names the state, and lists every zone
+  with its state, track and whether it has a `now_playing` — so the next request can name one.
+
+### Added — samples captured as tracks change, so timing stops mattering
+
+The real fix. The interesting fields only exist *while* something plays, which made the diagnostic a
+coordination exercise: load the URL at the right moment, on the right zone. Instead the last eight
+`now_playing` payloads are now recorded as the track changes — bounded, in memory only, a few KB —
+and returned whether or not anything is playing when you ask.
+
+So the question becomes: play a Qobuz album, play a local one, then read `sample_fields` at leisure.
+It is the **union** of every field across the samples, with `seen` counting how many carried each —
+and a field present in some samples and not others is precisely what a source marker would look
+like. Intersecting them would throw the answer away, which is what the mutation test for this pins.
+
+- `unionPaths()` added to `lib/objshape.js` (7 more tests): merges field listings across payloads,
+  keeps the populated sample over an empty one, and reports a field whose type varies rather than
+  picking one.
+
+### Changed
+- `recordNpSample` and its ring are declared beside `zones` at the top of the file rather than 12,000
+  lines below their call site. Safe either way — the subscription callback only runs long after
+  module load — but it is the temporal-dead-zone shape this project's own rules forbid.
+
+**Nothing user-visible changes in this release.** It is still a diagnostic build.
+
+- 841 unit / 513 DOM / 82 static tests
+
 ## [1.8.1] — 2026-09-02
 
 ### Added — `/api/debug/zone-dump`, to answer one question before building on a guess

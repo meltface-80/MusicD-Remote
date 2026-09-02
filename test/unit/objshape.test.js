@@ -10,7 +10,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { keyPaths, formatPaths } = require("../../lib/objshape");
+const { keyPaths, unionPaths, formatPaths } = require("../../lib/objshape");
 
 const pathsOf = (o) => keyPaths(o).map(r => r.path);
 const row = (o, p) => keyPaths(o).find(r => r.path === p);
@@ -145,4 +145,61 @@ test("formatPaths lines the types up and survives an empty listing", () => {
   assert.equal(at[0], at[1],
     `types start at columns ${at[0]} and ${at[1]} — the column is ragged`);
   assert.equal(formatPaths([]), "(nothing)");
+});
+
+// --- unionPaths ------------------------------------------------------------
+// One sample says what a payload carried; the union says what this KIND of
+// payload can ever carry — which is the actual question when hunting a field
+// that only appears under some conditions.
+
+test("THE one: a field present in only some samples is kept, and counted", () => {
+  // Exactly the shape a source marker would have: there for a streamed track,
+  // absent for a local one. Intersecting would throw away the answer.
+  const local  = { line1: "Sunday", length: 285 };
+  const stream = { line1: "Slip Away", length: 366, source: "qobuz" };
+  const rows = unionPaths([local, stream]);
+  const src = rows.find(r => r.path === "source");
+  assert.ok(src, "the field that appeared in only one sample was dropped");
+  assert.equal(src.seen, 1, "seen must say how many samples carried it");
+  assert.equal(src.sample, "qobuz");
+  assert.equal(rows.find(r => r.path === "line1").seen, 2);
+});
+
+test("a populated sample beats an empty one", () => {
+  // A field empty in the first payload and set in the second is most usefully
+  // shown set — otherwise the listing says a field exists but never says what
+  // goes in it.
+  const rows = unionPaths([{ tag: "" }, { tag: "hi-res" }]);
+  assert.equal(rows.find(r => r.path === "tag").sample, "hi-res");
+});
+
+test("a field that changes type says so rather than picking one", () => {
+  const rows = unionPaths([{ v: 1 }, { v: "one" }]);
+  assert.match(rows.find(r => r.path === "v").type, /number/);
+  assert.match(rows.find(r => r.path === "v").type, /string/);
+});
+
+test("the same type twice does not stutter", () => {
+  const rows = unionPaths([{ v: 1 }, { v: 2 }, { v: 3 }]);
+  assert.equal(rows.find(r => r.path === "v").type, "number");
+  assert.equal(rows.find(r => r.path === "v").seen, 3);
+});
+
+test("nulls, an empty list and a non-list are all survivable", () => {
+  // The endpoint hands this whatever the ring holds, which early on is nothing.
+  assert.deepEqual(unionPaths([]), []);
+  assert.deepEqual(unionPaths(null), []);
+  assert.deepEqual(unionPaths([null, undefined]), []);
+  assert.deepEqual(unionPaths([null, { a: 1 }]).map(r => r.path), ["a"]);
+});
+
+test("the union is sorted, so two runs can be diffed", () => {
+  const rows = unionPaths([{ zulu: 1 }, { alpha: 2 }, { mike: 3 }]);
+  assert.deepEqual(rows.map(r => r.path), ["alpha", "mike", "zulu"]);
+});
+
+test("formatPaths renders a union without losing the counts to alignment", () => {
+  const text = formatPaths(unionPaths([{ a: 1 }, { a: 1, b: 2 }]));
+  assert.equal(text.split("\n").length, 2);
+  assert.match(text, /^a\s+number/m);
 });

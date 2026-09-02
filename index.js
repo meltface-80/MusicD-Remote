@@ -146,6 +146,52 @@ const updater = createUpdater({
 // ---------------------------------------------------------------------------
 let core      = null;
 let zones     = {};
+
+/*
+ * The last few now_playing payloads Roon sent, exactly as they arrived.
+ *
+ * Captured continuously rather than on request because the interesting fields
+ * only exist WHILE something plays: asking for a dump a moment too late gets an
+ * idle zone and an answer that looks complete and says nothing. With this, the
+ * question "does Roon ever name the source" can be asked of a build that has
+ * simply been used for a few minutes, with no timing to coordinate.
+ *
+ * Eight entries of one small object each — a few KB, bounded, in memory only.
+ */
+const NP_SAMPLES_MAX = 8;
+const npSamples = [];
+const _npSeen = new Map();   // zone_id → the track last recorded for it
+
+function recordNpSample(z) {
+  const np = z && z.now_playing;
+  if (!np) return;
+  const t3 = np.three_line || {};
+  const track = t3.line1 || np.line1 || "";
+  if (!track) return;
+  // This push arrives many times a second while a track plays (the seek
+  // position alone moves), so only a genuine track change is recorded.
+  if (_npSeen.get(z.zone_id) === track) return;
+  _npSeen.set(z.zone_id, track);
+
+  const album = t3.line3 || np.line3 || "";
+  const artist = t3.line2 || np.line2 || "";
+  npSamples.push({
+    at: new Date().toISOString(),
+    zone_id: z.zone_id,
+    zone_name: z.display_name || "",
+    state: z.state || "",
+    // What this app concludes today, so a field Roon turns out to send can be
+    // read straight against the inference it would replace.
+    app_thinks: {
+      track, album, artist,
+      album_source: albumSource(album, artist, null),
+      has_local_file: !!wfAlbumKey(album, artist),
+    },
+    now_playing: np,
+  });
+  while (npSamples.length > NP_SAMPLES_MAX) npSamples.shift();
+}
+
 // output_id -> raw Roon output object. Fed by BOTH subscriptions: the zone
 // deltas (an output always arrives inside its zone) and subscribe_outputs.
 // They describe the same objects from the same Core, so merging is consistent
@@ -247,6 +293,7 @@ const roon = new RoonApi({
           (z.outputs || []).forEach(o => { outputs[o.output_id] = o; });
           // Before the radio decision, so the log shows the state that drove it.
           logZoneTransition(z);
+          recordNpSample(z);   // /api/debug/zone-dump; no-op unless the track changed
           handleRadioZone(z); scrobbleUpdate(z);
           // Warm the NEXT track's waveform while this one plays. Gated on the
           // track actually changing inside wfPrefetchNext — this push arrives
@@ -12008,7 +12055,6 @@ const WF = require("./lib/waveform");
 const WFD = require("./lib/waveform-decode");
 // Field listing for /api/debug/zone-dump. Pure, no I/O — see lib/objshape.js.
 const SHAPE = require("./lib/objshape");
-
 // Module-scope copies. buildFileLabelMap declares its own AUDIO_RE and resolves
 // parseFile INSIDE the function, so referencing either from here is a
 // ReferenceError at runtime that `node --check` cannot see (CLAUDE.md's
@@ -12290,12 +12336,21 @@ app.get("/api/waveform", async (req, res) => {
 app.get("/api/debug/zone-dump", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
 
-  // Default to whatever is playing, so the URL can be opened with no arguments
-  // from a phone while an album is on.
+  const all = Object.values(zones);
+  // Prefer a zone that HAS something loaded, not merely one that is playing: a
+  // paused zone still carries the now_playing this exists to inspect, and a
+  // stopped one carries nothing at all. Falling back to "the first zone" is how
+  // the first version of this quietly returned an idle endpoint and an answer
+  // that looked complete while saying nothing.
+  const rank = (z) => (
+    !z.now_playing ? 0 :
+    z.state === "playing" || z.state === "loading" ? 3 :
+    z.state === "paused" ? 2 : 1
+  );
   let zoneId = req.query.zone;
   if (!zoneId) {
-    const playing = Object.values(zones).find(z => z.state === "playing" || z.state === "loading");
-    zoneId = (playing || Object.values(zones)[0] || {}).zone_id;
+    const best = all.slice().sort((a, b) => rank(b) - rank(a))[0];
+    zoneId = best && best.zone_id;
   }
   const zone = zoneId && zones[zoneId];
   if (!zone) {
@@ -12312,25 +12367,53 @@ app.get("/api/debug/zone-dump", async (req, res) => {
     queue = [];
   }
 
-  const zoneRows  = SHAPE.keyPaths(zone);
-  const queueRows = SHAPE.keyPaths(queue[0] || null);
+  const np = zone.now_playing || null;
+  const t3 = (np && np.three_line) || {};
+  const album = t3.line3 || "", artist = t3.line2 || "";
 
   res.json({
-    // What this app already concluded, so the dump can be read against it: if
-    // Roon turns out to state the source, this is the answer to compare with.
-    app_thinks: (function () {
-      const np = zone.now_playing || null;
-      const t3 = (np && np.three_line) || {};
-      const album = t3.line3 || "", artist = t3.line2 || "";
-      return {
-        track: t3.line1 || "",
-        album, artist,
-        album_source: albumSource(album, artist, null),
-        has_local_file: !!wfAlbumKey(album, artist),
-      };
-    })(),
-    zone_shape:  SHAPE.formatPaths(zoneRows),
-    queue_shape: SHAPE.formatPaths(queueRows),
+    // Said first and said plainly. A dump of a stopped zone has no now_playing
+    // and no queue, so it cannot answer anything — and it looks like a full
+    // answer if nothing points that out.
+    note: np
+      ? "OK — this zone has a track loaded."
+      : "THIS ZONE IS IDLE (state: " + (zone.state || "?") + "). It carries no " +
+        "now_playing and no queue, so this dump cannot show what a playing track " +
+        "looks like. Start playback and reload, or use ?zone=<id> from the list " +
+        "below. The `samples` further down were captured as tracks changed and " +
+        "do not need anything to be playing right now.",
+    zones: all.map(z => ({
+      zone_id: z.zone_id,
+      name: z.display_name || "",
+      state: z.state || "",
+      has_now_playing: !!z.now_playing,
+      track: ((z.now_playing && z.now_playing.three_line) || {}).line1 || "",
+    })),
+
+    // What this app concludes today, so anything Roon turns out to send can be
+    // read straight against the inference it would replace.
+    app_thinks: {
+      track: t3.line1 || "",
+      album, artist,
+      album_source: albumSource(album, artist, null),
+      has_local_file: !!wfAlbumKey(album, artist),
+    },
+
+    /*
+     * The captured samples: the last few now_playing payloads, recorded as the
+     * track changed. THIS is the part that answers the question — play a Qobuz
+     * album and a local one, then read `sample_fields`, where `seen` says how
+     * many of the samples carried each field. A field that appears for some
+     * tracks and not others is exactly what a source marker would look like.
+     */
+    sample_count: npSamples.length,
+    sample_fields: SHAPE.formatPaths(SHAPE.unionPaths(npSamples.map(x => x.now_playing))),
+    samples: npSamples.map(x => ({ at: x.at, zone: x.zone_name, state: x.state,
+                                   app_thinks: x.app_thinks })),
+    samples_raw: npSamples.map(x => x.now_playing),
+
+    zone_shape:  SHAPE.formatPaths(SHAPE.keyPaths(zone)),
+    queue_shape: SHAPE.formatPaths(SHAPE.keyPaths(queue[0] || null)),
     zone_raw:  zone,
     queue_raw: queue,
   });
