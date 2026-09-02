@@ -2,6 +2,38 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.8] — 2026-09-02
+
+### Fixed — the likeliest reason of all was the one hidden behind a debug flag
+
+The v1.8.6 logs told the story by what was missing from them: `/api/waveform` answering in **1–3ms**,
+which is far too quick to have reached Qobuz, and not one `[waveform]` line to say why. v1.8.7 gave
+three of those declines a voice. It left the fourth — **no app secret set** — behind `if (DEBUG)`.
+
+That is the DEFAULT state of this feature. Hiding the default behind a flag is what makes a switched
+-off feature look like a broken one, which is exactly the report it produced.
+
+- The no-secret notice is unconditional now, and names the setting to go and fill in.
+- Said **once per reason**, not once per request. The clients poll every 1.5s, so a line per request
+  turns the reason into noise and buries it — the same outcome as not logging it at all. A
+  *different* decline still gets through immediately.
+- The no-album-id notice is keyed per album, and now asks the question that usually answers it:
+  **is the album in your Qobuz favourites?** Playing it from Qobuz search is not enough — the
+  favourites list is the only place an album id can come from. (v1.8.6's logs show this happening:
+  Bowie's *London Boy* matched nothing anywhere, in either service or the library.)
+- Saving or clearing the secret forgets what has already been said, so the next play reports the
+  state that is true now instead of staying quiet about it.
+
+### Changed
+- `_wfQobuzSaid` is declared above the function that reads it rather than fifty lines below —
+  runtime-safe either way, and the fourth time in this run of versions that shape has crept in.
+
+**Class of error:** the same one as v1.8.7, one layer up. There, reason-logging was built and then
+bypassed by three silent returns. Here, the one remaining decline was logged but gated to a mode
+nobody runs. A diagnostic that only speaks when you already suspect something is not a diagnostic.
+
+- 900 unit / 513 DOM / 85 static tests
+
 ## [1.8.7] — 2026-09-02
 
 ### Fixed — v1.8.6's streaming waveform never fired, and said nothing about it

@@ -12465,20 +12465,46 @@ async function wfPrefetchNext(zone) {
  * all. The Qobuz album id is stable, and it is what the peaks actually came
  * from.
  */
+/*
+ * Say a thing once per reason, not once per request.
+ *
+ * The clients poll, so a decline that logs every time turns the reason into
+ * noise and buries it — which is the same outcome as not logging it. Keyed by
+ * reason so a DIFFERENT decline still gets through immediately.
+ */
+const _wfQobuzSaid = new Set();
+function wfQobuzSayOnce(key, msg) {
+  if (_wfQobuzSaid.has(key)) return;
+  _wfQobuzSaid.add(key);
+  console.log(msg);
+}
+
 async function wfQobuzTrack(album, artist, track, seconds) {
   if (!waveformEnabled || !labelsDb) return null;
   // Every decline below says why. v1.8.6 returned from these three in silence,
   // so the one failure that actually happened — no album ids after a restart —
   // produced no waveform, no error and no log line to look at.
   if (!String(qobuzAppSecret || "").trim()) {
-    if (DEBUG) console.log("[waveform] qobuz: no app secret set — streaming waveforms are off");
+    // NOT behind DEBUG. This is the likeliest reason of them all — it is the
+    // default state — and hiding it behind a flag is what made v1.8.6 look
+    // broken rather than switched off. Said ONCE, because the clients poll and
+    // a line per request would bury the log it belongs in.
+    wfQobuzSayOnce("no-secret",
+      "[waveform] qobuz: a Qobuz album is playing and no app secret is set, so " +
+      "there is no streaming waveform. Settings \u2192 Playback \u2192 Qobuz " +
+      "waveforms. Local files are unaffected.");
     return null;
   }
   const albumId = wfQobuzAlbumId(album, artist);
   if (!albumId) {
-    console.log("[waveform] qobuz: no Qobuz album id for \"" + album + "\" by \"" +
-                (artist || "(none)") + "\" — " + qobuzAlbumIds.size + " ids known" +
-                (qobuzAlbumIds.size ? "" : " (favourites not read yet)"));
+    // Keyed by ALBUM: the clients re-ask every poll, and one line per album is
+    // the useful amount — enough to see which records are unreachable, not
+    // enough to drown the log.
+    wfQobuzSayOnce("noid:" + album,
+      "[waveform] qobuz: no Qobuz album id for \"" + album + "\" by \"" +
+      (artist || "(none)") + "\" — " + qobuzAlbumIds.size + " ids known" +
+      (qobuzAlbumIds.size ? " (is it in your Qobuz FAVOURITES? playing from search is not enough)"
+                          : " (favourites not read yet)"));
     return null;
   }
 
@@ -12747,6 +12773,9 @@ app.post("/api/settings/waveform", (req, res) => {
   if (body.qobuz_secret !== undefined) {
     qobuzAppSecret = String(body.qobuz_secret || "").trim();
     savePersistedSettings({ qobuzAppSecret });
+    // The reasons logged so far were about the old state. Forget them, so the
+    // next play says what is true now rather than staying quiet about it.
+    _wfQobuzSaid.clear();
     if (body.enabled === undefined) {
       return res.json({ ok: true, enabled: waveformEnabled,
                         qobuz_secret_set: !!qobuzAppSecret });
