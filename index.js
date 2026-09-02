@@ -1946,6 +1946,10 @@ let smartPicksEnabled = _persisted.smartPicksEnabled === true;
 // auto-enable heuristic like the two above, because this one spends CPU
 // decoding audio and nobody should discover that by surprise.
 let waveformEnabled   = _persisted.waveformEnabled === true;
+// The Qobuz app_secret for signed stream requests. Empty by default and never
+// shipped with a value — see the streaming-waveform block below for why. With
+// it blank, streaming tracks keep the plain progress bar exactly as before.
+let qobuzAppSecret    = String(_persisted.qobuzAppSecret || "");
 const _labelsEnabledSet     = _persisted.labelsEnabled !== undefined;
 const _smartPicksEnabledSet = _persisted.smartPicksEnabled !== undefined;
 
@@ -3164,6 +3168,11 @@ loadLocalAlbumKeys();
 // available immediately on restart and cost nothing per request.
 // ---------------------------------------------------------------------------
 const STREAM_ALBUMS_FILE = path.join(__dirname, "data", "stream-albums.json");
+// key → Qobuz album_id, harvested from the same favourites response the keys
+// come from. The streaming waveform needs it: a key says "you favourited this",
+// an id is what fetches the track list. Rebuilt with the keys, so the two can
+// never describe different sets of albums.
+let qobuzAlbumIds = new Map();
 let qobuzAlbumKeys = new Set();
 let tidalAlbumKeys = new Set();
 // Release years harvested from those same payloads — see harvestAlbumYears
@@ -3311,6 +3320,32 @@ function addFavouriteKeys(keys, title, version, artists) {
   }
 }
 
+/*
+ * Record which Qobuz album each identity key belongs to.
+ *
+ * Keyed EXACTLY the way addFavouriteKeys keys, deliberately: the streaming
+ * waveform looks an album up by the same key the badge matched on, so if these
+ * two ever generated keys differently the feature would find an album the badge
+ * says is not there, or miss one it says is.
+ *
+ * First writer wins. Two favourites can canonicalise to one key (an album and
+ * its deluxe edition credited identically); overwriting would make which id you
+ * get depend on page order, and the duration gate downstream is what catches a
+ * wrong album anyway.
+ */
+function addQobuzAlbumId(map, title, version, artists, albumId) {
+  if (!albumId) return;
+  const titles = [title];
+  if (version) titles.push(title + " " + version);
+  for (const t of titles) {
+    for (const artist of artists) {
+      if (!artist) continue;
+      const key = albumKey(t, artist);
+      if (key && !map.has(key)) map.set(key, albumId);
+    }
+  }
+}
+
 // Pull the user's favourites from whichever services are connected. Never
 // throws: a service that isn't connected (or is having a bad day) just leaves
 // its previous key set untouched.
@@ -3336,6 +3371,9 @@ async function refreshStreamAlbumKeys(reason) {
         // objects carry their release date, so the Decade filter gets it for
         // free rather than needing a lookup pass of its own.
         const years = new Map();
+        // And the album ids, for the streaming waveform: a key says the album
+        // is a favourite, an id is what fetches its track list.
+        const ids = new Map();
         let fetched = 0, skipped = 0, qualities = 0;
         for (let page = 0; page < MAX_PAGES; page++) {
           const items = await qobuzWithToken((t) => qobuz.getFavoriteAlbums(t, PAGE, page * PAGE));
@@ -3345,6 +3383,7 @@ async function refreshStreamAlbumKeys(reason) {
             const before = keys.size;
             const artists = [(a.artist && a.artist.name), (a.performer && a.performer.name)];
             addFavouriteKeys(keys, a.title, a.version, artists);
+            addQobuzAlbumId(ids, a.title, a.version, artists, a.id);
             addHarvestedYear(years, a.title, a.version, artists,
               a.release_date_original || a.release_date_stream || a.release_date_download);
             // ...and the bit depth and sample rate, from the same object. An
@@ -3366,6 +3405,7 @@ async function refreshStreamAlbumKeys(reason) {
         // and keeping the old set would badge albums that are no longer theirs.
         qobuzAlbumKeys = keys;
         qobuzAlbumYears = years;
+        qobuzAlbumIds  = ids;
         console.log("[stream] Qobuz favourites: " + keys.size + " albums from " + fetched +
                     " favourites (" + reason + ")" + (skipped ? ", " + skipped + " unkeyable" : "") +
                     ", " + years.size + " dated");
@@ -3428,7 +3468,7 @@ async function refreshStreamAlbumKeys(reason) {
 // keeps the logo of an account the user has removed, and the persisted file
 // reinstates it on the next restart.
 function clearStreamAlbumKeys(which) {
-  if (which === "qobuz") qobuzAlbumKeys = new Set();
+  if (which === "qobuz") { qobuzAlbumKeys = new Set(); qobuzAlbumIds = new Map(); }
   if (which === "tidal") tidalAlbumKeys = new Set();
   saveStreamAlbumKeys();
   // The formats that service told us go with it. Leaving them behind would show
@@ -12091,6 +12131,9 @@ const WF = require("./lib/waveform");
 const WFD = require("./lib/waveform-decode");
 // Field listing for /api/debug/zone-dump. Pure, no I/O — see lib/objshape.js.
 const SHAPE = require("./lib/objshape");
+// Picking the right track out of a service's album, by title AND duration. Pure
+// — see lib/trackmatch.js, which is where the rule about refusing to guess is.
+const TM = require("./lib/trackmatch");
 
 /*
  * What this app can work out about an album, both ways.
@@ -12335,6 +12378,10 @@ async function wfPeekNext(zoneId) {
     track:  t3.line1 || (it.one_line && it.one_line.line1) || "",
     artist: t3.line2 || "",
     album:  t3.line3 || "",
+    // The queue item carries its length, and the streaming path needs it: the
+    // duration gate is the only thing separating this track from a remaster of
+    // it with the same title.
+    seconds: Number.isFinite(it.length) ? it.length : 0,
   };
 }
 
@@ -12350,7 +12397,14 @@ async function wfPrefetchNext(zone) {
   const next = await wfPeekNext(zid);
   if (!next || !next.track) return;
   const akey = wfAlbumKey(next.album, next.artist);
-  if (!akey) return;                       // streaming, or not under /music
+  if (!akey) {
+    // Not under /music. If it is a Qobuz favourite it can still be warmed, and
+    // the wait it saves is larger here than for a local file: this one has a
+    // download in front of the decode.
+    wfQobuzTrack(next.album, next.artist, next.track, next.seconds || 0)
+      .catch(() => { /* best effort; the endpoint asks again on demand */ });
+    return;
+  }
   const tkey = WF.trackKey(akey, next.track);
   if (!tkey || tkey === _wfBusy) return;
   if (_wfPrefetch && _wfPrefetch.tkey === tkey) return;   // already queued
@@ -12363,6 +12417,144 @@ async function wfPrefetchNext(zone) {
     .finally(() => { if (_wfPrefetch && _wfPrefetch.tkey === tkey) _wfPrefetch = null; });
 }
 
+/* ===================== Streaming waveforms (Qobuz) =====================
+ *
+ * Roon streams Qobuz to the endpoint and never to an extension, so there is no
+ * audio here to read. This fetches the track from Qobuz directly, with the
+ * user's own account, decodes it to peaks and throws the audio away.
+ *
+ * OFF BY DEFAULT AND GATED ON A SECRET THE APP DOES NOT SHIP. track/getFileUrl
+ * is a signed endpoint; the app_secret is a Settings field the user fills in
+ * themselves. With it blank none of this runs. That is deliberate on two
+ * counts: the secret rotates whenever Qobuz updates their web player, so baking
+ * one in would guarantee a build that quietly stops working; and retrieving
+ * audio from an unofficial API is against Qobuz's terms, which should be a
+ * decision someone made rather than a default they inherited.
+ *
+ * NOTHING IS WRITTEN TO DISK. The HTTPS response is piped straight into ffmpeg
+ * (see decodeWaveform's `input`), so "no audio is stored" is a fact about how
+ * the bytes moved rather than a cleanup promise a crash could break. MP3 320 is
+ * requested rather than FLAC: the peaks are resampled to 1000 buckets from an
+ * 8 kHz mono decode, where a lossy envelope is indistinguishable — at ~7 MB a
+ * track instead of 30-150.
+ *
+ * Every step can decline, and declining means the plain progress bar:
+ *   1. the feature is off, or no secret is set;
+ *   2. the album is not confidently ONE Qobuz favourite (locateByTitle);
+ *   3. Qobuz will not name a track of that title AND that length (matchTrack);
+ *   4. the URL comes back a preview, or not at all;
+ *   5. ffmpeg cannot decode what arrives.
+ */
+
+/*
+ * The whole streaming path for one track: cache, identify, fetch, store.
+ *
+ * Keyed "qobuz:<album id> <title>" rather than by the album identity the local
+ * path uses. Those keys come from Roon's spelling of an album, which is exactly
+ * what is unreliable here — it is why this feature needed a title-only rung at
+ * all. The Qobuz album id is stable, and it is what the peaks actually came
+ * from.
+ */
+async function wfQobuzTrack(album, artist, track, seconds) {
+  if (!waveformEnabled || !labelsDb) return null;
+  if (!String(qobuzAppSecret || "").trim()) return null;
+  const albumId = wfQobuzAlbumId(album, artist);
+  if (!albumId) return null;
+
+  const tkey = WF.trackKey("qobuz:" + albumId, track);
+  if (!tkey) return null;
+  const have = wfGet(tkey);
+  if (have) return { peaks: have.peaks, n: have.n, cached: true, source: "qobuz" };
+
+  // The same sharing the local decode uses: a phone and the wall display asking
+  // together must fetch this once, not twice.
+  const already = _wfInflight.get(tkey);
+  if (already) {
+    const p = await already;
+    return p ? { peaks: p.peaks, n: p.n, cached: false, source: "qobuz" } : null;
+  }
+  const job = (async () => {
+    const peaks = await wfQobuzCompute(albumId, track, seconds, null);
+    if (!peaks) return null;
+    wfPut(tkey, peaks);
+    return { peaks: WF.encode(peaks), n: peaks.length };
+  })().finally(() => { _wfInflight.delete(tkey); });
+  _wfInflight.set(tkey, job);
+
+  const out = await job;
+  return out ? { peaks: out.peaks, n: out.n, cached: false, source: "qobuz" } : null;
+}
+
+/** The Qobuz album id for what Roon is playing, or null. */
+function wfQobuzAlbumId(album, artist) {
+  for (const k of albumKeys(album || "", artist || "")) {
+    if (qobuzAlbumIds.has(k)) return qobuzAlbumIds.get(k);
+  }
+  // The title-only rung, for the albums Roon names without a usable artist —
+  // "†††" canonicalises to nothing, so no key can ever match. Only when the
+  // title lands on exactly one album in exactly one place.
+  if (canonArtist(artist || "")) return null;
+  const titles = albumKeys(album || "", "").map(AK.titleOf).filter(Boolean);
+  const found = AK.locateByTitle(titles, {
+    local: localAlbumKeys, qobuz: qobuzAlbumKeys, tidal: tidalAlbumKeys,
+  });
+  if (!found.confident || found.source !== "qobuz") return null;
+  return qobuzAlbumIds.get(found.qobuz[0]) || null;
+}
+
+/**
+ * The waveform for a Qobuz track, or null with a logged reason.
+ *
+ * `reason` is always logged rather than swallowed: "no waveform" with no
+ * explanation is what makes this class of feature impossible to diagnose from a
+ * user's report, and there are five separate ways to decline here.
+ */
+async function wfQobuzCompute(albumId, track, seconds, signal) {
+  const secret = String(qobuzAppSecret || "").trim();
+  if (!secret) return null;                       // no secret: this path is off
+
+  const alb = await qobuzWithToken((t) => qobuz.getAlbum(t, albumId)).catch(() => null);
+  if (!alb) { console.log("[waveform] qobuz: album " + albumId + " could not be read"); return null; }
+
+  const m = TM.matchTrack(alb.tracks, track, seconds);
+  if (!m.track) { console.log("[waveform] qobuz: " + m.reason); return null; }
+
+  const url = await qobuzWithToken((t) => qobuz.getFileUrl(t, m.track.id, secret))
+    .catch(() => null);
+  if (!url) {
+    console.log("[waveform] qobuz: no stream url for \"" + track + "\" — " +
+                "a wrong or rotated app secret, or no subscription for this track");
+    return null;
+  }
+
+  const t0 = Date.now();
+  let peaks = null;
+  try {
+    const ctl = new AbortController();
+    // The decode's own cancellation reaches the download through this: an
+    // overtaken prefetch must stop pulling bytes, not just stop caring.
+    const poll = setInterval(() => { if (signal && signal.aborted) ctl.abort(); }, 500);
+    if (poll.unref) poll.unref();
+    let r;
+    try {
+      r = await fetch(url, { signal: ctl.signal });
+    } finally { clearInterval(poll); }
+    if (!r.ok || !r.body) {
+      console.log("[waveform] qobuz: stream HTTP " + r.status);
+      return null;
+    }
+    // Node's fetch gives a web ReadableStream; ffmpeg wants a node Readable.
+    const input = require("node:stream").Readable.fromWeb(r.body);
+    peaks = await WFD.decodeWaveform(null, { input, signal });
+  } catch (e) {
+    console.log("[waveform] qobuz: stream failed for \"" + track + "\": " + e.message);
+    return null;
+  }
+  if (!peaks) { console.log("[waveform] qobuz: could not decode \"" + track + "\""); return null; }
+  console.log("[waveform] qobuz: " + track + " in " + (Date.now() - t0) + "ms");
+  return peaks;
+}
+
 app.get("/api/waveform", async (req, res) => {
   if (!waveformEnabled) return res.json({ peaks: null, reason: "off" });
   const track  = String(req.query.track  || "").trim();
@@ -12371,9 +12563,17 @@ app.get("/api/waveform", async (req, res) => {
   if (!track) return res.status(400).json({ error: "track required" });
 
   const akey = wfAlbumKey(album, artist);
-  // No local file: Roon streams Qobuz/TIDAL to the endpoint and no extension
-  // can see the audio. The client draws its ordinary progress bar.
-  if (!akey) return res.json({ peaks: null, reason: "no-local-file" });
+  if (!akey) {
+    // No local file. Roon streams Qobuz and TIDAL to the endpoint and no
+    // extension can see that audio — but if this is a Qobuz favourite and the
+    // user configured a secret, it can be fetched from Qobuz directly.
+    const out = await wfQobuzTrack(album, artist, track, Number(req.query.length) || 0);
+    if (out) {
+      res.set("Cache-Control", "public, max-age=604800, immutable");
+      return res.json(out);
+    }
+    return res.json({ peaks: null, reason: "no-local-file" });
+  }
 
   const tkey = WF.trackKey(akey, track);
   const cached = wfGet(tkey);
@@ -12502,17 +12702,34 @@ app.get("/api/debug/zone-dump", async (req, res) => {
 });
 
 app.get("/api/settings/waveform", (req, res) => {
-  res.json({ enabled: waveformEnabled, decoder: !!WFD.ffmpegPath() });
+  res.json({
+    enabled: waveformEnabled,
+    decoder: !!WFD.ffmpegPath(),
+    // Whether a secret is SET, never the secret itself — this endpoint is
+    // polled by every open client and a credential has no business in it.
+    qobuz_secret_set: !!String(qobuzAppSecret || "").trim(),
+    qobuz_ready: !!(String(qobuzAppSecret || "").trim() && qobuzReady()),
+  });
 });
 app.post("/api/settings/waveform", (req, res) => {
   const body = req.body || {};
+  // The secret can be set on its own, without touching the switch.
+  if (body.qobuz_secret !== undefined) {
+    qobuzAppSecret = String(body.qobuz_secret || "").trim();
+    savePersistedSettings({ qobuzAppSecret });
+    if (body.enabled === undefined) {
+      return res.json({ ok: true, enabled: waveformEnabled,
+                        qobuz_secret_set: !!qobuzAppSecret });
+    }
+  }
   if (body.enabled === undefined) return res.status(400).json({ error: "enabled required" });
   waveformEnabled = !!body.enabled;
   savePersistedSettings({ waveformEnabled });
   // Switched off mid-decode: stop the prefetch rather than letting it finish
   // for a feature nobody is looking at.
   if (!waveformEnabled && _wfPrefetch) { _wfPrefetch.signal.aborted = true; _wfPrefetch = null; }
-  res.json({ ok: true, enabled: waveformEnabled });
+  res.json({ ok: true, enabled: waveformEnabled,
+             qobuz_secret_set: !!String(qobuzAppSecret || "").trim() });
 });
 
 // Labels on/off. The scan's own gate lives inside runLabelsIndexScan, at the

@@ -2,6 +2,64 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.6] — 2026-09-02
+
+### Added — waveforms for Qobuz albums
+
+Roon streams Qobuz to the endpoint and never to an extension, so there is no audio here to read.
+This fetches the track from Qobuz directly, with the user's own account, decodes it to peaks and
+throws the audio away.
+
+**Off by default, and gated on a secret this app does not ship.** `track/getFileUrl` is Qobuz's only
+signed endpoint — the one that hands back audio — and it needs an app_secret. That is a Settings
+field the user fills in themselves, blank by default. Two reasons, both deliberate: the secret
+rotates whenever Qobuz update their web player, so baking one in would guarantee a build that
+quietly stops working; and retrieving audio from an unofficial API is against Qobuz's terms, which
+should be a decision someone made rather than a default they inherited. With the field blank,
+nothing here runs and streaming tracks keep the plain bar exactly as before.
+
+**Nothing is written to disk.** The HTTPS response is piped straight into ffmpeg's stdin, so "no
+audio is stored" is a fact about how the bytes moved rather than a cleanup promise a crash could
+break. It is also faster — the decode overlaps the download. **MP3 320 is requested, not FLAC**: the
+peaks are resampled to 1000 buckets from an 8 kHz mono decode, where a lossy envelope is
+indistinguishable from the original's, at ~7 MB a track instead of 30–150.
+
+Five separate ways to decline, and every one of them means the plain progress bar:
+
+1. the feature is off, or no secret is set;
+2. the album is not confidently **one** Qobuz favourite;
+3. Qobuz will not name a track of that title **and** that length;
+4. the URL comes back a preview, or not at all;
+5. ffmpeg cannot decode what arrives.
+
+**The duration gate is the one that matters.** Remasters, radio edits and live versions all share a
+title, and a waveform of the wrong master looks authoritative and is a different recording — so the
+match is title AND length within ±2s, and two candidates at the right length is refused rather than
+guessed. Roon supplies the length on `now_playing` and on every queue item, so the gate works for the
+prefetch too. Each decline is logged with its reason: "no waveform" with no explanation is what makes
+this class of feature undiagnosable from a user's report.
+
+- `lib/qobuz-sig.js` (7 tests) — the request signature. Undocumented and order-sensitive: parameters
+  sort by name and concatenate with no separators, and Qobuz answers a misordered signature exactly
+  as it answers a wrong secret. Also `usableFileUrl`, which refuses a `sample: true` response — Qobuz
+  returns 200 with the 30-second preview rather than an error, and drawing that across a five-minute
+  bar looks like the track and is not.
+- `lib/trackmatch.js` (11 tests) — picking the track, and the rule about refusing to.
+- `lib/waveform-decode.js` — decodes from a stream as well as a path. EPIPE on the input is the
+  normal end of a piped decode (ffmpeg has enough audio and closes stdin while the response is still
+  arriving); unhandled it would take the server down for a decode that worked. Abandoning a decode
+  now destroys the response too, so a cancelled prefetch stops pulling bytes.
+- Qobuz album ids are harvested alongside the favourite keys, from the same response, keyed
+  identically — so the waveform looks an album up by the key the badge matched on.
+- Streamed waveforms are stored under `qobuz:<album id>`, not the album identity the local path uses:
+  those keys come from Roon's spelling of an album, which is precisely what is unreliable here.
+
+### Fixed
+- Disconnecting TIDAL would have cleared the Qobuz album ids — an unguarded line added minutes
+  earlier in the same change.
+
+- 900 unit / 513 DOM / 85 static tests
+
 ## [1.8.5] — 2026-09-02
 
 ### Fixed — v1.8.4 could claim another artist's album as the playing one's file

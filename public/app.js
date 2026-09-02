@@ -8346,9 +8346,14 @@
     drawWave();                          // plain bar while we ask
     const mine = ++npWaveReq;
     try {
+      // The LENGTH goes with it. For a streaming track the server has no file
+      // and matches the track on the service by title AND duration — without
+      // this it cannot tell a song from a remaster of it that shares the title,
+      // so it declines rather than guessing and nothing is ever drawn.
       const q = "track=" + encodeURIComponent(id.track) +
                 "&album=" + encodeURIComponent(id.album) +
-                "&artist=" + encodeURIComponent(id.artist);
+                "&artist=" + encodeURIComponent(id.artist) +
+                "&length=" + encodeURIComponent(npLen || 0);
       const r = await fetch("/api/waveform?" + q);
       if (!r.ok) return;
       const j = await r.json();
@@ -10215,6 +10220,7 @@
       const j = await r.json();
       waveEnabledEl.checked = !!j.enabled;
       window.__waveformOn = !!j.enabled;
+      showQobuzSecretState(j);
       if (waveEnabledNote) {
         waveEnabledNote.textContent = j.enabled
           ? "On. Local files only \u2014 Roon streams Qobuz and TIDAL to the endpoint, " +
@@ -10223,6 +10229,44 @@
       }
     } catch (e) { /* keep the last shown value */ }
   }
+  // ----- Qobuz app secret (streaming waveforms) -----
+  // Blank is the default and the off switch: with no secret the server never
+  // asks Qobuz for audio and streaming tracks keep the plain bar.
+  const qSecEl     = document.getElementById("qobuz-secret-input");
+  const qSecSave   = document.getElementById("qobuz-secret-save");
+  const qSecStatus = document.getElementById("qobuz-secret-status");
+  function showQobuzSecretState(j) {
+    if (!qSecStatus) return;
+    if (!j || !j.qobuz_secret_set) {
+      qSecStatus.textContent = "Not set — Qobuz albums keep the plain bar.";
+      return;
+    }
+    qSecStatus.textContent = j.qobuz_ready
+      ? "Set. Qobuz albums will show a waveform once analysed."
+      : "Set, but Qobuz is not connected — connect it under Services.";
+  }
+  if (qSecSave && qSecEl) {
+    qSecSave.addEventListener("click", async () => {
+      qSecSave.disabled = true;
+      try {
+        const r = await fetch("/api/settings/waveform", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ qobuz_secret: qSecEl.value })
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || j.error) throw new Error(j.error || "Couldn't save");
+        // Never echoed back into the field — the server does not return it, and
+        // a saved credential sitting in the DOM is one screenshot from being
+        // shared.
+        qSecEl.value = "";
+        showToast(j.qobuz_secret_set ? "Qobuz secret saved" : "Qobuz secret cleared");
+        loadWaveformEnabled();
+      } catch (e) {
+        showToast(e.message, "error");
+      } finally { qSecSave.disabled = false; }
+    });
+  }
+
   if (waveEnabledEl) {
     waveEnabledEl.addEventListener("change", async () => {
       const on = waveEnabledEl.checked;

@@ -255,9 +255,14 @@
     drawWave(0);
     const mine = ++waveReq;
     try {
+      // The LENGTH goes with it. For a streaming track the server has no file
+      // and matches the track on the service by title AND duration — without
+      // this it cannot tell a song from a remaster of it that shares the title,
+      // so it declines rather than guessing and nothing is ever drawn.
       const q = "track=" + encodeURIComponent(id.track) +
                 "&album=" + encodeURIComponent(id.album) +
-                "&artist=" + encodeURIComponent(id.artist);
+                "&artist=" + encodeURIComponent(id.artist) +
+                "&length=" + encodeURIComponent((np && np.length) || 0);
       const j = await jget("/api/waveform?" + q);
       // The display polls continuously and tracks change under it. A waveform
       // that arrives after the song has moved on is the wrong shape for what is

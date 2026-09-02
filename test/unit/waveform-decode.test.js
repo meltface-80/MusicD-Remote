@@ -22,6 +22,9 @@ function fakeChild() {
   const c = new EventEmitter();
   c.stdout = new EventEmitter();
   c.stderr = new EventEmitter();
+  // A real Writable, because the piped form calls input.pipe(child.stdin) and
+  // an EventEmitter is not something a stream will pipe into.
+  c.stdin = new (require("node:stream").Writable)({ write(_c, _e, cb) { cb(); } });
   c.killed = 0;
   c.kill = () => { c.killed++; };
   return c;
@@ -132,4 +135,91 @@ test("stderr from a pathological file cannot grow without bound", async () => {
   assert.equal(await p, null);
   assert.ok(d.lastDecodeError().length <= 4096,
     "stderr grew to " + d.lastDecodeError().length + " bytes");
+});
+
+// --- decoding from a stream (v1.8.6) ---------------------------------------
+// A streaming track has no file and must not get one: the bytes go from the
+// HTTPS response through ffmpeg and out as a thousand numbers. "Deleted
+// afterwards" is a promise a crash can break; piping is a fact about how the
+// data moved.
+
+const { Readable } = require("node:stream");
+const pipeArgs = d.pipeArgs;
+
+test("the piped form reads stdin and does not pass -nostdin", () => {
+  const a = pipeArgs();
+  assert.ok(a.includes("pipe:0"), "ffmpeg was not pointed at stdin");
+  assert.ok(!a.includes("-nostdin"), "-nostdin would close the input this form depends on");
+  // Everything else must match the file form, or a streamed waveform would be
+  // drawn from different numbers than a local one.
+  for (const flag of ["-map", "0:a:0", "-f", "s16le", "-ac", "1", "-ar", "8000"]) {
+    assert.ok(a.includes(flag), `the piped decode dropped ${flag}`);
+  }
+});
+
+test("THE one: no filename reaches ffmpeg when a stream is given", async () => {
+  let sawArgs = null, sawStdio = null;
+  const child = fakeChild();
+  await d.decodeWaveform("/should/not/be/used.flac", {
+    input: Readable.from([Buffer.alloc(4)]),
+    spawn: (bin, a, o) => { sawArgs = a; sawStdio = o.stdio; return child; },
+  }).then(() => {});
+  assert.ok(!sawArgs.includes("/should/not/be/used.flac"),
+    "the file path was passed anyway — a streaming decode must not touch disk");
+  assert.equal(sawStdio[0], "pipe", "stdin was not opened, so nothing could be piped in");
+});
+
+test("audio piped in comes back out as peaks", async () => {
+  const child = fakeChild();
+  const p = d.decodeWaveform(null, {
+    input: Readable.from([Buffer.alloc(2)]),
+    buckets: 4,
+    spawn: () => child,
+  });
+  // ffmpeg's answer: loud, then quiet.
+  const pcm = Buffer.alloc(1600);
+  for (let i = 0; i < 400; i++) pcm.writeInt16LE(30000, i * 2);
+  child.stdout.emit("data", pcm);
+  child.emit("close", 0);
+  const peaks = await p;
+  assert.equal(peaks.length, 4);
+  assert.ok(peaks[0] > peaks[3], "the shape of the piped audio was lost");
+});
+
+test("EPIPE on the input is the normal end, not a crash", async () => {
+  // ffmpeg closes stdin as soon as it has enough audio, while the response is
+  // still arriving. Unhandled, that error takes the server down for a decode
+  // that actually worked.
+  const child = fakeChild();
+  const src = Readable.from([Buffer.alloc(8)]);
+  const p = d.decodeWaveform(null, { input: src, buckets: 2, spawn: () => child });
+  child.stdin.emit("error", Object.assign(new Error("EPIPE"), { code: "EPIPE" }));
+  const pcm = Buffer.alloc(400);
+  for (let i = 0; i < 100; i++) pcm.writeInt16LE(1000, i * 2);
+  child.stdout.emit("data", pcm);
+  child.emit("close", 0);
+  assert.ok(await p, "a normal EPIPE lost the waveform");
+});
+
+test("a failing download resolves to no waveform rather than rejecting", async () => {
+  const child = fakeChild();
+  const src = new Readable({ read() {} });
+  const p = d.decodeWaveform(null, { input: src, spawn: () => child });
+  src.emit("error", new Error("socket hang up"));
+  assert.equal(await p, null);
+});
+
+test("THE other one: giving up stops the download too", async () => {
+  // A cancelled prefetch that keeps pulling megabytes is the bandwidth version
+  // of the orphaned process the timeout exists to prevent.
+  const child = fakeChild();
+  let destroyed = false;
+  const src = new Readable({ read() {} });
+  src.destroy = () => { destroyed = true; };
+  const signal = { aborted: false };
+  const p = d.decodeWaveform(null, { input: src, signal, spawn: () => child });
+  signal.aborted = true;
+  child.stdout.emit("data", Buffer.alloc(2));   // cancellation is checked here
+  await p;
+  assert.equal(destroyed, true, "the response was left open after the decode was abandoned");
 });
