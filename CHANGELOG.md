@@ -2,6 +2,54 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.3] — 2026-09-02
+
+### Added — the dump now identifies the album itself, instead of asking
+
+Two samples in, the finding is not the one this diagnostic was built for. Roon does not name the
+playback source anywhere — three `now_playing` payloads, identical six-key shape, nothing
+conditional — so that question is settled. What turned up instead is that **Roon sends no artist at
+all for some albums**: `three_line.line2` is `""` and `one_line.line1` ends in a bare separator, on
+two unrelated records.
+
+Every identity lookup here keys on `title||artist`, so an empty artist makes the key `analogue||`,
+which matches nothing. That album gets no source badge, no local-file lookup and no waveform — and,
+crucially for the streaming work, `albumSource()` cannot say whether it is a Qobuz album, which is
+the first step of the whole plan.
+
+The dump now answers that mechanically rather than by asking:
+
+- `app_thinks.keyed` — the normal title+artist result, as before.
+- `app_thinks.title_only` — the same question asked of the **title alone**, against the local index
+  and both services' favourites: which places hold it, how many keys match, and whether that is
+  `confident` (exactly one match, in exactly one place).
+
+So one dump now says what an album *is* even when Roon supplies no artist, and says whether the
+weaker rung would be safe enough to act on. It is reported, not acted on — nothing changes behaviour.
+
+- `lib/albumkeys.js` (12 tests): title-half matching and `locateByTitle`. Confident means one match
+  in one place; a record you own *and* stream, or two albums sharing a title inside one service, is
+  refused rather than guessed — the same discipline `wfResolveFile` uses, and for the same reason
+  (a waveform of the wrong master looks authoritative and is simply a different recording).
+  Favourited in both services stays unknowable, exactly as `albumSource` already treats it.
+
+### Fixed — the union listing hid the one column it existed for
+
+`unionPaths` counted how many samples carried each field and `formatPaths` never printed it, so
+`sample_fields` rendered as a plain listing. The count *is* the signal — a field present in some
+payloads and not others is what a source marker would look like — and without it the listing could
+not have shown what it was asked to look for. Two tests pin the column, and pin that a plain
+(non-union) listing does not grow a fake count.
+
+### Changed
+- `identityReport` is declared below the four `let`/`const` bindings it reads rather than above them.
+  Runtime-safe either way, but it is the temporal-dead-zone shape this project's rules forbid, and it
+  is the second time in two versions I have introduced it.
+
+**Nothing user-visible changes in this release.** Still a diagnostic build.
+
+- 855 unit / 513 DOM / 83 static tests
+
 ## [1.8.2] — 2026-09-02
 
 ### Fixed — the zone dump could answer with nothing and look complete

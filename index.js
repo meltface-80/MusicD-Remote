@@ -182,11 +182,7 @@ function recordNpSample(z) {
     state: z.state || "",
     // What this app concludes today, so a field Roon turns out to send can be
     // read straight against the inference it would replace.
-    app_thinks: {
-      track, album, artist,
-      album_source: albumSource(album, artist, null),
-      has_local_file: !!wfAlbumKey(album, artist),
-    },
+    app_thinks: Object.assign({ track, album, artist }, identityReport(album, artist)),
     now_playing: np,
   });
   while (npSamples.length > NP_SAMPLES_MAX) npSamples.shift();
@@ -12055,6 +12051,39 @@ const WF = require("./lib/waveform");
 const WFD = require("./lib/waveform-decode");
 // Field listing for /api/debug/zone-dump. Pure, no I/O — see lib/objshape.js.
 const SHAPE = require("./lib/objshape");
+// Title-only album matching, for the case Roon sends no artist. Pure — see
+// lib/albumkeys.js.
+const AK = require("./lib/albumkeys");
+
+/*
+ * What this app can work out about an album, both ways.
+ *
+ * `keyed` is the normal path: title + artist. `title_only` is the rung
+ * underneath, for the case Roon supplies no artist at all — which it does, for
+ * some albums, sending three_line.line2 as "". Without the fallback those
+ * albums are invisible to every identity lookup here: no source badge, no local
+ * file, no waveform.
+ *
+ * Reported rather than acted on. Whether the weaker rung is safe enough to use
+ * depends on how often it comes back ambiguous, and that is what the dump is
+ * for finding out.
+ */
+function identityReport(album, artist) {
+  const titles = albumKeys(album, "").map(AK.titleOf).filter(Boolean);
+  return {
+    keyed: {
+      album_source: albumSource(album, artist, null),
+      has_local_file: !!wfAlbumKey(album, artist),
+    },
+    title_only: Object.assign(
+      { titles },
+      AK.locateByTitle(titles, {
+        local: localAlbumKeys, qobuz: qobuzAlbumKeys, tidal: tidalAlbumKeys,
+      })
+    ),
+  };
+}
+
 // Module-scope copies. buildFileLabelMap declares its own AUDIO_RE and resolves
 // parseFile INSIDE the function, so referencing either from here is a
 // ReferenceError at runtime that `node --check` cannot see (CLAUDE.md's
@@ -12392,12 +12421,8 @@ app.get("/api/debug/zone-dump", async (req, res) => {
 
     // What this app concludes today, so anything Roon turns out to send can be
     // read straight against the inference it would replace.
-    app_thinks: {
-      track: t3.line1 || "",
-      album, artist,
-      album_source: albumSource(album, artist, null),
-      has_local_file: !!wfAlbumKey(album, artist),
-    },
+    app_thinks: Object.assign({ track: t3.line1 || "", album, artist },
+                             identityReport(album, artist)),
 
     /*
      * The captured samples: the last few now_playing payloads, recorded as the

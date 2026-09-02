@@ -203,3 +203,19 @@ test("formatPaths renders a union without losing the counts to alignment", () =>
   assert.equal(text.split("\n").length, 2);
   assert.match(text, /^a\s+number/m);
 });
+
+test("THE one for v1.8.3: the union prints how many samples carried each field", () => {
+  // The count IS the signal — a field in some payloads and not others is what a
+  // source marker looks like. v1.8.2 computed it and never printed it, so the
+  // union rendered as a plain listing and hid exactly what it was for.
+  const text = formatPaths(unionPaths([{ a: 1 }, { a: 1, only_here: "x" }]));
+  assert.match(text, /^a\s+number\s+x2/m, `no count on the shared field:\n${text}`);
+  assert.match(text, /^only_here\s+string\s+x1/m, `no count on the field that appeared once:\n${text}`);
+});
+
+test("a plain (non-union) listing carries no count column", () => {
+  // keyPaths rows have no `seen`, and inventing "x1" for them would imply a
+  // comparison that never happened.
+  const text = formatPaths(keyPaths({ a: 1 }));
+  assert.doesNotMatch(text, /x1/);
+});
