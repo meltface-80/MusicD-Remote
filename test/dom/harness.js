@@ -34,6 +34,10 @@ const PUBLIC_DIR = process.env.MUSICD_PUBLIC_DIR
   ? path.resolve(process.env.MUSICD_PUBLIC_DIR)
   : path.join(REPO_ROOT, "public");
 const INDEX_HTML = path.join(PUBLIC_DIR, "index.html");
+// The wall display is a second, entirely separate page (its own HTML, CSS and
+// JS). Everything below works on it unchanged — same fetch stub, same driver,
+// same result channel — so it is a parameter rather than a second harness.
+const DISPLAY_HTML = path.join(PUBLIC_DIR, "display.html");
 
 // --- locating a browser ----------------------------------------------------
 function findChromium() {
@@ -132,8 +136,8 @@ function driverWrapper(driverSource) {
 `;
 }
 
-function buildHtml({ stub, driver }) {
-  let html = fs.readFileSync(INDEX_HTML, "utf8");
+function buildHtml({ stub, driver, page }) {
+  let html = fs.readFileSync(page === "display" ? DISPLAY_HTML : INDEX_HTML, "utf8");
 
   // Drop external resources — no network in CI, and a pending font request
   // only slows the run down.
@@ -164,18 +168,29 @@ function buildHtml({ stub, driver }) {
  * @param {string}  opts.driver   async JS body run on load; report with T(key, value).
  * @param {number} [opts.budgetMs] virtual time budget (default 20000).
  * @param {string} [opts.name]     used for the temp file name.
+ * @param {string} [opts.page]     "display" for the wall display page; the app otherwise.
+ * @param {boolean} [opts.screenshot] also capture the composited page and return
+ *                                   it as `__png` (a Buffer). This is the only
+ *                                   way the suite can see PAINT ORDER — layout
+ *                                   reports two overlapping elements at the same
+ *                                   place and elementFromPoint skips anything
+ *                                   with pointer-events:none, so "which one is
+ *                                   on top" is otherwise unobservable. Decode it
+ *                                   with lib/png.
  * @param {string} [opts.windowSize] "WxH" viewport, e.g. "390x844" for a phone.
  *                                   Layout tests need this — Chromium's default
  *                                   800x600 is neither phone nor desktop, and
  *                                   vh/dvh-sized panels behave differently.
  * @returns {object} the reported results; `__error` / `__pageErrors` if the page failed.
  */
-function renderPage({ stub, driver, budgetMs = 20000, name = "page", windowSize }) {
+function renderPage({ stub, driver, budgetMs = 20000, name = "page", windowSize, page, screenshot }) {
   if (!available) throw new Error("no chromium binary found — set CHROMIUM_BIN");
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "musicd-dom-"));
   const file = path.join(dir, `${name}.html`);
-  fs.writeFileSync(file, buildHtml({ stub, driver }));
+  fs.writeFileSync(file, buildHtml({ stub, driver, page }));
+
+  const shotFile = path.join(dir, `${name}.png`);
 
   let dom;
   try {
@@ -187,6 +202,9 @@ function renderPage({ stub, driver, budgetMs = 20000, name = "page", windowSize 
       "--allow-file-access-from-files",
       ...(windowSize ? [`--window-size=${windowSize.replace("x", ",")}`] : []),
       `--virtual-time-budget=${budgetMs}`,
+      // --screenshot and --dump-dom coexist: the shot is taken when the virtual
+      // time budget expires, i.e. after the driver has finished.
+      ...(screenshot ? [`--screenshot=${shotFile}`] : []),
       "--dump-dom",
       file,
     ], {
@@ -211,6 +229,12 @@ function renderPage({ stub, driver, budgetMs = 20000, name = "page", windowSize 
       `dom tail: ${dom.slice(-1500)}`
     );
   }
+  // Read the shot BEFORE the temp dir goes, and carry the bytes rather than a
+  // path, so nothing is left behind for a later run to trip over.
+  let png = null;
+  if (screenshot) {
+    try { png = fs.readFileSync(shotFile); } catch (e) { png = null; }
+  }
   fs.rmSync(dir, { recursive: true, force: true });
 
   let parsed;
@@ -218,6 +242,10 @@ function renderPage({ stub, driver, budgetMs = 20000, name = "page", windowSize 
     parsed = JSON.parse(Buffer.from(m[1], "base64").toString("utf8"));
   } catch (e) {
     throw new Error(`could not decode #TESTRESULTS payload: ${e.message}`);
+  }
+  if (screenshot) {
+    if (!png) throw new Error("--screenshot produced no file");
+    parsed.__png = png;
   }
   return parsed;
 }

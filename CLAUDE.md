@@ -129,6 +129,22 @@ If step 3 cannot run (Roon not available), run steps 1 and 2 and explicitly note
        from one script. Identical output is a real answer: the regression is not in the code.
   A hypothesis that survives none of those three is not a root cause, and shipping a fix for it
   attaches a false explanation to a real change.
+- **Two numbers from two different moments are not a measurement.** The harness has two clocks:
+  the driver runs inside the virtual time budget, and `--screenshot` fires when that budget
+  EXPIRES — seconds of page-time later. A `getBoundingClientRect` reported by the driver and a
+  pixel read out of the screenshot describe different frames, and in a Now-playing fixture the page
+  moves 8.5px between them. **v1.7.90**: an assertion built that way reported the seek thumb riding
+  8.5px off the waveform. It did not. A fix was written and nearly shipped — the native thumb hidden,
+  the playhead redrawn into the canvas — before measuring BOTH values out of the same screenshot
+  showed the thumb had been exactly on the midline all along. The whole change was reverted.
+  When a test compares two positions, take both from the same source: two driver-time rects, or two
+  screenshot-time pixel scans. Never one of each. (The real 2px defect in the same area was found
+  the correct way, and the pixel test that pins it now scans for the waveform's bars AND the thumb
+  in the one image.)
+- **A canvas is transparent between what it draws.** A fixture whose waveform is quiet where the
+  assertion looks will pass with the drawing wrong, because the page shows through the gaps. Pixel
+  tests over a canvas need a full-scale fixture at the point being checked, and a paused zone, or
+  the playhead walks away from the coordinates being sampled.
 - **Device-only behaviour cannot be tested here.** The DOM harness is headless Chromium: no browser
   chrome, no safe areas, `dvh` == `vh` == `100%`. No assertion in this suite can observe iOS window
   behaviour, so writing more of them buys confidence and no coverage. What the suite CAN do is pin a

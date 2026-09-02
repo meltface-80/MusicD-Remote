@@ -247,7 +247,13 @@ const roon = new RoonApi({
           (z.outputs || []).forEach(o => { outputs[o.output_id] = o; });
           // Before the radio decision, so the log shows the state that drove it.
           logZoneTransition(z);
-          handleRadioZone(z); scrobbleUpdate(z); });
+          handleRadioZone(z); scrobbleUpdate(z);
+          // Warm the NEXT track's waveform while this one plays. Gated on the
+          // track actually changing inside wfPrefetchNext — this push arrives
+          // many times a second. Fire-and-forget: nothing here waits on it, and
+          // a failure means the next track is decoded on demand instead.
+          wfPrefetchNext(z).catch(() => { /* best effort; the endpoint retries */ });
+        });
         (data.zones_removed || []).forEach(zid => {
           const z = zones[zid];
           // Only when the outputs feed isn't live — see outputsFeedLive above:
@@ -1889,6 +1895,10 @@ let smartPicksAutoAdd = _persisted.smartPicksAutoAdd !== false;
 // are assigned rather than initialised here.
 let labelsEnabled     = _persisted.labelsEnabled === true;
 let smartPicksEnabled = _persisted.smartPicksEnabled === true;
+// Waveforms. OFF until switched on, and then on until switched off — no
+// auto-enable heuristic like the two above, because this one spends CPU
+// decoding audio and nobody should discover that by surprise.
+let waveformEnabled   = _persisted.waveformEnabled === true;
 const _labelsEnabledSet     = _persisted.labelsEnabled !== undefined;
 const _smartPicksEnabledSet = _persisted.smartPicksEnabled !== undefined;
 
@@ -2295,6 +2305,22 @@ function openLabelsDb() {
       -- query here that would otherwise scan. (These are the first indexes in
       -- this database — every other table is read by primary key.)
       CREATE INDEX IF NOT EXISTS album_tracks_tkey ON album_tracks(tkey);
+      -- Waveforms: ~1000 normalised peaks per track, base64, about 1.4 KB a row.
+      --
+      -- Keyed by album identity + canonical title (lib/waveform.js trackKey),
+      -- never by offset, for the same reason album_tracks is: offsets are
+      -- positions in a list that reshuffles on every library change, and a
+      -- decode costs seconds of CPU that should survive one.
+      --
+      -- The n column is the bucket count the row was written with. Stored
+      -- assumed so the constant can change without invalidating anything —
+      -- the renderer resamples whatever it is handed.
+      CREATE TABLE IF NOT EXISTS waveforms (
+        tkey  TEXT PRIMARY KEY,
+        peaks TEXT NOT NULL,
+        n     INTEGER NOT NULL,
+        ts    INTEGER NOT NULL
+      );
       -- The plays table is read by track title on the import path, and it is
       -- the only table here that grows without bound. Expression index because
       -- the query compares lower(trim(track)) — an index on the bare column
@@ -3018,12 +3044,25 @@ function writeJsonAtomic(file, data, tag) {
 const SOURCE_KEY_VERSION = 2;
 const LOCAL_ALBUMS_FILE = path.join(__dirname, "data", "local-albums.json");
 let localAlbumKeys = new Set();
+// albumKey -> absolute directory. Written by the same walk that fills
+// localAlbumKeys and loaded from the same file, so "this album is local" and
+// "this album is HERE" can never disagree. Empty on an index written before
+// v1.7.90 — the waveform simply has nothing to resolve until the next walk.
+let localAlbumDirs = new Map();
+// albumKey -> [{ file, title }] for that album's directory, so skipping through
+// a record does not re-read the folder for every track. Declared HERE, beside
+// the index it is derived from, rather than next to the waveform routes far
+// below: setLocalAlbumKeys() clears it, and a const declared after its own call
+// site is a ReferenceError that `typeof` cannot even test for.
+const _wfDirCache = new Map();
 function loadLocalAlbumKeys() {
   try {
     const raw = JSON.parse(fs.readFileSync(LOCAL_ALBUMS_FILE, "utf8"));
     if (raw && raw.v === SOURCE_KEY_VERSION && Array.isArray(raw.keys)) {
       localAlbumKeys = new Set(raw.keys);
-      if (DEBUG) console.log("[local] loaded", localAlbumKeys.size, "local album keys");
+      localAlbumDirs = new Map(Array.isArray(raw.dirs) ? raw.dirs : []);
+      if (DEBUG) console.log("[local] loaded", localAlbumKeys.size, "local album keys,",
+        localAlbumDirs.size, "directories");
     } else {
       // Old format: the /music walk rebuilds it. Kicked shortly so local badges
       // come back in minutes rather than at the next 12h cycle. The WALK, not
@@ -3052,9 +3091,15 @@ function loadLocalAlbumKeys() {
     if (t.unref) t.unref();
   }
 }
-function setLocalAlbumKeys(keys) {
+function setLocalAlbumKeys(keys, dirs) {
   localAlbumKeys = keys;
-  writeJsonAtomic(LOCAL_ALBUMS_FILE, { v: SOURCE_KEY_VERSION, keys: [...keys] }, "[local]");
+  localAlbumDirs = dirs || new Map();
+  // The per-album file listings were resolved against the OLD directories.
+  // Albums move (a re-rip, a reorganised folder), so anything cached against
+  // the previous walk is now a guess about paths that may not exist.
+  _wfDirCache.clear();
+  writeJsonAtomic(LOCAL_ALBUMS_FILE,
+    { v: SOURCE_KEY_VERSION, keys: [...keys], dirs: [...localAlbumDirs] }, "[local]");
   console.log("[local] " + keys.size + " album keys recorded from " + MUSIC_DIR);
 }
 loadLocalAlbumKeys();
@@ -3720,6 +3765,9 @@ async function buildFileLabelMap(onProgress) {
   // directory (not just ones that yielded a label), since presence on disk is
   // the whole question.
   const localKeys = new Set();
+  // key -> the directory the sampled file came from. Same lifetime and the
+  // same rebuild triggers as localKeys, so the two cannot drift apart.
+  const localDirs = new Map();
   // Built LOCALLY and published at the end, never cleared in place. This walk
   // takes minutes, while the Qobuz/TIDAL favourites come back in seconds — and
   // harvestAlbumYears fills gaps only, so whichever source lands first used to
@@ -3731,16 +3779,16 @@ async function buildFileLabelMap(onProgress) {
   const fileYears = new Map();
   let yearsWritten = 0;
   let formatWrites = 0;
-  if (!musicDirMounted()) return { labelMap: map, bandcampMap, localKeys };
+  if (!musicDirMounted()) return { labelMap: map, bandcampMap, localKeys, localDirs };
   let mm;
   try { mm = await import("music-metadata"); } catch (e) {
     if (DEBUG) console.error("[labels:files] music-metadata not available:", e.message);
-    return { labelMap: map, bandcampMap, localKeys };
+    return { labelMap: map, bandcampMap, localKeys, localDirs };
   }
   const parseFile = mm.parseFile || (mm.default && mm.default.parseFile);
   if (!parseFile) {
     if (DEBUG) console.error("[labels:files] music-metadata loaded but parseFile not found");
-    return { labelMap: map, bandcampMap, localKeys };
+    return { labelMap: map, bandcampMap, localKeys, localDirs };
   }
 
   const AUDIO_RE = /\.(flac|mp3|m4a|aac|ogg|opus|wv|ape|wav|aiff?)$/i;
@@ -3811,7 +3859,18 @@ async function buildFileLabelMap(onProgress) {
           // could never meet a Roon credit of "Robert Plant", while the reverse
           // matched fine. That asymmetry is invisible except as a local count
           // that is quietly too low.
-          for (const k of albumKeys(album, albumartist || "")) localKeys.add(k);
+          for (const k of albumKeys(album, albumartist || "")) {
+            localKeys.add(k);
+            // WHERE the album is, not just that it exists. The waveform needs a
+            // file, and until v1.7.90 nothing in this extension knew a path:
+            // the walk read one sampled file per directory and kept only the
+            // tags. Recording the directory here is free (we are standing in
+            // it), and it lets a track be resolved LAZILY later — read the tags
+            // of the dozen files in one folder when a track starts playing,
+            // rather than indexing ~70,000 files up front for a feature most
+            // of them will never be asked about.
+            localDirs.set(k, dirPath);
+          }
           // Also key by the track artist — Roon's album credit sometimes matches
           // that instead. NOT for compilations: one sampled track would claim a
           // various-artists disc for whichever performer happened to be first,
@@ -3819,7 +3878,10 @@ async function buildFileLabelMap(onProgress) {
           const isCompilation = /various|soundtrack|ost\b/i.test(albumartist || "") ||
                                 meta.common.compilation === true;
           if (meta.common.artist && !isCompilation) {
-            for (const k of albumKeys(album, meta.common.artist)) localKeys.add(k);
+            for (const k of albumKeys(album, meta.common.artist)) {
+              localKeys.add(k);
+              localDirs.set(k, dirPath);
+            }
           }
           // A compilation whose ALBUMARTIST tag is missing gets the first
           // track's performer instead, which never matches Roon's "Various
@@ -3827,7 +3889,7 @@ async function buildFileLabelMap(onProgress) {
           // unrelated album.
           if (isCompilation || meta.common.compilation === true) {
             const kv = albumKey(album, "Various Artists");
-            if (kv) localKeys.add(kv);
+            if (kv) { localKeys.add(kv); localDirs.set(kv, dirPath); }
           }
           walk.keyed++;
           if (fileMtime > 0) {
@@ -3946,7 +4008,7 @@ async function buildFileLabelMap(onProgress) {
   // which thousands of albums are still undated, while the Focus sheet
   // simultaneously reported them as dated.
   if (yearsWritten) bumpLibraryMeta();
-  return { labelMap: map, bandcampMap, localKeys };
+  return { labelMap: map, bandcampMap, localKeys, localDirs };
 }
 
 // ---------------------------------------------------------------------------
@@ -3996,14 +4058,14 @@ async function runFileMetadataScan(reason) {
   _fileScanRunning = true;
   try {
     const estimate = albumIndex.albums.length || 1000;
-    const { labelMap, bandcampMap, localKeys } = await buildFileLabelMap((n) => {
+    const { labelMap, bandcampMap, localKeys, localDirs } = await buildFileLabelMap((n) => {
       labelsIndex.progress = Math.min(0.15, n / estimate);
     });
     _lastFileLabelMap = labelMap || new Map();
     _lastFileBandcampMap = bandcampMap || new Map();
     // Only replace the known-local set when the scan actually saw the mount —
     // an unmounted /music must not wipe badges earned by a previous scan.
-    if (localKeys && localKeys.size) setLocalAlbumKeys(localKeys);
+    if (localKeys && localKeys.size) setLocalAlbumKeys(localKeys, localDirs);
     // The walk just re-read every album's tags, so join its years on now.
     harvestAlbumYears("file tags");
     console.log("[files] tag scan complete (" + (reason || "scheduled") + ")");
@@ -11925,6 +11987,296 @@ app.post("/api/settings/home-rows", (req, res) => {
   // Answered from the same repair path the GET uses, so the client is told
   // what was actually stored rather than what it sent.
   res.json({ ok: true, rows: homeRowsLayout() });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Waveforms                                                          */
+/* ------------------------------------------------------------------ */
+/*
+ * LOCAL FILES ONLY, and that is a hard limit rather than an unfinished corner.
+ * Roon's extension API exposes no audio at all — the Core decodes and streams
+ * to the endpoint, never to an extension — so a Qobuz or TIDAL track has no
+ * samples this process can reach. Those fall back to the plain progress bar.
+ *
+ * The resolution is LAZY on purpose. The /music walk records one directory per
+ * album (localAlbumDirs); when a track starts, we read the tags of the files in
+ * just that folder and match the title. That is a dozen reads for the album you
+ * are listening to, against ~70,000 for a track-level index of the whole
+ * library, most of which would never be asked about.
+ */
+const WF = require("./lib/waveform");
+const WFD = require("./lib/waveform-decode");
+
+// Module-scope copies. buildFileLabelMap declares its own AUDIO_RE and resolves
+// parseFile INSIDE the function, so referencing either from here is a
+// ReferenceError at runtime that `node --check` cannot see (CLAUDE.md's
+// declaration-before-use rule, and the pre-flight step 3 it added).
+const WF_AUDIO_RE = /\.(flac|mp3|m4a|aac|ogg|opus|wv|ape|wav|aiff?)$/i;
+let _wfParseFile;
+function wfParseFile(file, opts) {
+  if (_wfParseFile === undefined) {
+    try {
+      const mm = require("music-metadata");
+      _wfParseFile = mm.parseFile || (mm.default && mm.default.parseFile) || null;
+    } catch (e) { _wfParseFile = null; }
+  }
+  if (!_wfParseFile) return Promise.resolve({ common: {} });
+  return _wfParseFile(file, opts);
+}
+
+function wfGet(tkey) {
+  if (!labelsDb || !tkey) return null;
+  try {
+    const row = labelsDb.prepare("SELECT peaks, n FROM waveforms WHERE tkey = ?").get(tkey);
+    return row ? { peaks: row.peaks, n: row.n } : null;
+  } catch (e) { return null; }   // a read failure is "no waveform", not an outage
+}
+function wfPut(tkey, u8) {
+  if (!labelsDb || !tkey || !u8 || !u8.length) return;
+  try {
+    labelsDb.prepare(
+      "INSERT OR REPLACE INTO waveforms (tkey, peaks, n, ts) VALUES (?, ?, ?, ?)"
+    ).run(tkey, WF.encode(u8), u8.length, Date.now());
+  } catch (e) {
+    if (DEBUG) console.error("[waveform] store failed:", e.message);
+  }
+}
+
+// Which albumKey (if any) this album/artist is known locally under.
+function wfAlbumKey(album, artist) {
+  for (const k of albumKeys(album || "", artist || "")) {
+    if (localAlbumDirs.has(k)) return k;
+  }
+  return null;
+}
+
+// The audio files in an album's directory, with their title tags. One readdir
+// plus a tag read per file, cached per album.
+async function wfAlbumFiles(albumKey) {
+  if (_wfDirCache.has(albumKey)) return _wfDirCache.get(albumKey);
+  const dir = localAlbumDirs.get(albumKey);
+  if (!dir) return [];
+  let out = [];
+  try {
+    const names = fs.readdirSync(dir, { withFileTypes: true })
+      .filter(e => e.isFile() && WF_AUDIO_RE.test(e.name))
+      .map(e => e.name)
+      .sort();
+    for (const name of names) {
+      const full = path.join(dir, name);
+      let title = "";
+      try {
+        const meta = await wfParseFile(full, { duration: false, skipCovers: true });
+        title = (meta.common && meta.common.title) || "";
+      } catch (e) { /* unreadable or untagged: the filename fallback below */ }
+      // No title tag is common on older rips. The filename minus its extension
+      // and any leading track number is a decent stand-in, and a wrong match
+      // here costs a wrong picture, not wrong playback.
+      if (!title) title = name.replace(/\.[^.]+$/, "").replace(/^\s*\d+[\s._-]+/, "");
+      out.push({ file: full, title });
+    }
+  } catch (e) {
+    if (DEBUG) console.error("[waveform] cannot read " + dir + ":", e.message);
+  }
+  _wfDirCache.set(albumKey, out);
+  return out;
+}
+
+const wfCanon = (t) => String(t || "").toLowerCase().replace(/\s+/g, " ").trim();
+
+async function wfResolveFile(albumKey, trackTitle) {
+  const want = wfCanon(trackTitle);
+  if (!want) return null;
+  const files = await wfAlbumFiles(albumKey);
+  let hit = files.find(f => wfCanon(f.title) === want);
+  // Roon's track title can carry a suffix the tag does not (or the reverse),
+  // so containment is the fallback — but only when it is UNAMBIGUOUS. Two
+  // candidates means we do not know, and a waveform of the wrong track is
+  // worse than none: it looks authoritative and it is simply a different song.
+  if (!hit) {
+    const near = files.filter(f => {
+      const t = wfCanon(f.title);
+      return t && (t.includes(want) || want.includes(t));
+    });
+    if (near.length === 1) hit = near[0];
+  }
+  return hit ? hit.file : null;
+}
+
+// One decode at a time, plus one queued prefetch. Decoding is the only CPU this
+// extension spends in bulk, and the box it runs on also has to serve the UI.
+let _wfBusy = null;          // tkey currently decoding
+let _wfPrefetch = null;      // { tkey, signal } the queued next-track decode
+// tkey -> the in-flight wfCompute for it, so two askers share one decode. This
+// is the normal case here, not a corner: a phone and the wall display pointed
+// at the same zone both request the track that just started, within a second of
+// each other. Without this the second one either spawns a duplicate ffmpeg for
+// the same file or is told "busy" about a decode of the very thing it wants.
+const _wfInflight = new Map();
+// zoneId -> the track that was playing last time we looked. The zone push
+// arrives many times a second while a track plays (seek position alone), and
+// wfPeekNext costs a Core round trip, so nothing below it may run per-push.
+const _wfLastNp = new Map();
+
+function wfCompute(albumKey, track, signal) {
+  const tkey = WF.trackKey(albumKey, track);
+  if (!tkey) return Promise.resolve(null);
+  const have = wfGet(tkey);
+  if (have) return Promise.resolve(have);
+  const already = _wfInflight.get(tkey);
+  if (already) return already;
+  const p = wfDecodeOnce(albumKey, track, tkey, signal)
+    .finally(() => { _wfInflight.delete(tkey); });
+  _wfInflight.set(tkey, p);
+  return p;
+}
+
+async function wfDecodeOnce(albumKey, track, tkey, signal) {
+  const file = await wfResolveFile(albumKey, track);
+  if (!file) return null;
+  const t0 = Date.now();
+  const peaks = await WFD.decodeWaveform(file, { signal });
+  if (!peaks) {
+    const why = WFD.lastDecodeError();
+    console.log("[waveform] no waveform for " + track + (why ? " (" + why + ")" : ""));
+    return null;
+  }
+  wfPut(tkey, peaks);
+  console.log("[waveform] " + track + " in " + (Date.now() - t0) + "ms");
+  return { peaks: WF.encode(peaks), n: peaks.length };
+}
+
+/*
+ * The next track, decoded while the current one plays.
+ *
+ * ONE ahead, never more. The queue reshuffles constantly — a skip, a new album,
+ * Roon Radio picking something — so anything past the next item is CPU spent on
+ * tracks that will not play. One ahead is the whole win anyway: it turns the
+ * only visible wait (a cold track) into an instant one.
+ *
+ * The in-flight prefetch is cancelled rather than awaited when the queue moves,
+ * because a 20-minute decode nobody wants any more is 20 minutes of a core the
+ * playing track needs.
+ */
+/*
+ * The next item in a zone's queue.
+ *
+ * RoonApiTransport has no one-shot get_queue, so this is the same
+ * subscribe / read the first payload / unsubscribe dance /api/queue does. Two
+ * items is all it asks for, and it runs once per track change — cheap next to
+ * the ~8 browse round trips a single track resolution costs elsewhere.
+ *
+ * Resolves null for anything at all rather than rejecting: this is a
+ * best-effort warm-up, and a queue it cannot read simply means the next track
+ * is decoded on demand like the current one was.
+ */
+function wfPeekNext(zoneId) {
+  return new Promise((resolve) => {
+    if (!core || !zoneId) return resolve(null);
+    let done = false, sub = null;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (sub) { try { sub.unsubscribe(() => {}); } catch (e) { /* already gone */ } }
+      resolve(v);
+    };
+    const timer = setTimeout(() => finish(null), 5000);
+    if (timer.unref) timer.unref();
+    try {
+      sub = core.services.RoonApiTransport.subscribe_queue(zoneId, 2, (response, msg) => {
+        if (response !== "Subscribed") return;
+        const items = (msg && msg.items) || [];
+        // [0] is what is playing; [1] is the one worth warming.
+        const it = items[1];
+        if (!it) return finish(null);
+        const t3 = it.three_line || {};
+        finish({
+          track:  t3.line1 || (it.one_line && it.one_line.line1) || "",
+          artist: t3.line2 || "",
+          album:  t3.line3 || "",
+        });
+      });
+    } catch (e) { finish(null); }
+  });
+}
+
+async function wfPrefetchNext(zone) {
+  if (!waveformEnabled || !labelsDb) return;
+  const zid = zone && zone.zone_id;
+  if (!zid) return;
+  const nowTrack = (zone.now_playing && zone.now_playing.three_line &&
+                    zone.now_playing.three_line.line1) ||
+                   (zone.now_playing && zone.now_playing.line1) || "";
+  if (!nowTrack || _wfLastNp.get(zid) === nowTrack) return;   // same track: nothing to do
+  _wfLastNp.set(zid, nowTrack);
+  const next = await wfPeekNext(zid);
+  if (!next || !next.track) return;
+  const akey = wfAlbumKey(next.album, next.artist);
+  if (!akey) return;                       // streaming, or not under /music
+  const tkey = WF.trackKey(akey, next.track);
+  if (!tkey || tkey === _wfBusy) return;
+  if (_wfPrefetch && _wfPrefetch.tkey === tkey) return;   // already queued
+  if (wfGet(tkey)) return;                 // already known
+  if (_wfPrefetch) _wfPrefetch.signal.aborted = true;
+  const signal = { aborted: false };
+  _wfPrefetch = { tkey, signal };
+  wfCompute(akey, next.track, signal)
+    .catch(e => { if (DEBUG) console.error("[waveform] prefetch:", e.message); })
+    .finally(() => { if (_wfPrefetch && _wfPrefetch.tkey === tkey) _wfPrefetch = null; });
+}
+
+app.get("/api/waveform", async (req, res) => {
+  if (!waveformEnabled) return res.json({ peaks: null, reason: "off" });
+  const track  = String(req.query.track  || "").trim();
+  const album  = String(req.query.album  || "").trim();
+  const artist = String(req.query.artist || "").trim();
+  if (!track) return res.status(400).json({ error: "track required" });
+
+  const akey = wfAlbumKey(album, artist);
+  // No local file: Roon streams Qobuz/TIDAL to the endpoint and no extension
+  // can see the audio. The client draws its ordinary progress bar.
+  if (!akey) return res.json({ peaks: null, reason: "no-local-file" });
+
+  const tkey = WF.trackKey(akey, track);
+  const cached = wfGet(tkey);
+  if (cached) {
+    // Immutable: a waveform is a property of the audio, and the audio for a
+    // given track does not change. A week matches the artwork policy.
+    res.set("Cache-Control", "public, max-age=604800, immutable");
+    return res.json({ peaks: cached.peaks, n: cached.n, cached: true });
+  }
+
+  // Busy only means "another TRACK is decoding". A request for the one already
+  // in flight joins it below rather than being turned away.
+  if (_wfBusy && _wfBusy !== tkey && !_wfInflight.has(tkey)) {
+    return res.json({ peaks: null, reason: "busy" });
+  }
+  _wfBusy = tkey;
+  try {
+    const out = await wfCompute(akey, track, null);
+    if (!out) return res.json({ peaks: null, reason: "undecodable" });
+    res.set("Cache-Control", "public, max-age=604800, immutable");
+    res.json({ peaks: out.peaks, n: out.n, cached: false });
+  } catch (e) {
+    res.json({ peaks: null, reason: "error" });
+  } finally {
+    _wfBusy = null;
+  }
+});
+
+app.get("/api/settings/waveform", (req, res) => {
+  res.json({ enabled: waveformEnabled, decoder: !!WFD.ffmpegPath() });
+});
+app.post("/api/settings/waveform", (req, res) => {
+  const body = req.body || {};
+  if (body.enabled === undefined) return res.status(400).json({ error: "enabled required" });
+  waveformEnabled = !!body.enabled;
+  savePersistedSettings({ waveformEnabled });
+  // Switched off mid-decode: stop the prefetch rather than letting it finish
+  // for a feature nobody is looking at.
+  if (!waveformEnabled && _wfPrefetch) { _wfPrefetch.signal.aborted = true; _wfPrefetch = null; }
+  res.json({ ok: true, enabled: waveformEnabled });
 });
 
 // Labels on/off. The scan's own gate lives inside runLabelsIndexScan, at the

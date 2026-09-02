@@ -118,6 +118,8 @@
       if (!zone) { zoneId = null; showIdle(); return; }
       playing = zone.state === "playing" || zone.state === "loading";
       np = zone.now_playing || null;
+      // Cheap on every poll: returns immediately unless the track key changed.
+      loadWaveform();
 
       // Unpinned displays follow the music: if this zone has been quiet for
       // 30s, look for another zone that IS playing.
@@ -168,6 +170,115 @@
     } catch (e) { /* poll blip — next tick retries */ }
   }
 
+  /* ---------------- Waveform ---------------- */
+  /*
+   * The same shape the Now playing screen draws, on the bottom strip. Local
+   * files only — Roon streams Qobuz and TIDAL to the endpoint and never to an
+   * extension, so those tracks keep the plain fill.
+   *
+   * The canvas sits INSIDE .bb-track, over the existing fill rather than
+   * instead of it: if there is no waveform, or the setting is off, or anything
+   * here throws, the strip is exactly the bar it has always been.
+   */
+  const bbWave = $("bb-wave");
+  const bbTrack = document.querySelector(".bb-track");
+  let wavePeaks = null;
+  let waveKey = "";
+  let waveReq = 0;
+  let waveFlag;               // undefined until the first read
+
+  function waveIdentity() {
+    if (!np) return null;
+    const t3 = np.three_line || {};
+    const track = t3.line1 || np.line1 || "";
+    const album = t3.line3 || np.line3 || "";
+    return track ? { track, album, artist: t3.line2 || np.line2 || "",
+                     key: track + " " + album } : null;
+  }
+
+  function drawWave(frac) {
+    if (!bbWave || !bbTrack) return;
+    if (!wavePeaks || !wavePeaks.length) {
+      bbWave.classList.add("hidden");
+      bbTrack.classList.remove("has-wave");
+      return;
+    }
+    bbWave.classList.remove("hidden");
+    bbTrack.classList.add("has-wave");
+
+    const dpr = Math.min(3, window.devicePixelRatio || 1);
+    const w = Math.max(1, Math.round(bbWave.clientWidth));
+    const h = Math.max(1, Math.round(bbWave.clientHeight));
+    if (bbWave.width !== w * dpr || bbWave.height !== h * dpr) {
+      bbWave.width = w * dpr; bbWave.height = h * dpr;
+    }
+    const ctx = bbWave.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    // A wall display is watched from across a room, so the bars are wider than
+    // the phone's and the played/unplayed contrast is harder.
+    const barW = 3, gap = 2, step = barW + gap;
+    const bars = Math.max(1, Math.floor(w / step));
+    const mid = h / 2;
+    const f = Math.max(0, Math.min(1, frac || 0));
+    for (let i = 0; i < bars; i++) {
+      const a = Math.floor(i * wavePeaks.length / bars);
+      const b = Math.max(a + 1, Math.floor((i + 1) * wavePeaks.length / bars));
+      let v = 0;
+      for (let j = a; j < b && j < wavePeaks.length; j++) if (wavePeaks[j] > v) v = wavePeaks[j];
+      const barH = Math.max(1, (v / 255) * (h - 2));
+      const done = (i / bars) <= f;
+      ctx.fillStyle = done ? "#ffffff" : "rgba(255,255,255,.34)";
+      ctx.fillRect(i * step, mid - barH / 2, barW, barH);
+    }
+  }
+
+  async function waveformOn() {
+    if (waveFlag !== undefined) return waveFlag;
+    try {
+      const j = await jget("/api/settings/waveform");
+      waveFlag = !!(j && j.enabled);
+    } catch (e) { waveFlag = false; }
+    return waveFlag;
+  }
+
+  async function loadWaveform() {
+    if (!bbWave) return;
+    const on = await waveformOn();
+    const id = waveIdentity();
+    if (!id || !on) { wavePeaks = null; waveKey = ""; drawWave(0); return; }
+    if (id.key === waveKey) return;
+    waveKey = id.key;
+    wavePeaks = null;
+    drawWave(0);
+    const mine = ++waveReq;
+    try {
+      const q = "track=" + encodeURIComponent(id.track) +
+                "&album=" + encodeURIComponent(id.album) +
+                "&artist=" + encodeURIComponent(id.artist);
+      const j = await jget("/api/waveform?" + q);
+      // The display polls continuously and tracks change under it. A waveform
+      // that arrives after the song has moved on is the wrong shape for what is
+      // playing, which is worse than none.
+      if (mine !== waveReq || waveKey !== id.key) return;
+      // See app.js: "busy" is another track decoding, not an answer about this
+      // one. Drop the key so the next poll asks again rather than latching the
+      // track to a plain bar for its whole length.
+      if (j && j.reason === "busy") { waveKey = ""; return; }
+      if (!j || !j.peaks) return;
+      const bin = atob(j.peaks);
+      const u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      wavePeaks = u8;
+      drawWave(0);
+    } catch (e) {
+      /* A streaming track, an undecodable file, or the server busy. The plain
+         fill is already showing. */
+    }
+  }
+
   // Smooth progress between polls.
   function paintProgress() {
     if (!np || !np.length) { bbFill.style.width = "0%"; bbCur.textContent = "0:00"; return; }
@@ -175,6 +286,9 @@
       seekBase + (playing ? (Date.now() - seekBaseAt) / 1000 : 0));
     bbFill.style.width = ((pos / np.length) * 100).toFixed(2) + "%";
     bbCur.textContent = fmt(pos);
+    // Same number as the fill, so the two can never disagree about where the
+    // track is.
+    drawWave(pos / np.length);
   }
 
   function showIdle() {
