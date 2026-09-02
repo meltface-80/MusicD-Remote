@@ -12170,6 +12170,15 @@ function wfAlbumKey(album, artist) {
   for (const k of albumKeys(album || "", artist || "")) {
     if (localAlbumDirs.has(k)) return k;
   }
+  // ONLY when the artist is unusable. With a real artist a miss is a real
+  // answer — "we do not have this album" — and falling to the title would claim
+  // whatever else shares the name: Roon plays Alex G's "Rocket" from Qobuz, the
+  // library holds Goldfrapp's "Rocket", and v1.8.4 handed back the Goldfrapp
+  // folder. wfResolveFile's track-title check caught it in practice, but the
+  // answer was wrong before it got there, and a shared track title would have
+  // put a different record's shape under the song. Same guard titleOnlySource
+  // carries; it was missing here.
+  if (canonArtist(artist || "")) return null;
   const titles = albumKeys(album || "", "").map(AK.titleOf).filter(Boolean);
   const hits = AK.titleOnlyMatches(localAlbumDirs.keys(), titles);
   return AK.soleTargetKey(hits, localAlbumDirs);

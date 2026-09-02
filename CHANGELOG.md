@@ -2,6 +2,38 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.5] — 2026-09-02
+
+### Fixed — v1.8.4 could claim another artist's album as the playing one's file
+
+A regression I shipped one version ago, caught by the first dump taken against it. Roon was playing
+**Alex G's "Rocket" from Qobuz**; the library holds **Goldfrapp's "Rocket"**; `wfAlbumKey` handed back
+the Goldfrapp folder. The dump said so in one line — `album_source: "qobuz"` beside
+`has_local_file: true`, two answers that cannot both be right.
+
+v1.8.4 added the title-only fallback to two call sites and the **guard to only one**. `titleOnlySource`
+fires only when the artist is unusable; `wfAlbumKey` fired always. With a real artist, a miss is a real
+answer — "we do not have this album" — and falling to the title claims whatever else happens to share
+the name.
+
+In practice `wfResolveFile`'s track-title check usually caught it a step later and the user saw a plain
+bar, so the visible damage was small. But the answer was already wrong before it got there, and a
+shared track title between the two albums would have put **a different record's waveform under the
+song** — the exact failure this feature has been designed around from the start. It also meant an
+album like Alex G's *Rocket* read as local, which would have blocked the Qobuz path from ever firing
+for it.
+
+- The guard is now on both call sites, with the reason written at each.
+- `test/unit/wfalbumkey.test.js` (8 tests) covers `wfAlbumKey` for the first time — it had none.
+  The Alex G / Goldfrapp collision is pinned in both directions, and removing the guard again fails
+  two of them.
+
+**Class of error:** one rule, two call sites, applied to one. The fallback and its precondition were
+written in separate places, so nothing made the omission visible — not review, not the suite, only a
+live dump. The precondition is now stated at both sites and asserted at both.
+
+- 876 unit / 513 DOM / 83 static tests
+
 ## [1.8.4] — 2026-09-02
 
 ### Fixed — albums Roon names without an artist got no waveform and no badge
