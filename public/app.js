@@ -8394,12 +8394,26 @@
     // entirely rather than reading zero.
     const val = Number.isFinite(pos) ? pos : (parseFloat(npSeek.value) || 0);
     const pct = max > 0 ? Math.max(0, Math.min(100, (val / max) * 100)) : 0;
+
+    // The waveform carries the same progress, from the same number, so the two
+    // can never disagree about where the track is. Drawn FIRST because this is
+    // what adds and removes .has-wave, which the fill below reads.
+    drawWave(val);
+
+    // With a waveform showing, the range's own 4px track draws a line straight
+    // through the middle of the shape, and the canvas already paints the
+    // played/unplayed split. The stylesheet sets --seek-fill to transparent for
+    // that case, but an INLINE custom property beats any stylesheet rule
+    // however specific, so it has to be REMOVED here rather than overridden —
+    // writing the gradient unconditionally is what put a grey line across the
+    // waveform in v1.7.90.
+    if (npProgressEl && npProgressEl.classList.contains("has-wave")) {
+      npSeek.style.removeProperty("--seek-fill");
+      return;
+    }
     npSeek.style.setProperty("--seek-fill",
       "linear-gradient(to right, var(--accent) 0%, var(--accent) " + pct + "%, " +
       "var(--border) " + pct + "%, var(--border) 100%)");
-    // The waveform carries the same progress, from the same number, so the two
-    // can never disagree about where the track is.
-    drawWave(val);
   }
 
   async function seek(seconds) {

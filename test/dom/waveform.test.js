@@ -106,6 +106,11 @@ const DRIVER = `
              accent: cs.getPropertyValue("--accent").trim(),
              bg: cs.getPropertyValue("--bg").trim() };
   })());
+  // Which of the two won for the range's own 4px track: paintSeek writes this
+  // INLINE (so it beats the stylesheet) and must remove it while a waveform is
+  // showing. The pixel test proves the outcome; this names the mechanism, so a
+  // failure says which half broke.
+  T("seek_fill", getComputedStyle(seek).getPropertyValue("--seek-fill").trim());
   T("canvas_pointer_events", wave ? getComputedStyle(wave).pointerEvents : "");
   T("canvas_aria_hidden", wave ? wave.getAttribute("aria-hidden") : "");
   T("painted", (function () {
@@ -164,6 +169,12 @@ test("with a waveform, the bar gains a shape and loses nothing", async (t) => {
     assert.equal(r.canvas_pointer_events, "none");
     assert.equal(r.canvas_aria_hidden, "true",
       "the decorative canvas is announced to assistive technology");
+  });
+
+  await t.test("the range's own track is switched off", () => {
+    assert.equal(r.seek_fill, "transparent",
+      `--seek-fill is "${r.seek_fill}" — the 4px track is still being painted, ` +
+      `and it lands exactly on the waveform's midline`);
   });
 
   await t.test("the draggable area covers the whole shape", () => {
@@ -318,6 +329,11 @@ test("a streaming track keeps the plain bar", async (t) => {
     assert.equal(r.seek.disabled, false);
     assert.equal(r.seek.max, "285");
     assert.equal(r.seek.hit, "seek");
+    // THE fill, not just the control. Switching the track off is right only
+    // while a waveform is showing; doing it here would leave every streaming
+    // track — most of a mixed library — with no progress indication at all.
+    assert.match(r.seek_fill, /gradient/,
+      `--seek-fill is "${r.seek_fill}" — the plain bar lost its elapsed fill`);
   });
 });
 
@@ -621,5 +637,86 @@ test("a 'busy' answer is retried, not taken as the final word", async (t) => {
     assert.equal(r.hidden, false,
       "the waveform never appeared even though the server stopped being busy");
     assert.equal(r.has_wave_class, true);
+  });
+});
+
+test("THE one for v1.7.91: the range's own track is not drawn through the shape", async (t) => {
+  if (!harness.available) { t.skip("no chromium binary available"); return; }
+
+  // Reported on a phone: the waveform drew, and a grey line ran edge to edge
+  // through the middle of it with the played part in blue — the range input's
+  // own 4px track, sitting exactly where the waveform's midline is.
+  //
+  // The stylesheet had `--seek-fill: transparent` for this case and it did
+  // nothing, because paintSeek writes that property INLINE four times a second
+  // and an inline custom property beats a stylesheet rule however specific.
+  // Nothing in the DOM says which of the two won, so this is a pixel test.
+  //
+  // HOW IT TELLS A LINE FROM THE WAVEFORM, given both sit on the same midline:
+  // the fixture is SILENT for its second half, where the bars are the 1px floor
+  // drawn 2px on / 1px off. Nothing the canvas draws there can be continuous,
+  // so the longest unbroken horizontal run separates the two outright — 156px
+  // (the full width) with the line, single digits without it.
+  const HALF = Buffer.from(
+    Array.from({ length: 200 }, (_, i) => (i < 80 ? 255 : 0))
+  ).toString("base64");
+  const EARLY = JSON.parse(JSON.stringify(ZONE));
+  EARLY.now_playing.seek_position = 10;   // barely started, like the report
+  EARLY.state = "paused";                 // so the playhead cannot walk off
+
+  const r = harness.renderPage({
+    name: "wf-no-track", windowSize: "390x844", screenshot: true,
+    stub: stub({ enabled: true, answer: { peaks: HALF, n: 200 } })
+            .replace(JSON.stringify(ZONE), JSON.stringify(EARLY)),
+    driver: DRIVER,
+  });
+  harness.assertNoPageError(assert, r);
+  assert.equal(r.wave_hidden, false, "no waveform was showing, so there is nothing to draw through");
+
+  const { decodePng, pixel } = require("../../lib/png");
+  const img = decodePng(r.__png);
+  const { seek, dpr } = r.boxes;
+  const hex = (h) => {
+    const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(h).trim());
+    assert.ok(m, `--bg came back as "${h}", which is not a hex colour`);
+    return [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)];
+  };
+  const bg = hex(r.tokens.bg);
+  const ink = (p) => Math.abs(p[0] - bg[0]) + Math.abs(p[1] - bg[1]) + Math.abs(p[2] - bg[2]) > 12;
+
+  // The bars' own rows, found in THIS image from the loud half: a bar row is
+  // ~2/3 covered (2px on, 1px off), while the times underneath are sparse text.
+  // Taken by coverage rather than by extent so a label below cannot widen the
+  // band being searched.
+  const lx0 = Math.floor(seek.x) + 10, lx1 = Math.floor(seek.x + seek.w * 0.35);
+  const rows = [];
+  for (let y = Math.floor(seek.y) - 30; y <= Math.ceil(seek.y + seek.h) + 30; y++) {
+    let n = 0;
+    for (let x = lx0; x < lx1; x++) if (ink(pixel(img, x * dpr, y * dpr))) n++;
+    if (n > (lx1 - lx0) * 0.4) rows.push(y);
+  }
+
+  // The silent half, well clear of the loud/quiet boundary and the bar's ends.
+  const sx0 = Math.floor(seek.x + seek.w * 0.55), sx1 = Math.ceil(seek.x + seek.w) - 4;
+  let longest = 0, atRow = -1;
+  for (const y of rows) {
+    let run = 0;
+    for (let x = sx0; x < sx1; x++) {
+      if (ink(pixel(img, x * dpr, y * dpr))) {
+        if (++run > longest) { longest = run; atRow = y; }
+      } else run = 0;
+    }
+  }
+
+  await t.test("the fixture really did draw a waveform to look through", () => {
+    assert.ok(rows.length >= 8,
+      `only ${rows.length} rows of waveform found — the shape is not there to test against`);
+  });
+
+  await t.test("nothing continuous is drawn across the silent half", () => {
+    assert.ok(longest <= 16,
+      `a solid ${longest}px line runs across the waveform at y=${atRow} (the silent ` +
+      `stretch is ${sx1 - sx0}px wide, and the canvas can only draw 2px dashes ` +
+      `there) — the seek input's own track is being painted through the shape`);
   });
 });

@@ -2044,13 +2044,15 @@ main {
   pointer-events: none;
 }
 .np-wave.hidden { display: none; }
-/* With a waveform showing, the range's own 4px track would draw a line straight
+/* With a waveform showing, the range's own 4px track draws a line straight
    through the middle of it. The canvas carries the progress instead — it paints
    the played part in the accent and the rest dim — so the track goes and the
    THUMB stays, which is what makes the bar look draggable.
-   Overriding --seek-fill rather than the pseudo-elements: paintSeek() writes a
-   gradient into that property four times a second, and a rule targeting
-   ::-webkit-slider-runnable-track would be fighting it on every frame. */
+   THIS RULE IS ONLY HALF THE ANSWER, and on its own it did nothing: paintSeek()
+   writes the gradient into --seek-fill as an INLINE property, and an inline
+   custom property beats a stylesheet rule however specific it is. paintSeek
+   removes that inline value while .has-wave is set, which is what lets this
+   line apply at all. Both halves are needed; neither works alone. */
 .np-progress.has-wave .np-seek { --seek-fill: transparent; }
 /* NOT flex: .np-progress also holds .np-times, and a row would put the elapsed
    and remaining times beside the bar instead of under it.

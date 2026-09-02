@@ -2,6 +2,36 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.7.91] — 2026-09-02
+
+### Fixed — the seek bar's own track was drawn through the waveform
+
+Reported on a phone the moment v1.7.90 was installed: the shape drew correctly and a grey line ran
+edge to edge through the middle of it, with the played part in blue at the left. That line is the
+range input's own 4px track, and it sits exactly where the waveform's midline is.
+
+The stylesheet had carried `--seek-fill: transparent` for this case since v1.7.90 and it never did
+anything. **`paintSeek()` writes that property as an INLINE style four times a second, and an inline
+custom property beats a stylesheet rule however specific it is.** The comment beside the CSS had the
+precedence backwards — it claimed overriding the property avoided "fighting paintSeek on every
+frame", when in fact paintSeek won every frame and the rule was dead. `paintSeek` now REMOVES its
+inline value while the waveform is showing, which is what lets the stylesheet's `transparent` apply.
+Both halves are needed and neither works alone; a mutation test pins each.
+
+`paintSeek` also draws the waveform before deciding the fill rather than after, because `drawWave` is
+what adds and removes `.has-wave` — checking it first read the previous frame's state.
+
+The plain bar is untouched: with no waveform the elapsed gradient is written exactly as before, which
+is now asserted, because removing it everywhere would have left every streaming track with no
+progress indication at all and nothing would have noticed.
+
+**How it is tested, given a line and a waveform sit on the same midline.** The fixture is silent for
+its second half, where the canvas draws only its 1px floor — 2px on, 1px off. Nothing the canvas can
+draw there is continuous, so the longest unbroken horizontal run separates the two outright: 156px
+(the full width) with the line, 8px without it.
+
+- 820 unit / 513 DOM / 81 static tests — README points here
+
 ## [1.7.90] — 2026-09-02
 
 ### Added — the shape of the track, under the progress bar
