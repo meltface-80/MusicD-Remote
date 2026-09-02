@@ -2,6 +2,45 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.7] — 2026-09-02
+
+### Fixed — v1.8.6's streaming waveform never fired, and said nothing about it
+
+Reported the moment it was installed: no waveform on either screen. The feature was inert on every
+existing install, for a reason that had nothing to do with Qobuz, the secret or the audio.
+
+**The album ids were harvested but never persisted.** v1.8.6 collected `key → Qobuz album_id`
+alongside the favourite keys, from the same response — and then `saveStreamAlbumKeys` wrote only the
+keys. The ids are what turns "you favourited this album" into "here is its track list", so after any
+restart there were none, and every streaming lookup declined.
+
+**And the refresh that would have rebuilt them was skipped.** The startup fetch runs only when there
+are *no* persisted keys — correct while keys were the sole thing harvested, wrong the moment
+something else rode along in the same pass and did not persist. Anyone with working source badges
+had keys, so the refresh never ran, so the ids stayed empty. Indefinitely.
+
+- The ids are written with the keys now, and an index that has keys but no ids triggers the startup
+  refresh — so an existing install repairs itself about 20 seconds after this build starts, with no
+  rescan and no reconnection.
+
+### Fixed — three declines that explained nothing
+
+`wfQobuzTrack` returned early in silence three times over, and the failure that actually happened was
+one of them. Building reason-logging into every gate of this feature and then bypassing it at the top
+is what turned a one-line diagnosis into a report of "not working".
+
+- Every decline logs. The no-album-id line names the album, the artist and **how many ids are known**,
+  which is what identifies this specific failure at a glance.
+- `/api/debug/zone-dump` reports a `qobuz` block: album keys, album ids, whether a secret is set and
+  whether Qobuz is connected. Zero ids beside non-zero keys is exactly the state above.
+- The favourites log line now ends `, N with an album id`, so a completed harvest is visible.
+
+**Class of error:** two things harvested together, one persisted. The pair was written in one place
+and saved in another, and the save had been correct for as long as there was only one thing to save.
+Nothing in the suite could see it — the bug lives entirely in what survives a restart.
+
+- 900 unit / 513 DOM / 85 static tests
+
 ## [1.8.6] — 2026-09-02
 
 ### Added — waveforms for Qobuz albums

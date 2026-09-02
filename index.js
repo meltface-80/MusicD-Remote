@@ -3192,20 +3192,30 @@ function loadStreamAlbumKeys() {
     if (!raw || raw.v !== SOURCE_KEY_VERSION) return;
     if (Array.isArray(raw.qobuz)) qobuzAlbumKeys = new Set(raw.qobuz);
     if (Array.isArray(raw.tidal)) tidalAlbumKeys = new Set(raw.tidal);
+    if (Array.isArray(raw.qobuzIds)) qobuzAlbumIds = new Map(raw.qobuzIds);
     if (DEBUG) console.log("[stream] loaded", qobuzAlbumKeys.size, "Qobuz +",
                            tidalAlbumKeys.size, "Tidal album keys");
   } catch (e) { /* absent on first run — rebuilt by the next favourites refresh */ }
 }
 function saveStreamAlbumKeys() {
   writeJsonAtomic(STREAM_ALBUMS_FILE,
-    { v: SOURCE_KEY_VERSION, qobuz: [...qobuzAlbumKeys], tidal: [...tidalAlbumKeys] }, "[stream]");
+    { v: SOURCE_KEY_VERSION, qobuz: [...qobuzAlbumKeys], tidal: [...tidalAlbumKeys],
+      // Written WITH the keys, because they are harvested together and are
+      // useless apart. v1.8.6 persisted the keys and not these, so after any
+      // restart the streaming waveform had no album to fetch and declined
+      // silently — the feature simply never fired.
+      qobuzIds: [...qobuzAlbumIds] }, "[stream]");
 }
 loadStreamAlbumKeys();
 // First run (or a version upgrade) has no persisted keys: fetch them shortly
 // after boot so badges appear without waiting for the next library sync.
 // Delayed so it never competes with pairing, and unref'd so it can't hold the
 // process open.
-if (!qobuzAlbumKeys.size && !tidalAlbumKeys.size) {
+// ...or when we have Qobuz keys but no album ids to go with them. That is what
+// an index written by a build before the ids existed looks like, and without
+// this the streaming waveform waits for a library sync that may be hours away.
+if ((!qobuzAlbumKeys.size && !tidalAlbumKeys.size) ||
+    (qobuzAlbumKeys.size && !qobuzAlbumIds.size)) {
   const t = setTimeout(() => {
     refreshStreamAlbumKeys("startup").catch(e => {
       if (DEBUG) console.error("[stream] startup refresh:", e.message);
@@ -3408,7 +3418,7 @@ async function refreshStreamAlbumKeys(reason) {
         qobuzAlbumIds  = ids;
         console.log("[stream] Qobuz favourites: " + keys.size + " albums from " + fetched +
                     " favourites (" + reason + ")" + (skipped ? ", " + skipped + " unkeyable" : "") +
-                    ", " + years.size + " dated");
+                    ", " + years.size + " dated, " + ids.size + " with an album id");
       } catch (e) {
         // Left untouched on failure: a network blip must not wipe working badges.
         console.error("[stream] Qobuz favourites failed (keys kept):", e.message);
@@ -12457,9 +12467,20 @@ async function wfPrefetchNext(zone) {
  */
 async function wfQobuzTrack(album, artist, track, seconds) {
   if (!waveformEnabled || !labelsDb) return null;
-  if (!String(qobuzAppSecret || "").trim()) return null;
+  // Every decline below says why. v1.8.6 returned from these three in silence,
+  // so the one failure that actually happened — no album ids after a restart —
+  // produced no waveform, no error and no log line to look at.
+  if (!String(qobuzAppSecret || "").trim()) {
+    if (DEBUG) console.log("[waveform] qobuz: no app secret set — streaming waveforms are off");
+    return null;
+  }
   const albumId = wfQobuzAlbumId(album, artist);
-  if (!albumId) return null;
+  if (!albumId) {
+    console.log("[waveform] qobuz: no Qobuz album id for \"" + album + "\" by \"" +
+                (artist || "(none)") + "\" — " + qobuzAlbumIds.size + " ids known" +
+                (qobuzAlbumIds.size ? "" : " (favourites not read yet)"));
+    return null;
+  }
 
   const tkey = WF.trackKey("qobuz:" + albumId, track);
   if (!tkey) return null;
@@ -12688,6 +12709,15 @@ app.get("/api/debug/zone-dump", async (req, res) => {
      * many of the samples carried each field. A field that appears for some
      * tracks and not others is exactly what a source marker would look like.
      */
+    // Streaming waveforms need an album id, not just a key. Reported here
+    // because zero of them is the difference between "declined for a good
+    // reason" and "the favourites have not been read yet".
+    qobuz: {
+      album_keys: qobuzAlbumKeys.size,
+      album_ids: qobuzAlbumIds.size,
+      secret_set: !!String(qobuzAppSecret || "").trim(),
+      connected: qobuzReady(),
+    },
     sample_count: npSamples.length,
     sample_fields: SHAPE.formatPaths(SHAPE.unionPaths(npSamples.map(x => x.now_playing))),
     samples: npSamples.map(x => ({ at: x.at, zone: x.zone_name, state: x.state,
