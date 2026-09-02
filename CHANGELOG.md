@@ -2,6 +2,47 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.9] — 2026-09-02
+
+### Fixed — both streaming calls went to a URL with a doubled slash
+
+The secret was set, Qobuz albums were playing, and still nothing drew. `QOBUZ_BASE` ends in `/`, and
+the two calls added in v1.8.6 were the only ones in the file written with a **leading slash**:
+
+```
+qobuzGet("/album/get")        →  https://www.qobuz.com/api.json/0.2//album/get
+qobuzGet("/track/getFileUrl") →  …/0.2//track/getFileUrl
+```
+
+Every other call in `lib/qobuz.js` — eight of them, going back to the original integration — passes a
+bare path. The two new ones did not, so neither ever reached Qobuz. The signature was correct; the
+address was not.
+
+It hid well: a wrong URL comes back as an ordinary non-200, and this client turns every non-200 into
+"no result", which the waveform treats as the normal answer of "no waveform for this track". A
+mistake with no distinguishing symptom.
+
+- Both paths corrected, and `qobuzGet` now **strips a leading slash itself** — the convention is
+  enforced in the one place that builds the URL rather than trusted to each new call site.
+- Two tests: no `qobuzGet` call may carry a leading slash, and the normalisation must stay. Putting
+  the bug back fails both.
+
+### Verified against a working client
+The user's own Qobuz tooling confirmed two things this code could not check from here:
+
+- **The signature construction in `lib/qobuz-sig.js` is correct** — endpoint with its slash removed,
+  parameters sorted by name and concatenated as `key` immediately followed by `value`, then the
+  timestamp, then the secret. Written from reasoning about an undocumented scheme; now matched
+  against an implementation that works against the live API.
+- **The endpoint names are right**: `album/get` and `track/getFileUrl`.
+
+### Note on the app secret
+Still not shipped, and now for a better reason than caution: a working client already re-derives it
+weekly. Duplicating that here would be a second, untested copy of a solved problem — the value goes
+in Settings, from whatever already keeps a current one.
+
+- 902 unit / 513 DOM / 85 static tests
+
 ## [1.8.8] — 2026-09-02
 
 ### Fixed — the likeliest reason of all was the one hidden behind a debug flag

@@ -185,3 +185,29 @@ test("every outcome explains itself", () => {
     assert.ok(r.reason.length > 8, `thin reason: "${r.reason}"`);
   }
 });
+
+// --- the URL the call actually goes to (v1.8.9) ----------------------------
+
+test("THE one: a leading slash in an endpoint cannot reach the URL", () => {
+  // QOBUZ_BASE ends in "/", so "/album/get" builds ".../0.2//album/get" — wrong
+  // in a way nothing downstream can see, because the failure comes back as an
+  // ordinary non-200 and this client turns those into "no result". v1.8.6
+  // shipped both streaming calls that way and they simply never worked.
+  const src = require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "../../lib/qobuz.js"), "utf8");
+  const calls = [...src.matchAll(/qobuzGet\(\s*"([^"]*)"/g)].map((m) => m[1]);
+  assert.ok(calls.length >= 8, `only found ${calls.length} qobuzGet calls — the scan is not working`);
+  const bad = calls.filter((e) => e.startsWith("/"));
+  assert.deepEqual(bad, [], `these endpoints carry a leading slash: ${bad.join(", ")}`);
+  // And the guard that makes it not matter even if one slips through.
+  assert.match(src, /endpoint\s*=\s*String\(endpoint[^)]*\)\.replace\(\/\^\\\/\+\/, ""\)/,
+    "qobuzGet no longer strips a leading slash, so the convention is unenforced again");
+});
+
+test("the streaming endpoints are named the way Qobuz names them", () => {
+  const src = require("node:fs").readFileSync(
+    require("node:path").join(__dirname, "../../lib/qobuz.js"), "utf8");
+  for (const e of ["album/get", "track/getFileUrl"]) {
+    assert.ok(src.includes('qobuzGet("' + e + '"'), `missing the ${e} call`);
+  }
+});
