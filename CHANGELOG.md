@@ -2,6 +2,27 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.0] — 2026-09-02
+
+Version jump for the waveform feature. The code is what shipped in v1.7.90 and v1.7.91 — this
+release renumbers it and carries the documentation with it, in one commit, so the merge takes the
+whole thing at once rather than leaving the version references trailing a release behind.
+
+### Changed
+- `README.md` and the docs site (`docs/index.html`) move to **v1.8.0**: install commands, tarball
+  URLs, `docker build` tags, the version badge and the configurator's baked-in fallback version.
+- **Waveform is the first entry in both feature lists**, marked *New* on the docs site.
+
+### The feature, in one paragraph
+The seek bar on Now playing and the wall display's progress strip draw the shape of the track that
+is playing. Off by default; Settings → Playback turns it on and it stays on. Each track is analysed
+once and stored on the data volume, and the next track in the queue is decoded while the current one
+plays, so it is already there when the track changes. **Local files only** — a Roon extension is
+given metadata and control, never audio, so Qobuz and TIDAL tracks keep the plain bar and always
+will. See the v1.7.90 and v1.7.91 entries below for how it is built and the two defects found in it.
+
+- 820 unit / 513 DOM / 81 static tests
+
 ## [1.7.91] — 2026-09-02
 
 ### Fixed — the seek bar's own track was drawn through the waveform
