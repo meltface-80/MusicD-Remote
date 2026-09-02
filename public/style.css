@@ -2015,10 +2015,58 @@ main {
 .np-album:hover, .np-album:focus-visible { color: var(--text); text-decoration: underline; }
 .np-album:empty { display: none; }
 
-.np-progress { width: 100%; margin-top: 18px; }
+.np-progress {
+  width: 100%; margin-top: 18px; position: relative;
+  /* Chrome's UA stylesheet puts margin:2px on input[type=range], and nothing in
+     this file used to say so. The canvas is positioned against the CONTAINER
+     while the input sits in flow below that margin, so the shape was drawn 2px
+     above the thumb that is supposed to ride along it — measured off a
+     screenshot at 638.5 against 640.5, not inferred. Declared once here and
+     used by both rules, so the two cannot drift apart again. */
+  --seek-inset: 2px;
+  /* The waveform's height, and with it the height of the bar in waveform mode.
+     Named because two rules have to agree on it: the canvas draws at this
+     height and the input is grown to match, so the whole shape is draggable
+     rather than just the 4px line the plain bar occupies. */
+  --wave-h: 34px;
+}
+/* The waveform sits UNDER the seek input, which keeps every one of its own
+   behaviours (drag, keyboard, the elapsed fill painted into --seek-fill). The
+   canvas is inert decoration: pointer-events none, aria-hidden, and removed
+   from the flow entirely when the track has no waveform, so a streaming track
+   is exactly the bar it was before this feature existed. */
+.np-wave {
+  position: absolute;
+  /* Aligned to the INPUT's box, not the container's, so the thumb rides through
+     the middle of the waveform rather than sitting below it. */
+  left: 0; right: 0; top: var(--seek-inset);
+  width: 100%; height: var(--wave-h);
+  pointer-events: none;
+}
+.np-wave.hidden { display: none; }
+/* With a waveform showing, the range's own 4px track draws a line straight
+   through the middle of it. The canvas carries the progress instead — it paints
+   the played part in the accent and the rest dim — so the track goes and the
+   THUMB stays, which is what makes the bar look draggable.
+   THIS RULE IS ONLY HALF THE ANSWER, and on its own it did nothing: paintSeek()
+   writes the gradient into --seek-fill as an INLINE property, and an inline
+   custom property beats a stylesheet rule however specific it is. paintSeek
+   removes that inline value while .has-wave is set, which is what lets this
+   line apply at all. Both halves are needed; neither works alone. */
+.np-progress.has-wave .np-seek { --seek-fill: transparent; }
+/* NOT flex: .np-progress also holds .np-times, and a row would put the elapsed
+   and remaining times beside the bar instead of under it.
+   The input grows to the canvas's height instead. A range centres its track and
+   thumb vertically in its own box, so a 34px input puts the thumb exactly on
+   the waveform's midline with no offsets to keep in step. */
+.np-progress.has-wave .np-seek { height: var(--wave-h); position: relative; z-index: 1; }
+.np-progress.has-wave .np-seek::-webkit-slider-thumb { margin-top: -5px; }
 .np-seek {
   -webkit-appearance: none; appearance: none;
   display: block;
+  /* Stated rather than inherited from the UA sheet — .np-wave is positioned
+     against this exact value. */
+  margin: var(--seek-inset) 0;
   width: 100%; height: 14px;
   background: transparent;
   cursor: pointer;

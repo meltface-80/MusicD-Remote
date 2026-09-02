@@ -2,6 +2,129 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.0] — 2026-09-02
+
+Version jump for the waveform feature. The code is what shipped in v1.7.90 and v1.7.91 — this
+release renumbers it and carries the documentation with it, in one commit, so the merge takes the
+whole thing at once rather than leaving the version references trailing a release behind.
+
+### Changed
+- `README.md` and the docs site (`docs/index.html`) move to **v1.8.0**: install commands, tarball
+  URLs, `docker build` tags, the version badge and the configurator's baked-in fallback version.
+- **Waveform is the first entry in both feature lists**, marked *New* on the docs site.
+
+### The feature, in one paragraph
+The seek bar on Now playing and the wall display's progress strip draw the shape of the track that
+is playing. Off by default; Settings → Playback turns it on and it stays on. Each track is analysed
+once and stored on the data volume, and the next track in the queue is decoded while the current one
+plays, so it is already there when the track changes. **Local files only** — a Roon extension is
+given metadata and control, never audio, so Qobuz and TIDAL tracks keep the plain bar and always
+will. See the v1.7.90 and v1.7.91 entries below for how it is built and the two defects found in it.
+
+- 820 unit / 513 DOM / 81 static tests
+
+## [1.7.91] — 2026-09-02
+
+### Fixed — the seek bar's own track was drawn through the waveform
+
+Reported on a phone the moment v1.7.90 was installed: the shape drew correctly and a grey line ran
+edge to edge through the middle of it, with the played part in blue at the left. That line is the
+range input's own 4px track, and it sits exactly where the waveform's midline is.
+
+The stylesheet had carried `--seek-fill: transparent` for this case since v1.7.90 and it never did
+anything. **`paintSeek()` writes that property as an INLINE style four times a second, and an inline
+custom property beats a stylesheet rule however specific it is.** The comment beside the CSS had the
+precedence backwards — it claimed overriding the property avoided "fighting paintSeek on every
+frame", when in fact paintSeek won every frame and the rule was dead. `paintSeek` now REMOVES its
+inline value while the waveform is showing, which is what lets the stylesheet's `transparent` apply.
+Both halves are needed and neither works alone; a mutation test pins each.
+
+`paintSeek` also draws the waveform before deciding the fill rather than after, because `drawWave` is
+what adds and removes `.has-wave` — checking it first read the previous frame's state.
+
+The plain bar is untouched: with no waveform the elapsed gradient is written exactly as before, which
+is now asserted, because removing it everywhere would have left every streaming track with no
+progress indication at all and nothing would have noticed.
+
+**How it is tested, given a line and a waveform sit on the same midline.** The fixture is silent for
+its second half, where the canvas draws only its 1px floor — 2px on, 1px off. Nothing the canvas can
+draw there is continuous, so the longest unbroken horizontal run separates the two outright: 156px
+(the full width) with the line, 8px without it.
+
+- 820 unit / 513 DOM / 81 static tests — README points here
+
+## [1.7.90] — 2026-09-02
+
+### Added — the shape of the track, under the progress bar
+
+The seek bar on Now playing and the strip on the wall display can draw the waveform of the song that
+is playing. **Off by default**; Settings → Playback → Waveform turns it on and it stays on until it is
+turned off.
+
+**Local files only, and that is not a limitation that can be engineered away.** A Roon extension is
+given metadata and control, never audio — Qobuz and TIDAL are streamed by the Core straight to the
+endpoint, and nothing an extension can ask for carries a sample of it. So a streaming track keeps the
+plain bar it has always had, which is the common case for most libraries and is treated as a normal
+answer everywhere in this feature, never as a failure.
+
+How it works:
+
+- `lib/waveform.js` is the peak maths, with no I/O in it: a streaming accumulator takes one peak per
+  256 samples as the audio arrives, then resamples to 1000 buckets **by maximum, never by mean** —
+  averaging peaks is exactly what flattens the shape a waveform exists to show. Normalised per track,
+  so a quietly-mastered record is not a flat line next to a loud one.
+- `lib/waveform-decode.js` runs ffmpeg (`ffmpeg-static`, pinned with the app; a system ffmpeg on PATH
+  is the fallback). It decodes to 8 kHz mono — a bucket already spans a third of a second at that
+  rate, so decoding at 44.1 and discarding 98% of it would cost five times the CPU for an identical
+  picture. It never rejects: a missing codec, a truncated file or a vanished mount are all "this
+  track has no waveform".
+- Every answer is stored in a `waveforms` table on the data volume, keyed by album key + canonical
+  title — never by queue offset, which is a position in a list that reshuffles on every library
+  change. A track is analysed once, ever.
+- **The next track in the queue is decoded while the current one plays**, one ahead and no further:
+  the queue reshuffles constantly, so anything past the next item is CPU spent on tracks that will
+  not play. That turns the only visible wait — a cold track — into an instant one. An overtaken
+  prefetch is cancelled rather than awaited, because a 20-minute decode nobody wants any more is 20
+  minutes of a core the playing track needs.
+
+The canvas is decoration **under** the range input, never a replacement for it. The input keeps the
+drag, the keyboard, the thumb and the disabled state, and if anything here fails the bar is exactly
+the control it was before this feature existed.
+
+### Fixed — the shape was drawn 2px above the thumb riding on it
+
+The canvas is positioned against `.np-progress` while the input sits in flow below the 2px margin
+Chrome's UA stylesheet puts on `input[type=range]` — which nothing in this file mentioned. The two
+boxes both looked right, because the boxes *were* right; only the pixels disagreed, and the waveform
+was drawn 2px clear of the thumb meant to ride along it. The inset is a declared token now, used by
+both rules so they cannot drift apart again.
+
+### Fixed — two clients asking for the same track
+
+A phone and the wall display pointed at the same zone both ask for the track that just started, a
+second apart. The second one was told `busy` — about a decode of the very thing it wanted — and the
+client, which latches a track's key the moment it asks, took that as final and showed a plain bar for
+the rest of the song. Concurrent requests for the same track now share one decode, and a `busy` answer
+about a *different* track is retried on the next poll instead of ending the matter.
+
+### Added — the DOM harness can read pixels
+
+Layout cannot see paint order: two overlapping elements report the same box, and `elementFromPoint`
+skips anything with `pointer-events: none`. `lib/png.js` is a ~100-line PNG reader (zlib is in node —
+no new dependency) and `renderPage({ screenshot: true })` returns the composited page, which is how
+"the thumb rides on the waveform" is now an assertion rather than a belief.
+
+**Class of error worth recording, because it cost most of the work above.** The first version of that
+assertion compared a `getBoundingClientRect` taken by the driver against a pixel from the screenshot.
+`--screenshot` fires when the virtual time budget expires, seconds after the driver ran, and the page
+has moved by then — 8.5px, in that fixture. It reported a misalignment that did not exist, and a fix
+was written for it: the thumb hidden and the playhead drawn into the canvas instead. Measuring both
+things out of the *same* screenshot showed the thumb had been exactly on the waveform's midline all
+along, and the whole fix was reverted. **A measurement that compares two different moments is not a
+measurement.** The 2px defect above is real and was found the same way — same screenshot, both values.
+
+- 820 unit / 509 DOM / 81 static tests — README points here
+
 ## [1.7.89] — 2026-08-31
 
 ### Fixed — a transient image failure was permanent

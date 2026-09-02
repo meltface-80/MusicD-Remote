@@ -105,6 +105,18 @@
   }
   .card h3 { font-size: 15.5px; font-weight: 650; margin-bottom: 6px; }
   .card h3 .em { margin-right: 8px; }
+  /* "New" marker on a feature card. Copper like every other accent here, and
+     sized off the heading rather than fixed, so it stays proportional if the
+     card type is reused elsewhere. */
+  .card h3 .new {
+    margin-left: 8px; vertical-align: 1px;
+    font-size: 10.5px; font-weight: 700; letter-spacing: .06em;
+    text-transform: uppercase;
+    padding: 2px 7px; border-radius: 999px;
+    border: 1px solid var(--copper-dim); color: var(--copper-hi);
+    background: rgba(196,127,74,.10);
+  }
+  .card.is-new { border-color: var(--copper-dim); }
   .card p { font-size: 13.5px; color: var(--muted); }
 
   /* ---------- configurator ---------- */
@@ -294,7 +306,7 @@
      <a href="https://roon.app">Roon</a> — random-album browsing, instant whole-library
      search, rich label &amp; artist pages, and seamless playback with Roon Server at the heart.</p>
   <div class="badges">
-    <span class="badge" id="ver-badge">v1.7.89</span>
+    <span class="badge" id="ver-badge">v1.8.0</span>
     <span class="badge plain">Docker</span>
     <span class="badge plain">MIT licence</span>
     <span class="badge plain">Pairs with your Roon Core over the network</span>
@@ -308,6 +320,13 @@
        API — the app never touches your library files (except an optional read-only mount for
        label-tag scanning).</p>
     <div class="grid">
+      <div class="card is-new"><h3><span class="em">〰️</span>Waveform<span class="new">New</span></h3>
+        <p>The seek bar on Now playing and the wall display's progress strip draw the shape of the
+           track you're listening to — where the quiet intro ends, where the loud middle is. Off by
+           default; switch it on in Settings&nbsp;→ Playback and it stays on. Each track is analysed
+           once and stored, and the next one in the queue is prepared while the current one plays, so
+           it's there the moment the track changes. Local files only: Roon streams Qobuz and TIDAL
+           straight to your endpoint and never to an extension, so those tracks keep the plain bar.</p></div>
       <div class="card"><h3><span class="em">🎵</span>Album discovery</h3>
         <p>Random album selection with filtering, Album of the day, Label of the week, Play Unheard, and recently-unplayed recommendations. The database learns what you've heard and resurfaces forgotten albums.</p></div>
       <div class="card"><h3><span class="em">📚</span>Rich library browsing</h3>
@@ -399,9 +418,9 @@
             <button class="copy-btn" id="copy" type="button">Copy</button>
             <pre id="cmd">sudo mkdir -p /opt/musicd-remote
 cd /opt/musicd-remote
-sudo wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.7.89/MusicD-Remote-v1.7.89.tar.gz
-sudo tar -xzf MusicD-Remote-v1.7.89.tar.gz
-docker build -t musicd-remote:1.7.89 .
+sudo wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.0/MusicD-Remote-v1.8.0.tar.gz
+sudo tar -xzf MusicD-Remote-v1.8.0.tar.gz
+docker build -t musicd-remote:1.8.0 .
 
 # Run it
 docker run -d \
@@ -410,13 +429,13 @@ docker run -d \
   --network host \
   -v musicd-remote-data:/app/data \
   -v "/your/path/to/Music:/music:ro" \
-  musicd-remote:1.7.89</pre>
+  musicd-remote:1.8.0</pre>
           </div>
           <noscript><p class="after-note">JavaScript is off, so the configurator can't rebuild this
              command — what's shown is the standard Linux install. The macOS and streaming-only
              variants are in the <a href="https://github.com/meltface-80/MusicD-Remote#install-docker">README</a>.</p></noscript>
           <p class="after-note" id="after-note"></p>
-          <p class="after-note">Installing <b id="ver-line">v1.7.89</b> <span id="ver-note">(checking for the latest release…)</span>.
+          <p class="after-note">Installing <b id="ver-line">v1.8.0</b> <span id="ver-note">(checking for the latest release…)</span>.
              If your user isn't in the <code>docker</code> group, prefix the <code>docker</code>
              commands with <code>sudo</code>.</p>
           <div class="note"><b>One volume to rule them all.</b> The <code>musicd-remote-data</code>
@@ -512,7 +531,7 @@ docker run -d \
 
   var IMAGE = "musicd-remote";
   var REPO  = "meltface-80/MusicD-Remote";
-  var FALLBACK_VERSION = "1.7.89";   // latest published release when this page was built
+  var FALLBACK_VERSION = "1.8.0";   // latest published release when this page was built
 
   var els = {
     modes:      document.getElementById("modes"),

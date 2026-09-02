@@ -8190,6 +8190,9 @@
       npCur.textContent = "0:00"; npTot.textContent = "0:00";
     }
     paintSeek(seekPos);
+    // Cheap on every poll: loadWaveform returns immediately unless the track
+    // key actually changed, so this is a string compare, not a fetch.
+    loadWaveform();
 
     // Volume — show the controls only when the endpoint has a controllable
     // volume; otherwise show "Volume control is fixed" (matches Roon).
@@ -8232,6 +8235,157 @@
   // `pos` is passed in rather than read back out of the input: the input is
   // step-quantised, so round-tripping through it threw away the sub-second part
   // and the fill could only ever move in whole-second jumps.
+  /* ---------------- Waveform ---------------- */
+  /*
+   * The shape of the track, drawn under the seek bar. LOCAL FILES ONLY — Roon
+   * streams Qobuz and TIDAL to the endpoint and never to an extension, so those
+   * tracks have no audio the server can read and simply keep the plain bar.
+   *
+   * The canvas is decoration UNDER the range input, never a replacement for it:
+   * the input keeps the drag, the keyboard, the thumb and the disabled state,
+   * and if any of this fails the bar is exactly what it was before.
+   */
+  const npWave = document.getElementById("np-wave");
+  const npProgressEl = document.querySelector(".np-progress");
+  let npWavePeaks = null;     // Uint8Array for the current track, or null
+  let npWaveKey = "";         // which track those peaks are for
+  let npWaveReq = 0;          // generation, so a slow answer cannot land late
+
+  function npWaveIdentity() {
+    const np = (currentZone && currentZone.now_playing) || null;
+    if (!np) return null;
+    const t3 = np.three_line || {};
+    const track  = t3.line1 || np.line1 || "";
+    const artist = t3.line2 || np.line2 || "";
+    const album  = t3.line3 || np.line3 || "";
+    return track ? { track, artist, album, key: track + " " + album } : null;
+  }
+
+  function drawWave(pos) {
+    if (!npWave || !npProgressEl) return;
+    const peaks = npWavePeaks;
+    if (!peaks || !peaks.length) {
+      npWave.classList.add("hidden");
+      npProgressEl.classList.remove("has-wave");
+      return;
+    }
+    npWave.classList.remove("hidden");
+    npProgressEl.classList.add("has-wave");
+
+    // Size the backing store to the DEVICE pixels actually on screen, or the
+    // bars are soft on every phone made in the last decade.
+    const dpr = Math.min(3, window.devicePixelRatio || 1);
+    const w = Math.max(1, Math.round(npWave.clientWidth));
+    const h = Math.max(1, Math.round(npWave.clientHeight));
+    if (npWave.width !== w * dpr || npWave.height !== h * dpr) {
+      npWave.width = w * dpr; npWave.height = h * dpr;
+    }
+    const ctx = npWave.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const cs = getComputedStyle(document.documentElement);
+    const played = cs.getPropertyValue("--accent").trim() || "#4cb7e6";
+    const ahead  = cs.getPropertyValue("--border").trim() || "#666";
+    const at = Number.isFinite(pos) ? pos : npNow();
+    const frac = npLen > 0 ? Math.max(0, Math.min(1, at / npLen)) : 0;
+
+    // One bar per 3 CSS pixels: finer than that and it reads as a solid block
+    // on a phone, coarser and the shape goes.
+    const barW = 2, gap = 1, step = barW + gap;
+    const bars = Math.max(1, Math.floor(w / step));
+    const mid = h / 2;
+    for (let i = 0; i < bars; i++) {
+      // Max across the peaks this bar covers, for the same reason the server
+      // resamples by max: averaging flattens exactly what is worth seeing.
+      const a = Math.floor(i * peaks.length / bars);
+      const b = Math.max(a + 1, Math.floor((i + 1) * peaks.length / bars));
+      let v = 0;
+      for (let j = a; j < b && j < peaks.length; j++) if (peaks[j] > v) v = peaks[j];
+      // A floor of 1px so silence is a line rather than a gap — a gap reads as
+      // "the waveform stopped loading", which is a different thing entirely.
+      const barH = Math.max(1, (v / 255) * (h - 2));
+      const done = (i / bars) <= frac;
+      ctx.fillStyle = done ? played : ahead;
+      ctx.globalAlpha = done ? 0.95 : 0.42;
+      ctx.fillRect(i * step, mid - barH / 2, barW, barH);
+    }
+    ctx.globalAlpha = 1;
+
+  }
+
+  // The switch's state, fetched once. loadWaveformEnabled() in the settings
+  // module also writes window.__waveformOn, but that only runs when the
+  // Settings pane is opened — without this the waveform stayed invisible on a
+  // fresh load until you happened to go and look at the setting.
+  let waveFlagPending = null;
+  function waveformOn() {
+    if (window.__waveformOn !== undefined) return Promise.resolve(window.__waveformOn);
+    if (!waveFlagPending) {
+      waveFlagPending = fetch("/api/settings/waveform")
+        .then(r => (r.ok ? r.json() : null))
+        .then(j => { window.__waveformOn = !!(j && j.enabled); return window.__waveformOn; })
+        .catch(() => { window.__waveformOn = false; return false; });
+    }
+    return waveFlagPending;
+  }
+
+  async function loadWaveform() {
+    if (!npWave) return;
+    const on = await waveformOn();
+    const id = npWaveIdentity();
+    if (!id || !on) {
+      npWavePeaks = null; npWaveKey = "";
+      drawWave();
+      return;
+    }
+    if (id.key === npWaveKey) return;    // same track: what we have still applies
+    npWaveKey = id.key;
+    npWavePeaks = null;
+    drawWave();                          // plain bar while we ask
+    const mine = ++npWaveReq;
+    try {
+      const q = "track=" + encodeURIComponent(id.track) +
+                "&album=" + encodeURIComponent(id.album) +
+                "&artist=" + encodeURIComponent(id.artist);
+      const r = await fetch("/api/waveform?" + q);
+      if (!r.ok) return;
+      const j = await r.json();
+      // The track may have moved on while the server was decoding. Landing a
+      // stale waveform under a different song is worse than none: it looks
+      // authoritative and it is simply the wrong shape.
+      //
+      // The KEY check is the one that does the work, and it catches two things:
+      // a skip (the key is now the next track's) and the setting being switched
+      // off mid-decode (__repaintWaveform blanks the key without touching the
+      // generation). The generation is belt and braces — every path that bumps
+      // it without changing the key is a repeat request for the SAME track, so
+      // a late answer there is the right shape anyway. It stays because it is
+      // what keeps this correct if the key logic is ever changed.
+      if (mine !== npWaveReq || npWaveKey !== id.key) return;
+      // "busy" means the server is decoding a DIFFERENT track and will be free
+      // in a moment. Leaving the key set would latch this track to no waveform
+      // for as long as it plays, so drop it and let the next poll ask again —
+      // the request costs nothing while the server is busy, because it answers
+      // without decoding.
+      if (j && j.reason === "busy") { npWaveKey = ""; return; }
+      if (!j || !j.peaks) return;
+      const bin = atob(j.peaks);
+      const u8 = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      npWavePeaks = u8;
+      drawWave();
+    } catch (e) {
+      /* No waveform is a normal answer — a streaming track, an undecodable
+         file, the server busy. The plain bar is already showing. */
+    }
+  }
+
+  // The settings switch repaints through this rather than reaching into the
+  // module: turning it off must clear a waveform already on screen.
+  window.__repaintWaveform = () => { npWaveKey = ""; loadWaveform(); };
+
   function paintSeek(pos) {
     if (!npSeek) return;
     const max = parseFloat(npSeek.max) || 0;
@@ -8240,6 +8394,23 @@
     // entirely rather than reading zero.
     const val = Number.isFinite(pos) ? pos : (parseFloat(npSeek.value) || 0);
     const pct = max > 0 ? Math.max(0, Math.min(100, (val / max) * 100)) : 0;
+
+    // The waveform carries the same progress, from the same number, so the two
+    // can never disagree about where the track is. Drawn FIRST because this is
+    // what adds and removes .has-wave, which the fill below reads.
+    drawWave(val);
+
+    // With a waveform showing, the range's own 4px track draws a line straight
+    // through the middle of the shape, and the canvas already paints the
+    // played/unplayed split. The stylesheet sets --seek-fill to transparent for
+    // that case, but an INLINE custom property beats any stylesheet rule
+    // however specific, so it has to be REMOVED here rather than overridden —
+    // writing the gradient unconditionally is what put a grey line across the
+    // waveform in v1.7.90.
+    if (npProgressEl && npProgressEl.classList.contains("has-wave")) {
+      npSeek.style.removeProperty("--seek-fill");
+      return;
+    }
     npSeek.style.setProperty("--seek-fill",
       "linear-gradient(to right, var(--accent) 0%, var(--accent) " + pct + "%, " +
       "var(--border) " + pct + "%, var(--border) 100%)");
@@ -10033,6 +10204,49 @@
     });
   }
 
+  // ----- Waveform on/off -----
+  const waveEnabledEl = document.getElementById("waveform-enabled");
+  const waveEnabledNote = document.getElementById("waveform-enabled-note");
+  async function loadWaveformEnabled() {
+    if (!waveEnabledEl) return;
+    try {
+      const r = await fetch("/api/settings/waveform");
+      if (!r.ok) return;
+      const j = await r.json();
+      waveEnabledEl.checked = !!j.enabled;
+      window.__waveformOn = !!j.enabled;
+      if (waveEnabledNote) {
+        waveEnabledNote.textContent = j.enabled
+          ? "On. Local files only \u2014 Roon streams Qobuz and TIDAL to the endpoint, " +
+            "so those tracks keep the plain bar."
+          : "Off. The progress bar stays a plain line.";
+      }
+    } catch (e) { /* keep the last shown value */ }
+  }
+  if (waveEnabledEl) {
+    waveEnabledEl.addEventListener("change", async () => {
+      const on = waveEnabledEl.checked;
+      try {
+        const r = await fetch("/api/settings/waveform", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: on })
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || j.error) throw new Error(j.error || "Couldn't save");
+        window.__waveformOn = on;
+        showToast(on ? "Waveform on \u2014 local files show the track's shape"
+                     : "Waveform off");
+        loadWaveformEnabled();
+        // Repaint now rather than at the next track change, so the switch is
+        // seen to do something.
+        if (window.__repaintWaveform) window.__repaintWaveform();
+      } catch (e) {
+        waveEnabledEl.checked = !on;   // the server refused — do not lie about it
+        showToast(e.message, "error");
+      }
+    });
+  }
+
   // ----- Labels on/off -----
   const labelsEnabledEl = document.getElementById("labels-enabled");
   const labelsEnabledNote = document.getElementById("labels-enabled-note");
@@ -10221,7 +10435,7 @@
     renderHomeRowsList();
   }
 
-  const open = () => { showView("home"); pendingThemeId = null; renderThemeList(); loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); loadDisplaySettings(); loadLabelFolderDepth(); loadQobuzStatus(); loadTidalStatus(); loadSmartPicksSettings(); loadLabelsEnabled(); loadHomeRowsSettings(); overlay.classList.remove("hidden"); };
+  const open = () => { showView("home"); pendingThemeId = null; renderThemeList(); loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); loadDisplaySettings(); loadLabelFolderDepth(); loadQobuzStatus(); loadTidalStatus(); loadSmartPicksSettings(); loadLabelsEnabled(); loadWaveformEnabled(); loadHomeRowsSettings(); overlay.classList.remove("hidden"); };
   const close = () => {
     overlay.classList.add("hidden");
     // Closing Settings ends the client side of any pending Tidal device flow

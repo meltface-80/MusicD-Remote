@@ -217,7 +217,25 @@ body.show-ui .controls { opacity: 1; pointer-events: auto; }
   flex: 1 1 auto; height: 4px; border-radius: 2px;
   background: rgba(255,255,255,.18);
   overflow: hidden;
+  position: relative;
 }
+/* With a waveform, the strip grows and the plain fill steps aside — the canvas
+   carries the progress instead, in two tones. Without one (a streaming track,
+   the setting off, an undecodable file) none of this applies and the bar is
+   exactly what it was. */
+.bb-track.has-wave {
+  height: 40px; border-radius: 0;
+  background: transparent;
+  overflow: visible;
+}
+.bb-track.has-wave .bb-fill { display: none; }
+.bb-wave {
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+}
+.bb-wave.hidden { display: none; }
 .bb-fill {
   height: 100%; width: 0%;
   border-radius: 2px;

@@ -129,6 +129,22 @@ If step 3 cannot run (Roon not available), run steps 1 and 2 and explicitly note
        from one script. Identical output is a real answer: the regression is not in the code.
   A hypothesis that survives none of those three is not a root cause, and shipping a fix for it
   attaches a false explanation to a real change.
+- **Two numbers from two different moments are not a measurement.** The harness has two clocks:
+  the driver runs inside the virtual time budget, and `--screenshot` fires when that budget
+  EXPIRES — seconds of page-time later. A `getBoundingClientRect` reported by the driver and a
+  pixel read out of the screenshot describe different frames, and in a Now-playing fixture the page
+  moves 8.5px between them. **v1.7.90**: an assertion built that way reported the seek thumb riding
+  8.5px off the waveform. It did not. A fix was written and nearly shipped — the native thumb hidden,
+  the playhead redrawn into the canvas — before measuring BOTH values out of the same screenshot
+  showed the thumb had been exactly on the midline all along. The whole change was reverted.
+  When a test compares two positions, take both from the same source: two driver-time rects, or two
+  screenshot-time pixel scans. Never one of each. (The real 2px defect in the same area was found
+  the correct way, and the pixel test that pins it now scans for the waveform's bars AND the thumb
+  in the one image.)
+- **A canvas is transparent between what it draws.** A fixture whose waveform is quiet where the
+  assertion looks will pass with the drawing wrong, because the page shows through the gaps. Pixel
+  tests over a canvas need a full-scale fixture at the point being checked, and a paused zone, or
+  the playhead walks away from the coordinates being sampled.
 - **Device-only behaviour cannot be tested here.** The DOM harness is headless Chromium: no browser
   chrome, no safe areas, `dvh` == `vh` == `100%`. No assertion in this suite can observe iOS window
   behaviour, so writing more of them buys confidence and no coverage. What the suite CAN do is pin a
@@ -271,7 +287,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
 - The README contains version references (install commands, tarball URLs, `docker build` tags).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.7.89** (until the user says otherwise).
+- Current stable version in the README: **v1.8.0** (until the user says otherwise).
 - The extension is being renamed **MusicD Remote** ("for Roon" is descriptive, not part of the name). The Roon `extension_id` must NEVER change — it would force every user to re-authorize.
 
 ---
@@ -435,4 +451,7 @@ docker run -d \
 | v1.7.86 | superseded | One material for every piece of app chrome: both volume sheets and the top bar joined the transport pill's surface. The top bar's blur turned out to be doing nothing — `.topbar` is a flex SIBLING of `<main>`, so only the flat page was ever behind it and `saturate+blur` of a flat colour returns the colour it started with; `--bg-translucent` went with it. The iOS status bar can't be made translucent (that meta is the banned one), so it was given the bar's exact colour instead, which removes the seam |
 | v1.7.87 | superseded | One ground on every screen: page, top bar and the full-screen panels were three tones. The DARK palettes came UP to the bar (#1d2125, #2d3134) and the whole elevation ladder moved with them — the old `--bg-elev` is darker than the new ground, so lifting the page alone would have turned every card into a recess. The light palettes went the other way on headroom: their bar was already #fffffe. Raising a background without raising what sits on it is what the contrast floors are for, and they caught it — five failures across the two dark palettes |
 | v1.7.88 | superseded | The top bar made genuinely see-through: it overlays the scroller now, so album art passes under it. The bar is the GROUND WITH ALPHA, not a lighter translucent surface — over an unscrolled page that composites to exactly `--bg` (no seam) while still tinting with whatever scrolls behind. Its height is measured into `--topbar-h` rather than guessed; the banner and update toast moved inside `<main>` so the shell has one in-flow child |
-| v1.7.89 | **Latest (stable)** | The pill and volume sheets joined the bar's `--bg-veil` (`--glass-bg` had no users left and is gone); a transient 503 while pairing no longer leaves a music note forever; the share card rebuilt as a pane over the softened cover, its release line solved against a white sleeve. **Also the version where a stale PWA was mistaken for a regression** — see the diagnosis rule above, added because of it. 793 unit / 472 DOM / 78 static — README points here |
+| v1.7.89 | stable (superseded) | The pill and volume sheets joined the bar's `--bg-veil` (`--glass-bg` had no users left and is gone); a transient 503 while pairing no longer leaves a music note forever; the share card rebuilt as a pane over the softened cover, its release line solved against a white sleeve. **Also the version where a stale PWA was mistaken for a regression** — see the diagnosis rule above, added because of it. 793 unit / 472 DOM / 78 static — README points here |
+| v1.7.90 | superseded | The waveform, off by default: the shape of the track under the Now-playing seek bar and on the wall display's strip. Local files only and that cannot be engineered away — a Roon extension is given metadata and control, never audio, so Qobuz and TIDAL keep the plain bar. Peaks resampled BY MAXIMUM (averaging is what flattens the one thing a waveform is for), stored per track on the data volume, and the next queue item decoded while the current one plays. Also the version that taught the harness to read pixels (`lib/png.js`, zlib only) — and the one where an assertion comparing a driver-time rect against a screenshot pixel reported an 8.5px misalignment that did not exist, and a fix for it was written and reverted |
+| v1.7.91 | superseded | The seek bar's own 4px track was drawn straight through the waveform, reported from a phone on the day. The stylesheet had said `--seek-fill: transparent` since v1.7.90 and it never applied: `paintSeek()` writes that property INLINE four times a second, and an inline custom property beats a stylesheet rule however specific — the comment beside the CSS had the precedence exactly backwards. Both halves are needed and a mutation test pins each. Tested by continuity, not position: over a silent stretch the canvas can only draw 2px dashes, so an unbroken run is the line and nothing else |
+| v1.8.0  | **Latest (stable)** | Version jump for the waveform. Same code as v1.7.91, renumbered, with README and the docs site moved to v1.8.0 in the SAME commit — Waveform first in both feature lists, marked New on the site. 820 unit / 513 DOM / 81 static — README points here |

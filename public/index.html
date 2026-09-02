@@ -560,6 +560,11 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             <button class="np-album" id="np-album" type="button" aria-label="Open album detail"></button>
 
             <div class="np-progress">
+              <!-- Behind the seek input, not instead of it: the range is what
+                   makes the bar draggable and accessible, and it keeps every
+                   one of its behaviours. The canvas is decoration under it,
+                   hidden whenever there is no waveform for the track. -->
+              <canvas id="np-wave" class="np-wave hidden" aria-hidden="true"></canvas>
               <input type="range" id="np-seek" class="np-seek" min="0" max="100" step="1" value="0"
                      aria-label="Seek" disabled>
               <div class="np-times">
@@ -1052,6 +1057,19 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
               </svg>
             </div>
           </div>
+        </div>
+
+        <div class="settings-divider"></div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Waveform <button class="settings-info-btn" data-info="Off by default. Draws the shape of the track on the Now playing progress bar and the wall display, read from the audio itself. LOCAL FILES ONLY: Roon streams Qobuz and TIDAL to the endpoint and never to an extension, so those tracks have no audio this app can see and keep the plain bar. The first play of a track decodes it (a second or two); the next track in the queue is prepared while the current one plays, and every result is stored so it is instant afterwards." aria-label="Info">&#9432;</button></span>
+            <label class="switch">
+              <input type="checkbox" id="waveform-enabled" aria-label="Waveform">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+          <div class="settings-note" id="waveform-enabled-note">Off. The progress bar stays a plain line.</div>
         </div>
 
         <div class="settings-divider"></div>
