@@ -126,3 +126,50 @@ test("missing key sets are treated as empty, not as an error", () => {
   assert.equal(r.confident, false);
   assert.deepEqual(locateByTitle(["analogue"], undefined).places, []);
 });
+
+// --- resolving keys to directories -----------------------------------------
+// The local waveform asks a narrower question than locateByTitle: not "is this
+// album unambiguous" but "do the keys that matched point at one folder". The
+// /music walk keys a directory under several artist spellings on purpose, so
+// several keys for one folder is the NORMAL case, not an ambiguous one.
+
+const { distinctTargets, soleTargetKey } = require("../../lib/albumkeys");
+
+test("THE one: several keys for one folder is one answer, not an ambiguity", () => {
+  // Exactly the Blind Man's Zoo case: the walk keyed the folder by its
+  // album-artist tag and again by its track-artist tag.
+  const dirs = new Map([
+    ["blind man s zoo||10 000 maniacs", "/music/10,000 Maniacs/Blind Man's Zoo"],
+    ["blind man s zoo||10",             "/music/10,000 Maniacs/Blind Man's Zoo"],
+  ]);
+  const keys = [...dirs.keys()];
+  assert.equal(distinctTargets(keys, dirs).length, 1);
+  assert.equal(soleTargetKey(keys, dirs), "blind man s zoo||10 000 maniacs",
+    "one folder must yield a usable key, whichever spelling led to it");
+});
+
+test("two genuinely different folders is ambiguous and gets nothing", () => {
+  const dirs = new Map([
+    ["greatest hits||queen", "/music/Queen/Greatest Hits"],
+    ["greatest hits||abba",  "/music/ABBA/Greatest Hits"],
+  ]);
+  assert.equal(distinctTargets([...dirs.keys()], dirs).length, 2);
+  assert.equal(soleTargetKey([...dirs.keys()], dirs), null,
+    "two albums sharing a title must not resolve to either of them");
+});
+
+test("keys the index does not hold are skipped, not counted", () => {
+  const dirs = new Map([["analogue||a-ha", "/music/a-ha/Analogue"]]);
+  assert.deepEqual(distinctTargets(["nope||x", "analogue||a-ha"], dirs),
+                   ["/music/a-ha/Analogue"]);
+  assert.equal(soleTargetKey(["nope||x", "analogue||a-ha"], dirs), "analogue||a-ha");
+});
+
+test("nothing matching yields nothing, and no map is survivable", () => {
+  const dirs = new Map([["analogue||a-ha", "/music/a-ha/Analogue"]]);
+  assert.deepEqual(distinctTargets(["nope||x"], dirs), []);
+  assert.equal(soleTargetKey(["nope||x"], dirs), null);
+  assert.deepEqual(distinctTargets(["a||b"], null), []);
+  assert.deepEqual(distinctTargets([], dirs), []);
+  assert.equal(soleTargetKey([], dirs), null);
+});

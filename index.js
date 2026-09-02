@@ -18,6 +18,10 @@ const RoonApiTransport = require("node-roon-api-transport");
 const RoonApiSettings  = require("node-roon-api-settings");
 
 const { createUpdater } = require("./lib/updater");
+// Title-only album matching, for the albums Roon supplies no artist for. Pure —
+// see lib/albumkeys.js. Required up here rather than beside the waveform code
+// because albumSource reads it, and that runs from every list endpoint.
+const AK = require("./lib/albumkeys");
 const { radioDecision, radioResumeDecision, radioQueueFloor,
         radioToTurnOff } = require("./lib/radio");
 const { playCounted, historyEntry, pushHistory, recentHistory,
@@ -3500,7 +3504,43 @@ function albumSource(title, subtitle, rec) {
     if (inQobuz) return "qobuz";
     if (inTidal) return "tidal";
   }
+  // Nothing keyed. Before giving up, try the TITLE alone — an album Roon names
+  // without an artist ("" in three_line.line2) can never match above, and one
+  // whose artist we canonicalise differently from the service will not either.
+  // locateByTitle applies the same precedence this function already does: local
+  // wins because the files are what plays, and favourited in both services
+  // stays unknowable rather than a coin flip.
+  const byTitle = titleOnlySource(title, subtitle);
+  if (byTitle) return byTitle;
   return unclaimedIsLocal() ? "local" : null;
+}
+
+/*
+ * The title-only rung, kept separate so the rule about when it may speak is in
+ * one place.
+ *
+ * It answers only when the title lands somewhere unambiguous. "Greatest Hits"
+ * in three services and two local folders tells us nothing, and a badge is a
+ * claim about an album rather than decoration on a tile — the same reason
+ * ambiguousAlbumKeys exists.
+ */
+function titleOnlySource(title, subtitle) {
+  // Only when the keyed path could not have worked. With a usable artist, a
+  // miss is a real answer ("we do not have this") and must not be second-guessed
+  // by a looser match.
+  if (canonArtist(subtitle || "")) return null;
+  const titles = albumKeys(title || "", "").map(AK.titleOf).filter(Boolean);
+  if (!titles.length) return null;
+  // `source` applies the same precedence the keyed path above does: local wins
+  // over a streaming match because the files are what actually plays, and
+  // favourited in both services stays unknowable rather than a coin flip. Not
+  // `confident`, which is the stricter flag — one match in one place — and is
+  // for deciding whether to go and FETCH a particular album, where picking the
+  // wrong one of two costs a waveform of the wrong recording. A badge only has
+  // to name the source.
+  return AK.locateByTitle(titles, {
+    local: localAlbumKeys, qobuz: qobuzAlbumKeys, tidal: tidalAlbumKeys,
+  }).source;
 }
 
 // Does a source badge tell the user anything? Only when the library could hold
@@ -12051,9 +12091,6 @@ const WF = require("./lib/waveform");
 const WFD = require("./lib/waveform-decode");
 // Field listing for /api/debug/zone-dump. Pure, no I/O — see lib/objshape.js.
 const SHAPE = require("./lib/objshape");
-// Title-only album matching, for the case Roon sends no artist. Pure — see
-// lib/albumkeys.js.
-const AK = require("./lib/albumkeys");
 
 /*
  * What this app can work out about an album, both ways.
@@ -12120,11 +12157,22 @@ function wfPut(tkey, u8) {
 }
 
 // Which albumKey (if any) this album/artist is known locally under.
+//
+// The second rung is for the albums Roon supplies no artist for — it sends
+// three_line.line2 as "" for a real share of a library, which makes the key
+// "blind man s zoo||" and matches nothing, so an album sitting in /music got no
+// waveform at all. Falling back to the TITLE alone would normally be too loose;
+// what makes it safe is asking the question in directories rather than keys.
+// The walk deliberately files one folder under several artist spellings, so
+// several matching keys is the ordinary case; two distinct FOLDERS is the
+// ambiguous one, and that gets nothing.
 function wfAlbumKey(album, artist) {
   for (const k of albumKeys(album || "", artist || "")) {
     if (localAlbumDirs.has(k)) return k;
   }
-  return null;
+  const titles = albumKeys(album || "", "").map(AK.titleOf).filter(Boolean);
+  const hits = AK.titleOnlyMatches(localAlbumDirs.keys(), titles);
+  return AK.soleTargetKey(hits, localAlbumDirs);
 }
 
 // The audio files in an album's directory, with their title tags. One readdir

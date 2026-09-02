@@ -30,12 +30,18 @@ function fixture() {
     ["normalize", "canonText", "canonArtist", "albumKey", "albumKeys", "albumTitleVariants",
      "addFavouriteKeys", "withSource", "albumSource", "sourceBadgesDistinguish",
      "claimingServices", "unclaimedIsLocal",
+     // v1.8.4: the rung albumSource falls to when Roon supplies no artist and
+     // nothing can key. Extracted rather than stubbed, so these tests see the
+     // real rule about when it is allowed to speak.
+     "titleOnlySource",
      // withSource now attaches the quality badge too, so its helpers come with
      // it — extracted rather than stubbed, so a change to what a badge SAYS is
      // visible to the tests that assert badges.
      "albumFileFacts", "albumQualityLabel", "albumIsHiRes", "rateShort"],
     { localAlbumKeys, qobuzAlbumKeys, tidalAlbumKeys, ambiguousAlbumKeys,
       albumFileCache: new Map(),
+      // titleOnlySource matches by title half against the same key sets.
+      AK: require("../../lib/albumkeys"),
       // A CONNECTED Qobuz with at least one favourite. Every assertion in this
       // file is about identifying a source from POSITIVE evidence, and since
       // v1.7.34 that logic only runs while a service is connected — with none
@@ -221,5 +227,78 @@ test("withSource — dual-service short-circuit (pinned behaviour)", async (t) =
     f.addFavouriteKeys(f.tidalAlbumKeys, "Dual", null, ["Alpha Band"]);
     f.localAlbumKeys.add(f.albumKey("Dual", "Alpha"));
     assert.equal(f.badge("Dual", "Alpha Band"), null);
+  });
+});
+
+test("withSource — the title-only rung (v1.8.4)", async (t) => {
+  // Roon sends three_line.line2 as "" for a real share of a library, which
+  // makes every key "<title>||" and matches nothing: no badge, no local file,
+  // no waveform, for albums plainly sitting in /music. This rung answers from
+  // the title alone — but only where that cannot mislead.
+
+  await t.test("THE one: no artist, and the title is in one place", () => {
+    const f = fixture();
+    f.localAlbumKeys.add(f.albumKey("Blind Man's Zoo", "10,000 Maniacs"));
+    // Roon named the album and gave us nothing else.
+    assert.equal(f.badge("Blind Man's Zoo", ""), "local",
+      "an album we can see in /music went unbadged because Roon named no artist");
+  });
+
+  await t.test("a streaming-only album is found the same way", () => {
+    const f = fixture();
+    f.addFavouriteKeys(f.qobuzAlbumKeys, "Truth Rising", null, ["Hed P.E."]);
+    assert.equal(f.badge("Truth Rising", ""), "qobuz");
+  });
+
+  await t.test("THE guard: with a usable artist, a miss stays a miss", () => {
+    // The rung exists because a blank artist makes keying impossible. Where the
+    // artist IS usable, "we do not have this album" is a real answer and must
+    // not be second-guessed by a looser match — otherwise every unmatched album
+    // starts collecting badges from same-titled records by other artists.
+    const f = fixture();
+    f.localAlbumKeys.add(f.albumKey("Greatest Hits", "ABBA"));
+    assert.equal(f.badge("Greatest Hits", "Queen"), null,
+      "Queen's album was badged from ABBA's, because the title happened to match");
+  });
+
+  await t.test("the same title in two places is still no badge", () => {
+    // Owned AND favourited. The keyed path already refuses to guess here; the
+    // looser rung must not become a way around that.
+    const f = fixture();
+    f.localAlbumKeys.add(f.albumKey("Blind Man's Zoo", "10,000 Maniacs"));
+    f.addFavouriteKeys(f.qobuzAlbumKeys, "Blind Man's Zoo", null, ["10,000 Maniacs"]);
+    assert.equal(f.badge("Blind Man's Zoo", ""), "local",
+      "local wins when it is one of the places — the files are what plays");
+  });
+
+  await t.test("favourited in both services stays unknowable", () => {
+    const f = fixture();
+    f.addFavouriteKeys(f.qobuzAlbumKeys, "Analogue", null, ["a-ha"]);
+    f.addFavouriteKeys(f.tidalAlbumKeys, "Analogue", null, ["a-ha"]);
+    assert.equal(f.badge("Analogue", ""), null,
+      "a coin flip between two services is not an answer, keyed or not");
+  });
+
+  await t.test("several artist spellings of ONE album is one place, not two", () => {
+    // The /music walk files a folder under its album-artist AND its track-artist
+    // tag on purpose, so two keys for one album is the ordinary case.
+    const f = fixture();
+    f.localAlbumKeys.add(f.albumKey("Blind Man's Zoo", "10,000 Maniacs"));
+    f.localAlbumKeys.add(f.albumKey("Blind Man's Zoo", "10"));
+    assert.equal(f.badge("Blind Man's Zoo", ""), "local");
+  });
+
+  await t.test("no artist and no match anywhere invents nothing", () => {
+    const f = fixture();
+    f.localAlbumKeys.add(f.albumKey("Something Else", "Someone"));
+    assert.equal(f.badge("Never Heard Of It", ""), null);
+  });
+
+  await t.test("no artist and no title is not a wildcard", () => {
+    // "" canonicalises to no keys at all; it must not sweep up every album.
+    const f = fixture();
+    f.localAlbumKeys.add(f.albumKey("Blind Man's Zoo", "10,000 Maniacs"));
+    assert.equal(f.badge("", ""), null);
+    assert.equal(f.badge("!!!", ""), null, "a symbol-only title keys to nothing");
   });
 });

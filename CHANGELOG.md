@@ -2,6 +2,51 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.4] — 2026-09-02
+
+### Fixed — albums Roon names without an artist got no waveform and no badge
+
+The diagnostic found something bigger than the question it was built for. **Roon sends
+`three_line.line2` as `""` for a real share of a library** — three albums out of five sampled — and
+every identity in this app is keyed `title||artist`. An empty artist makes the key `blind man s zoo||`,
+which matches nothing, so an album sitting in `/music` got no source badge, no local-file lookup and
+**no waveform at all**. Not a streaming limitation; the shipped feature was silently not working for
+part of the library.
+
+A second, narrower failure has the same effect: Roon spells the artist `(həd) p.e.` and `normalize()`
+deletes the schwa rather than folding it, so the key becomes `h d p e` while Qobuz's spelling gives
+`hed p e`. Present artist, still no match.
+
+Both are now caught by a rung underneath the keyed lookup: **match on the album title alone**, and
+only where that cannot mislead.
+
+- `wfAlbumKey` — falls back to the title, then asks the question in **directories, not keys**. The
+  `/music` walk deliberately files one folder under several artist spellings (Blind Man's Zoo is
+  indexed under both `10 000 maniacs` and `10`), so several matching keys is the ordinary case and
+  refusing it would decline a file we can plainly see. Two distinct *folders* is the ambiguous case,
+  and that still gets nothing.
+- `albumSource` — falls back to the title with **the same precedence it already applies**: local wins
+  over a streaming match because the files are what plays, and favourited in both services stays
+  unknowable rather than a coin flip.
+
+**The guard that makes this safe:** the rung only fires when the artist is unusable. Where Roon gives
+a real artist, "we do not have this album" is a genuine answer and must not be second-guessed — a
+looser match there would badge Queen's *Greatest Hits* from ABBA's. A mutation test pins it, and
+removing the guard fails nine existing assertions, including the v1.6.55 wrong-badge suite.
+
+- `lib/albumkeys.js` gains `distinctTargets` / `soleTargetKey` (16 tests total). `locateByTitle` keeps
+  two separate answers on purpose: `source` (which service — the badge question) and `confident`
+  (one match in one place — the fetch question, where picking the wrong one of two costs a waveform
+  of the wrong recording).
+
+### Not fixed here
+`normalize()` deleting non-ASCII letters instead of transliterating them — `ə`, `ø`, `æ`, `ð` and the
+rest become word separators, so `(həd) p.e.` splits into `h d p e` and Røyksopp into `r yksopp`.
+Fixing it changes every stored key in the app and forces a full rescan, so it wants its own version
+and its own migration. The title-only rung covers the symptom meanwhile.
+
+- 868 unit / 513 DOM / 83 static tests
+
 ## [1.8.3] — 2026-09-02
 
 ### Added — the dump now identifies the album itself, instead of asking
