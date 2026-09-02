@@ -12006,6 +12006,8 @@ app.post("/api/settings/home-rows", (req, res) => {
  */
 const WF = require("./lib/waveform");
 const WFD = require("./lib/waveform-decode");
+// Field listing for /api/debug/zone-dump. Pure, no I/O — see lib/objshape.js.
+const SHAPE = require("./lib/objshape");
 
 // Module-scope copies. buildFileLabelMap declares its own AUDIO_RE and resolves
 // parseFile INSIDE the function, so referencing either from here is a
@@ -12170,9 +12172,9 @@ async function wfDecodeOnce(albumKey, track, tkey, signal) {
  * best-effort warm-up, and a queue it cannot read simply means the next track
  * is decoded on demand like the current one was.
  */
-function wfPeekNext(zoneId) {
+function peekQueueRaw(zoneId, count) {
   return new Promise((resolve) => {
-    if (!core || !zoneId) return resolve(null);
+    if (!core || !zoneId) return resolve([]);
     let done = false, sub = null;
     const finish = (v) => {
       if (done) return;
@@ -12181,24 +12183,27 @@ function wfPeekNext(zoneId) {
       if (sub) { try { sub.unsubscribe(() => {}); } catch (e) { /* already gone */ } }
       resolve(v);
     };
-    const timer = setTimeout(() => finish(null), 5000);
+    const timer = setTimeout(() => finish([]), 5000);
     if (timer.unref) timer.unref();
     try {
-      sub = core.services.RoonApiTransport.subscribe_queue(zoneId, 2, (response, msg) => {
+      sub = core.services.RoonApiTransport.subscribe_queue(zoneId, count, (response, msg) => {
         if (response !== "Subscribed") return;
-        const items = (msg && msg.items) || [];
-        // [0] is what is playing; [1] is the one worth warming.
-        const it = items[1];
-        if (!it) return finish(null);
-        const t3 = it.three_line || {};
-        finish({
-          track:  t3.line1 || (it.one_line && it.one_line.line1) || "",
-          artist: t3.line2 || "",
-          album:  t3.line3 || "",
-        });
+        finish((msg && msg.items) || []);
       });
-    } catch (e) { finish(null); }
+    } catch (e) { finish([]); }
   });
+}
+
+async function wfPeekNext(zoneId) {
+  // [0] is what is playing; [1] is the one worth warming.
+  const it = (await peekQueueRaw(zoneId, 2))[1];
+  if (!it) return null;
+  const t3 = it.three_line || {};
+  return {
+    track:  t3.line1 || (it.one_line && it.one_line.line1) || "",
+    artist: t3.line2 || "",
+    album:  t3.line3 || "",
+  };
 }
 
 async function wfPrefetchNext(zone) {
@@ -12263,6 +12268,72 @@ app.get("/api/waveform", async (req, res) => {
   } finally {
     _wfBusy = null;
   }
+});
+
+/*
+ * GET /api/debug/zone-dump?zone=<id>
+ *
+ * Everything Roon sends about a zone, and about the next few queue items,
+ * exactly as it arrives — plus a sorted listing of every field path in it.
+ *
+ * WHY: /api/zone-state hand-picks the fields this app knows about, so a field
+ * the Core sends that nobody here has looked at is invisible from inside the
+ * app. Before the streaming waveform is built on an INFERENCE about where the
+ * audio comes from (albumSource, which really answers "is this album in your
+ * favourites"), this answers whether Roon states it outright.
+ *
+ * Read-only, and it starts no subscription it does not immediately close. The
+ * zone comes from the cache the transport subscription already maintains, so
+ * asking costs the Core nothing; the queue read is the same one-shot
+ * subscribe/read/unsubscribe the waveform prefetch uses.
+ */
+app.get("/api/debug/zone-dump", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+
+  // Default to whatever is playing, so the URL can be opened with no arguments
+  // from a phone while an album is on.
+  let zoneId = req.query.zone;
+  if (!zoneId) {
+    const playing = Object.values(zones).find(z => z.state === "playing" || z.state === "loading");
+    zoneId = (playing || Object.values(zones)[0] || {}).zone_id;
+  }
+  const zone = zoneId && zones[zoneId];
+  if (!zone) {
+    return res.status(404).json({ error: "no such zone", known: Object.keys(zones) });
+  }
+
+  const count = Math.max(1, Math.min(10, parseInt(req.query.items, 10) || 3));
+  let queue = [];
+  try {
+    queue = await peekQueueRaw(zoneId, count);
+  } catch (e) {
+    // A queue we cannot read is not a reason to withhold the zone, which is the
+    // more interesting half.
+    queue = [];
+  }
+
+  const zoneRows  = SHAPE.keyPaths(zone);
+  const queueRows = SHAPE.keyPaths(queue[0] || null);
+
+  res.json({
+    // What this app already concluded, so the dump can be read against it: if
+    // Roon turns out to state the source, this is the answer to compare with.
+    app_thinks: (function () {
+      const np = zone.now_playing || null;
+      const t3 = (np && np.three_line) || {};
+      const album = t3.line3 || "", artist = t3.line2 || "";
+      return {
+        track: t3.line1 || "",
+        album, artist,
+        album_source: albumSource(album, artist, null),
+        has_local_file: !!wfAlbumKey(album, artist),
+      };
+    })(),
+    zone_shape:  SHAPE.formatPaths(zoneRows),
+    queue_shape: SHAPE.formatPaths(queueRows),
+    zone_raw:  zone,
+    queue_raw: queue,
+  });
 });
 
 app.get("/api/settings/waveform", (req, res) => {

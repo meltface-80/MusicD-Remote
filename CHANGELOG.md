@@ -2,6 +2,47 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.1] — 2026-09-02
+
+### Added — `/api/debug/zone-dump`, to answer one question before building on a guess
+
+Groundwork for waveforms on Qobuz and TIDAL albums. Making that work needs the extension to know
+that Roon is playing a **streamed** track rather than a local one, and today the only thing
+resembling an answer is `albumSource()`, which really answers a different question: *"is this album
+in your favourites?"* Local wins over a streaming match there, and an album favourited in both
+services returns nothing rather than a coin flip — good rules, but an inference either way.
+
+**Roon may simply say.** The extension API is thinly documented and `/api/zone-state` hand-picks the
+fields this app already knows about, so anything the Core sends beyond that set is invisible from
+inside the app. This endpoint returns the zone and the next few queue items **exactly as Roon sends
+them**, so that can be checked rather than assumed.
+
+- `GET /api/debug/zone-dump` — no arguments needed; it defaults to whatever is playing.
+  `?zone=<id>` picks one, `?items=<1-10>` sets how much of the queue to read.
+- Returns `zone_shape` and `queue_shape` (a sorted listing of every field path, with types and short
+  samples — the scannable form), `zone_raw` and `queue_raw` (untouched), and `app_thinks`: what
+  `albumSource` and the local-file lookup currently conclude, so the dump can be read against it.
+- Read-only. The zone comes from the cache the transport subscription already maintains, so asking
+  costs the Core nothing; the queue read is the same one-shot subscribe/read/unsubscribe the
+  waveform prefetch uses.
+
+### Added
+- `lib/objshape.js` — lists every field an object carries as sorted dotted paths. Pure, no I/O,
+  14 tests. Arrays are described once with their length plus the shape of element 0, because a
+  200-item queue described 200 times over is the wall of JSON this exists to replace. Cycles are
+  marked rather than followed, and a non-plain value (a Date, a Buffer) is reported by its
+  constructor and stringified rather than walked into — walking it finds no enumerable keys and
+  loses the value, which is the one thing a field listing must never do.
+
+### Changed
+- `wfPeekNext` now sits on a shared `peekQueueRaw(zoneId, count)` rather than carrying its own copy
+  of the subscribe/read/unsubscribe dance, so the dump and the waveform prefetch read the queue the
+  same way. No behaviour change.
+
+**Nothing user-visible changes in this release.** It is a diagnostic build.
+
+- 834 unit / 513 DOM / 82 static tests
+
 ## [1.8.0] — 2026-09-02
 
 Version jump for the waveform feature. The code is what shipped in v1.7.90 and v1.7.91 — this
