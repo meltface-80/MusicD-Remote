@@ -2,6 +2,51 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.20] — 2026-09-03
+
+### Changed — one Qobuz sign-in, not two
+
+v1.8.19 left the app asking for Qobuz twice: a username and password under Streaming accounts for
+browsing and favourites, and a separate browser sign-in under Playback for waveforms. Two logins to
+the same account.
+
+The browser sign-in can do **strictly more** than the password one — it reads the catalogue and the
+favourites like any other token, *and* it can sign the streaming call, which the password token can
+never do because this app holds no secret for the app that mints it. So it is now the whole session.
+
+- `lib/qobuz.js` gained one `setDefaultAppId`, because a token and its `app_id` have to move
+  together and this is genuinely one fact about the session rather than a per-call decision. All nine
+  endpoints follow it.
+- Streaming accounts → Qobuz is now a single **Connect** that signs in on qobuz.com. The email and
+  password fields are gone; the waveform panel has no controls at all and just reports what the
+  sign-in means for it.
+- Disconnect clears the whole session. Leaving the sign-in behind would have kept the app
+  half-connected — still fetching audio for an account the user had just removed.
+- A 401 under the sign-in's app is **logged and allowed to fail**, deliberately. There is no
+  fallback: swapping the `app_id` mid-flight would race every other in-flight call, and on an install
+  that only ever signed in there is no password login to fall back to. If some endpoint refuses that
+  app, that is a real finding and must be visible rather than papered over.
+
+### Added — waveforms for TIDAL tracks
+
+TIDAL needed no new credentials at all. The device sign-in already in the app carries a Bearer token,
+**it refreshes itself**, and TIDAL signs nothing — so none of the six versions of credential trouble
+Qobuz produced applies here.
+
+- Album ids are harvested from TIDAL favourites alongside the identity keys and persisted with them,
+  the same shape v1.8.7 had to add for Qobuz after shipping the feature without it.
+- `lib/tidal-manifest.js` reads TIDAL's answer, which is a base64 manifest rather than a URL. Only
+  the plain **BTS** kind carries readable audio; the higher tiers arrive as MPEG-DASH in a protected
+  container and are **refused outright**, naming the reason. That refusal is the correct outcome, not
+  a gap to close later — those tracks keep the plain bar.
+- Everything downstream is shared with the Qobuz path unchanged: the title-and-duration matcher, the
+  8 kHz decode, the storage, the one-track-ahead prefetch.
+- Qobuz is tried first, then TIDAL. Roon states no playback source, so an album's presence in one
+  favourites list is the only signal there is — and an album in neither declines from both without a
+  network call.
+
+972 unit / 513 DOM / 87 static.
+
 ## [1.8.19] — 2026-09-03
 
 ### Added — Qobuz waveforms work after a sign-in, with nothing to paste

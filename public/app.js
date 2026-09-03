@@ -9739,8 +9739,9 @@
     });
   }
 
-  const qobuzUserInput  = document.getElementById("qobuz-username-input");
-  const qobuzPassInput  = document.getElementById("qobuz-password-input");
+  const qobuzPasteRow   = document.getElementById("qobuz-signin-paste");
+  const qobuzPasteUrl   = document.getElementById("qobuz-signin-url");
+  const qobuzPasteGo    = document.getElementById("qobuz-signin-finish");
   const qobuzConnect    = document.getElementById("qobuz-connect");
   const qobuzDisconnect = document.getElementById("qobuz-disconnect");
   const qobuzStatus     = document.getElementById("qobuz-status");
@@ -9760,6 +9761,9 @@
         ? ("Connected" + (j.displayName ? " as " + j.displayName : ""))
         : "Not connected";
       if (qobuzDisconnect) qobuzDisconnect.classList.toggle("hidden", !j.connected);
+      // The sign-in landed by itself; the recovery field has nothing left to do.
+      if (qobuzPasteRow && j.connected) qobuzPasteRow.hidden = true;
+      if (qobuzConnect) qobuzConnect.classList.toggle("hidden", !!j.connected);
       if (qobuzTopbarBtn) qobuzTopbarBtn.classList.toggle("hidden", !j.connected);
       if (qobuzMenuItem)  qobuzMenuItem.classList.toggle("hidden", !j.connected);
       // Deliberately NOT force-closing an open Qobuz browser: hideOverlay() is
@@ -9769,31 +9773,49 @@
     } catch (_) { /* display-only status — stale on failure is fine */ }
   }
 
+  // One sign-in for everything Qobuz. It happens on Qobuz's own page, so no
+  // password is typed into this app, and the token it returns serves the
+  // catalogue, the favourites and the waveforms alike.
   if (qobuzConnect) {
     qobuzConnect.addEventListener("click", async () => {
-      const username = qobuzUserInput ? qobuzUserInput.value.trim() : "";
-      const password = qobuzPassInput ? qobuzPassInput.value : "";
-      if (!username || !password) { showToast("Enter your Qobuz email and password", "error"); return; }
       qobuzConnect.disabled = true;
       try {
-        const r = await fetch("/api/settings/qobuz", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username, password })
-        });
-        const j = await r.json();
-        if (j.ok) {
-          if (qobuzPassInput) qobuzPassInput.value = "";
-          showToast("Qobuz connected" + (j.displayName ? " as " + j.displayName : ""), "ok");
-          loadQobuzStatus();
-        } else {
-          showToast(j.error || "Qobuz connect failed", "error");
+        const r = await fetch("/api/qobuz/oauth/start");
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.url) throw new Error(j.error || "Couldn't start the Qobuz sign-in");
+        // Opened rather than navigated, so this page keeps its state; the tab
+        // that comes back carries the code straight to the server.
+        window.open(j.url, "_blank", "noopener");
+        if (qobuzPasteRow) qobuzPasteRow.hidden = false;
+        if (qobuzStatus) {
+          qobuzStatus.textContent = "Sign in on the Qobuz tab, then come back here. " +
+            "If it does not connect by itself, paste the address you landed on below.";
         }
       } catch (e) {
-        showToast("Failed: " + e.message, "error");
+        showToast(e.message, "error");
       } finally {
         qobuzConnect.disabled = false;
       }
+    });
+  }
+
+  if (qobuzPasteGo && qobuzPasteUrl) {
+    qobuzPasteGo.addEventListener("click", async () => {
+      qobuzPasteGo.disabled = true;
+      try {
+        const r = await fetch("/api/qobuz/oauth/paste", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: qobuzPasteUrl.value })
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || j.error) throw new Error(j.error || "Couldn't finish signing in");
+        qobuzPasteUrl.value = "";
+        if (qobuzPasteRow) qobuzPasteRow.hidden = true;
+        showToast("Qobuz connected", "ok");
+        loadQobuzStatus();
+      } catch (e) {
+        showToast(e.message, "error");
+      } finally { qobuzPasteGo.disabled = false; }
     });
   }
 
@@ -10233,83 +10255,24 @@
   // Blank is the default and the off switch: with no secret the server never
   // asks Qobuz for audio and streaming tracks keep the plain bar.
   const qSecStatus = document.getElementById("qobuz-secret-status");
-  const qOauthBtn  = document.getElementById("qobuz-oauth-btn");
-  const qPasteRow  = document.getElementById("qobuz-oauth-paste");
-  const qPasteUrl  = document.getElementById("qobuz-oauth-url");
-  const qPasteGo   = document.getElementById("qobuz-oauth-finish");
-  let qConnected = false;
 
+  // No controls of its own any more: one Qobuz sign-in under Streaming accounts
+  // covers browsing, favourites and waveforms alike, so this only reports what
+  // that sign-in means for waveforms.
   function showQobuzSecretState(j) {
-    qConnected = !!(j && j.qobuz_connected);
-    if (qOauthBtn) qOauthBtn.textContent = qConnected ? "Disconnect" : "Connect";
-    // The paste row is a recovery path, not a step: it only appears once a
-    // sign-in has been started and has not landed back here by itself.
-    if (qPasteRow && qConnected) qPasteRow.hidden = true;
     if (!qSecStatus) return;
-    if (qConnected) {
-      const who = (j && j.qobuz_user) ? " as " + j.qobuz_user : "";
-      qSecStatus.textContent = "Connected" + who +
-        ". Qobuz tracks will show a waveform once analysed.";
+    if (j && j.qobuz_connected) {
+      qSecStatus.textContent = "Using your Qobuz sign-in. Qobuz tracks will show a " +
+        "waveform once analysed.";
       return;
     }
-    // A legacy pasted secret still works and still says so, even though there
-    // is no longer any UI to enter one.
     if (j && j.qobuz_secret_set) {
       qSecStatus.textContent = "Using saved credentials from an earlier version. " +
-        "Connect to replace them with a Qobuz sign-in.";
+        "Reconnect Qobuz under Streaming accounts to replace them.";
       return;
     }
-    qSecStatus.textContent = "Not connected — Qobuz tracks keep the plain bar.";
-  }
-
-  if (qOauthBtn) {
-    qOauthBtn.addEventListener("click", async () => {
-      qOauthBtn.disabled = true;
-      try {
-        if (qConnected) {
-          const r = await fetch("/api/qobuz/oauth/disconnect", { method: "POST" });
-          if (!r.ok) throw new Error("Couldn't disconnect");
-          showToast("Qobuz disconnected");
-          loadWaveformEnabled();
-          return;
-        }
-        const r = await fetch("/api/qobuz/oauth/start");
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok || !j.url) throw new Error(j.error || "Couldn't start the Qobuz sign-in");
-        // Opened rather than navigated: this page keeps its state, and the tab
-        // that comes back carries the code straight to the server.
-        window.open(j.url, "_blank", "noopener");
-        if (qPasteRow) qPasteRow.hidden = false;
-        if (qSecStatus) {
-          qSecStatus.textContent = "Sign in on the Qobuz tab, then come back here. " +
-            "If it does not connect by itself, paste the address you landed on below.";
-        }
-      } catch (e) {
-        showToast(e.message, "error");
-      } finally { qOauthBtn.disabled = false; }
-    });
-  }
-
-  if (qPasteGo && qPasteUrl) {
-    qPasteGo.addEventListener("click", async () => {
-      qPasteGo.disabled = true;
-      try {
-        const r = await fetch("/api/qobuz/oauth/paste", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: qPasteUrl.value })
-        });
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok || j.error) throw new Error(j.error || "Couldn't finish signing in");
-        // The address carries a one-time code; it has been used and is of no
-        // further value, but leaving it on screen serves nothing either.
-        qPasteUrl.value = "";
-        if (qPasteRow) qPasteRow.hidden = true;
-        showToast("Qobuz connected");
-        loadWaveformEnabled();
-      } catch (e) {
-        showToast(e.message, "error");
-      } finally { qPasteGo.disabled = false; }
-    });
+    qSecStatus.textContent = "Connect Qobuz under Streaming accounts to enable this. " +
+      "Qobuz tracks keep the plain bar until then.";
   }
 
   if (waveEnabledEl) {
