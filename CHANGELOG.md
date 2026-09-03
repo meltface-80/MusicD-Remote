@@ -2,6 +2,57 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.13] — 2026-09-03
+
+### Fixed — the token has to be MADE under the app the secret belongs to
+
+The instrumentation added in v1.8.12 finally named the failure, and it named two different ones in
+one line:
+
+```
+this app's Qobuz login:  Qobuz rejected the TOKEN (HTTP 401). The signing app_id is not
+                         the one that minted this login token
+the pasted credentials:  Qobuz rejected the TOKEN (HTTP 401) — this login is expired
+```
+
+So the album read worked; **signing** was refused. And the token in the pasted file was dead on
+arrival, which is why the two attempts failed for different reasons at different steps.
+
+That closes the question v1.8.10–12 kept circling. A `user_auth_token` belongs to the app that
+issued it, and Qobuz refuses a signed request whose `app_id` is not that app. This app's token is
+minted under `lib/qobuz.js`'s own `app_id`, for which there is no secret and never will be; the
+supplied secret belongs to a different app. **Every pairing of the two things already held therefore
+fails** — v1.8.11 tried one direction, v1.8.12 the other, and both were rearrangements of the same
+insufficient set.
+
+The way out is not another combination. It is to mint a **second token under the app the secret
+belongs to** — `user/login` is unsigned and takes an `app_id`, and the username and password hash
+are already stored for re-login, so this costs one extra login and pairs correctly by construction.
+
+- `login()` takes an optional `app_id`, applied to the query **and** the `X-App-Id` header.
+- The signed path tries, in order: the minted token (correct by construction), this app's own login
+  (right when a bare secret belongs to this app's id), then a pasted file's token (last — it expires
+  wherever it was made and nothing here can refresh it).
+- The minted token is cached **in memory only** — it is a credential, and it is re-derivable at any
+  moment from what is already persisted. A 401 on it drops it so the next play mints a fresh one; a
+  changed signing `app_id` drops it too, rather than signing as one app with another's token.
+- Minting is skipped, once and loudly, when no Qobuz username/password is stored — otherwise that
+  attempt is simply missing from the decline list, and an absence is not a diagnosis. It shares the
+  60-second backoff `qobuzRelogin` uses so a wrong password is not a login attempt per poll.
+- `_wfQobuzSaid` moved above its first caller. It is a `const` and the new caller sits 2,000 lines
+  higher — the startup-crash class this project keeps pre-flight step 3 for.
+
+### Known gap
+
+A track whose title is only symbols (`Ø`, on the album in the log above) canonicalises to an empty
+string and is refused with "no track title to match on". Refusing is correct — matching on duration
+alone would draw a confident waveform of the wrong recording — but those tracks keep the plain bar.
+
+Class of error: two versions spent rearranging a set of credentials that could not work in any
+arrangement, because the missing piece was not held at all.
+
+931 unit / 513 DOM / 85 static.
+
 ## [1.8.12] — 2026-09-03
 
 ### Fixed — the album read was swallowing its reason, in the function above the one v1.8.11 fixed

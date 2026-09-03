@@ -483,3 +483,60 @@ test("no album id is refused before any network call", async () => {
     assert.equal(called, false, "an empty id still went to the network");
   } finally { global.fetch = realFetch; }
 });
+
+// ---------------------------------------------------------------------------
+// v1.8.13 — mint the token under the app the SECRET belongs to.
+//
+// The live log finally named it: signing as app 798273057 while carrying a token
+// this app minted under its own app_id is HTTP 401, and the pasted file's token
+// was dead on arrival. No combination of what was already held can work — the
+// token has to be MADE under the secret's app. user/login is unsigned and takes
+// an app_id, so it can be.
+// ---------------------------------------------------------------------------
+
+test("login mints against the app_id it is given, in query AND header", async () => {
+  const realFetch = global.fetch;
+  let sawUrl = "", sawHeaders = null;
+  global.fetch = async (url, opts) => {
+    sawUrl = String(url); sawHeaders = (opts && opts.headers) || {};
+    return { ok: true, status: 200,
+             json: async () => ({ user_auth_token: "tok", user: { id: 7, display_name: "X" } }) };
+  };
+  try {
+    const r = await QB.login("me@example.com", "hash", true, "798273057");
+    assert.equal(r.token, "tok");
+    assert.match(sawUrl, /app_id=798273057/, "the login was minted under the wrong app");
+    assert.equal(sawHeaders["X-App-Id"], "798273057",
+      "the header still named the module's app — half a switch is still a mismatch");
+  } finally { global.fetch = realFetch; }
+});
+
+test("login with no app_id keeps the module's own — nothing else changes", async () => {
+  const realFetch = global.fetch;
+  let sawUrl = "";
+  global.fetch = async (url) => {
+    sawUrl = String(url);
+    return { ok: true, status: 200,
+             json: async () => ({ user_auth_token: "t", user: { id: 1 } }) };
+  };
+  try {
+    await QB.login("me", "hash", true);
+    assert.match(sawUrl, new RegExp("app_id=" + QB.APP_ID));
+  } finally { global.fetch = realFetch; }
+});
+
+test("a login that returns no token is still an error, minted or not", async () => {
+  const realFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, status: 200, json: async () => ({ user: { id: 1 } }) });
+  try {
+    await assert.rejects(() => QB.login("me", "hash", true, "798273057"), /login failed/i);
+  } finally { global.fetch = realFetch; }
+});
+
+test("the 401 wording tells the two cases apart", () => {
+  // Signed: the app_id and the token disagree. Unsigned: the token is simply
+  // dead. These sent us to different fixes and the live log used both.
+  const e = new Error("x"); e.code = 401;
+  assert.match(QB.describeQobuzError(e, true),  /minted/i);
+  assert.match(QB.describeQobuzError(e, false), /expired/i);
+});

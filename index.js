@@ -10575,6 +10575,77 @@ function qobuzRelogin() {
   return qobuzLoginPending;
 }
 
+// Said-once logging for the streaming waveform. Declared HERE, above its first
+// caller (qobuzSigningToken), not beside the waveform code 2000 lines below:
+// `const` has no hoisting, and a helper that reads a not-yet-initialised const
+// is the startup-crash class this project keeps a pre-flight step for.
+const _wfQobuzSaid = new Set();
+function wfQobuzSayOnce(key, msg) {
+  if (_wfQobuzSaid.has(key)) return;
+  _wfQobuzSaid.add(key);
+  console.log(msg);
+}
+
+/*
+ * A Qobuz token minted under the SIGNING app_id.
+ *
+ * THE THING THAT MAKES STREAMING WAVEFORMS POSSIBLE AT ALL. A user_auth_token
+ * belongs to the app that issued it, and Qobuz refuses a signed request whose
+ * app_id is not that app — HTTP 401, indistinguishable from an expired login.
+ * This app's own token is minted under lib/qobuz.js's app_id, for which there is
+ * no secret and never will be; the secret the user supplies belongs to a
+ * different app. Every pairing of those two therefore fails, which is exactly
+ * what v1.8.10-12 kept walking into from different directions.
+ *
+ * The way out is not another combination of what we already hold: it is to mint
+ * a SECOND token under the app the secret belongs to. user/login is unsigned and
+ * takes an app_id, and the stored username/password hash is already here for
+ * re-login — so this costs one extra login, once, and pairs correctly by
+ * construction.
+ *
+ * Cached in memory only. It is a credential, it is derivable at any time from
+ * what is already persisted, and a token on disk is one more thing to leak.
+ */
+let _qobuzSignTok    = null;   // { appId, token }
+let _qobuzSignTokAt  = 0;      // when the last attempt failed, for the backoff
+let _qobuzSignTokJob = null;
+async function qobuzSigningToken() {
+  const appId = String(qobuzSignAppId || "").trim();
+  // No separate app to sign as: the caller should use this app's own token.
+  if (!appId) return null;
+  if (!qobuzUsername || !qobuzPasswordMd5) {
+    // Said once, or it is a line per poll. Without the stored login there is
+    // nothing to mint FROM, and the attempt simply would not appear in the
+    // decline list below — an absence is not a diagnosis.
+    wfQobuzSayOnce("no-login-to-mint",
+      "[waveform] qobuz: a signing app_id is set but this app has no stored Qobuz " +
+      "username/password to mint a matching token with. Re-enter your Qobuz login " +
+      "under Settings \u2192 Services so it can be saved.");
+    return null;
+  }
+  if (_qobuzSignTok && _qobuzSignTok.appId === appId) return _qobuzSignTok.token;
+  // Same 60s backoff qobuzRelogin uses: a wrong password must not become a
+  // login attempt per poll, and the clients poll.
+  if (Date.now() - _qobuzSignTokAt < 60 * 1000) return null;
+  if (!_qobuzSignTokJob) {
+    _qobuzSignTokJob = (async () => {
+      try {
+        const r = await qobuz.login(qobuzUsername, qobuzPasswordMd5, true, appId);
+        _qobuzSignTok = { appId, token: r.token };
+        _qobuzSignTokAt = 0;
+        console.log("[waveform] qobuz: minted a signing token under app " + appId);
+        return r.token;
+      } catch (e) {
+        _qobuzSignTokAt = Date.now();
+        console.log("[waveform] qobuz: could not mint a token under app " + appId +
+                    " — " + (e && e.message ? e.message : "unknown error"));
+        return null;
+      } finally { _qobuzSignTokJob = null; }
+    })();
+  }
+  return _qobuzSignTokJob;
+}
+
 // Run an authenticated Qobuz call; on a 401 (expired token), re-login once and
 // retry. Throws a "not connected" error if no credentials are stored.
 async function qobuzWithToken(fn) {
@@ -12489,13 +12560,6 @@ async function wfPrefetchNext(zone) {
  * noise and buries it — which is the same outcome as not logging it. Keyed by
  * reason so a DIFFERENT decline still gets through immediately.
  */
-const _wfQobuzSaid = new Set();
-function wfQobuzSayOnce(key, msg) {
-  if (_wfQobuzSaid.has(key)) return;
-  _wfQobuzSaid.add(key);
-  console.log(msg);
-}
-
 async function wfQobuzTrack(album, artist, track, seconds) {
   if (!waveformEnabled || !labelsDb) return null;
   // Every decline below says why. v1.8.6 returned from these three in silence,
@@ -12587,11 +12651,26 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
   // Which combination Qobuz accepts cannot be determined from outside, so the
   // credential sets are tried in order and the first that yields audio wins.
   const attempts = [];
+  // FIRST: a token this app minted under the secret's own app_id. That is the
+  // only combination Qobuz can accept when the secret is not this app's, and
+  // it is built rather than pasted, so it cannot go stale the way a file does.
+  const minted = await qobuzSigningToken();
+  if (minted) {
+    attempts.push({
+      label: "a token minted under app " + qobuzSignAppId,
+      token: minted,
+      readAppId: qobuzSignAppId || undefined,
+    });
+  }
+  // Then this app's own login — right when the secret belongs to this app's
+  // app_id, which is the case for a bare secret paste.
   attempts.push({
     label: "this app's Qobuz login",
     token: null,                       // null = the app's own, via qobuzWithToken
     readAppId: undefined,              // its own app_id, which minted that token
   });
+  // Last, a token that came with a pasted file. Ranked last because it expires
+  // wherever it was made and nothing here can refresh it.
   if (qobuzSignToken) {
     attempts.push({
       label: "the pasted credentials",
@@ -12613,6 +12692,7 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
       .catch((e) => ({ album: null, reason: qobuz.describeQobuzError(e, false) }));
     if (!got || !got.album) {
       reasons.push(a.label + ": " + ((got && got.reason) || "unknown"));
+      if (a.token && _qobuzSignTok && a.token === _qobuzSignTok.token) _qobuzSignTok = null;
       continue;
     }
 
@@ -12625,6 +12705,9 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
       .catch((e) => ({ url: null, reason: qobuz.describeFileUrlError(e) }));
     if (f && f.url) { url = f.url; break; }
     reasons.push(a.label + ": " + ((f && f.reason) || "unknown"));
+    // A minted token that stops working has expired. Forget it so the next play
+    // mints a fresh one rather than replaying a dead credential forever.
+    if (a.token && _qobuzSignTok && a.token === _qobuzSignTok.token) _qobuzSignTok = null;
   }
 
   if (!url) {
@@ -12846,6 +12929,11 @@ app.post("/api/settings/waveform", (req, res) => {
     qobuzAppSecret = pair.secret;
     qobuzSignAppId = pair.appId;
     qobuzSignToken = pair.token;
+    // The minted token belongs to the OLD app_id. Keeping it across a change
+    // would sign the next request as one app with another's token — the very
+    // failure this whole path exists to avoid.
+    _qobuzSignTok = null;
+    _qobuzSignTokAt = 0;
     savePersistedSettings({ qobuzAppSecret, qobuzSignAppId, qobuzSignToken });
     // The reasons logged so far were about the old state. Forget them, so the
     // next play says what is true now rather than staying quiet about it.
