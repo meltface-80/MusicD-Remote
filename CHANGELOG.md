@@ -2,6 +2,39 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.15] — 2026-09-03
+
+### Changed — a bare secret is the LMS arrangement, and always was
+
+This app already **is** the LMS Qobuz plugin's setup: the same `app_id` (`942852567`), and the same
+ordinary username + md5-password login, which works and has worked throughout. A secret issued for
+that app therefore completes a set that is already internally consistent — no OAuth, no browser
+flow, no pasted token, nothing new at all.
+
+That arrangement was the default path the whole time, reachable by pasting the secret **on its own**.
+Five versions went into pairing a *web player* secret (`798273057`, out of a `credentials.json`) with
+tokens it could never match, and every one of those failures was real and correctly diagnosed —
+against the wrong question. The right question was never "how do these two credentials fit together",
+it was "which app's secret is this".
+
+- Settings now states which app it will sign as, and what that implies for the secret. Pasted alone:
+  this app's own id, its own login — get a secret issued for that app and nothing else is needed.
+  A whole `credentials.json` is for the other case only, where the secret belongs to a different app
+  and so its `app_id` and token must travel with it.
+- `POST /api/debug/qobuz-probe` no longer requires `app_id`; omitted, it tests against this app's own
+  id. Requiring it hid the entire arrangement behind a field nobody would think to leave blank.
+- Two tests pin that the id used to **log in** and the id used to **sign** are the same value. They
+  are both the module default today, and drifting apart would be a guaranteed 401 with no visible
+  cause — which is exactly the failure mode this whole sequence has been living in.
+
+No secret is shipped, and none of this changes that.
+
+Class of error: five releases of increasingly precise answers to a question that was framed wrong at
+the start — and a default path that already did the right thing, hidden behind an input that
+implied otherwise.
+
+934 unit / 513 DOM / 85 static.
+
 ## [1.8.14] — 2026-09-03
 
 ### Added — a probe that answers the credential question without a release

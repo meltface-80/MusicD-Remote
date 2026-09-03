@@ -12845,16 +12845,23 @@ app.get("/api/debug/qobuz-probe", (req, res) => res.status(405).json({
 
 app.post("/api/debug/qobuz-probe", async (req, res) => {
   const body   = req.body || {};
-  const appId  = String(body.app_id || "").trim();
   const secret = String(body.secret || "").trim();
   const given  = String(body.token  || "").trim();
-  if (!appId || !secret) {
+  // app_id is OPTIONAL, and omitting it is the most useful case: it means "this
+  // app's own id", which is the LMS plugin's — the same id whose username and
+  // md5-password login this app already uses successfully. A secret issued for
+  // THAT app therefore completes a set that is already consistent, with no new
+  // sign-in flow at all. Requiring an app_id here hid that whole arrangement
+  // behind a field nobody would think to leave blank.
+  const appId = String(body.app_id || "").trim() || qobuz.APP_ID;
+  if (!secret) {
     return res.status(400).json({
-      error: "app_id and secret are required",
-      how: "POST {\"app_id\":\"<id>\",\"secret\":\"<secret>\",\"token\":\"<optional>\"," +
-           "\"album\":\"<optional>\",\"artist\":\"<optional>\"}",
-      note: "Nothing is saved. Supply the pair you want tested; the reply carries " +
-            "no secrets, only what Qobuz answered.",
+      error: "secret is required",
+      how: "POST {\"secret\":\"<secret>\"} — app_id defaults to this app's own (" +
+           qobuz.APP_ID + "), which is the LMS plugin's, so a secret issued for " +
+           "that app needs nothing else. Add \"app_id\" and \"token\" only to " +
+           "test a different app's pair.",
+      note: "Nothing is saved. The reply carries no secrets, only what Qobuz answered.",
     });
   }
 

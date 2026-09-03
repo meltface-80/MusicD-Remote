@@ -10246,9 +10246,9 @@
     // credential set to fall back on, not a requirement — the signing runs
     // against this app's own Qobuz login first, which is the one known to work.
     const id = j.qobuz_sign_app_id
-      ? "Signing as app " + j.qobuz_sign_app_id + "."
-      : "No app id supplied, so this app signs as itself — paste the whole " +
-        "credentials.json if no waveform appears.";
+      ? "Signing as app " + j.qobuz_sign_app_id + " — the secret must be that app's."
+      : "Signing as this app itself, with its own Qobuz login (the LMS arrangement) " +
+        "— so this must be a secret issued for that same app.";
     const spare = j.qobuz_sign_token_set ? " A pasted login is available as a fallback." : "";
     qSecStatus.textContent = (j.qobuz_ready
       ? "Set. Qobuz albums will show a waveform once analysed. "

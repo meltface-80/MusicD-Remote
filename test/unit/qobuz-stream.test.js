@@ -540,3 +540,63 @@ test("the 401 wording tells the two cases apart", () => {
   assert.match(QB.describeQobuzError(e, true),  /minted/i);
   assert.match(QB.describeQobuzError(e, false), /expired/i);
 });
+
+// ---------------------------------------------------------------------------
+// v1.8.15 — a bare secret IS the LMS arrangement, and always was.
+//
+// This app already carries the LMS plugin's app_id and already signs in with
+// username + md5 password, exactly as that plugin does. So a secret issued for
+// THAT app completes a set that is already internally consistent, with no new
+// sign-in flow. Five versions went into pairing a web-player secret with tokens
+// it could never match, while the arrangement that needs nothing new was the
+// default path all along — reachable by pasting the secret on its own.
+// ---------------------------------------------------------------------------
+
+test("a bare secret signs with this app's own app_id, in query AND header", async () => {
+  const realFetch = global.fetch;
+  let sawUrl = "", sawHeaders = null;
+  global.fetch = async (url, opts) => {
+    sawUrl = String(url); sawHeaders = (opts && opts.headers) || {};
+    return { ok: true, status: 200, json: async () => ({ url: "https://x/track.mp3" }) };
+  };
+  try {
+    const r = await QB.getFileUrlResult("tok", 42, "lms-secret", {});
+    assert.equal(r.url, "https://x/track.mp3");
+    assert.match(sawUrl, new RegExp("app_id=" + QB.APP_ID),
+      "a bare secret must sign as this app, which is the id its login token came from");
+    assert.equal(sawHeaders["X-App-Id"], QB.APP_ID);
+  } finally { global.fetch = realFetch; }
+});
+
+test("the app_id this app uses is the one its own login mints against", async () => {
+  // The two must agree or the signed call is refused. They are both the module
+  // default, and this pins that they cannot drift apart unnoticed.
+  const realFetch = global.fetch;
+  const seen = [];
+  global.fetch = async (url) => {
+    seen.push(String(url));
+    return { ok: true, status: 200,
+             json: async () => ({ user_auth_token: "t", user: { id: 1 },
+                                  url: "https://x/a.mp3" }) };
+  };
+  try {
+    await QB.login("me", "hash", true);
+    await QB.getFileUrlResult("t", 1, "sec", {});
+  } finally { global.fetch = realFetch; }
+  const idOf = (u) => (u.match(/app_id=([^&]+)/) || [])[1];
+  assert.equal(idOf(seen[0]), idOf(seen[1]),
+    "login and the signed call used different app_ids — a guaranteed 401");
+});
+
+test("an explicit app_id still overrides, for a foreign pair", async () => {
+  const realFetch = global.fetch;
+  let sawUrl = "";
+  global.fetch = async (url) => {
+    sawUrl = String(url);
+    return { ok: true, status: 200, json: async () => ({ url: "https://x/t.mp3" }) };
+  };
+  try {
+    await QB.getFileUrlResult("tok", 42, "sec", { appId: "798273057" });
+    assert.match(sawUrl, /app_id=798273057/);
+  } finally { global.fetch = realFetch; }
+});
