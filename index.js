@@ -1959,6 +1959,14 @@ let qobuzAppSecret    = String(_persisted.qobuzAppSecret || "");
 // secret. Blank means "use the module's own id", which is right only when the
 // secret happens to be that app's.
 let qobuzSignAppId    = String(_persisted.qobuzSignAppId || "");
+// The login token that belongs with THAT app_id. Qobuz checks the signing
+// app_id against the app that minted the token, so this app's own token — minted
+// by lib/qobuz.js's app_id via user/login — is refused when the request signs as
+// a different app, however well matched the id/secret pair is. All three come
+// out of one pasted credentials file and are consistent by construction. Blank
+// means "use this app's own token", which is right only for a bare secret that
+// happens to belong to this app's id.
+let qobuzSignToken    = String(_persisted.qobuzSignToken || "");
 const _labelsEnabledSet     = _persisted.labelsEnabled !== undefined;
 const _smartPicksEnabledSet = _persisted.smartPicksEnabled !== undefined;
 
@@ -12569,18 +12577,36 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
   const secret = String(qobuzAppSecret || "").trim();
   if (!secret) return null;                       // no secret: this path is off
 
-  const alb = await qobuzWithToken((t) => qobuz.getAlbum(t, albumId)).catch(() => null);
-  if (!alb) { console.log("[waveform] qobuz: album " + albumId + " could not be read"); return null; }
+  // ONE APP'S CREDENTIALS, ALL THE WAY THROUGH. When a credentials file was
+  // pasted it carries the token, the app_id and the secret as a matched set, and
+  // they are used together: signing as app A while presenting a token minted by
+  // app B is refused (401) no matter how well the id and secret agree. With no
+  // file token, fall back to this app's own login — correct only when the secret
+  // belongs to this app's id, which is why the settings line names the id.
+  const signAs = qobuzSignAppId || undefined;
+  const useOwn = !qobuzSignToken;
+  const withTok = (fn) => useOwn ? qobuzWithToken(fn) : fn(qobuzSignToken);
+
+  const alb = await withTok((t) => qobuz.getAlbum(t, albumId, 12000, signAs)).catch(() => null);
+  if (!alb) {
+    console.log("[waveform] qobuz: album " + albumId + " could not be read" +
+                (useOwn ? "" : " with the pasted credentials"));
+    return null;
+  }
 
   const m = TM.matchTrack(alb.tracks, track, seconds);
   if (!m.track) { console.log("[waveform] qobuz: " + m.reason); return null; }
 
-  const url = await qobuzWithToken((t) =>
-      qobuz.getFileUrl(t, m.track.id, secret, { appId: qobuzSignAppId || undefined }))
-    .catch(() => null);
+  const got = await withTok((t) =>
+      qobuz.getFileUrlResult(t, m.track.id, secret, { appId: signAs }))
+    .catch((e) => ({ url: null, reason: qobuz.describeFileUrlError(e) }));
+  const url = got && got.url;
   if (!url) {
+    // The REASON, as Qobuz stated it. Three different causes need three
+    // different actions and they used to arrive as one sentence covering all of
+    // them, which is not a diagnosis.
     console.log("[waveform] qobuz: no stream url for \"" + track + "\" — " +
-                "a wrong or rotated app secret, or no subscription for this track");
+                ((got && got.reason) || "unknown reason"));
     return null;
   }
 
@@ -12753,6 +12779,7 @@ app.get("/api/debug/zone-dump", async (req, res) => {
       album_ids: qobuzAlbumIds.size,
       secret_set: !!String(qobuzAppSecret || "").trim(),
       sign_app_id: qobuzSignAppId || "(module default)",
+      sign_token_set: !!qobuzSignToken,
       connected: qobuzReady(),
     },
     sample_count: npSamples.length,
@@ -12779,6 +12806,9 @@ app.get("/api/settings/waveform", (req, res) => {
     // visible: a secret from the web player signed with the Lyrion plugin's id
     // fails exactly like a wrong secret.
     qobuz_sign_app_id: qobuzSignAppId || null,
+    // Whether a token came WITH the pair. Not the token — that is a credential,
+    // and this endpoint is polled by every open client.
+    qobuz_sign_token_set: !!qobuzSignToken,
     qobuz_ready: !!(String(qobuzAppSecret || "").trim() && qobuzReady()),
   });
 });
@@ -12791,14 +12821,16 @@ app.post("/api/settings/waveform", (req, res) => {
     const pair = SIG.parseSecretInput(body.qobuz_secret);
     qobuzAppSecret = pair.secret;
     qobuzSignAppId = pair.appId;
-    savePersistedSettings({ qobuzAppSecret, qobuzSignAppId });
+    qobuzSignToken = pair.token;
+    savePersistedSettings({ qobuzAppSecret, qobuzSignAppId, qobuzSignToken });
     // The reasons logged so far were about the old state. Forget them, so the
     // next play says what is true now rather than staying quiet about it.
     _wfQobuzSaid.clear();
     if (body.enabled === undefined) {
       return res.json({ ok: true, enabled: waveformEnabled,
                         qobuz_secret_set: !!qobuzAppSecret,
-                        qobuz_sign_app_id: qobuzSignAppId || null });
+                        qobuz_sign_app_id: qobuzSignAppId || null,
+                        qobuz_sign_token_set: !!qobuzSignToken });
     }
   }
   if (body.enabled === undefined) return res.status(400).json({ error: "enabled required" });
@@ -12809,7 +12841,8 @@ app.post("/api/settings/waveform", (req, res) => {
   if (!waveformEnabled && _wfPrefetch) { _wfPrefetch.signal.aborted = true; _wfPrefetch = null; }
   res.json({ ok: true, enabled: waveformEnabled,
              qobuz_secret_set: !!String(qobuzAppSecret || "").trim(),
-             qobuz_sign_app_id: qobuzSignAppId || null });
+             qobuz_sign_app_id: qobuzSignAppId || null,
+             qobuz_sign_token_set: !!qobuzSignToken });
 });
 
 // Labels on/off. The scan's own gate lives inside runLabelsIndexScan, at the

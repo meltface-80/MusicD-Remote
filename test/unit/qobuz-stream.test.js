@@ -16,6 +16,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const SIG = require("../../lib/qobuz-sig");
 const { matchTrack, DURATION_TOLERANCE_S } = require("../../lib/trackmatch");
+const QB = require("../../lib/qobuz");
 
 // --- the signature ---------------------------------------------------------
 
@@ -272,4 +273,126 @@ test("a cycle in the pasted object cannot hang the parse", () => {
   // gets reused, and a diagnostic that hangs the server is worse than none.
   const a = { app_secret: "sss" }; a.self = a;
   assert.doesNotThrow(() => SIG.parseSecretInput(JSON.stringify({ app_secret: "sss" })));
+});
+
+// ---------------------------------------------------------------------------
+// v1.8.11 — the token is part of the credential set.
+//
+// v1.8.10 made the app_id and the secret travel together and still failed,
+// because Qobuz checks the signing app_id against the app that MINTED THE
+// TOKEN. This app logs in with its own app_id, so signing as the pasted app
+// while presenting its own token is refused (401) however well the pair agrees.
+// All three come out of one credentials file, consistent by construction.
+// ---------------------------------------------------------------------------
+
+test("the login token is read out of a pasted credentials file", () => {
+  const p = SIG.parseSecretInput(JSON.stringify({
+    app_id: "798273057", app_secret: "s3cr3t", user_auth_token: "tok-abc",
+    email: "someone@example.com", display_name: "Someone",
+  }));
+  assert.equal(p.appId, "798273057");
+  assert.equal(p.secret, "s3cr3t");
+  assert.equal(p.token, "tok-abc", "the token was dropped — this is the v1.8.10 defect");
+});
+
+test("a bare secret carries no token, so the caller keeps its own", () => {
+  const p = SIG.parseSecretInput("deadbeefcafe");
+  assert.equal(p.secret, "deadbeefcafe");
+  assert.equal(p.token, "");
+  assert.equal(p.appId, "");
+});
+
+test("only user_auth_token is adopted, never some other token field", () => {
+  // A credentials file may carry a refresh/device/session token. Taking any
+  // "token"-ish field would present the wrong one and fail as a 401.
+  const p = SIG.parseSecretInput(JSON.stringify({
+    app_id: "1", app_secret: "s", refresh_token: "nope", device_token: "also-nope",
+  }));
+  assert.equal(p.token, "", "a token field that is not user_auth_token was adopted");
+});
+
+test("mangled JSON yields no token either — nothing is half-stored", () => {
+  const p = SIG.parseSecretInput('{"app_id":"1","app_secret":');
+  assert.deepEqual(p, { secret: "", appId: "", token: "" });
+});
+
+// --- the reason a stream url was refused -----------------------------------
+
+test("a 400 naming the signature is reported as a signature failure", () => {
+  const e = new Error("Qobuz HTTP 400");
+  e.code = 400;
+  e.body = "Invalid Request Signature parameter (request_sig)";
+  const s = QB.describeFileUrlError(e);
+  assert.match(s, /SIGNATURE/);
+  assert.match(s, /400/);
+});
+
+test("a 401 is reported as the TOKEN not matching the signing app", () => {
+  const e = new Error("Qobuz auth failed (401)");
+  e.code = 401;
+  const s = QB.describeFileUrlError(e);
+  assert.match(s, /TOKEN/);
+  assert.match(s, /minted/i, "the 401 message must name the actual cause, not just the status");
+});
+
+test("the three causes produce three different sentences", () => {
+  const mk = (code, body) => { const e = new Error("x"); e.code = code; e.body = body || ""; return e; };
+  const said = new Set([
+    QB.describeFileUrlError(mk(400, "Invalid Request Signature parameter (request_sig)")),
+    QB.describeFileUrlError(mk(401)),
+    QB.describeFileUrlError(mk(404)),
+  ]);
+  assert.equal(said.size, 3, "two causes collapsed into one message — the v1.8.10 defect");
+});
+
+test("an unrecognised failure still says something rather than nothing", () => {
+  const e = new Error("socket hang up");
+  const s = QB.describeFileUrlError(e);
+  assert.match(s, /socket hang up/, "the underlying message was swallowed");
+});
+
+test("a preview response is refused with a reason naming the subscription", async () => {
+  // Qobuz answers a refused request with 200 and sample:true. This is the
+  // ordinary shape of "you cannot stream this", not an error path.
+  const realFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true, status: 200,
+    json: async () => ({ url: "https://example.com/preview.mp3", sample: true }),
+  });
+  try {
+    const r = await QB.getFileUrlResult("tok", 123, "sec", {});
+    assert.equal(r.url, null);
+    assert.match(r.reason, /preview/i);
+    assert.match(r.reason, /subscription/i);
+  } finally { global.fetch = realFetch; }
+});
+
+test("getFileUrl keeps its old shape — a url string or null", async () => {
+  const realFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true, status: 200,
+    json: async () => ({ url: "https://example.com/track.mp3" }),
+  });
+  try {
+    assert.equal(await QB.getFileUrl("tok", 123, "sec", {}), "https://example.com/track.mp3");
+  } finally { global.fetch = realFetch; }
+  global.fetch = async () => ({ ok: true, status: 200, json: async () => ({ sample: true, url: "x" }) });
+  try {
+    assert.equal(await QB.getFileUrl("tok", 123, "sec", {}), null);
+  } finally { global.fetch = realFetch; }
+});
+
+test("a failing call carries the response BODY, not just the status", async () => {
+  // The body is the only thing that separates a signature failure from an auth
+  // one. Throwing the bare status is what made them indistinguishable.
+  const realFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: false, status: 400,
+    text: async () => "Invalid Request Signature parameter (request_sig)",
+  });
+  try {
+    const r = await QB.getFileUrlResult("tok", 123, "sec", {});
+    assert.equal(r.url, null);
+    assert.match(r.reason, /SIGNATURE/, "the 400 body never reached the reason");
+  } finally { global.fetch = realFetch; }
 });

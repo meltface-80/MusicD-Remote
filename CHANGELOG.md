@@ -2,6 +2,48 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.11] — 2026-09-03
+
+### Fixed — the login token is part of the credential set, and the real reason is now logged
+
+v1.8.10 made the `app_id` and the secret travel together and it still failed. The missing third
+piece was the **token**. Qobuz checks the signing `app_id` against the app that *minted the login
+token*, so signing as the pasted app while presenting this app's own token is refused however well
+the id and secret agree — the mismatch simply moved.
+
+This app logs in through `user/login` with its own `app_id` (`942852567`), so its token belongs to
+that app and to no other. A pasted `credentials.json` carries a token, an id and a secret that are
+consistent **by construction**, and v1.8.10 read two of the three and dropped the token on the floor.
+
+- `parseSecretInput` now also returns `user_auth_token`, and the signed path uses **one app's
+  credentials all the way through** — that token, that id, that secret. `album/get` goes the same
+  way, since it rides the same pairing. With no pasted token the old behaviour stands: this app's
+  own login, correct only when the secret belongs to this app's id.
+- Only the exact key `user_auth_token` is adopted. A credentials file may hold a refresh or device
+  token, and presenting the wrong one fails as a 401 that looks like everything else here.
+
+### Fixed — three different failures had one message
+
+`getFileUrl` caught every error and returned `null`, so a rejected signature, a rejected token and
+an unstreamable track all surfaced as *"a wrong or rotated app secret, or no subscription for this
+track"* — a sentence covering three causes with three different remedies, which is not a diagnosis.
+Qobuz names the cause and the app was discarding it.
+
+- `qobuzGet` attaches the response **body** to the thrown error. The body is the only thing that
+  separates a signature failure (HTTP 400, *"Invalid Request Signature parameter (request_sig)"*)
+  from a token failure (401) — both otherwise arrive as an ordinary non-200.
+- `getFileUrlResult` returns `{url, reason}` and the log says which of the five it was. A `sample:
+  true` answer is reported as the preview it is, not as an error. `getFileUrl` keeps its old
+  string-or-null shape, so no existing caller changes.
+- Settings reports what actually arrived — full set, pair without a token, or secret alone — instead
+  of one "Set." that means three different states. The secret and the token are still never echoed
+  back by any route; a test asserts both.
+
+Class of error: a fix that made two of three values agree, and a diagnostic that averaged its
+causes into a sentence true of none of them.
+
+920 unit / 513 DOM / 85 static.
+
 ## [1.8.10] — 2026-09-03
 
 ### Fixed — a secret is only valid against the app_id it was issued for

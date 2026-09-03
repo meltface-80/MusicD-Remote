@@ -10241,15 +10241,28 @@
       qSecStatus.textContent = "Not set — Qobuz albums keep the plain bar.";
       return;
     }
-    // Naming the app_id is how a MISMATCHED PAIR becomes visible: a secret
-    // issued for the web player, signed with this app's own id, is refused
-    // exactly as a wrong secret is.
-    const paired = j.qobuz_sign_app_id
-      ? " Signing as app " + j.qobuz_sign_app_id + "."
-      : " No app id supplied — paste the whole credentials.json if it does not work.";
-    qSecStatus.textContent = (j.qobuz_ready
-      ? "Set. Qobuz albums will show a waveform once analysed."
-      : "Set, but Qobuz is not connected — connect it under Services.") + paired;
+    // What is visible here is the SET, not just the secret. app_id, secret and
+    // login token have to come from one app or Qobuz refuses the call, and each
+    // way of getting that wrong looks identical from outside — so the line says
+    // which pieces arrived instead of leaving it to be guessed.
+    if (j.qobuz_sign_app_id && j.qobuz_sign_token_set) {
+      qSecStatus.textContent =
+        "Set — full credentials for app " + j.qobuz_sign_app_id +
+        " (id, secret and login token). Qobuz albums will show a waveform once analysed.";
+      return;
+    }
+    if (j.qobuz_sign_app_id) {
+      qSecStatus.textContent =
+        "Partly set — app " + j.qobuz_sign_app_id + " and its secret, but no login " +
+        "token. Qobuz will refuse the call: paste the WHOLE credentials.json, " +
+        "including its user_auth_token line.";
+      return;
+    }
+    qSecStatus.textContent =
+      "Secret only — no app id and no login token, so this app must guess they are " +
+      "its own. If no waveform appears, paste the whole credentials.json instead of " +
+      "just the secret." +
+      (j.qobuz_ready ? "" : " Qobuz is also not connected — see Services.");
   }
   if (qSecSave && qSecEl) {
     qSecSave.addEventListener("click", async () => {
