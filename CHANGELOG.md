@@ -2,6 +2,42 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.17] — 2026-09-03
+
+### Fixed — correcting the signing pair no longer destroys the token that works
+
+The probe found the working arrangement: app_id `304027809`, its secret, and **the token already
+stored from an earlier paste** — the one three versions had written off as expired. It never was. It
+was minted under the OAuth app and kept being sent with the web player's `app_id`, which Qobuz
+answers identically to a dead token.
+
+Which exposed a trap sitting directly in the user's path. Correcting the pair means pasting an
+`app_id` and secret; the token is not the wrong part and there is no reason to retype it. The
+settings route assigned `qobuzSignToken = pair.token` unconditionally, so that paste would have
+**wiped the only credential that works** — and it cannot be rebuilt here, unlike a minted one.
+
+- A paste that carries an `app_id` but no token now **inherits** the stored one.
+- A **bare** secret still starts clean: it means "sign as this app itself", where a foreign token is
+  only a wasted attempt.
+- Clearing the field still clears everything, which is how to remove a token deliberately.
+- A token this app **minted** is still dropped on any change — it belongs to the app_id it was minted
+  under, and costs one login to rebuild.
+
+### Fixed (v1.8.16, restated because it is what broke the diagnosis)
+
+"Expired" was a guess written into a message. A 401 on the unsigned read means the token and the
+`app_id` sent with it do not go together, and the wrong `app_id` is much the commoner cause. Leading
+with expiry sent three versions after a fresh login that was never needed.
+
+### What the LMS plugin does, for the record
+
+Login is username + password, exactly as here. `track/getFileUrl` is **additionally signed** with
+`md5(endpoint + sorted params + ts + app_secret)` — the construction in `lib/qobuz-sig.js`, which was
+correct throughout. Its `app_id`/`app_secret` are built in hex-encoded (`API/Common.pm`,
+`pack('H*', ...)`), so a working username and password never implied a signable stream URL.
+
+937 unit / 513 DOM / 85 static.
+
 ## [1.8.16] — 2026-09-03
 
 ### Fixed — "expired" was a guess in a message, and it sent us the wrong way

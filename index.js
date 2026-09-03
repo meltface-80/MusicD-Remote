@@ -13062,10 +13062,18 @@ app.post("/api/settings/waveform", (req, res) => {
     const pair = SIG.parseSecretInput(body.qobuz_secret);
     qobuzAppSecret = pair.secret;
     qobuzSignAppId = pair.appId;
-    qobuzSignToken = pair.token;
-    // The minted token belongs to the OLD app_id. Keeping it across a change
-    // would sign the next request as one app with another's token — the very
-    // failure this whole path exists to avoid.
+    // KEEP A WORKING TOKEN WHEN ONLY THE PAIR IS BEING CORRECTED. Updating the
+    // app_id and secret while leaving the token out is the ordinary way to fix
+    // a mismatch — the token was never the wrong part — and wiping it would
+    // destroy the one credential that works, for a paste that never mentioned
+    // it. Only a paste that CARRIES an app_id may inherit, so a bare secret
+    // (which means "sign as this app itself") still starts clean, and clearing
+    // the field clears everything, which is the way to remove one deliberately.
+    qobuzSignToken = pair.token || (pair.appId ? qobuzSignToken : "");
+    // A token minted BY THIS APP, though, belongs to the app_id it was minted
+    // under. Keeping that across a change would sign as one app with another's
+    // token — the very failure this path exists to avoid. It costs one login to
+    // rebuild, unlike a pasted one, which cannot be rebuilt here at all.
     _qobuzSignTok = null;
     _qobuzSignTokAt = 0;
     savePersistedSettings({ qobuzAppSecret, qobuzSignAppId, qobuzSignToken });

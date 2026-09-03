@@ -605,3 +605,51 @@ test("an explicit app_id still overrides, for a foreign pair", async () => {
     assert.match(sawUrl, /app_id=798273057/);
   } finally { global.fetch = realFetch; }
 });
+
+// ---------------------------------------------------------------------------
+// v1.8.17 — the combination that works, and not destroying it on the way in.
+//
+// The probe found it: app_id 304027809 + its secret + the token already stored
+// from a pasted file. That token had been called "expired" for three versions;
+// it was minted under the OAuth app all along and kept being sent with the web
+// player's id, which answers identically.
+//
+// Correcting the PAIR is now the ordinary repair, and it must not take the
+// token with it — that is the one credential this app cannot rebuild.
+// ---------------------------------------------------------------------------
+
+test("a pair-only paste is parsed as a pair with no token", () => {
+  const p = SIG.parseSecretInput(JSON.stringify({
+    app_id: "304027809", app_secret: "96c4538ca81015a5be0c1d5bd9573844",
+  }));
+  assert.equal(p.appId, "304027809");
+  assert.equal(p.secret, "96c4538ca81015a5be0c1d5bd9573844");
+  assert.equal(p.token, "", "a token was invented from a paste that had none");
+});
+
+test("the inherit rule: a pair keeps a stored token, a bare secret does not", () => {
+  // The expression the settings route uses. Pinned here because getting it
+  // backwards silently destroys a working credential on an unrelated edit.
+  const keep = (pair, stored) => pair.token || (pair.appId ? stored : "");
+
+  assert.equal(keep({ token: "", appId: "304027809" }, "LIVE"), "LIVE",
+    "correcting the pair wiped the token that works");
+  assert.equal(keep({ token: "NEW", appId: "304027809" }, "LIVE"), "NEW",
+    "an explicit token must win over the stored one");
+  assert.equal(keep({ token: "", appId: "" }, "LIVE"), "",
+    "a bare secret means sign as this app — a foreign token must not linger");
+  assert.equal(keep({ token: "", appId: "" }, ""), "");
+});
+
+test("the winning arrangement round-trips as one pasted document", () => {
+  // Exactly what the probe reported working, pasted as one blob.
+  const p = SIG.parseSecretInput(JSON.stringify({
+    app_id: "304027809",
+    app_secret: "96c4538ca81015a5be0c1d5bd9573844",
+    user_auth_token: "live-oauth-token",
+    token_source: "oauth",
+    email: "someone@example.com",
+  }));
+  assert.deepEqual(p, { secret: "96c4538ca81015a5be0c1d5bd9573844",
+                        appId: "304027809", token: "live-oauth-token" });
+});
