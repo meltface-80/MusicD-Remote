@@ -396,3 +396,90 @@ test("a failing call carries the response BODY, not just the status", async () =
     assert.match(r.reason, /SIGNATURE/, "the 400 body never reached the reason");
   } finally { global.fetch = realFetch; }
 });
+
+// ---------------------------------------------------------------------------
+// v1.8.12 — the album read keeps its reason, and the token does not move.
+//
+// v1.8.11 fixed the swallowed error in getFileUrl and left the identical defect
+// in getAlbum one function above it, so the first real failure the feature ever
+// reached still read "could not be read". It also swapped the TOKEN along with
+// the app_id, which broke an unsigned album read that had been working: a
+// working client keeps ONE token and varies only the app_id/secret pair.
+// ---------------------------------------------------------------------------
+
+test("a failed album read names the cause instead of swallowing it", async () => {
+  const realFetch = global.fetch;
+  global.fetch = async () => ({ ok: false, status: 404, text: async () => "not found" });
+  try {
+    const r = await QB.getAlbumResult("tok", "0724384405953");
+    assert.equal(r.album, null);
+    assert.match(r.reason, /404/);
+    assert.match(r.reason, /album/i, "the reason must name what was being read");
+  } finally { global.fetch = realFetch; }
+});
+
+test("a dead token on an unsigned read is not blamed on the signature", async () => {
+  // Only a SIGNED call can have its signature rejected. Reporting a 401 on the
+  // catalogue read as a signing problem sends the user to fix the wrong thing.
+  const realFetch = global.fetch;
+  global.fetch = async () => ({ ok: false, status: 401, text: async () => "" });
+  try {
+    const r = await QB.getAlbumResult("tok", "123");
+    assert.match(r.reason, /401/);
+    assert.doesNotMatch(r.reason, /SIGNATURE/);
+  } finally { global.fetch = realFetch; }
+});
+
+test("the same status reads differently signed and unsigned", () => {
+  const mk = (code) => { const e = new Error("x"); e.code = code; return e; };
+  assert.notEqual(QB.describeQobuzError(mk(404), true), QB.describeQobuzError(mk(404), false));
+  assert.notEqual(QB.describeQobuzError(mk(401), true), QB.describeQobuzError(mk(401), false));
+});
+
+test("an unmapped status still carries its number and body", () => {
+  const e = new Error("x"); e.code = 503; e.body = "maintenance";
+  const s = QB.describeQobuzError(e, false);
+  assert.match(s, /503/);
+  assert.match(s, /maintenance/);
+});
+
+test("getAlbum keeps its old shape — the album, or null", async () => {
+  const realFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: true, status: 200,
+    json: async () => ({ id: "abc", title: "Junction Seven",
+                         tracks: { items: [{ id: 1, title: "Spy In The House Of Love",
+                                             duration: 286, track_number: 1 }] } }),
+  });
+  try {
+    const a = await QB.getAlbum("tok", "abc");
+    assert.equal(a.id, "abc");
+    assert.equal(a.tracks.length, 1);
+    assert.equal(a.tracks[0].duration, 286);
+  } finally { global.fetch = realFetch; }
+  global.fetch = async () => ({ ok: false, status: 500, text: async () => "" });
+  try {
+    assert.equal(await QB.getAlbum("tok", "abc"), null);
+  } finally { global.fetch = realFetch; }
+});
+
+test("a 200 with no album is a reason, not a silent null", async () => {
+  const realFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, status: 200, json: async () => ({}) });
+  try {
+    const r = await QB.getAlbumResult("tok", "abc");
+    assert.equal(r.album, null);
+    assert.ok(r.reason && r.reason.length > 0);
+  } finally { global.fetch = realFetch; }
+});
+
+test("no album id is refused before any network call", async () => {
+  const realFetch = global.fetch;
+  let called = false;
+  global.fetch = async () => { called = true; throw new Error("should not be called"); };
+  try {
+    const r = await QB.getAlbumResult("tok", "");
+    assert.equal(r.album, null);
+    assert.equal(called, false, "an empty id still went to the network");
+  } finally { global.fetch = realFetch; }
+});

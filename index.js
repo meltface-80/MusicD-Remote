@@ -12577,36 +12577,60 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
   const secret = String(qobuzAppSecret || "").trim();
   if (!secret) return null;                       // no secret: this path is off
 
-  // ONE APP'S CREDENTIALS, ALL THE WAY THROUGH. When a credentials file was
-  // pasted it carries the token, the app_id and the secret as a matched set, and
-  // they are used together: signing as app A while presenting a token minted by
-  // app B is refused (401) no matter how well the id and secret agree. With no
-  // file token, fall back to this app's own login — correct only when the secret
-  // belongs to this app's id, which is why the settings line names the id.
+  // ONE TOKEN, SEVERAL PAIRS — the shape a working Qobuz client actually uses.
+  // v1.8.11 swapped the TOKEN along with the app_id and broke the album read,
+  // which had been fine: `album/get` is unsigned, and this app's own login is
+  // the token known to be live, since it is what read the favourites these
+  // album ids came from. The token stays put; what varies is the app_id, which
+  // pairs with the secret for the SIGNATURE only.
+  //
+  // Which combination Qobuz accepts cannot be determined from outside, so the
+  // credential sets are tried in order and the first that yields audio wins.
+  const attempts = [];
+  attempts.push({
+    label: "this app's Qobuz login",
+    token: null,                       // null = the app's own, via qobuzWithToken
+    readAppId: undefined,              // its own app_id, which minted that token
+  });
+  if (qobuzSignToken) {
+    attempts.push({
+      label: "the pasted credentials",
+      token: qobuzSignToken,
+      readAppId: qobuzSignAppId || undefined,
+    });
+  }
   const signAs = qobuzSignAppId || undefined;
-  const useOwn = !qobuzSignToken;
-  const withTok = (fn) => useOwn ? qobuzWithToken(fn) : fn(qobuzSignToken);
 
-  const alb = await withTok((t) => qobuz.getAlbum(t, albumId, 12000, signAs)).catch(() => null);
-  if (!alb) {
-    console.log("[waveform] qobuz: album " + albumId + " could not be read" +
-                (useOwn ? "" : " with the pasted credentials"));
-    return null;
+  const reasons = [];
+  // Declared here, not with `var` inside the loop: the loop assigns it and the
+  // check below reads it, and a hoisted declaration inside a block is the exact
+  // shape this project has been bitten by (see the declaration-before-use rule).
+  let url = null;
+  for (const a of attempts) {
+    const withTok = (fn) => a.token ? fn(a.token) : qobuzWithToken(fn);
+
+    const got = await withTok((t) => qobuz.getAlbumResult(t, albumId, 12000, a.readAppId))
+      .catch((e) => ({ album: null, reason: qobuz.describeQobuzError(e, false) }));
+    if (!got || !got.album) {
+      reasons.push(a.label + ": " + ((got && got.reason) || "unknown"));
+      continue;
+    }
+
+    // The track match does not depend on the credentials, so a failure here is
+    // final — retrying with another login would ask the same question twice.
+    const m = TM.matchTrack(got.album.tracks, track, seconds);
+    if (!m.track) { console.log("[waveform] qobuz: " + m.reason); return null; }
+
+    const f = await withTok((t) => qobuz.getFileUrlResult(t, m.track.id, secret, { appId: signAs }))
+      .catch((e) => ({ url: null, reason: qobuz.describeFileUrlError(e) }));
+    if (f && f.url) { url = f.url; break; }
+    reasons.push(a.label + ": " + ((f && f.reason) || "unknown"));
   }
 
-  const m = TM.matchTrack(alb.tracks, track, seconds);
-  if (!m.track) { console.log("[waveform] qobuz: " + m.reason); return null; }
-
-  const got = await withTok((t) =>
-      qobuz.getFileUrlResult(t, m.track.id, secret, { appId: signAs }))
-    .catch((e) => ({ url: null, reason: qobuz.describeFileUrlError(e) }));
-  const url = got && got.url;
   if (!url) {
-    // The REASON, as Qobuz stated it. Three different causes need three
-    // different actions and they used to arrive as one sentence covering all of
-    // them, which is not a diagnosis.
-    console.log("[waveform] qobuz: no stream url for \"" + track + "\" — " +
-                ((got && got.reason) || "unknown reason"));
+    // Every set that was tried, and what Qobuz said to each. One line, because
+    // a cause per attempt is the difference between a diagnosis and a shrug.
+    console.log("[waveform] qobuz: no audio for \"" + track + "\" — " + reasons.join(" | "));
     return null;
   }
 

@@ -2,6 +2,41 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.12] — 2026-09-03
+
+### Fixed — the album read was swallowing its reason, in the function above the one v1.8.11 fixed
+
+The first real failure this feature ever reached logged `album 0724384405953 could not be read` —
+a sentence with no cause in it. v1.8.11 wrote a whole entry about `getFileUrl` catching every error
+and returning `null`, and left the identical defect in `getAlbum` one function above it.
+
+- `getAlbumResult` returns `{album, reason}`; `getAlbum` keeps its album-or-null shape.
+- One shared `describeQobuzError(e, signed)`, because a status does not mean the same thing on both
+  calls: only a **signed** request can have its signature rejected, so reporting a 401 on the
+  unsigned catalogue read as a signing problem sends you to fix the wrong thing. A 404 likewise
+  reads "no such album" or "no such track" depending on what was asked for.
+
+### Fixed — v1.8.11 moved the token and broke a read that was working
+
+v1.8.11 concluded that the login token had to travel with the app_id. That was over-read from a
+docstring. A working client keeps **one token** and varies only the `app_id`/`secret` pair:
+`X-User-Auth-Token` stays put while `X-App-Id` changes with the pair. Swapping in the pasted file's
+token broke `album/get`, which is **unsigned** and had been succeeding on this app's own login —
+the token known to be live, since it is what read the 8,000-odd favourites these album ids came from.
+
+- The token stays with this app's own Qobuz login. The pasted `app_id` and secret are used for the
+  **signature** only.
+- Which combination Qobuz accepts cannot be known from outside, so the credential sets are now tried
+  in order — this app's login first, the pasted file second — and the first that yields audio wins.
+  A pasted token is a fallback, not a requirement.
+- The decline line names **every set tried and what Qobuz said to each**, rather than one reason for
+  a path with two branches.
+
+Class of error: fixing a swallowed error in one function and not looking at its caller; then
+generalising a real finding one step past the evidence.
+
+927 unit / 513 DOM / 85 static.
+
 ## [1.8.11] — 2026-09-03
 
 ### Fixed — the login token is part of the credential set, and the real reason is now logged
