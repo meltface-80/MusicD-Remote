@@ -12364,6 +12364,43 @@ function wfGet(tkey) {
     return row ? { peaks: row.peaks, n: row.n } : null;
   } catch (e) { return null; }   // a read failure is "no waveform", not an outage
 }
+/*
+ * Throw away every stored waveform when the decode rate changes.
+ *
+ * A waveform is only comparable with others taken the same way. Decoding to
+ * 8 kHz lowpasses at 4 kHz and loses the top of every transient; 16 kHz keeps
+ * them, and the two produce visibly different shapes for the same audio. A
+ * library holding both would draw two kinds of picture with nothing on screen
+ * to say which is which — worse than either choice on its own, because the
+ * inconsistency is invisible and unexplainable.
+ *
+ * So the rate is recorded next to the data, and a change wipes it. That costs a
+ * re-analysis: local files are re-read from disk, and streamed tracks are
+ * fetched again the next time they play. Both are the ordinary first-play cost,
+ * paid once.
+ */
+function wfCheckDecodeRate() {
+  if (!labelsDb) return;
+  const want = WFD.DECODE_RATE;
+  const had = parseInt(_persisted.waveformRate, 10) || 0;
+  if (had === want) return;
+  try {
+    const n = labelsDb.prepare("SELECT COUNT(*) c FROM waveforms").get().c;
+    if (n) {
+      labelsDb.prepare("DELETE FROM waveforms").run();
+      console.log("[waveform] decode rate " + (had || "unset") + " → " + want +
+                  "Hz: cleared " + n + " stored waveform" + (n === 1 ? "" : "s") +
+                  ", they will be re-analysed on next play");
+    }
+    savePersistedSettings({ waveformRate: want });
+  } catch (e) {
+    // A failure here means the table is unreadable, which the next wfGet will
+    // report anyway. Not fatal: the feature degrades to the plain bar rather
+    // than taking startup with it.
+    console.error("[waveform] could not clear waveforms for the rate change:", e.message);
+  }
+}
+
 function wfPut(tkey, u8) {
   if (!labelsDb || !tkey || !u8 || !u8.length) return;
   try {
@@ -12374,6 +12411,11 @@ function wfPut(tkey, u8) {
     if (DEBUG) console.error("[waveform] store failed:", e.message);
   }
 }
+
+// Run once at startup, here rather than beside the schema: WFD is required at
+// the top of this section, and _persisted and the database are both ready long
+// before it.
+wfCheckDecodeRate();
 
 // Which albumKey (if any) this album/artist is known locally under.
 //

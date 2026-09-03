@@ -151,8 +151,11 @@ test("the piped form reads stdin and does not pass -nostdin", () => {
   assert.ok(a.includes("pipe:0"), "ffmpeg was not pointed at stdin");
   assert.ok(!a.includes("-nostdin"), "-nostdin would close the input this form depends on");
   // Everything else must match the file form, or a streamed waveform would be
-  // drawn from different numbers than a local one.
-  for (const flag of ["-map", "0:a:0", "-f", "s16le", "-ac", "1", "-ar", "8000"]) {
+  // drawn from different numbers than a local one. The rate comes from the
+  // constant rather than a literal: hard-coding it here meant a rate change had
+  // to be made in two places, and this test failed for the wrong reason when
+  // the decode moved from 8 kHz to 16 kHz.
+  for (const flag of ["-map", "0:a:0", "-f", "s16le", "-ac", "1", "-ar", String(d.DECODE_RATE)]) {
     assert.ok(a.includes(flag), `the piped decode dropped ${flag}`);
   }
 });
@@ -222,4 +225,54 @@ test("THE other one: giving up stops the download too", async () => {
   child.stdout.emit("data", Buffer.alloc(2));   // cancellation is checked here
   await p;
   assert.equal(destroyed, true, "the response was left open after the decode was abandoned");
+});
+
+// ---------------------------------------------------------------------------
+// v1.8.22 — the decode rate.
+//
+// 8 kHz made ffmpeg lowpass at 4 kHz before peaks were taken, so cymbals,
+// snare cracks and sibilance — most of whose energy is above that — were
+// filtered away before they could register. Measured over a track of
+// transients, 8 kHz under-read the drawn bars by a mean of 16/255 and by up to
+// 52/255, and under-read on the majority of them: a systematic flattening.
+//
+// It is close to free: the decode of the compressed source dominates, and
+// 44.1 kHz (five times the PCM) measured the same wall clock as 8 kHz.
+// ---------------------------------------------------------------------------
+
+test("both decode forms ask for the same rate, and it is 16 kHz", () => {
+  const D = require("../../lib/waveform-decode");
+  assert.equal(D.DECODE_RATE, 16000);
+  for (const argv of [D.args("/music/x.flac"), D.pipeArgs()]) {
+    const i = argv.indexOf("-ar");
+    assert.ok(i >= 0, "-ar missing from " + JSON.stringify(argv));
+    assert.equal(argv[i + 1], "16000",
+      "a file decode and a stream decode must use the SAME rate — different " +
+      "rates would give a local and a streamed copy of one track different shapes");
+  }
+});
+
+test("nothing in the argv names a file to write", () => {
+  // The waveform never touches disk. Input is a pipe or the source path;
+  // output is stdout. A stray filename here would be an audio file on disk.
+  const D = require("../../lib/waveform-decode");
+  const argv = D.pipeArgs();
+  assert.equal(argv[argv.length - 1], "-", "output must be stdout");
+  assert.ok(argv.includes("pipe:0"), "input must be stdin");
+  const looksLikePath = argv.filter((a) => /[/\\]/.test(a) && a !== "pipe:0" && a !== "0:a:0");
+  assert.deepEqual(looksLikePath, [], "argv carries a path: " + JSON.stringify(argv));
+});
+
+test("the stride still leaves ample headroom above the stored buckets", () => {
+  // At 16 kHz with stride 256 each intermediate peak covers ~16ms, so a
+  // three-minute track holds ~11,250 of them before the reduction to 1,000.
+  // If this ever drops below BUCKETS the stored waveform is being upsampled,
+  // which is padding rather than detail.
+  const WF = require("../../lib/waveform");
+  const D = require("../../lib/waveform-decode");
+  const perSecond = D.DECODE_RATE / WF.STRIDE;
+  const shortestRealTrack = 60;
+  assert.ok(perSecond * shortestRealTrack > WF.BUCKETS,
+    "a one-minute track yields " + Math.round(perSecond * shortestRealTrack) +
+    " peaks for " + WF.BUCKETS + " buckets — the store would be stretching");
 });

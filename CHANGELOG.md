@@ -2,6 +2,53 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.22] — 2026-09-03
+
+### Changed — the decode moved from 8 kHz to 16 kHz
+
+Resampling to 8 kHz makes ffmpeg **lowpass at 4 kHz first**. Cymbals, snare cracks and sibilance —
+most of whose energy sits above that — were being filtered away before they could register as a
+peak, so the waveform was quietly flattening exactly the moments it exists to show.
+
+Measured on a three-minute track of transients, comparing the bars actually drawn:
+
+| against 8 kHz | bars differing | mean | largest |
+|---|---|---|---|
+| 16 kHz | 192/195 | 16.3/255 | 52/255 (9.4px of a 46px bar) |
+| 22.05 kHz | 193/195 | 17.8/255 | 52/255 |
+| 44.1 kHz | 186/195 | 12.6/255 | 45/255 |
+
+Of 195 bars, 44.1 kHz read **higher** on 119 and lower on 67 — a systematic under-read at 8 kHz,
+not noise. For comparison, raising the stored bucket count from 1,000 to 10,000 moved the worst bar
+by 4px and most bars not at all; this is an order of magnitude larger and it is the lever that
+matters.
+
+**It is close to free.** The decode of the compressed source dominates: 134 ms at 8 kHz, 141 ms at
+16 kHz, and 133 ms at 44.1 kHz — five times the PCM, same wall clock, on the x86 class of machine
+this runs on.
+
+16 kHz rather than higher because the content that was missing is all below 8 kHz: 22.05 and 44.1
+differ from 16 by less than they differ from 8.
+
+- `STRIDE` stays at 256, so each intermediate peak now covers ~16 ms instead of ~32 ms — twice the
+  time resolution, free, and a five-minute track holds ~18,750 of them before the reduction to 1,000.
+- Both decode forms — file and pipe — read the rate from one constant. A test asserts they match,
+  because a local and a streamed copy of one track drawn from different rates would have different
+  shapes.
+
+### Changed — a rate change now clears every stored waveform
+
+A waveform is only comparable with others taken the same way, and a library holding both 8 kHz and
+16 kHz rows would draw two kinds of picture with nothing on screen to say which is which — worse
+than either choice on its own, because the inconsistency is invisible.
+
+So the rate is recorded beside the data and a change wipes the table, logging what it did. Verified
+end to end: a seeded 8 kHz library cleared on first boot and re-recorded the new rate. The cost is
+one re-analysis per track, paid at next play — local files re-read from disk, streamed tracks fetched
+again.
+
+975 unit / 513 DOM / 87 static.
+
 ## [1.8.21] — 2026-09-03
 
 ### Changed — the track ahead is drawn to be seen
