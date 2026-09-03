@@ -22,6 +22,9 @@ const { createUpdater } = require("./lib/updater");
 // see lib/albumkeys.js. Required up here rather than beside the waveform code
 // because albumSource reads it, and that runs from every list endpoint.
 const AK = require("./lib/albumkeys");
+// Qobuz request signing, and reading an app_id/secret pair out of whatever the
+// user pasted into Settings. Pure — see lib/qobuz-sig.js.
+const SIG = require("./lib/qobuz-sig");
 const { radioDecision, radioResumeDecision, radioQueueFloor,
         radioToTurnOff } = require("./lib/radio");
 const { playCounted, historyEntry, pushHistory, recentHistory,
@@ -1950,6 +1953,12 @@ let waveformEnabled   = _persisted.waveformEnabled === true;
 // shipped with a value — see the streaming-waveform block below for why. With
 // it blank, streaming tracks keep the plain progress bar exactly as before.
 let qobuzAppSecret    = String(_persisted.qobuzAppSecret || "");
+// The app_id the SECRET belongs to. Secrets are app_id-specific — a signature
+// made with one app's secret is only valid against that app's id — so the pair
+// travels together or the request is refused indistinguishably from a wrong
+// secret. Blank means "use the module's own id", which is right only when the
+// secret happens to be that app's.
+let qobuzSignAppId    = String(_persisted.qobuzSignAppId || "");
 const _labelsEnabledSet     = _persisted.labelsEnabled !== undefined;
 const _smartPicksEnabledSet = _persisted.smartPicksEnabled !== undefined;
 
@@ -12566,7 +12575,8 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
   const m = TM.matchTrack(alb.tracks, track, seconds);
   if (!m.track) { console.log("[waveform] qobuz: " + m.reason); return null; }
 
-  const url = await qobuzWithToken((t) => qobuz.getFileUrl(t, m.track.id, secret))
+  const url = await qobuzWithToken((t) =>
+      qobuz.getFileUrl(t, m.track.id, secret, { appId: qobuzSignAppId || undefined }))
     .catch(() => null);
   if (!url) {
     console.log("[waveform] qobuz: no stream url for \"" + track + "\" — " +
@@ -12742,6 +12752,7 @@ app.get("/api/debug/zone-dump", async (req, res) => {
       album_keys: qobuzAlbumKeys.size,
       album_ids: qobuzAlbumIds.size,
       secret_set: !!String(qobuzAppSecret || "").trim(),
+      sign_app_id: qobuzSignAppId || "(module default)",
       connected: qobuzReady(),
     },
     sample_count: npSamples.length,
@@ -12764,6 +12775,10 @@ app.get("/api/settings/waveform", (req, res) => {
     // Whether a secret is SET, never the secret itself — this endpoint is
     // polled by every open client and a credential has no business in it.
     qobuz_secret_set: !!String(qobuzAppSecret || "").trim(),
+    // The ID is not a credential and naming it is how a mismatched pair becomes
+    // visible: a secret from the web player signed with the Lyrion plugin's id
+    // fails exactly like a wrong secret.
+    qobuz_sign_app_id: qobuzSignAppId || null,
     qobuz_ready: !!(String(qobuzAppSecret || "").trim() && qobuzReady()),
   });
 });
@@ -12771,14 +12786,19 @@ app.post("/api/settings/waveform", (req, res) => {
   const body = req.body || {};
   // The secret can be set on its own, without touching the switch.
   if (body.qobuz_secret !== undefined) {
-    qobuzAppSecret = String(body.qobuz_secret || "").trim();
-    savePersistedSettings({ qobuzAppSecret });
+    // Accepts a bare secret OR the JSON a Qobuz client stores, so the app_id
+    // and the secret cannot be separated on their way in here.
+    const pair = SIG.parseSecretInput(body.qobuz_secret);
+    qobuzAppSecret = pair.secret;
+    qobuzSignAppId = pair.appId;
+    savePersistedSettings({ qobuzAppSecret, qobuzSignAppId });
     // The reasons logged so far were about the old state. Forget them, so the
     // next play says what is true now rather than staying quiet about it.
     _wfQobuzSaid.clear();
     if (body.enabled === undefined) {
       return res.json({ ok: true, enabled: waveformEnabled,
-                        qobuz_secret_set: !!qobuzAppSecret });
+                        qobuz_secret_set: !!qobuzAppSecret,
+                        qobuz_sign_app_id: qobuzSignAppId || null });
     }
   }
   if (body.enabled === undefined) return res.status(400).json({ error: "enabled required" });
@@ -12788,7 +12808,8 @@ app.post("/api/settings/waveform", (req, res) => {
   // for a feature nobody is looking at.
   if (!waveformEnabled && _wfPrefetch) { _wfPrefetch.signal.aborted = true; _wfPrefetch = null; }
   res.json({ ok: true, enabled: waveformEnabled,
-             qobuz_secret_set: !!String(qobuzAppSecret || "").trim() });
+             qobuz_secret_set: !!String(qobuzAppSecret || "").trim(),
+             qobuz_sign_app_id: qobuzSignAppId || null });
 });
 
 // Labels on/off. The scan's own gate lives inside runLabelsIndexScan, at the

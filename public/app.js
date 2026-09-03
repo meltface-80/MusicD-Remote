@@ -10241,9 +10241,15 @@
       qSecStatus.textContent = "Not set — Qobuz albums keep the plain bar.";
       return;
     }
-    qSecStatus.textContent = j.qobuz_ready
+    // Naming the app_id is how a MISMATCHED PAIR becomes visible: a secret
+    // issued for the web player, signed with this app's own id, is refused
+    // exactly as a wrong secret is.
+    const paired = j.qobuz_sign_app_id
+      ? " Signing as app " + j.qobuz_sign_app_id + "."
+      : " No app id supplied — paste the whole credentials.json if it does not work.";
+    qSecStatus.textContent = (j.qobuz_ready
       ? "Set. Qobuz albums will show a waveform once analysed."
-      : "Set, but Qobuz is not connected — connect it under Services.";
+      : "Set, but Qobuz is not connected — connect it under Services.") + paired;
   }
   if (qSecSave && qSecEl) {
     qSecSave.addEventListener("click", async () => {

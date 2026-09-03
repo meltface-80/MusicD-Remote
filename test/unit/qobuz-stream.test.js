@@ -211,3 +211,65 @@ test("the streaming endpoints are named the way Qobuz names them", () => {
     assert.ok(src.includes('qobuzGet("' + e + '"'), `missing the ${e} call`);
   }
 });
+
+// --- the app_id/secret pair (v1.8.9) ---------------------------------------
+// Secrets are app_id-specific: a signature made with one app's secret is only
+// valid against that app's id. Splitting the two across separate fields is how
+// one of them gets updated later and the other does not, and the failure is
+// indistinguishable from a wrong secret.
+
+test("THE one: a credentials file keeps the pair together", () => {
+  const p = SIG.parseSecretInput(JSON.stringify({
+    app_id: "798273057", app_secret: "deadbeef", user_auth_token: "tok",
+  }));
+  assert.equal(p.secret, "deadbeef");
+  assert.equal(p.appId, "798273057", "the id was dropped — the pair is broken");
+});
+
+test("a bare secret leaves the app_id to the caller", () => {
+  const p = SIG.parseSecretInput("  justthesecret  ");
+  assert.equal(p.secret, "justthesecret", "surrounding whitespace was not trimmed");
+  assert.equal(p.appId, "", "an id was invented for a paste that carried none");
+});
+
+test("the pair is found however the file nests it", () => {
+  const p = SIG.parseSecretInput(JSON.stringify({
+    accounts: { primary: { creds: { app_id: 111, app_secret: "sss" } } },
+  }));
+  assert.equal(p.secret, "sss");
+  assert.equal(p.appId, "111", "numbers must survive as strings");
+});
+
+test("only app_id counts as the id — not every id in the file", () => {
+  // A credentials file is full of ids. Accepting the first one seen would sign
+  // with a user id and fail in a way that looks like a bad secret.
+  const p = SIG.parseSecretInput(JSON.stringify({
+    user_id: "999", id: "888", app_secret: "sss", app_id: "777",
+  }));
+  assert.equal(p.appId, "777");
+});
+
+test("JSON with no secret in it reports nothing, rather than being used raw", () => {
+  // Pasting the wrong file is a mistake worth surfacing, not something to store
+  // as a very long secret that can never work.
+  const p = SIG.parseSecretInput(JSON.stringify({ user_auth_token: "tok" }));
+  assert.equal(p.secret, "");
+  assert.equal(p.appId, "");
+});
+
+test("anything unusable is empty, not a throw", () => {
+  for (const junk of ["", "   ", null, undefined, "{ not json", "[]", "{}"]) {
+    const p = SIG.parseSecretInput(junk);
+    assert.equal(typeof p.secret, "string", `parseSecretInput(${JSON.stringify(junk)})`);
+    assert.equal(typeof p.appId, "string");
+  }
+  // Broken JSON that opens with "{" is not silently kept as a secret either.
+  assert.equal(SIG.parseSecretInput("{ not json").secret, "");
+});
+
+test("a cycle in the pasted object cannot hang the parse", () => {
+  // Not reachable through JSON.parse, but the walk is the kind of code that
+  // gets reused, and a diagnostic that hangs the server is worse than none.
+  const a = { app_secret: "sss" }; a.self = a;
+  assert.doesNotThrow(() => SIG.parseSecretInput(JSON.stringify({ app_secret: "sss" })));
+});

@@ -2,6 +2,38 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.10] — 2026-09-03
+
+### Fixed — a secret is only valid against the app_id it was issued for
+
+v1.8.9 fixed the address; the request still came back refused. The reason is in the pairing:
+**Qobuz secrets are app_id-specific.** A signature built with the web player's secret is only
+accepted when the request also presents the web player's `app_id`. `lib/qobuz.js` has always sent
+its own — the one the favourites, search and new-release calls use, which need no secret at all —
+so a perfectly good secret was being signed against the wrong id, and Qobuz refuses that exactly
+the way it refuses a wrong secret. There is no error that distinguishes them.
+
+- `qobuzGet` takes an optional `appId` that overrides the module's for one call, applied to **both**
+  the `app_id` query parameter and the `X-App-Id` header — sending the id in one place and not the
+  other is its own way of being refused.
+- `getFileUrl` forwards it, so only the signed streaming call changes address. Every unsigned call
+  keeps the id it has used since the original integration.
+- The Settings field now accepts **either** the bare secret **or** a whole `credentials.json` pasted
+  in. `parseSecretInput` walks the document for `app_secret` and `app_id` at any nesting depth, so
+  the pair cannot be separated on its way in. Two fields would have invited exactly one of them
+  being updated later — which reproduces this bug with no way to see it.
+- Text that *looks* like JSON and does not parse is **refused**, not stored. Falling through to
+  "treat it as a bare secret" would have saved `{ not json` as a credential and reported it SET: a
+  wrong answer wearing a right one's clothes.
+- The settings endpoint reports `qobuz_sign_app_id` and the Settings line names it ("Signing as app
+  N", or a prompt to paste the file). The id is not a credential — it travels in the clear in every
+  request URL — and naming it is what makes a mismatched pair visible instead of silent. **The
+  secret itself is still never echoed back**, by this route or any other.
+
+Class of error: two values that are only meaningful together, accepted separately.
+
+820 → 909 unit / 513 DOM / 85 static.
+
 ## [1.8.9] — 2026-09-02
 
 ### Fixed — both streaming calls went to a URL with a doubled slash
