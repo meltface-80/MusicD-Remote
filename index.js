@@ -12650,34 +12650,36 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
   //
   // Which combination Qobuz accepts cannot be determined from outside, so the
   // credential sets are tried in order and the first that yields audio wins.
+  // The credential sets to try, best first, each resolved LAZILY. Minting costs
+  // a login round trip and, for a signing app that does not accept passwords,
+  // can only ever fail — so building it up front spent a doomed request and a
+  // log line every 60s behind a pasted token that was already working.
   const attempts = [];
-  // FIRST: a token this app minted under the secret's own app_id. That is the
-  // only combination Qobuz can accept when the secret is not this app's, and
-  // it is built rather than pasted, so it cannot go stale the way a file does.
-  const minted = await qobuzSigningToken();
-  if (minted) {
-    attempts.push({
-      label: "a token minted under app " + qobuzSignAppId,
-      token: minted,
-      readAppId: qobuzSignAppId || undefined,
-    });
-  }
-  // Then this app's own login — right when the secret belongs to this app's
-  // app_id, which is the case for a bare secret paste.
-  attempts.push({
-    label: "this app's Qobuz login",
-    token: null,                       // null = the app's own, via qobuzWithToken
-    readAppId: undefined,              // its own app_id, which minted that token
-  });
-  // Last, a token that came with a pasted file. Ranked last because it expires
-  // wherever it was made and nothing here can refresh it.
+  // FIRST: a token supplied with the pair. Deliberate, and matched to that
+  // app_id by whoever pasted it — the arrangement the probe reports as working.
   if (qobuzSignToken) {
     attempts.push({
-      label: "the pasted credentials",
-      token: qobuzSignToken,
+      label: "the token saved from a pasted file",
+      get: () => qobuzSignToken,
       readAppId: qobuzSignAppId || undefined,
     });
   }
+  // Then one minted under the signing app, for a secret whose app DOES accept a
+  // password login. Only reached when there is no pasted token or it failed.
+  if (qobuzSignAppId) {
+    attempts.push({
+      label: "a token minted under app " + qobuzSignAppId,
+      get: () => qobuzSigningToken(),
+      readAppId: qobuzSignAppId,
+    });
+  }
+  // Last, this app's own login — right when the secret belongs to this app's
+  // own app_id, which is the case for a bare secret paste.
+  attempts.push({
+    label: "this app's Qobuz login",
+    get: () => null,                   // null = the app's own, via qobuzWithToken
+    readAppId: undefined,              // its own app_id, which minted that token
+  });
   const signAs = qobuzSignAppId || undefined;
 
   const reasons = [];
@@ -12686,13 +12688,22 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
   // shape this project has been bitten by (see the declaration-before-use rule).
   let url = null;
   for (const a of attempts) {
-    const withTok = (fn) => a.token ? fn(a.token) : qobuzWithToken(fn);
+    // Resolved here, not above: reaching this entry is what makes its cost worth
+    // paying, and the common case never reaches past the first.
+    const tok = await a.get();
+    if (tok === undefined || (tok === null && a.readAppId)) {
+      // A mint that failed. It logged its own reason; record that this set was
+      // unavailable rather than silently trying it as "this app's login".
+      reasons.push(a.label + ": could not be obtained");
+      continue;
+    }
+    const withTok = (fn) => tok ? fn(tok) : qobuzWithToken(fn);
 
     const got = await withTok((t) => qobuz.getAlbumResult(t, albumId, 12000, a.readAppId))
       .catch((e) => ({ album: null, reason: qobuz.describeQobuzError(e, false) }));
     if (!got || !got.album) {
       reasons.push(a.label + ": " + ((got && got.reason) || "unknown"));
-      if (a.token && _qobuzSignTok && a.token === _qobuzSignTok.token) _qobuzSignTok = null;
+      if (tok && _qobuzSignTok && tok === _qobuzSignTok.token) _qobuzSignTok = null;
       continue;
     }
 
@@ -12707,7 +12718,7 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
     reasons.push(a.label + ": " + ((f && f.reason) || "unknown"));
     // A minted token that stops working has expired. Forget it so the next play
     // mints a fresh one rather than replaying a dead credential forever.
-    if (a.token && _qobuzSignTok && a.token === _qobuzSignTok.token) _qobuzSignTok = null;
+    if (tok && _qobuzSignTok && tok === _qobuzSignTok.token) _qobuzSignTok = null;
   }
 
   if (!url) {

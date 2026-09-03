@@ -2,6 +2,46 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.18] — 2026-09-03
+
+### Fixed — Roon's track title can carry a suffix the service's does not
+
+From the live log, a whole album drawing nothing:
+
+```
+qobuz: no track called "The Number 3 (Live at Sydney Opera House)" on the album
+```
+
+Roon appends the venue to every track on Khruangbin's *Live at Sydney Opera House*; Qobuz's track
+list calls it plainly "The Number 3". Exact matching refused each one.
+
+`wfResolveFile` has matched **local** files by containment since the feature was written, with a
+comment giving this exact reason. `matchTrack` never got it — the same problem, solved on one path
+and left on the other.
+
+- A containment match (either direction) is now tried **when there is no exact title match at all**,
+  and it still has to pass the same duration gate, and still has to be the only candidate.
+- It never reaches past an exact title whose length is wrong. That is a different recording, and
+  falling through to a loosely named neighbour is precisely the wrong-master failure this module
+  exists to prevent. A test pins it.
+- The reason line says "matched on a partial title" when the looser rung answered, so a surprising
+  waveform can be traced to how it was found.
+
+The duration gate makes containment far safer here than in the local path, where it stands alone:
+"The Number 3" and "The Number 4" are one character apart, and length separates them.
+
+### Fixed — a doomed login attempt every 60 seconds
+
+The log also carried `could not mint a token under app 304027809 — Qobuz auth failed (401)` on
+repeat. Minting was built up front, before the pasted token that was already working was even tried,
+and for a signing app that does not accept password logins it can only ever fail.
+
+The credential sets are now resolved **lazily** and ordered pasted-token first, so the working path
+costs no extra request and writes no log line. Minting remains as a fallback for a secret whose app
+*does* accept a password login, and is reached only if the pasted token fails.
+
+945 unit / 513 DOM / 85 static.
+
 ## [1.8.17] — 2026-09-03
 
 ### Fixed — correcting the signing pair no longer destroys the token that works

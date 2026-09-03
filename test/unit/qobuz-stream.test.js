@@ -653,3 +653,83 @@ test("the winning arrangement round-trips as one pasted document", () => {
   assert.deepEqual(p, { secret: "96c4538ca81015a5be0c1d5bd9573844",
                         appId: "304027809", token: "live-oauth-token" });
 });
+
+// ---------------------------------------------------------------------------
+// v1.8.18 — Roon's title can carry a suffix the service's does not.
+//
+// From the live log: Khruangbin's "Live at Sydney Opera House". Roon calls the
+// track "The Number 3 (Live at Sydney Opera House)"; Qobuz calls it "The Number
+// 3". Exact matching refused, so the whole live album drew nothing.
+//
+// wfResolveFile has matched local files by containment since the beginning, for
+// this exact reason, with a comment saying so. matchTrack never got it — the
+// same problem solved on one path and not the other.
+// ---------------------------------------------------------------------------
+
+const LIVE = [
+  { id: 1, title: "The Number 3", duration: 170 },
+  { id: 2, title: "The Number 4", duration: 210 },
+  { id: 3, title: "August 10",    duration: 195 },
+];
+
+test("THE case: Roon's suffixed title finds the service's plain one", () => {
+  const m = matchTrack(LIVE, "The Number 3 (Live at Sydney Opera House)", 170);
+  assert.ok(m.track, m.reason);
+  assert.equal(m.track.id, 1);
+  assert.match(m.reason, /partial/, "a looser match should say so");
+});
+
+test("and it picks the RIGHT neighbour, not merely a nearby one", () => {
+  // "The Number 3" and "The Number 4" are one character apart. Containment plus
+  // duration has to separate them or this fallback is worse than no fallback.
+  assert.equal(matchTrack(LIVE, "The Number 4 (Live at Sydney Opera House)", 210).track.id, 2);
+  assert.equal(matchTrack(LIVE, "The Number 3 (Live at Sydney Opera House)", 170).track.id, 1);
+});
+
+test("the reverse direction too — service longer than Roon's", () => {
+  const svc = [{ id: 9, title: "Avenue (Radio Edit)", duration: 200 }];
+  assert.equal(matchTrack(svc, "Avenue", 200).track.id, 9);
+});
+
+test("containment NEVER reaches past an exact title whose length is wrong", () => {
+  // The wrong-master case. An exact title at the wrong duration is a different
+  // recording and must stay refused, not fall through to a loose neighbour.
+  const svc = [
+    { id: 1, title: "Rocket",            duration: 200 },
+    { id: 2, title: "Rocket (Reprise)",  duration: 300 },
+  ];
+  const m = matchTrack(svc, "Rocket", 300);
+  assert.equal(m.track, null,
+    "an exact title at the wrong length fell through to a different recording");
+  assert.match(m.reason, /different recording/);
+});
+
+test("a loose match still has to pass the duration gate", () => {
+  assert.equal(matchTrack(LIVE, "The Number 3 (Live at Sydney Opera House)", 400).track, null);
+});
+
+test("an ambiguous loose match is refused rather than guessed", () => {
+  const svc = [
+    { id: 1, title: "Intro",        duration: 60 },
+    { id: 2, title: "Intro (Live)", duration: 60 },
+  ];
+  const m = matchTrack(svc, "Intro (Live at Somewhere)", 60);
+  assert.equal(m.track, null, "two equally good loose matches were not refused");
+  assert.match(m.reason, /ambiguous/);
+});
+
+test("a title matching nothing at all still says so plainly", () => {
+  const m = matchTrack(LIVE, "Completely Different Song", 170);
+  assert.equal(m.track, null);
+  assert.match(m.reason, /no track called/);
+});
+
+test("exact matching is still preferred when it is available", () => {
+  const svc = [
+    { id: 1, title: "Beast",          duration: 230 },
+    { id: 2, title: "Beast (Live)",   duration: 230 },
+  ];
+  const m = matchTrack(svc, "Beast", 230);
+  assert.equal(m.track.id, 1, "an exact match must win over a containing one");
+  assert.match(m.reason, /matched on title and duration/);
+});
