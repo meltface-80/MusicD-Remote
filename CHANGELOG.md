@@ -2,6 +2,51 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.19] — 2026-09-03
+
+### Added — Qobuz waveforms work after a sign-in, with nothing to paste
+
+The feature finally becoming usable by anyone other than the person who built it. v1.8.10–18 got
+Qobuz waveforms working on one machine and needed an `app_id`, a secret and a matching login token
+pasted in as JSON — values obtainable only by running a separate Qobuz client and reading its
+credential file. Nobody was going to do that.
+
+**Settings → Playback → Qobuz waveforms → Connect.** It opens Qobuz's own sign-in page; Qobuz sends
+the browser back here with a one-time code, which trades for a token. **No password or key is ever
+typed into this app**, and the paste box is gone.
+
+Why this was the only way out, stated plainly because six versions were spent not seeing it: a Qobuz
+signature needs an `app_id`, *that app's* secret, and a token minted **by that app**. This
+extension's ordinary username/password login (the arrangement the LMS plugin uses) produces a token
+for an app whose secret it does not have — so no combination of what it already held could ever
+sign. The redirect flow is what produces a token belonging to an app whose secret is present.
+
+- `lib/qobuz-oauth.js` — the sign-in URL, reading the code back, and the exchange. Pure apart from
+  one request, so all of it is tested without an account.
+- **The redirect address is taken from the request**, not configured: whatever address you reached
+  Settings on — a LAN IP, a hostname, a reverse proxy — is where Qobuz sends you back. That is what
+  makes it work unchanged inside Docker, which has no idea what address it is reached on, and from a
+  phone on the same network. Forwarded headers win over `Host`, or a proxy would send you to an
+  address only the proxy can reach.
+- A paste field appears **only** if the redirect does not land by itself — a sign-in done on a device
+  that cannot reach the box. It takes the address you landed on, in any of the three shapes someone
+  might copy.
+- An install that already had a pasted secret keeps working; it is simply no longer offered.
+  Connecting replaces it.
+
+The application credentials this signs with identify the *application*, never a user, and grant
+nothing without a token from the sign-in. They are published in the open by the author of an existing
+open-source Qobuz client. Qobuz's unofficial API remains against their terms of service, which is why
+this stays off until switched on.
+
+### Changed
+
+- The "no waveform" log line now names the sign-in rather than a missing app secret, since that is
+  what a person can now act on.
+- `qobuz_connected` and `qobuz_user` are reported by the settings endpoint. The token never is.
+
+963 unit / 513 DOM / 86 static.
+
 ## [1.8.18] — 2026-09-03
 
 ### Fixed — Roon's track title can carry a suffix the service's does not

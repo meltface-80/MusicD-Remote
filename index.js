@@ -25,6 +25,10 @@ const AK = require("./lib/albumkeys");
 // Qobuz request signing, and reading an app_id/secret pair out of whatever the
 // user pasted into Settings. Pure — see lib/qobuz-sig.js.
 const SIG = require("./lib/qobuz-sig");
+// Signing in to Qobuz on Qobuz's own page, so that a token exists which the
+// built-in application credentials can actually sign with. See lib/qobuz-oauth.js
+// for why the ordinary username/password login can never produce one.
+const QOA = require("./lib/qobuz-oauth");
 const { radioDecision, radioResumeDecision, radioQueueFloor,
         radioToTurnOff } = require("./lib/radio");
 const { playCounted, historyEntry, pushHistory, recentHistory,
@@ -1967,6 +1971,14 @@ let qobuzSignAppId    = String(_persisted.qobuzSignAppId || "");
 // means "use this app's own token", which is right only for a bare secret that
 // happens to belong to this app's id.
 let qobuzSignToken    = String(_persisted.qobuzSignToken || "");
+// The token from signing in on Qobuz's own page, and who it belongs to. THIS is
+// the one that works with no setup: it is minted by the app whose secret ships
+// in lib/qobuz-oauth.js, so the three parts of a signature — app_id, secret,
+// token — agree by construction instead of having to be assembled by hand out
+// of a pasted credentials file.
+let qobuzWaveToken    = String(_persisted.qobuzWaveToken || "");
+let qobuzWaveUser     = String(_persisted.qobuzWaveUser  || "");
+let qobuzWaveName     = String(_persisted.qobuzWaveName  || "");
 const _labelsEnabledSet     = _persisted.labelsEnabled !== undefined;
 const _smartPicksEnabledSet = _persisted.smartPicksEnabled !== undefined;
 
@@ -12565,15 +12577,15 @@ async function wfQobuzTrack(album, artist, track, seconds) {
   // Every decline below says why. v1.8.6 returned from these three in silence,
   // so the one failure that actually happened — no album ids after a restart —
   // produced no waveform, no error and no log line to look at.
-  if (!String(qobuzAppSecret || "").trim()) {
+  if (!qobuzWaveToken && !String(qobuzAppSecret || "").trim()) {
     // NOT behind DEBUG. This is the likeliest reason of them all — it is the
     // default state — and hiding it behind a flag is what made v1.8.6 look
     // broken rather than switched off. Said ONCE, because the clients poll and
     // a line per request would bury the log it belongs in.
-    wfQobuzSayOnce("no-secret",
-      "[waveform] qobuz: a Qobuz album is playing and no app secret is set, so " +
-      "there is no streaming waveform. Settings \u2192 Playback \u2192 Qobuz " +
-      "waveforms. Local files are unaffected.");
+    wfQobuzSayOnce("no-signin",
+      "[waveform] qobuz: a Qobuz album is playing and this extension is not " +
+      "signed in to Qobuz for waveforms — Settings → Playback → " +
+      "Qobuz waveforms → Connect. Local files are unaffected.");
     return null;
   }
   const albumId = wfQobuzAlbumId(album, artist);
@@ -12639,7 +12651,8 @@ function wfQobuzAlbumId(album, artist) {
  */
 async function wfQobuzCompute(albumId, track, seconds, signal) {
   const secret = String(qobuzAppSecret || "").trim();
-  if (!secret) return null;                       // no secret: this path is off
+  // Off entirely only when there is neither a sign-in nor a legacy pasted secret.
+  if (!secret && !qobuzWaveToken) return null;
 
   // ONE TOKEN, SEVERAL PAIRS — the shape a working Qobuz client actually uses.
   // v1.8.11 swapped the TOKEN along with the app_id and broke the album read,
@@ -12655,8 +12668,20 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
   // can only ever fail — so building it up front spent a doomed request and a
   // log line every 60s behind a pasted token that was already working.
   const attempts = [];
-  // FIRST: a token supplied with the pair. Deliberate, and matched to that
-  // app_id by whoever pasted it — the arrangement the probe reports as working.
+  // FIRST: the token from signing in on Qobuz's own page. It is minted by the
+  // app whose secret is built in, so this set needs nothing from the user
+  // beyond that one sign-in — nothing pasted, no credentials typed in here.
+  if (qobuzWaveToken) {
+    attempts.push({
+      label: "the Qobuz sign-in",
+      get: () => qobuzWaveToken,
+      readAppId: QOA.APP_ID,
+      secret: QOA.APP_SECRET,
+    });
+  }
+  // Then a token supplied with a pasted pair. No UI offers this any more, but
+  // an install that already had one keeps working instead of going dark on
+  // upgrade.
   if (qobuzSignToken) {
     attempts.push({
       label: "the token saved from a pasted file",
@@ -12697,6 +12722,11 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
       reasons.push(a.label + ": could not be obtained");
       continue;
     }
+    // An attempt may bring its own signing pair — the built-in sign-in does,
+    // and its secret belongs to its app_id and to no other. The rest fall back
+    // to whatever is configured.
+    const useSecret = a.secret || secret;
+    const useSignAs = a.secret ? a.readAppId : signAs;
     const withTok = (fn) => tok ? fn(tok) : qobuzWithToken(fn);
 
     const got = await withTok((t) => qobuz.getAlbumResult(t, albumId, 12000, a.readAppId))
@@ -12712,7 +12742,7 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
     const m = TM.matchTrack(got.album.tracks, track, seconds);
     if (!m.track) { console.log("[waveform] qobuz: " + m.reason); return null; }
 
-    const f = await withTok((t) => qobuz.getFileUrlResult(t, m.track.id, secret, { appId: signAs }))
+    const f = await withTok((t) => qobuz.getFileUrlResult(t, m.track.id, useSecret, { appId: useSignAs }))
       .catch((e) => ({ url: null, reason: qobuz.describeFileUrlError(e) }));
     if (f && f.url) { url = f.url; break; }
     reasons.push(a.label + ": " + ((f && f.reason) || "unknown"));
@@ -12755,6 +12785,89 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
   console.log("[waveform] qobuz: " + track + " in " + (Date.now() - t0) + "ms");
   return peaks;
 }
+
+/*
+ * Signing in to Qobuz for waveforms.
+ *
+ * Three routes, and the whole point of them is that no credential is ever typed
+ * into this app: /start hands back a qobuz.com URL, the user signs in THERE, and
+ * Qobuz redirects their browser to /callback with a one-time code that trades
+ * for a token. The password never comes near this process.
+ *
+ * The redirect address is taken from the request that asked for it, so whatever
+ * the user reached this page on — a LAN IP, a hostname, a reverse proxy — is
+ * where Qobuz sends them back. Nothing to configure, and it works unchanged
+ * inside Docker, which has no idea what address it is reached on.
+ */
+app.get("/api/qobuz/oauth/start", (req, res) => {
+  const cb = QOA.callbackUrlFrom(req, "/api/qobuz/oauth/callback");
+  if (!cb) return res.status(400).json({ error: "could not work out this server's address" });
+  res.json({ url: QOA.buildAuthorizeUrl(cb), redirect_url: cb });
+});
+
+// Where Qobuz sends the browser back. Answers HTML, not JSON: a person is
+// looking at this, having just come from a sign-in page.
+app.get("/api/qobuz/oauth/callback", async (req, res) => {
+  const page = (title, body) =>
+    "<!doctype html><meta charset=utf-8>" +
+    "<meta name=viewport content='width=device-width,initial-scale=1'>" +
+    "<title>" + title + "</title>" +
+    "<body style=\"font:16px/1.5 system-ui,sans-serif;max-width:34em;margin:12vh auto;padding:0 24px\">" +
+    body + "</body>";
+
+  const code = QOA.extractCode(req.originalUrl || "");
+  if (!code) {
+    return res.status(400).send(page("Sign-in incomplete",
+      "<h2>Qobuz did not send a sign-in code back.</h2><p>The sign-in may have been " +
+      "cancelled. Close this tab and try Connect again.</p>"));
+  }
+  try {
+    const got = await QOA.exchangeCode(code);
+    qobuzWaveToken = got.token;
+    qobuzWaveUser  = got.userId;
+    qobuzWaveName  = qobuzDisplayName || "";
+    savePersistedSettings({ qobuzWaveToken, qobuzWaveUser, qobuzWaveName });
+    // The declines logged so far were about the old state; forget them so the
+    // next play reports what is true now instead of staying quiet about it.
+    _wfQobuzSaid.clear();
+    console.log("[waveform] qobuz: signed in for waveforms (user " + got.userId + ")");
+    res.send(page("Connected",
+      "<h2>Qobuz connected.</h2><p>Waveforms will now be drawn for Qobuz tracks. " +
+      "You can close this tab and go back to MusicD Remote.</p>"));
+  } catch (e) {
+    console.log("[waveform] qobuz: sign-in failed — " + (e && e.message));
+    res.status(400).send(page("Sign-in failed",
+      "<h2>Could not finish signing in.</h2><p>" +
+      String((e && e.message) || "Unknown error").replace(/[<>&]/g, "") +
+      "</p><p>Close this tab and try Connect again.</p>"));
+  }
+});
+
+// The fallback for a sign-in done on a device that cannot reach this server —
+// a phone on mobile data, say. The user lands on an address that fails to load
+// and pastes it here instead. Same exchange, different way in.
+app.post("/api/qobuz/oauth/paste", async (req, res) => {
+  const code = QOA.extractCode((req.body && req.body.url) || "");
+  if (!code) return res.status(400).json({ error: "no sign-in code found in that address" });
+  try {
+    const got = await QOA.exchangeCode(code);
+    qobuzWaveToken = got.token;
+    qobuzWaveUser  = got.userId;
+    qobuzWaveName  = qobuzDisplayName || "";
+    savePersistedSettings({ qobuzWaveToken, qobuzWaveUser, qobuzWaveName });
+    _wfQobuzSaid.clear();
+    res.json({ ok: true, connected: true });
+  } catch (e) {
+    res.status(400).json({ error: (e && e.message) || "sign-in failed" });
+  }
+});
+
+app.post("/api/qobuz/oauth/disconnect", (req, res) => {
+  qobuzWaveToken = qobuzWaveUser = qobuzWaveName = "";
+  savePersistedSettings({ qobuzWaveToken: "", qobuzWaveUser: "", qobuzWaveName: "" });
+  _wfQobuzSaid.clear();
+  res.json({ ok: true, connected: false });
+});
 
 app.get("/api/waveform", async (req, res) => {
   if (!waveformEnabled) return res.json({ peaks: null, reason: "off" });
@@ -13061,7 +13174,14 @@ app.get("/api/settings/waveform", (req, res) => {
     // Whether a token came WITH the pair. Not the token — that is a credential,
     // and this endpoint is polled by every open client.
     qobuz_sign_token_set: !!qobuzSignToken,
-    qobuz_ready: !!(String(qobuzAppSecret || "").trim() && qobuzReady()),
+    // Whether the Qobuz sign-in has been done. Not the token — this endpoint is
+    // polled by every open client and a credential has no business in it. The
+    // user id is not one: it identifies an account to its owner, who is the only
+    // person who can see this page.
+    qobuz_connected: !!qobuzWaveToken,
+    qobuz_user: qobuzWaveToken ? (qobuzWaveName || qobuzWaveUser || "") : "",
+    qobuz_ready: !!(qobuzWaveToken ||
+                    (String(qobuzAppSecret || "").trim() && qobuzReady())),
   });
 });
 app.post("/api/settings/waveform", (req, res) => {
