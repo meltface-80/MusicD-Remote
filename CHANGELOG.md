@@ -2,6 +2,39 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.21] — 2026-09-03
+
+### Changed — the track ahead is drawn to be seen
+
+The unplayed part of the waveform was the border colour at 42 % opacity on the phone and white at
+34 % on the wall display — a background rule, not a picture of the music. It is now the **text**
+colour (near-white on the dark palettes, near-black on the light ones, so "white" means "reads
+clearly" in both) at 72 %, and 70 % on the wall. The played side goes to full strength so the accent
+still reads as the position marker against a brighter track ahead of it.
+
+### Changed — more of the stored waveform actually reaches the screen
+
+The waveform holds **1,000** values. A phone is about 390 CSS pixels wide, and at a 3-pixel step only
+**130 bars** were ever drawn — eight stored values collapsed into every one of them. The data was
+already there and was being thrown away at the last step.
+
+- Now playing: 2-pixel step, so 195 bars. Below that the bars stop being separable and it reads as a
+  filled shape rather than a waveform.
+- Wall display: the bars stay 3 pixels wide, because thin bars mush together across a room; the gap
+  tightens from 2 to 1 instead, drawing 480 of the 1,000 rather than 384.
+
+**Raising the stored bucket count would have changed nothing** — 1,000 is already between 2 and 8
+times what any screen here draws, and the decode is identical either way, so the only lever that does
+anything is bar geometry.
+
+### Not a bug: the square ones
+
+A heavily limited master genuinely has near-full loudness in almost every bucket, so its waveform is a
+block. That is the record, faithfully drawn — the same code renders a piano recital with its full
+dynamic range. More bars make such a track finer-grained, not less square.
+
+972 unit / 513 DOM / 87 static.
+
 ## [1.8.20] — 2026-09-03
 
 ### Changed — one Qobuz sign-in, not two

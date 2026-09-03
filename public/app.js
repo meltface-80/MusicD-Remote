@@ -8287,13 +8287,20 @@
 
     const cs = getComputedStyle(document.documentElement);
     const played = cs.getPropertyValue("--accent").trim() || "#4cb7e6";
-    const ahead  = cs.getPropertyValue("--border").trim() || "#666";
+    // The track ahead is drawn in the TEXT colour, not the border colour: it is
+    // the shape of the music and it should be as legible as the title above it.
+    // `--text` is near-white on the dark palettes and near-black on the light
+    // ones, so "white" here means "reads clearly", in both.
+    const ahead  = cs.getPropertyValue("--text").trim() || "#e9eaec";
     const at = Number.isFinite(pos) ? pos : npNow();
     const frac = npLen > 0 ? Math.max(0, Math.min(1, at / npLen)) : 0;
 
-    // One bar per 3 CSS pixels: finer than that and it reads as a solid block
-    // on a phone, coarser and the shape goes.
-    const barW = 2, gap = 1, step = barW + gap;
+    // One bar per 2 CSS pixels. The stored waveform holds 1000 values and a
+    // phone is ~390 CSS px wide, so at the old 3px step only 130 of them were
+    // ever drawn — 8 collapsed into every bar. Halving the step shows 195, and
+    // the data to fill them was already there. Below 2px the bars stop being
+    // separable at all and it reads as a filled shape rather than a waveform.
+    const barW = 1, gap = 1, step = barW + gap;
     const bars = Math.max(1, Math.floor(w / step));
     const mid = h / 2;
     for (let i = 0; i < bars; i++) {
@@ -8308,7 +8315,9 @@
       const barH = Math.max(1, (v / 255) * (h - 2));
       const done = (i / bars) <= frac;
       ctx.fillStyle = done ? played : ahead;
-      ctx.globalAlpha = done ? 0.95 : 0.42;
+      // The played side goes to full strength so the accent still reads as the
+      // position marker against a now-bright track ahead of it.
+      ctx.globalAlpha = done ? 1 : 0.72;
       ctx.fillRect(i * step, mid - barH / 2, barW, barH);
     }
     ctx.globalAlpha = 1;
