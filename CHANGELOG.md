@@ -2,6 +2,38 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.16] — 2026-09-03
+
+### Fixed — "expired" was a guess in a message, and it sent us the wrong way
+
+A 401 on the unsigned catalogue read means the token and the `app_id` sent with it do not go
+together. The commoner cause by far is **the wrong app_id**, not a dead token: a live token minted by
+app A, presented with app B's id, answers exactly like an expired one. The message led with
+"expired", so a token that was almost certainly fine got written off, and a re-login was recommended
+that would not have helped.
+
+It now reads "it was not minted by the app_id it was sent with (or it has expired)", and a test pins
+the ordering — leading with expiry is the part that misled, so the test asserts which clause comes
+first, not merely that both appear.
+
+### What the LMS plugin actually does (the question behind five versions)
+
+Read from [LMS-Community/plugin-Qobuz](https://github.com/LMS-Community/plugin-Qobuz):
+
+- **Login is username + password**, exactly as here — `user/login` returning a `user_auth_token`.
+  This app has always done the same thing, under the same `app_id`.
+- **`track/getFileUrl` is signed**, with `md5(endpoint-without-slash + sorted params + ts + app_secret)`
+  — character for character the construction in `lib/qobuz-sig.js`. The implementation here is right.
+- The `app_id` and `app_secret` are **built into the plugin in hex-encoded form**
+  (`API/Common.pm`: `pack('H*', ...)` matched against `(\d{9})([a-f0-9]{32})(\d{9})`), deliberately
+  so they cannot simply be read out of the public source.
+
+So the login half was never the missing piece and never could be: streaming additionally needs an
+**application** credential that no user account supplies. That is why a working username and password
+prove nothing about whether a stream URL can be signed.
+
+934 unit / 513 DOM / 85 static.
+
 ## [1.8.15] — 2026-09-03
 
 ### Changed — a bare secret is the LMS arrangement, and always was

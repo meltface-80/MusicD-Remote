@@ -538,7 +538,12 @@ test("the 401 wording tells the two cases apart", () => {
   // dead. These sent us to different fixes and the live log used both.
   const e = new Error("x"); e.code = 401;
   assert.match(QB.describeQobuzError(e, true),  /minted/i);
-  assert.match(QB.describeQobuzError(e, false), /expired/i);
+  assert.match(QB.describeQobuzError(e, false), /not minted by the app_id/i);
+  // And it must not LEAD with expiry: a live token sent with the wrong app_id
+  // answers identically, and that is the commoner cause by far.
+  assert.ok(QB.describeQobuzError(e, false).indexOf("not minted") <
+            QB.describeQobuzError(e, false).indexOf("expired"),
+            "the message still leads with expiry, which sent us after a fresh login");
 });
 
 // ---------------------------------------------------------------------------
