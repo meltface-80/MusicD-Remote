@@ -2,6 +2,50 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.14] — 2026-09-03
+
+### Added — a probe that answers the credential question without a release
+
+Five versions have now been spent testing one hypothesis per Docker rebuild. That is the wrong loop:
+the question is empirical, its answer space is small, and none of it needs a release. v1.8.13's
+minting attempt returned `Qobuz auth failed (401)` — password login is simply not available under the
+web player's `app_id`, which is a fact no amount of reading could have established and one request
+settles.
+
+`POST /api/debug/qobuz-probe` takes a candidate `{app_id, secret, token?}`, tries **every token this
+box can produce** against that signing pair, and reports what Qobuz answered to each: this app's own
+login, a token in the request, a token saved from a pasted file, and one minted by password under
+the supplied `app_id`. The reply names the combination that works, if any.
+
+- **POST, not GET.** The `[http]` logger records `req.originalUrl`, and those lines go to the
+  rotating log files on the data volume — a secret in a query string would be written to disk in
+  plaintext and kept for ~88 MB of history. A JSON body is not logged. `GET` returns a 405 that
+  prints the correct `curl`, so nobody discovers this by putting a secret in a URL first.
+- Nothing is persisted, and no secret, token or stream URL is echoed back — only labels, statuses and
+  reasons. Any value the caller supplied is scrubbed out of the reply before it is sent, because
+  "no observed echo" is not a guarantee for a credential handed over a moment ago.
+- The signing pair is supplied per request. This app still ships no secret.
+
+### What the evidence now says
+
+A working signed request needs a token minted by the **same app** as the secret. Three app_ids are in
+play and this app holds a usable secret for none of them:
+
+| app_id | how a token is obtained | secret held here |
+|---|---|---|
+| `942852567` (this app) | email + password — works | no, and never will |
+| the web player's | not by password — **401** | only if pasted |
+| the OAuth desktop app's | browser sign-in flow | only if pasted |
+
+So the combination that works is the pasted pair together with a **live** token minted by that same
+app. The token in the pasted file was expired, which is why every attempt failed at a different step
+for a different reason.
+
+Class of error: five releases spent shipping hypotheses one at a time instead of building the
+one-request experiment that distinguishes them.
+
+931 unit / 513 DOM / 85 static.
+
 ## [1.8.13] — 2026-09-03
 
 ### Fixed — the token has to be MADE under the app the secret belongs to

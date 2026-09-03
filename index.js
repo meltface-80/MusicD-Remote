@@ -12809,6 +12809,133 @@ app.get("/api/waveform", async (req, res) => {
  * asking costs the Core nothing; the queue read is the same one-shot
  * subscribe/read/unsubscribe the waveform prefetch uses.
  */
+/*
+ * POST /api/debug/qobuz-probe   {app_id, secret, token?, album?, artist?}
+ *
+ * POST, not GET, for one reason: the [http] logger records req.originalUrl, and
+ * those lines go to the rotating log files on the data volume. A secret in a
+ * query string would be written to disk in plaintext and kept for ~88 MB of
+ * history. A JSON body is not logged.
+ *
+ * WHICH COMBINATION DOES QOBUZ ACTUALLY ACCEPT?
+ *
+ * Five versions have now been spent testing one hypothesis per Docker rebuild,
+ * because the only way to try a credential combination was to ship it. That is
+ * the wrong loop: the question is empirical, it has a small answer space, and
+ * nothing about it needs a release. This tries every token this box can produce
+ * against a caller-supplied signing pair and reports what Qobuz said to each.
+ *
+ * A signature is only valid against the app_id its secret belongs to, AND the
+ * token must have been minted by that same app — so the working combination is
+ * a PAIR OF PAIRS, and knowing which one it is takes evidence, not reasoning.
+ *
+ * Nothing here is persisted and no secret or token is ever echoed back: the
+ * answer is a grid of labels, HTTP statuses and reasons. Supply the candidate
+ * pair yourself — this app ships no secret and this endpoint does not store one.
+ */
+// GET answers with how to call it, so a mistyped probe explains itself rather
+// than 404ing — and so nobody puts a secret in a URL to find that out.
+app.get("/api/debug/qobuz-probe", (req, res) => res.status(405).json({
+  error: "POST this, do not GET it",
+  how: "curl -s -X POST http://<host>:<port>/api/debug/qobuz-probe " +
+       "-H 'Content-Type: application/json' " +
+       "-d '{\"app_id\":\"...\",\"secret\":\"...\",\"token\":\"optional\"}'",
+  why: "a secret in a query string is written to the log files on the data volume",
+}));
+
+app.post("/api/debug/qobuz-probe", async (req, res) => {
+  const body   = req.body || {};
+  const appId  = String(body.app_id || "").trim();
+  const secret = String(body.secret || "").trim();
+  const given  = String(body.token  || "").trim();
+  if (!appId || !secret) {
+    return res.status(400).json({
+      error: "app_id and secret are required",
+      how: "POST {\"app_id\":\"<id>\",\"secret\":\"<secret>\",\"token\":\"<optional>\"," +
+           "\"album\":\"<optional>\",\"artist\":\"<optional>\"}",
+      note: "Nothing is saved. Supply the pair you want tested; the reply carries " +
+            "no secrets, only what Qobuz answered.",
+    });
+  }
+
+  // Which album to ask about. The playing one if named, else any harvested id —
+  // the probe only needs a track id that exists, not a particular record.
+  let albumId = null, albumFrom = "";
+  const album = String(body.album || "").trim();
+  const artist = String(body.artist || "").trim();
+  if (album) { albumId = wfQobuzAlbumId(album, artist); albumFrom = "the album named"; }
+  if (!albumId && qobuzAlbumIds.size) {
+    albumId = qobuzAlbumIds.values().next().value;
+    albumFrom = "the first harvested favourite";
+  }
+  if (!albumId) {
+    return res.status(409).json({ error: "no Qobuz album id available to test with",
+                                  hint: "connect Qobuz so favourites are read, or pass album=&artist=" });
+  }
+
+  // Every token this box can lay hands on, labelled by where it came from.
+  const tokens = [];
+  if (qobuzToken)      tokens.push({ label: "this app's login (app_id " + qobuz.APP_ID + ")", token: qobuzToken });
+  if (given)           tokens.push({ label: "the token in this request",                      token: given });
+  if (qobuzSignToken)  tokens.push({ label: "the token saved from a pasted file",             token: qobuzSignToken });
+  if (qobuzUsername && qobuzPasswordMd5) {
+    try {
+      const r = await qobuz.login(qobuzUsername, qobuzPasswordMd5, true, appId);
+      tokens.push({ label: "minted now by password under app " + appId, token: r.token });
+    } catch (e) {
+      tokens.push({ label: "minted now by password under app " + appId, token: null,
+                    mint_error: qobuz.describeQobuzError(e, false) });
+    }
+  }
+  if (!tokens.length) {
+    return res.status(409).json({ error: "no Qobuz token available to test with",
+                                  hint: "connect Qobuz under Settings, or pass token=" });
+  }
+
+  const results = [];
+  for (const t of tokens) {
+    if (!t.token) { results.push({ token: t.label, mint: t.mint_error || "could not be obtained" }); continue; }
+    const row = { token: t.label };
+
+    // Unsigned catalogue read, signed with nothing — proves the token is alive.
+    const alb = await qobuz.getAlbumResult(t.token, albumId, 12000, appId)
+      .catch((e) => ({ album: null, reason: qobuz.describeQobuzError(e, false) }));
+    row.album_read = alb.album ? "ok (" + (alb.album.tracks || []).length + " tracks)" : alb.reason;
+    if (!alb.album || !alb.album.tracks || !alb.album.tracks.length) { results.push(row); continue; }
+
+    // The signed call — the one that actually gates the feature.
+    const trackId = alb.album.tracks[0].id;
+    const f = await qobuz.getFileUrlResult(t.token, trackId, secret, { appId })
+      .catch((e) => ({ url: null, reason: qobuz.describeFileUrlError(e) }));
+    // The URL is a time-limited link to audio: report only WHETHER there is one.
+    row.stream = f.url ? "OK — this combination works" : f.reason;
+    results.push(row);
+  }
+
+  // A Qobuz error body is quoted into the reason, and this request carried a
+  // secret and possibly a token. Nothing observed echoes them, but "nothing
+  // observed" is not a guarantee for a value the caller just handed us.
+  const hide = [secret, given].filter((v) => v && v.length >= 8);
+  const scrub = (v) => {
+    let out = String(v == null ? "" : v);
+    for (const h of hide) out = out.split(h).join("<redacted>");
+    return out;
+  };
+  for (const r of results) for (const k of Object.keys(r)) r[k] = scrub(r[k]);
+
+  const winner = results.find((r) => r.stream === "OK — this combination works");
+  res.json({
+    signing_app_id: appId,          // not a credential — it travels in every URL
+    album_id_tested: albumId,
+    album_chosen: albumFrom,
+    answer: winner
+      ? "WORKS with: " + winner.token + ". Paste that app_id, that secret and that " +
+        "token together into Settings → Qobuz waveforms."
+      : "No combination worked. Every token available here was refused by this pair.",
+    results,
+  });
+});
+
 app.get("/api/debug/zone-dump", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
 
