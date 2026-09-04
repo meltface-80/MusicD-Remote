@@ -276,6 +276,7 @@ docker run -d \
   --name musicd-remote \
   --restart unless-stopped \
   --network host \
+  -e TZ=Europe/London \
   -v musicd-remote-data:/app/data \
 # remove the below line (and this line) if you only use Qobuz/Tidal
   -v /your/path/to/Music:/music:ro \
@@ -285,6 +286,10 @@ docker run -d \
 > **The `musicd-remote-data` volume holds your Roon pairing, play history, and label cache — never rename it once created.** Point every future `docker run` at the same name and everything carries over; a different name makes Docker silently create a fresh empty volume (new pairing, lost history). **Upgrading from v1.6.31 or earlier?** Your data lives in the old `roon-random-albums-data` volume — move it once with the copy step in [Updating](#updating) below before using this command.
 
 `--network host` is required so the extension can discover your Roon Core on the local network. The `-v musicd-remote-data` flag mounts a named Docker volume so that your Roon pairing, play history, and label cache survive container rebuilds. The `-v .../Music:/music:ro` flag mounts your music directory read-only so the extension can read label tags directly from your files — this is optional but gives the most accurate label data. Adjust the path to match your music library location.
+
+Set `-e TZ=` to your own zone (`Europe/London`, `America/New_York`, …). A container runs on UTC otherwise, which changes which midnight **Album of the day** turns over on and the hour **Smart Picks** switches.
+
+**More than one music folder?** The scan reads everything under `/music` recursively, so mount each one as its own subdirectory rather than adding a second root — `-v /mnt/nas/Albums:/music/Albums:ro -v /mnt/usb/Vinyl:/music/Vinyl:ro`. A mount at `/music2` would never be looked at. The [install configurator](https://meltface-80.github.io/MusicD-Remote/#install) builds the whole command for you. Note that **Label from folder depth** in Settings counts from `/music`, so with several folders every depth goes up by one.
 
 You should see the extension appear in **Roon → Settings → Extensions** under **MusicD**. Click **Enable**, then browse to `http://<your-server-ip>:3399`.
 
@@ -329,6 +334,7 @@ docker run -d \
   --name musicd-remote \
   --restart unless-stopped \
   --network host \
+  -e TZ=Europe/London \
   -v musicd-remote-data:/app/data \
 # remove the below line (and this line) if you only use Qobuz/Tidal
   -v /your/path/to/Music:/music:ro \
@@ -356,6 +362,7 @@ docker run -d \
   --name musicd-remote \
   --restart unless-stopped \
   --network host \
+  -e TZ=Europe/London \
   -v musicd-remote-data:/app/data \
 # remove the below line (and this line) if you only use Qobuz/Tidal
   -v /your/path/to/Music:/music:ro \
@@ -421,6 +428,7 @@ docker run -d \
   --restart unless-stopped \
   -p 3399:3399 \
   -e ROON_CORE_IP=<IP_OF_YOUR_ROON_CORE> \
+  -e TZ=Europe/London \
   -v musicd-remote-data:/app/data \
   -v /Users/yourusername/Music:/music:ro \
   musicd-remote:1.8.22
@@ -434,6 +442,7 @@ docker run -d \
   --restart unless-stopped \
   -p 3399:3399 \
   -e ROON_CORE_IP=<IP_OF_YOUR_ROON_CORE> \
+  -e TZ=Europe/London \
   -v musicd-remote-data:/app/data \
   musicd-remote:1.8.22
 ```
@@ -451,7 +460,8 @@ Please let me know if you run into any trouble.
 |--------------|-----------|--------------|
 | `PORT`       | `3399`    | HTTP port the UI listens on |
 | `RRA_DEBUG`  | on in Docker | Verbose logging (timestamps, Roon API call traces with durations, API request traces). **On by default inside Docker** — set to `0` for quiet logs, or `1` to force it on outside Docker |
-| `MUSIC_DIR`  | `/music`  | Path where your music library is mounted inside the container |
+| `MUSIC_DIR`  | `/music`  | Path where your music library is mounted inside the container. The scan reads everything **under** it, so several libraries can be mounted as subdirectories — `/music/Albums`, `/music/Vinyl` — rather than as a second root |
+| `TZ`         | `Etc/UTC` | The container's local time. Sets which midnight **Album of the day** turns over on and the hour **Smart Picks** switches. The 6- and 12-month "not played" windows count elapsed time, so they read the same in any zone |
 | `ROON_CORE_IP` | *(discover)* | Roon Core address, for setups where multicast discovery can't reach it (macOS / Docker Desktop). When set, the extension connects to the Core directly instead of discovering it |
 | `ROON_CORE_PORT` | `9330` | Roon Core API port used with `ROON_CORE_IP` — only change it if your Core runs its API on a non-standard port |
 

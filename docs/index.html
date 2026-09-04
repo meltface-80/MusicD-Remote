@@ -154,15 +154,18 @@
   .fields { display: grid; gap: 14px; }
   .field label { display: block; font-size: 12.5px; font-weight: 600; color: var(--muted); margin-bottom: 5px; letter-spacing: .02em; }
   .field label .req { color: var(--copper-hi); }
-  .field input[type=text] {
+  /* .mrow is here too: the extra music-folder rows are built in script, so they
+     sit outside any .field and would otherwise render as bare browser inputs
+     next to the styled one directly above them. */
+  .field input[type=text], .mrow input[type=text] {
     width: 100%; padding: 9px 12px; font-size: 14px;
     font-family: var(--mono);
     color: var(--text); background: var(--bg-deep);
     border: 1px solid var(--line); border-radius: 8px;
     outline: none;
   }
-  .field input[type=text]:focus { border-color: var(--copper); }
-  .field .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .field input[type=text]:focus, .mrow input[type=text]:focus { border-color: var(--copper); }
+  .field .hint, .subfields .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
   .field.hidden { display: none; }
 
   .toggle-row {
@@ -175,6 +178,27 @@
   .toggle-row .t-sub { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
 
   .subfields { display: grid; gap: 12px; border-left: 2px solid var(--copper-dim); margin-left: 6px; padding: 10px 0 2px 14px; }
+  /* "Add another folder" and the per-row remove. Quiet by default so the list
+     reads as one control rather than a stack of competing buttons. */
+  .addbtn {
+    justify-self: start; cursor: pointer;
+    font-family: var(--sans); font-size: 13px; font-weight: 600;
+    color: var(--copper-hi); background: transparent;
+    border: 1px dashed var(--copper-dim); border-radius: 8px;
+    padding: 7px 12px;
+  }
+  .addbtn:hover { background: rgba(196,127,74,.08); }
+  #extra-mounts { display: grid; gap: 8px; }
+  #extra-mounts:empty { display: none; }
+  .mrow { display: flex; gap: 8px; align-items: center; }
+  .mrow input { flex: 1 1 auto; min-width: 0; }
+  .mrow button {
+    flex: 0 0 auto; cursor: pointer;
+    font-family: var(--sans); font-size: 13px; line-height: 1;
+    color: var(--muted); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px;
+  }
+  .mrow button:hover { color: var(--text); border-color: var(--copper-dim); }
   .subfields.hidden { display: none; }
 
   .note {
@@ -407,7 +431,25 @@
                 <label for="musicpath">Path to your music on this machine</label>
                 <input type="text" id="musicpath" value="" placeholder="/your/path/to/Music" spellcheck="false">
               </div>
+              <!-- Extra folders. The app scans ONE root (/music) and recurses, so a
+                   second mount has to land INSIDE it — /music2 would never be looked
+                   at. With more than one folder every path is mounted as its own
+                   subdirectory of /music, which avoids nesting a mount inside a mount. -->
+              <div id="extra-mounts"></div>
+              <button type="button" id="add-mount" class="addbtn">+ Add another music folder</button>
+              <div class="hint" id="mount-hint"></div>
             </div>
+          </div>
+
+          <div class="field">
+            <label for="tzone">Time zone</label>
+            <input type="text" id="tzone" value="" placeholder="Europe/London" spellcheck="false">
+            <div class="hint">A container runs on UTC unless told otherwise, which moves
+              <b>Album of the day</b> (it turns over on the wrong midnight, and so does the
+              &ldquo;already played today&rdquo; check that hides it) and the hour
+              <b>Smart Picks</b> switches. The <b>not played in 6 months</b> and
+              <b>12 months</b> windows count elapsed time, not calendar days, so they read the
+              same in any zone. Pre-filled from this browser.</div>
           </div>
         </div>
 
@@ -430,6 +472,7 @@ docker run -d \
   --name musicd-remote \
   --restart unless-stopped \
   --network host \
+  -e TZ=Etc/UTC \
   -v musicd-remote-data:/app/data \
   -v "/your/path/to/Music:/music:ro" \
   musicd-remote:1.8.22</pre>
@@ -499,7 +542,8 @@ docker run -d \
           <tr><td>PORT</td><td><code>3399</code></td><td>HTTP port for this app</td></tr>
           <tr><td>ROON_CORE_IP</td><td><i>(discover)</i></td><td>Roon Core address for setups where multicast discovery can't reach it (macOS / Docker Desktop)</td></tr>
           <tr><td>ROON_CORE_PORT</td><td><code>9330</code></td><td>Roon Core API port used with ROON_CORE_IP — only change it if your Core runs its API on a non-standard port</td></tr>
-          <tr><td>MUSIC_DIR</td><td><code>/music</code></td><td>Where the optional read-only music mount lives inside the container (only used for file-tag label scanning)</td></tr>
+          <tr><td>MUSIC_DIR</td><td><code>/music</code></td><td>Where the optional read-only music mount lives inside the container — the scan reads everything under it, so several folders can be mounted as subdirectories (only used for file-tag label scanning)</td></tr>
+          <tr><td>TZ</td><td><code>Etc/UTC</code></td><td>The container's local time. Affects <b>Album of the day</b> (which midnight it turns over on) and the hour <b>Smart Picks</b> switches. The 6- and 12-month "not played" windows are counted in absolute time and are unaffected</td></tr>
           <tr><td>RRA_DEBUG</td><td><i>on in Docker</i></td><td>Verbose logging (timestamps, Roon API call traces with durations). On by default inside Docker — <code>0</code> for quiet logs</td></tr>
         </tbody>
       </table>
@@ -545,6 +589,10 @@ docker run -d \
     mount:      document.getElementById("mount"),
     mountFields:document.getElementById("mount-fields"),
     musicpath:  document.getElementById("musicpath"),
+    extraMounts:document.getElementById("extra-mounts"),
+    addMount:   document.getElementById("add-mount"),
+    mountHint:  document.getElementById("mount-hint"),
+    tzone:      document.getElementById("tzone"),
     cmd:        document.getElementById("cmd"),
     copy:       document.getElementById("copy"),
     tabRun:     document.getElementById("tab-run"),
@@ -583,6 +631,74 @@ docker run -d \
     return state.mode === "macos" ? "/Users/yourusername/Music" : "/your/path/to/Music";
   }
 
+  // Every music folder the user has entered, first field plus any extras.
+  function allPaths() {
+    var out = [pathVal()];
+    Array.prototype.forEach.call(els.extraMounts.querySelectorAll("input"), function (i) {
+      var v = i.value.trim();
+      if (v !== "") out.push(v);
+    });
+    return out;
+  }
+
+  // Where each folder lands INSIDE the container.
+  //
+  // The app scans one root and recurses into it, so a second mount at /music2
+  // would simply never be looked at. One folder keeps the historic /music, so
+  // nothing changes for an existing install; more than one and every folder
+  // becomes its own subdirectory of /music — never /music plus /music/x, which
+  // would nest a mount inside a mount.
+  function mountPairs() {
+    var paths = allPaths();
+    if (paths.length === 1) return [{ host: paths[0], guest: "/music" }];
+    var used = {}, out = [];
+    paths.forEach(function (h, idx) {
+      var base = h.replace(/[\/\\]+$/, "").split(/[\/\\]/).pop() || ("music" + (idx + 1));
+      var name = base.replace(/[^A-Za-z0-9._-]/g, "-").replace(/^-+|-+$/g, "") || ("music" + (idx + 1));
+      if (used[name]) { var k = 2; while (used[name + "-" + k]) k++; name = name + "-" + k; }
+      used[name] = true;
+      out.push({ host: h, guest: "/music/" + name });
+    });
+    return out;
+  }
+
+  // A container runs on UTC unless told otherwise, which moves Album of the day
+  // and the hour Smart Picks turns over. The 6-month and 12-month windows are
+  // epoch arithmetic and are NOT affected — worth knowing before blaming the
+  // clock for an empty row.
+  function tzVal() {
+    var v = els.tzone.value.trim().replace(/[^A-Za-z0-9_+\-\/]/g, "");
+    return v === "" ? "Etc/UTC" : v;
+  }
+
+  function renderMountHint() {
+    var pairs = mountPairs();
+    // Nothing to explain with no mount, or with the single historic /music.
+    if (!els.mount.checked || pairs.length < 2) { els.mountHint.textContent = ""; return; }
+    els.mountHint.innerHTML = "Mounted as " +
+      pairs.map(function (m) { return "<code>" + esc(m.guest) + "</code>"; }).join(", ") +
+      " — the scan reads every folder under <code>/music</code>. One thing to know: " +
+      "Settings &rarr; <b>Label from folder depth</b> counts from <code>/music</code>, so with " +
+      "several folders every depth goes up by one — level 1 is the name above, not your own " +
+      "top folder.";
+  }
+
+  function addMountRow(value) {
+    var row = document.createElement("div");
+    row.className = "mrow";
+    var inp = document.createElement("input");
+    inp.type = "text"; inp.spellcheck = false;
+    inp.placeholder = "/another/music/folder";
+    inp.value = value || "";
+    var rm = document.createElement("button");
+    rm.type = "button"; rm.textContent = "Remove";
+    rm.setAttribute("aria-label", "Remove this music folder");
+    rm.addEventListener("click", function () { row.remove(); render(); });
+    inp.addEventListener("input", render);
+    row.appendChild(inp); row.appendChild(rm);
+    els.extraMounts.appendChild(row);
+  }
+
   var NOTES = {
     same:     "Host networking lets the app <b>auto-discover your Roon Core</b> — no addresses to configure. Once it's running, enable it in <b>Roon → Settings → Extensions</b>.",
     separate: "Still host networking — Roon's discovery works across the LAN, so just make sure this machine is on the <b>same network/subnet</b> as your Roon Core.",
@@ -617,9 +733,17 @@ docker run -d \
     } else {
       cmd.push("  --network host \\");
     }
+    // Local time. A container is UTC otherwise, which moves Album of the day and
+    // the hour Smart Picks turns over. TZ alone is enough and needs no bind
+    // mount: tzdata is Priority: required in Debian, so the zone files are in
+    // the bookworm-slim base this image is built on. Grouped with the other -e
+    // flags rather than after the volumes.
+    cmd.push("  -e TZ=" + tzVal() + " \\");
     cmd.push("  -v musicd-remote-data:/app/data \\");
     if (els.mount.checked) {
-      cmd.push("  -v " + shq(pathVal() + ":/music:ro") + " \\");
+      mountPairs().forEach(function (m) {
+        cmd.push("  -v " + shq(m.host + ":" + m.guest + ":ro") + " \\");
+      });
     }
     cmd.push("  " + IMAGE + ":" + v);
 
@@ -646,15 +770,21 @@ docker run -d \
     if (mac) {
       y.push("    ports:");
       y.push("      - \"" + portVal() + ":3399\"");
-      y.push("    environment:");
-      y.push("      ROON_CORE_IP: \"" + ipVal() + "\"");
     } else {
       y.push("    network_mode: host   # Roon Core auto-discovery on the local network");
     }
+    // One environment block for both modes. TZ belongs in each — a container is
+    // UTC otherwise — and ROON_CORE_IP only where discovery cannot run.
+    y.push("    environment:");
+    y.push("      TZ: \"" + tzVal() + "\"   # local time: Album of the day, Smart Picks hour");
+    if (mac) y.push("      ROON_CORE_IP: \"" + ipVal() + "\"");
     y.push("    volumes:");
     y.push("      - musicd-remote-data:/app/data");
     if (els.mount.checked) {
-      y.push("      - \"" + pathVal().replace(/\\/g, "\\\\").replace(/"/g, '\\"') + ":/music:ro\"   # read-only music mount");
+      mountPairs().forEach(function (m) {
+        y.push("      - \"" + m.host.replace(/\\/g, "\\\\").replace(/"/g, '\\"') +
+               ":" + m.guest + ":ro\"   # read-only music mount");
+      });
     }
     y.push("");
     y.push("volumes:");
@@ -681,6 +811,7 @@ docker run -d \
       return p.c === "c" ? '<span class="c">' + esc(p.t) + "</span>" : highlight(p.t);
     }).join("\n");
 
+    renderMountHint();
     els.modeNote.innerHTML = NOTES[state.mode];
 
     els.afterNote.innerHTML = state.mode === "macos"
@@ -696,8 +827,18 @@ docker run -d \
     if (state.mode !== "same") p.set("mode", state.mode);
     if (els.coreip.value.trim()) p.set("core", els.coreip.value.trim());
     if (portVal() !== "3399") p.set("port", portVal());
-    if (!els.mount.checked) p.set("mount", "0");
-    else if (els.musicpath.value.trim()) p.set("music", els.musicpath.value.trim());
+    if (!els.mount.checked) {
+      p.set("mount", "0");
+    } else {
+      if (els.musicpath.value.trim()) p.set("music", els.musicpath.value.trim());
+      // Extra folders travel as repeated music2 values, so a shared link rebuilds
+      // the whole list rather than only the first field. Kept inside the checked
+      // branch with `music`, or a link that says mount=0 would still carry paths.
+      Array.prototype.forEach.call(els.extraMounts.querySelectorAll("input"), function (i) {
+        if (i.value.trim()) p.append("music2", i.value.trim());
+      });
+    }
+    if (els.tzone.value.trim()) p.set("tz", els.tzone.value.trim());
     var qs = p.toString();
     history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "") + location.hash);
   }
@@ -736,7 +877,8 @@ docker run -d \
     render();
   });
 
-  ["coreip", "appport", "musicpath"].forEach(function (id) {
+  els.addMount.addEventListener("click", function () { addMountRow(""); render(); });
+  ["coreip", "appport", "musicpath", "tzone"].forEach(function (id) {
     els[id].addEventListener("input", render);
   });
 
@@ -789,6 +931,11 @@ docker run -d \
   if (q.get("port"))  els.appport.value = q.get("port");
   if (q.get("mount") === "0") { els.mount.checked = false; els.mountFields.classList.add("hidden"); }
   if (q.get("music")) { els.mount.checked = true; els.mountFields.classList.remove("hidden"); els.musicpath.value = q.get("music"); }
+  q.getAll("music2").forEach(function (v) { if (v) addMountRow(v); });
+  // Pre-filled from this browser, which is almost always the right answer and
+  // is the difference between a correct clock and a silent UTC one.
+  els.tzone.value = q.get("tz") ||
+    (function () { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) { return ""; } })();
   var qm = q.get("mode");
   setMode(qm === "separate" || qm === "macos" ? qm : "same");
 })();
