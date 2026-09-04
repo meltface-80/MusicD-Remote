@@ -31,8 +31,13 @@ function build(opts) {
     ["withSource", "albumSource", "sourceBadgesDistinguish",
      "claimingServices", "unclaimedIsLocal", "albumKeys",
      "albumTitleVariants", "canonText", "canonArtist", "normalize",
+     // v1.8.4: the rung albumSource falls to when nothing can key. It must not
+     // change the elimination rules these tests pin, so it is extracted for
+     // real rather than stubbed out.
+     "titleOnlySource",
      "albumFileFacts", "albumQualityLabel", "albumIsHiRes", "rateShort"],
     {
+      AK: require("../../lib/albumkeys"),
       albumFileCache:  new Map(opts.files || []),
       localAlbumKeys:  new Set(opts.local || []),
       qobuzAlbumKeys:  new Set(opts.qobuz || []),

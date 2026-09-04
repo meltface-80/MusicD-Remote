@@ -1070,6 +1070,13 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             </label>
           </div>
           <div class="settings-note" id="waveform-enabled-note">Off. The progress bar stays a plain line.</div>
+
+          <!-- Qobuz waveforms. Off until the user signs in, and the sign-in
+               happens on qobuz.com — no password or key is typed in here. -->
+          <div class="settings-row" style="margin-top:12px">
+            <span class="settings-label">Qobuz waveforms <button class="settings-info-btn" data-info="Waveforms for Qobuz tracks, which Roon streams straight to your endpoint and never to this extension. Uses the same Qobuz sign-in as the rest of the app — there is nothing extra to set up here. Each track is fetched from Qobuz with YOUR account, piped through ffmpeg into a thousand loudness values and discarded: no audio is written to disk, and Roon still handles all playback." aria-label="Info">ⓘ</button></span>
+          </div>
+          <div id="qobuz-secret-status" class="settings-token-status"></div>
         </div>
 
         <div class="settings-divider"></div>
@@ -1217,16 +1224,18 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
 
         <div class="settings-block">
           <div class="settings-row">
-            <span class="settings-label">Qobuz account <button class="settings-info-btn" data-info="Connects to Qobuz via the unofficial API (the Lyrion/LMS plugin's app id). Used only to browse and search the Qobuz catalogue and add albums to your Qobuz favourites/library — no streaming or downloading (Roon streams). Against Qobuz's Terms of Service and may break at any time. Your password is sent to Qobuz once to obtain a token; only the token is stored, never the plaintext password." aria-label="Info">ⓘ</button></span>
+            <span class="settings-label">Qobuz account <button class="settings-info-btn" data-info="Signs in on Qobuz&#39;s own page — your password is never typed into or seen by MusicD Remote. One sign-in covers everything: browsing and searching the Qobuz catalogue, adding albums to your Qobuz favourites, and waveforms for Qobuz tracks. Roon still handles all playback. This uses Qobuz&#39;s unofficial API, which is against their Terms of Service and may break at any time." aria-label="Info">ⓘ</button></span>
           </div>
           <div class="settings-token-row">
-            <input id="qobuz-username-input" type="email" class="settings-token-input" placeholder="Qobuz email…" autocomplete="off" spellcheck="false">
-          </div>
-          <div class="settings-token-row">
-            <input id="qobuz-password-input" type="password" class="settings-token-input" placeholder="Qobuz password…" autocomplete="off" spellcheck="false">
             <button id="qobuz-connect" class="settings-update-btn" type="button">Connect</button>
           </div>
           <div id="qobuz-status" class="settings-token-status"></div>
+          <!-- Only shown when the redirect cannot land back here — a sign-in
+               done on a device that is not on this network. -->
+          <div id="qobuz-signin-paste" class="settings-token-row" hidden>
+            <input id="qobuz-signin-url" class="settings-token-input" placeholder="Paste the address you were sent to…" autocomplete="off" spellcheck="false">
+            <button id="qobuz-signin-finish" class="settings-update-btn" type="button">Finish</button>
+          </div>
           <button id="qobuz-disconnect" class="settings-update-btn hidden" type="button">Disconnect</button>
           <div class="settings-token-status" style="opacity:.6;font-size:11px;margin-top:6px;">Unofficial Qobuz API — against Qobuz ToS, may break, use at your own risk.</div>
         </div>

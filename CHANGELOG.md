@@ -2,6 +2,896 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.22] — 2026-09-03
+
+### Changed — the decode moved from 8 kHz to 16 kHz
+
+Resampling to 8 kHz makes ffmpeg **lowpass at 4 kHz first**. Cymbals, snare cracks and sibilance —
+most of whose energy sits above that — were being filtered away before they could register as a
+peak, so the waveform was quietly flattening exactly the moments it exists to show.
+
+Measured on a three-minute track of transients, comparing the bars actually drawn:
+
+| against 8 kHz | bars differing | mean | largest |
+|---|---|---|---|
+| 16 kHz | 192/195 | 16.3/255 | 52/255 (9.4px of a 46px bar) |
+| 22.05 kHz | 193/195 | 17.8/255 | 52/255 |
+| 44.1 kHz | 186/195 | 12.6/255 | 45/255 |
+
+Of 195 bars, 44.1 kHz read **higher** on 119 and lower on 67 — a systematic under-read at 8 kHz,
+not noise. For comparison, raising the stored bucket count from 1,000 to 10,000 moved the worst bar
+by 4px and most bars not at all; this is an order of magnitude larger and it is the lever that
+matters.
+
+**It is close to free.** The decode of the compressed source dominates: 134 ms at 8 kHz, 141 ms at
+16 kHz, and 133 ms at 44.1 kHz — five times the PCM, same wall clock, on the x86 class of machine
+this runs on.
+
+16 kHz rather than higher because the content that was missing is all below 8 kHz: 22.05 and 44.1
+differ from 16 by less than they differ from 8.
+
+- `STRIDE` stays at 256, so each intermediate peak now covers ~16 ms instead of ~32 ms — twice the
+  time resolution, free, and a five-minute track holds ~18,750 of them before the reduction to 1,000.
+- Both decode forms — file and pipe — read the rate from one constant. A test asserts they match,
+  because a local and a streamed copy of one track drawn from different rates would have different
+  shapes.
+
+### Changed — a rate change now clears every stored waveform
+
+A waveform is only comparable with others taken the same way, and a library holding both 8 kHz and
+16 kHz rows would draw two kinds of picture with nothing on screen to say which is which — worse
+than either choice on its own, because the inconsistency is invisible.
+
+So the rate is recorded beside the data and a change wipes the table, logging what it did. Verified
+end to end: a seeded 8 kHz library cleared on first boot and re-recorded the new rate. The cost is
+one re-analysis per track, paid at next play — local files re-read from disk, streamed tracks fetched
+again.
+
+975 unit / 513 DOM / 87 static.
+
+## [1.8.21] — 2026-09-03
+
+### Changed — the track ahead is drawn to be seen
+
+The unplayed part of the waveform was the border colour at 42 % opacity on the phone and white at
+34 % on the wall display — a background rule, not a picture of the music. It is now the **text**
+colour (near-white on the dark palettes, near-black on the light ones, so "white" means "reads
+clearly" in both) at 72 %, and 70 % on the wall. The played side goes to full strength so the accent
+still reads as the position marker against a brighter track ahead of it.
+
+### Changed — more of the stored waveform actually reaches the screen
+
+The waveform holds **1,000** values. A phone is about 390 CSS pixels wide, and at a 3-pixel step only
+**130 bars** were ever drawn — eight stored values collapsed into every one of them. The data was
+already there and was being thrown away at the last step.
+
+- Now playing: 2-pixel step, so 195 bars. Below that the bars stop being separable and it reads as a
+  filled shape rather than a waveform.
+- Wall display: the bars stay 3 pixels wide, because thin bars mush together across a room; the gap
+  tightens from 2 to 1 instead, drawing 480 of the 1,000 rather than 384.
+
+**Raising the stored bucket count would have changed nothing** — 1,000 is already between 2 and 8
+times what any screen here draws, and the decode is identical either way, so the only lever that does
+anything is bar geometry.
+
+### Not a bug: the square ones
+
+A heavily limited master genuinely has near-full loudness in almost every bucket, so its waveform is a
+block. That is the record, faithfully drawn — the same code renders a piano recital with its full
+dynamic range. More bars make such a track finer-grained, not less square.
+
+972 unit / 513 DOM / 87 static.
+
+## [1.8.20] — 2026-09-03
+
+### Changed — one Qobuz sign-in, not two
+
+v1.8.19 left the app asking for Qobuz twice: a username and password under Streaming accounts for
+browsing and favourites, and a separate browser sign-in under Playback for waveforms. Two logins to
+the same account.
+
+The browser sign-in can do **strictly more** than the password one — it reads the catalogue and the
+favourites like any other token, *and* it can sign the streaming call, which the password token can
+never do because this app holds no secret for the app that mints it. So it is now the whole session.
+
+- `lib/qobuz.js` gained one `setDefaultAppId`, because a token and its `app_id` have to move
+  together and this is genuinely one fact about the session rather than a per-call decision. All nine
+  endpoints follow it.
+- Streaming accounts → Qobuz is now a single **Connect** that signs in on qobuz.com. The email and
+  password fields are gone; the waveform panel has no controls at all and just reports what the
+  sign-in means for it.
+- Disconnect clears the whole session. Leaving the sign-in behind would have kept the app
+  half-connected — still fetching audio for an account the user had just removed.
+- A 401 under the sign-in's app is **logged and allowed to fail**, deliberately. There is no
+  fallback: swapping the `app_id` mid-flight would race every other in-flight call, and on an install
+  that only ever signed in there is no password login to fall back to. If some endpoint refuses that
+  app, that is a real finding and must be visible rather than papered over.
+
+### Added — waveforms for TIDAL tracks
+
+TIDAL needed no new credentials at all. The device sign-in already in the app carries a Bearer token,
+**it refreshes itself**, and TIDAL signs nothing — so none of the six versions of credential trouble
+Qobuz produced applies here.
+
+- Album ids are harvested from TIDAL favourites alongside the identity keys and persisted with them,
+  the same shape v1.8.7 had to add for Qobuz after shipping the feature without it.
+- `lib/tidal-manifest.js` reads TIDAL's answer, which is a base64 manifest rather than a URL. Only
+  the plain **BTS** kind carries readable audio; the higher tiers arrive as MPEG-DASH in a protected
+  container and are **refused outright**, naming the reason. That refusal is the correct outcome, not
+  a gap to close later — those tracks keep the plain bar.
+- Everything downstream is shared with the Qobuz path unchanged: the title-and-duration matcher, the
+  8 kHz decode, the storage, the one-track-ahead prefetch.
+- Qobuz is tried first, then TIDAL. Roon states no playback source, so an album's presence in one
+  favourites list is the only signal there is — and an album in neither declines from both without a
+  network call.
+
+972 unit / 513 DOM / 87 static.
+
+## [1.8.19] — 2026-09-03
+
+### Added — Qobuz waveforms work after a sign-in, with nothing to paste
+
+The feature finally becoming usable by anyone other than the person who built it. v1.8.10–18 got
+Qobuz waveforms working on one machine and needed an `app_id`, a secret and a matching login token
+pasted in as JSON — values obtainable only by running a separate Qobuz client and reading its
+credential file. Nobody was going to do that.
+
+**Settings → Playback → Qobuz waveforms → Connect.** It opens Qobuz's own sign-in page; Qobuz sends
+the browser back here with a one-time code, which trades for a token. **No password or key is ever
+typed into this app**, and the paste box is gone.
+
+Why this was the only way out, stated plainly because six versions were spent not seeing it: a Qobuz
+signature needs an `app_id`, *that app's* secret, and a token minted **by that app**. This
+extension's ordinary username/password login (the arrangement the LMS plugin uses) produces a token
+for an app whose secret it does not have — so no combination of what it already held could ever
+sign. The redirect flow is what produces a token belonging to an app whose secret is present.
+
+- `lib/qobuz-oauth.js` — the sign-in URL, reading the code back, and the exchange. Pure apart from
+  one request, so all of it is tested without an account.
+- **The redirect address is taken from the request**, not configured: whatever address you reached
+  Settings on — a LAN IP, a hostname, a reverse proxy — is where Qobuz sends you back. That is what
+  makes it work unchanged inside Docker, which has no idea what address it is reached on, and from a
+  phone on the same network. Forwarded headers win over `Host`, or a proxy would send you to an
+  address only the proxy can reach.
+- A paste field appears **only** if the redirect does not land by itself — a sign-in done on a device
+  that cannot reach the box. It takes the address you landed on, in any of the three shapes someone
+  might copy.
+- An install that already had a pasted secret keeps working; it is simply no longer offered.
+  Connecting replaces it.
+
+The application credentials this signs with identify the *application*, never a user, and grant
+nothing without a token from the sign-in. They are published in the open by the author of an existing
+open-source Qobuz client. Qobuz's unofficial API remains against their terms of service, which is why
+this stays off until switched on.
+
+### Changed
+
+- The "no waveform" log line now names the sign-in rather than a missing app secret, since that is
+  what a person can now act on.
+- `qobuz_connected` and `qobuz_user` are reported by the settings endpoint. The token never is.
+
+963 unit / 513 DOM / 86 static.
+
+## [1.8.18] — 2026-09-03
+
+### Fixed — Roon's track title can carry a suffix the service's does not
+
+From the live log, a whole album drawing nothing:
+
+```
+qobuz: no track called "The Number 3 (Live at Sydney Opera House)" on the album
+```
+
+Roon appends the venue to every track on Khruangbin's *Live at Sydney Opera House*; Qobuz's track
+list calls it plainly "The Number 3". Exact matching refused each one.
+
+`wfResolveFile` has matched **local** files by containment since the feature was written, with a
+comment giving this exact reason. `matchTrack` never got it — the same problem, solved on one path
+and left on the other.
+
+- A containment match (either direction) is now tried **when there is no exact title match at all**,
+  and it still has to pass the same duration gate, and still has to be the only candidate.
+- It never reaches past an exact title whose length is wrong. That is a different recording, and
+  falling through to a loosely named neighbour is precisely the wrong-master failure this module
+  exists to prevent. A test pins it.
+- The reason line says "matched on a partial title" when the looser rung answered, so a surprising
+  waveform can be traced to how it was found.
+
+The duration gate makes containment far safer here than in the local path, where it stands alone:
+"The Number 3" and "The Number 4" are one character apart, and length separates them.
+
+### Fixed — a doomed login attempt every 60 seconds
+
+The log also carried `could not mint a token under app 304027809 — Qobuz auth failed (401)` on
+repeat. Minting was built up front, before the pasted token that was already working was even tried,
+and for a signing app that does not accept password logins it can only ever fail.
+
+The credential sets are now resolved **lazily** and ordered pasted-token first, so the working path
+costs no extra request and writes no log line. Minting remains as a fallback for a secret whose app
+*does* accept a password login, and is reached only if the pasted token fails.
+
+945 unit / 513 DOM / 85 static.
+
+## [1.8.17] — 2026-09-03
+
+### Fixed — correcting the signing pair no longer destroys the token that works
+
+The probe found the working arrangement: app_id `304027809`, its secret, and **the token already
+stored from an earlier paste** — the one three versions had written off as expired. It never was. It
+was minted under the OAuth app and kept being sent with the web player's `app_id`, which Qobuz
+answers identically to a dead token.
+
+Which exposed a trap sitting directly in the user's path. Correcting the pair means pasting an
+`app_id` and secret; the token is not the wrong part and there is no reason to retype it. The
+settings route assigned `qobuzSignToken = pair.token` unconditionally, so that paste would have
+**wiped the only credential that works** — and it cannot be rebuilt here, unlike a minted one.
+
+- A paste that carries an `app_id` but no token now **inherits** the stored one.
+- A **bare** secret still starts clean: it means "sign as this app itself", where a foreign token is
+  only a wasted attempt.
+- Clearing the field still clears everything, which is how to remove a token deliberately.
+- A token this app **minted** is still dropped on any change — it belongs to the app_id it was minted
+  under, and costs one login to rebuild.
+
+### Fixed (v1.8.16, restated because it is what broke the diagnosis)
+
+"Expired" was a guess written into a message. A 401 on the unsigned read means the token and the
+`app_id` sent with it do not go together, and the wrong `app_id` is much the commoner cause. Leading
+with expiry sent three versions after a fresh login that was never needed.
+
+### What the LMS plugin does, for the record
+
+Login is username + password, exactly as here. `track/getFileUrl` is **additionally signed** with
+`md5(endpoint + sorted params + ts + app_secret)` — the construction in `lib/qobuz-sig.js`, which was
+correct throughout. Its `app_id`/`app_secret` are built in hex-encoded (`API/Common.pm`,
+`pack('H*', ...)`), so a working username and password never implied a signable stream URL.
+
+937 unit / 513 DOM / 85 static.
+
+## [1.8.16] — 2026-09-03
+
+### Fixed — "expired" was a guess in a message, and it sent us the wrong way
+
+A 401 on the unsigned catalogue read means the token and the `app_id` sent with it do not go
+together. The commoner cause by far is **the wrong app_id**, not a dead token: a live token minted by
+app A, presented with app B's id, answers exactly like an expired one. The message led with
+"expired", so a token that was almost certainly fine got written off, and a re-login was recommended
+that would not have helped.
+
+It now reads "it was not minted by the app_id it was sent with (or it has expired)", and a test pins
+the ordering — leading with expiry is the part that misled, so the test asserts which clause comes
+first, not merely that both appear.
+
+### What the LMS plugin actually does (the question behind five versions)
+
+Read from [LMS-Community/plugin-Qobuz](https://github.com/LMS-Community/plugin-Qobuz):
+
+- **Login is username + password**, exactly as here — `user/login` returning a `user_auth_token`.
+  This app has always done the same thing, under the same `app_id`.
+- **`track/getFileUrl` is signed**, with `md5(endpoint-without-slash + sorted params + ts + app_secret)`
+  — character for character the construction in `lib/qobuz-sig.js`. The implementation here is right.
+- The `app_id` and `app_secret` are **built into the plugin in hex-encoded form**
+  (`API/Common.pm`: `pack('H*', ...)` matched against `(\d{9})([a-f0-9]{32})(\d{9})`), deliberately
+  so they cannot simply be read out of the public source.
+
+So the login half was never the missing piece and never could be: streaming additionally needs an
+**application** credential that no user account supplies. That is why a working username and password
+prove nothing about whether a stream URL can be signed.
+
+934 unit / 513 DOM / 85 static.
+
+## [1.8.15] — 2026-09-03
+
+### Changed — a bare secret is the LMS arrangement, and always was
+
+This app already **is** the LMS Qobuz plugin's setup: the same `app_id` (`942852567`), and the same
+ordinary username + md5-password login, which works and has worked throughout. A secret issued for
+that app therefore completes a set that is already internally consistent — no OAuth, no browser
+flow, no pasted token, nothing new at all.
+
+That arrangement was the default path the whole time, reachable by pasting the secret **on its own**.
+Five versions went into pairing a *web player* secret (`798273057`, out of a `credentials.json`) with
+tokens it could never match, and every one of those failures was real and correctly diagnosed —
+against the wrong question. The right question was never "how do these two credentials fit together",
+it was "which app's secret is this".
+
+- Settings now states which app it will sign as, and what that implies for the secret. Pasted alone:
+  this app's own id, its own login — get a secret issued for that app and nothing else is needed.
+  A whole `credentials.json` is for the other case only, where the secret belongs to a different app
+  and so its `app_id` and token must travel with it.
+- `POST /api/debug/qobuz-probe` no longer requires `app_id`; omitted, it tests against this app's own
+  id. Requiring it hid the entire arrangement behind a field nobody would think to leave blank.
+- Two tests pin that the id used to **log in** and the id used to **sign** are the same value. They
+  are both the module default today, and drifting apart would be a guaranteed 401 with no visible
+  cause — which is exactly the failure mode this whole sequence has been living in.
+
+No secret is shipped, and none of this changes that.
+
+Class of error: five releases of increasingly precise answers to a question that was framed wrong at
+the start — and a default path that already did the right thing, hidden behind an input that
+implied otherwise.
+
+934 unit / 513 DOM / 85 static.
+
+## [1.8.14] — 2026-09-03
+
+### Added — a probe that answers the credential question without a release
+
+Five versions have now been spent testing one hypothesis per Docker rebuild. That is the wrong loop:
+the question is empirical, its answer space is small, and none of it needs a release. v1.8.13's
+minting attempt returned `Qobuz auth failed (401)` — password login is simply not available under the
+web player's `app_id`, which is a fact no amount of reading could have established and one request
+settles.
+
+`POST /api/debug/qobuz-probe` takes a candidate `{app_id, secret, token?}`, tries **every token this
+box can produce** against that signing pair, and reports what Qobuz answered to each: this app's own
+login, a token in the request, a token saved from a pasted file, and one minted by password under
+the supplied `app_id`. The reply names the combination that works, if any.
+
+- **POST, not GET.** The `[http]` logger records `req.originalUrl`, and those lines go to the
+  rotating log files on the data volume — a secret in a query string would be written to disk in
+  plaintext and kept for ~88 MB of history. A JSON body is not logged. `GET` returns a 405 that
+  prints the correct `curl`, so nobody discovers this by putting a secret in a URL first.
+- Nothing is persisted, and no secret, token or stream URL is echoed back — only labels, statuses and
+  reasons. Any value the caller supplied is scrubbed out of the reply before it is sent, because
+  "no observed echo" is not a guarantee for a credential handed over a moment ago.
+- The signing pair is supplied per request. This app still ships no secret.
+
+### What the evidence now says
+
+A working signed request needs a token minted by the **same app** as the secret. Three app_ids are in
+play and this app holds a usable secret for none of them:
+
+| app_id | how a token is obtained | secret held here |
+|---|---|---|
+| `942852567` (this app) | email + password — works | no, and never will |
+| the web player's | not by password — **401** | only if pasted |
+| the OAuth desktop app's | browser sign-in flow | only if pasted |
+
+So the combination that works is the pasted pair together with a **live** token minted by that same
+app. The token in the pasted file was expired, which is why every attempt failed at a different step
+for a different reason.
+
+Class of error: five releases spent shipping hypotheses one at a time instead of building the
+one-request experiment that distinguishes them.
+
+931 unit / 513 DOM / 85 static.
+
+## [1.8.13] — 2026-09-03
+
+### Fixed — the token has to be MADE under the app the secret belongs to
+
+The instrumentation added in v1.8.12 finally named the failure, and it named two different ones in
+one line:
+
+```
+this app's Qobuz login:  Qobuz rejected the TOKEN (HTTP 401). The signing app_id is not
+                         the one that minted this login token
+the pasted credentials:  Qobuz rejected the TOKEN (HTTP 401) — this login is expired
+```
+
+So the album read worked; **signing** was refused. And the token in the pasted file was dead on
+arrival, which is why the two attempts failed for different reasons at different steps.
+
+That closes the question v1.8.10–12 kept circling. A `user_auth_token` belongs to the app that
+issued it, and Qobuz refuses a signed request whose `app_id` is not that app. This app's token is
+minted under `lib/qobuz.js`'s own `app_id`, for which there is no secret and never will be; the
+supplied secret belongs to a different app. **Every pairing of the two things already held therefore
+fails** — v1.8.11 tried one direction, v1.8.12 the other, and both were rearrangements of the same
+insufficient set.
+
+The way out is not another combination. It is to mint a **second token under the app the secret
+belongs to** — `user/login` is unsigned and takes an `app_id`, and the username and password hash
+are already stored for re-login, so this costs one extra login and pairs correctly by construction.
+
+- `login()` takes an optional `app_id`, applied to the query **and** the `X-App-Id` header.
+- The signed path tries, in order: the minted token (correct by construction), this app's own login
+  (right when a bare secret belongs to this app's id), then a pasted file's token (last — it expires
+  wherever it was made and nothing here can refresh it).
+- The minted token is cached **in memory only** — it is a credential, and it is re-derivable at any
+  moment from what is already persisted. A 401 on it drops it so the next play mints a fresh one; a
+  changed signing `app_id` drops it too, rather than signing as one app with another's token.
+- Minting is skipped, once and loudly, when no Qobuz username/password is stored — otherwise that
+  attempt is simply missing from the decline list, and an absence is not a diagnosis. It shares the
+  60-second backoff `qobuzRelogin` uses so a wrong password is not a login attempt per poll.
+- `_wfQobuzSaid` moved above its first caller. It is a `const` and the new caller sits 2,000 lines
+  higher — the startup-crash class this project keeps pre-flight step 3 for.
+
+### Known gap
+
+A track whose title is only symbols (`Ø`, on the album in the log above) canonicalises to an empty
+string and is refused with "no track title to match on". Refusing is correct — matching on duration
+alone would draw a confident waveform of the wrong recording — but those tracks keep the plain bar.
+
+Class of error: two versions spent rearranging a set of credentials that could not work in any
+arrangement, because the missing piece was not held at all.
+
+931 unit / 513 DOM / 85 static.
+
+## [1.8.12] — 2026-09-03
+
+### Fixed — the album read was swallowing its reason, in the function above the one v1.8.11 fixed
+
+The first real failure this feature ever reached logged `album 0724384405953 could not be read` —
+a sentence with no cause in it. v1.8.11 wrote a whole entry about `getFileUrl` catching every error
+and returning `null`, and left the identical defect in `getAlbum` one function above it.
+
+- `getAlbumResult` returns `{album, reason}`; `getAlbum` keeps its album-or-null shape.
+- One shared `describeQobuzError(e, signed)`, because a status does not mean the same thing on both
+  calls: only a **signed** request can have its signature rejected, so reporting a 401 on the
+  unsigned catalogue read as a signing problem sends you to fix the wrong thing. A 404 likewise
+  reads "no such album" or "no such track" depending on what was asked for.
+
+### Fixed — v1.8.11 moved the token and broke a read that was working
+
+v1.8.11 concluded that the login token had to travel with the app_id. That was over-read from a
+docstring. A working client keeps **one token** and varies only the `app_id`/`secret` pair:
+`X-User-Auth-Token` stays put while `X-App-Id` changes with the pair. Swapping in the pasted file's
+token broke `album/get`, which is **unsigned** and had been succeeding on this app's own login —
+the token known to be live, since it is what read the 8,000-odd favourites these album ids came from.
+
+- The token stays with this app's own Qobuz login. The pasted `app_id` and secret are used for the
+  **signature** only.
+- Which combination Qobuz accepts cannot be known from outside, so the credential sets are now tried
+  in order — this app's login first, the pasted file second — and the first that yields audio wins.
+  A pasted token is a fallback, not a requirement.
+- The decline line names **every set tried and what Qobuz said to each**, rather than one reason for
+  a path with two branches.
+
+Class of error: fixing a swallowed error in one function and not looking at its caller; then
+generalising a real finding one step past the evidence.
+
+927 unit / 513 DOM / 85 static.
+
+## [1.8.11] — 2026-09-03
+
+### Fixed — the login token is part of the credential set, and the real reason is now logged
+
+v1.8.10 made the `app_id` and the secret travel together and it still failed. The missing third
+piece was the **token**. Qobuz checks the signing `app_id` against the app that *minted the login
+token*, so signing as the pasted app while presenting this app's own token is refused however well
+the id and secret agree — the mismatch simply moved.
+
+This app logs in through `user/login` with its own `app_id` (`942852567`), so its token belongs to
+that app and to no other. A pasted `credentials.json` carries a token, an id and a secret that are
+consistent **by construction**, and v1.8.10 read two of the three and dropped the token on the floor.
+
+- `parseSecretInput` now also returns `user_auth_token`, and the signed path uses **one app's
+  credentials all the way through** — that token, that id, that secret. `album/get` goes the same
+  way, since it rides the same pairing. With no pasted token the old behaviour stands: this app's
+  own login, correct only when the secret belongs to this app's id.
+- Only the exact key `user_auth_token` is adopted. A credentials file may hold a refresh or device
+  token, and presenting the wrong one fails as a 401 that looks like everything else here.
+
+### Fixed — three different failures had one message
+
+`getFileUrl` caught every error and returned `null`, so a rejected signature, a rejected token and
+an unstreamable track all surfaced as *"a wrong or rotated app secret, or no subscription for this
+track"* — a sentence covering three causes with three different remedies, which is not a diagnosis.
+Qobuz names the cause and the app was discarding it.
+
+- `qobuzGet` attaches the response **body** to the thrown error. The body is the only thing that
+  separates a signature failure (HTTP 400, *"Invalid Request Signature parameter (request_sig)"*)
+  from a token failure (401) — both otherwise arrive as an ordinary non-200.
+- `getFileUrlResult` returns `{url, reason}` and the log says which of the five it was. A `sample:
+  true` answer is reported as the preview it is, not as an error. `getFileUrl` keeps its old
+  string-or-null shape, so no existing caller changes.
+- Settings reports what actually arrived — full set, pair without a token, or secret alone — instead
+  of one "Set." that means three different states. The secret and the token are still never echoed
+  back by any route; a test asserts both.
+
+Class of error: a fix that made two of three values agree, and a diagnostic that averaged its
+causes into a sentence true of none of them.
+
+920 unit / 513 DOM / 85 static.
+
+## [1.8.10] — 2026-09-03
+
+### Fixed — a secret is only valid against the app_id it was issued for
+
+v1.8.9 fixed the address; the request still came back refused. The reason is in the pairing:
+**Qobuz secrets are app_id-specific.** A signature built with the web player's secret is only
+accepted when the request also presents the web player's `app_id`. `lib/qobuz.js` has always sent
+its own — the one the favourites, search and new-release calls use, which need no secret at all —
+so a perfectly good secret was being signed against the wrong id, and Qobuz refuses that exactly
+the way it refuses a wrong secret. There is no error that distinguishes them.
+
+- `qobuzGet` takes an optional `appId` that overrides the module's for one call, applied to **both**
+  the `app_id` query parameter and the `X-App-Id` header — sending the id in one place and not the
+  other is its own way of being refused.
+- `getFileUrl` forwards it, so only the signed streaming call changes address. Every unsigned call
+  keeps the id it has used since the original integration.
+- The Settings field now accepts **either** the bare secret **or** a whole `credentials.json` pasted
+  in. `parseSecretInput` walks the document for `app_secret` and `app_id` at any nesting depth, so
+  the pair cannot be separated on its way in. Two fields would have invited exactly one of them
+  being updated later — which reproduces this bug with no way to see it.
+- Text that *looks* like JSON and does not parse is **refused**, not stored. Falling through to
+  "treat it as a bare secret" would have saved `{ not json` as a credential and reported it SET: a
+  wrong answer wearing a right one's clothes.
+- The settings endpoint reports `qobuz_sign_app_id` and the Settings line names it ("Signing as app
+  N", or a prompt to paste the file). The id is not a credential — it travels in the clear in every
+  request URL — and naming it is what makes a mismatched pair visible instead of silent. **The
+  secret itself is still never echoed back**, by this route or any other.
+
+Class of error: two values that are only meaningful together, accepted separately.
+
+820 → 909 unit / 513 DOM / 85 static.
+
+## [1.8.9] — 2026-09-02
+
+### Fixed — both streaming calls went to a URL with a doubled slash
+
+The secret was set, Qobuz albums were playing, and still nothing drew. `QOBUZ_BASE` ends in `/`, and
+the two calls added in v1.8.6 were the only ones in the file written with a **leading slash**:
+
+```
+qobuzGet("/album/get")        →  https://www.qobuz.com/api.json/0.2//album/get
+qobuzGet("/track/getFileUrl") →  …/0.2//track/getFileUrl
+```
+
+Every other call in `lib/qobuz.js` — eight of them, going back to the original integration — passes a
+bare path. The two new ones did not, so neither ever reached Qobuz. The signature was correct; the
+address was not.
+
+It hid well: a wrong URL comes back as an ordinary non-200, and this client turns every non-200 into
+"no result", which the waveform treats as the normal answer of "no waveform for this track". A
+mistake with no distinguishing symptom.
+
+- Both paths corrected, and `qobuzGet` now **strips a leading slash itself** — the convention is
+  enforced in the one place that builds the URL rather than trusted to each new call site.
+- Two tests: no `qobuzGet` call may carry a leading slash, and the normalisation must stay. Putting
+  the bug back fails both.
+
+### Verified against a working client
+The user's own Qobuz tooling confirmed two things this code could not check from here:
+
+- **The signature construction in `lib/qobuz-sig.js` is correct** — endpoint with its slash removed,
+  parameters sorted by name and concatenated as `key` immediately followed by `value`, then the
+  timestamp, then the secret. Written from reasoning about an undocumented scheme; now matched
+  against an implementation that works against the live API.
+- **The endpoint names are right**: `album/get` and `track/getFileUrl`.
+
+### Note on the app secret
+Still not shipped, and now for a better reason than caution: a working client already re-derives it
+weekly. Duplicating that here would be a second, untested copy of a solved problem — the value goes
+in Settings, from whatever already keeps a current one.
+
+- 902 unit / 513 DOM / 85 static tests
+
+## [1.8.8] — 2026-09-02
+
+### Fixed — the likeliest reason of all was the one hidden behind a debug flag
+
+The v1.8.6 logs told the story by what was missing from them: `/api/waveform` answering in **1–3ms**,
+which is far too quick to have reached Qobuz, and not one `[waveform]` line to say why. v1.8.7 gave
+three of those declines a voice. It left the fourth — **no app secret set** — behind `if (DEBUG)`.
+
+That is the DEFAULT state of this feature. Hiding the default behind a flag is what makes a switched
+-off feature look like a broken one, which is exactly the report it produced.
+
+- The no-secret notice is unconditional now, and names the setting to go and fill in.
+- Said **once per reason**, not once per request. The clients poll every 1.5s, so a line per request
+  turns the reason into noise and buries it — the same outcome as not logging it at all. A
+  *different* decline still gets through immediately.
+- The no-album-id notice is keyed per album, and now asks the question that usually answers it:
+  **is the album in your Qobuz favourites?** Playing it from Qobuz search is not enough — the
+  favourites list is the only place an album id can come from. (v1.8.6's logs show this happening:
+  Bowie's *London Boy* matched nothing anywhere, in either service or the library.)
+- Saving or clearing the secret forgets what has already been said, so the next play reports the
+  state that is true now instead of staying quiet about it.
+
+### Changed
+- `_wfQobuzSaid` is declared above the function that reads it rather than fifty lines below —
+  runtime-safe either way, and the fourth time in this run of versions that shape has crept in.
+
+**Class of error:** the same one as v1.8.7, one layer up. There, reason-logging was built and then
+bypassed by three silent returns. Here, the one remaining decline was logged but gated to a mode
+nobody runs. A diagnostic that only speaks when you already suspect something is not a diagnostic.
+
+- 900 unit / 513 DOM / 85 static tests
+
+## [1.8.7] — 2026-09-02
+
+### Fixed — v1.8.6's streaming waveform never fired, and said nothing about it
+
+Reported the moment it was installed: no waveform on either screen. The feature was inert on every
+existing install, for a reason that had nothing to do with Qobuz, the secret or the audio.
+
+**The album ids were harvested but never persisted.** v1.8.6 collected `key → Qobuz album_id`
+alongside the favourite keys, from the same response — and then `saveStreamAlbumKeys` wrote only the
+keys. The ids are what turns "you favourited this album" into "here is its track list", so after any
+restart there were none, and every streaming lookup declined.
+
+**And the refresh that would have rebuilt them was skipped.** The startup fetch runs only when there
+are *no* persisted keys — correct while keys were the sole thing harvested, wrong the moment
+something else rode along in the same pass and did not persist. Anyone with working source badges
+had keys, so the refresh never ran, so the ids stayed empty. Indefinitely.
+
+- The ids are written with the keys now, and an index that has keys but no ids triggers the startup
+  refresh — so an existing install repairs itself about 20 seconds after this build starts, with no
+  rescan and no reconnection.
+
+### Fixed — three declines that explained nothing
+
+`wfQobuzTrack` returned early in silence three times over, and the failure that actually happened was
+one of them. Building reason-logging into every gate of this feature and then bypassing it at the top
+is what turned a one-line diagnosis into a report of "not working".
+
+- Every decline logs. The no-album-id line names the album, the artist and **how many ids are known**,
+  which is what identifies this specific failure at a glance.
+- `/api/debug/zone-dump` reports a `qobuz` block: album keys, album ids, whether a secret is set and
+  whether Qobuz is connected. Zero ids beside non-zero keys is exactly the state above.
+- The favourites log line now ends `, N with an album id`, so a completed harvest is visible.
+
+**Class of error:** two things harvested together, one persisted. The pair was written in one place
+and saved in another, and the save had been correct for as long as there was only one thing to save.
+Nothing in the suite could see it — the bug lives entirely in what survives a restart.
+
+- 900 unit / 513 DOM / 85 static tests
+
+## [1.8.6] — 2026-09-02
+
+### Added — waveforms for Qobuz albums
+
+Roon streams Qobuz to the endpoint and never to an extension, so there is no audio here to read.
+This fetches the track from Qobuz directly, with the user's own account, decodes it to peaks and
+throws the audio away.
+
+**Off by default, and gated on a secret this app does not ship.** `track/getFileUrl` is Qobuz's only
+signed endpoint — the one that hands back audio — and it needs an app_secret. That is a Settings
+field the user fills in themselves, blank by default. Two reasons, both deliberate: the secret
+rotates whenever Qobuz update their web player, so baking one in would guarantee a build that
+quietly stops working; and retrieving audio from an unofficial API is against Qobuz's terms, which
+should be a decision someone made rather than a default they inherited. With the field blank,
+nothing here runs and streaming tracks keep the plain bar exactly as before.
+
+**Nothing is written to disk.** The HTTPS response is piped straight into ffmpeg's stdin, so "no
+audio is stored" is a fact about how the bytes moved rather than a cleanup promise a crash could
+break. It is also faster — the decode overlaps the download. **MP3 320 is requested, not FLAC**: the
+peaks are resampled to 1000 buckets from an 8 kHz mono decode, where a lossy envelope is
+indistinguishable from the original's, at ~7 MB a track instead of 30–150.
+
+Five separate ways to decline, and every one of them means the plain progress bar:
+
+1. the feature is off, or no secret is set;
+2. the album is not confidently **one** Qobuz favourite;
+3. Qobuz will not name a track of that title **and** that length;
+4. the URL comes back a preview, or not at all;
+5. ffmpeg cannot decode what arrives.
+
+**The duration gate is the one that matters.** Remasters, radio edits and live versions all share a
+title, and a waveform of the wrong master looks authoritative and is a different recording — so the
+match is title AND length within ±2s, and two candidates at the right length is refused rather than
+guessed. Roon supplies the length on `now_playing` and on every queue item, so the gate works for the
+prefetch too. Each decline is logged with its reason: "no waveform" with no explanation is what makes
+this class of feature undiagnosable from a user's report.
+
+- `lib/qobuz-sig.js` (7 tests) — the request signature. Undocumented and order-sensitive: parameters
+  sort by name and concatenate with no separators, and Qobuz answers a misordered signature exactly
+  as it answers a wrong secret. Also `usableFileUrl`, which refuses a `sample: true` response — Qobuz
+  returns 200 with the 30-second preview rather than an error, and drawing that across a five-minute
+  bar looks like the track and is not.
+- `lib/trackmatch.js` (11 tests) — picking the track, and the rule about refusing to.
+- `lib/waveform-decode.js` — decodes from a stream as well as a path. EPIPE on the input is the
+  normal end of a piped decode (ffmpeg has enough audio and closes stdin while the response is still
+  arriving); unhandled it would take the server down for a decode that worked. Abandoning a decode
+  now destroys the response too, so a cancelled prefetch stops pulling bytes.
+- Qobuz album ids are harvested alongside the favourite keys, from the same response, keyed
+  identically — so the waveform looks an album up by the key the badge matched on.
+- Streamed waveforms are stored under `qobuz:<album id>`, not the album identity the local path uses:
+  those keys come from Roon's spelling of an album, which is precisely what is unreliable here.
+
+### Fixed
+- Disconnecting TIDAL would have cleared the Qobuz album ids — an unguarded line added minutes
+  earlier in the same change.
+
+- 900 unit / 513 DOM / 85 static tests
+
+## [1.8.5] — 2026-09-02
+
+### Fixed — v1.8.4 could claim another artist's album as the playing one's file
+
+A regression I shipped one version ago, caught by the first dump taken against it. Roon was playing
+**Alex G's "Rocket" from Qobuz**; the library holds **Goldfrapp's "Rocket"**; `wfAlbumKey` handed back
+the Goldfrapp folder. The dump said so in one line — `album_source: "qobuz"` beside
+`has_local_file: true`, two answers that cannot both be right.
+
+v1.8.4 added the title-only fallback to two call sites and the **guard to only one**. `titleOnlySource`
+fires only when the artist is unusable; `wfAlbumKey` fired always. With a real artist, a miss is a real
+answer — "we do not have this album" — and falling to the title claims whatever else happens to share
+the name.
+
+In practice `wfResolveFile`'s track-title check usually caught it a step later and the user saw a plain
+bar, so the visible damage was small. But the answer was already wrong before it got there, and a
+shared track title between the two albums would have put **a different record's waveform under the
+song** — the exact failure this feature has been designed around from the start. It also meant an
+album like Alex G's *Rocket* read as local, which would have blocked the Qobuz path from ever firing
+for it.
+
+- The guard is now on both call sites, with the reason written at each.
+- `test/unit/wfalbumkey.test.js` (8 tests) covers `wfAlbumKey` for the first time — it had none.
+  The Alex G / Goldfrapp collision is pinned in both directions, and removing the guard again fails
+  two of them.
+
+**Class of error:** one rule, two call sites, applied to one. The fallback and its precondition were
+written in separate places, so nothing made the omission visible — not review, not the suite, only a
+live dump. The precondition is now stated at both sites and asserted at both.
+
+- 876 unit / 513 DOM / 83 static tests
+
+## [1.8.4] — 2026-09-02
+
+### Fixed — albums Roon names without an artist got no waveform and no badge
+
+The diagnostic found something bigger than the question it was built for. **Roon sends
+`three_line.line2` as `""` for a real share of a library** — three albums out of five sampled — and
+every identity in this app is keyed `title||artist`. An empty artist makes the key `blind man s zoo||`,
+which matches nothing, so an album sitting in `/music` got no source badge, no local-file lookup and
+**no waveform at all**. Not a streaming limitation; the shipped feature was silently not working for
+part of the library.
+
+A second, narrower failure has the same effect: Roon spells the artist `(həd) p.e.` and `normalize()`
+deletes the schwa rather than folding it, so the key becomes `h d p e` while Qobuz's spelling gives
+`hed p e`. Present artist, still no match.
+
+Both are now caught by a rung underneath the keyed lookup: **match on the album title alone**, and
+only where that cannot mislead.
+
+- `wfAlbumKey` — falls back to the title, then asks the question in **directories, not keys**. The
+  `/music` walk deliberately files one folder under several artist spellings (Blind Man's Zoo is
+  indexed under both `10 000 maniacs` and `10`), so several matching keys is the ordinary case and
+  refusing it would decline a file we can plainly see. Two distinct *folders* is the ambiguous case,
+  and that still gets nothing.
+- `albumSource` — falls back to the title with **the same precedence it already applies**: local wins
+  over a streaming match because the files are what plays, and favourited in both services stays
+  unknowable rather than a coin flip.
+
+**The guard that makes this safe:** the rung only fires when the artist is unusable. Where Roon gives
+a real artist, "we do not have this album" is a genuine answer and must not be second-guessed — a
+looser match there would badge Queen's *Greatest Hits* from ABBA's. A mutation test pins it, and
+removing the guard fails nine existing assertions, including the v1.6.55 wrong-badge suite.
+
+- `lib/albumkeys.js` gains `distinctTargets` / `soleTargetKey` (16 tests total). `locateByTitle` keeps
+  two separate answers on purpose: `source` (which service — the badge question) and `confident`
+  (one match in one place — the fetch question, where picking the wrong one of two costs a waveform
+  of the wrong recording).
+
+### Not fixed here
+`normalize()` deleting non-ASCII letters instead of transliterating them — `ə`, `ø`, `æ`, `ð` and the
+rest become word separators, so `(həd) p.e.` splits into `h d p e` and Røyksopp into `r yksopp`.
+Fixing it changes every stored key in the app and forces a full rescan, so it wants its own version
+and its own migration. The title-only rung covers the symptom meanwhile.
+
+- 868 unit / 513 DOM / 83 static tests
+
+## [1.8.3] — 2026-09-02
+
+### Added — the dump now identifies the album itself, instead of asking
+
+Two samples in, the finding is not the one this diagnostic was built for. Roon does not name the
+playback source anywhere — three `now_playing` payloads, identical six-key shape, nothing
+conditional — so that question is settled. What turned up instead is that **Roon sends no artist at
+all for some albums**: `three_line.line2` is `""` and `one_line.line1` ends in a bare separator, on
+two unrelated records.
+
+Every identity lookup here keys on `title||artist`, so an empty artist makes the key `analogue||`,
+which matches nothing. That album gets no source badge, no local-file lookup and no waveform — and,
+crucially for the streaming work, `albumSource()` cannot say whether it is a Qobuz album, which is
+the first step of the whole plan.
+
+The dump now answers that mechanically rather than by asking:
+
+- `app_thinks.keyed` — the normal title+artist result, as before.
+- `app_thinks.title_only` — the same question asked of the **title alone**, against the local index
+  and both services' favourites: which places hold it, how many keys match, and whether that is
+  `confident` (exactly one match, in exactly one place).
+
+So one dump now says what an album *is* even when Roon supplies no artist, and says whether the
+weaker rung would be safe enough to act on. It is reported, not acted on — nothing changes behaviour.
+
+- `lib/albumkeys.js` (12 tests): title-half matching and `locateByTitle`. Confident means one match
+  in one place; a record you own *and* stream, or two albums sharing a title inside one service, is
+  refused rather than guessed — the same discipline `wfResolveFile` uses, and for the same reason
+  (a waveform of the wrong master looks authoritative and is simply a different recording).
+  Favourited in both services stays unknowable, exactly as `albumSource` already treats it.
+
+### Fixed — the union listing hid the one column it existed for
+
+`unionPaths` counted how many samples carried each field and `formatPaths` never printed it, so
+`sample_fields` rendered as a plain listing. The count *is* the signal — a field present in some
+payloads and not others is what a source marker would look like — and without it the listing could
+not have shown what it was asked to look for. Two tests pin the column, and pin that a plain
+(non-union) listing does not grow a fake count.
+
+### Changed
+- `identityReport` is declared below the four `let`/`const` bindings it reads rather than above them.
+  Runtime-safe either way, but it is the temporal-dead-zone shape this project's rules forbid, and it
+  is the second time in two versions I have introduced it.
+
+**Nothing user-visible changes in this release.** Still a diagnostic build.
+
+- 855 unit / 513 DOM / 83 static tests
+
+## [1.8.2] — 2026-09-02
+
+### Fixed — the zone dump could answer with nothing and look complete
+
+v1.8.1's endpoint picked "a zone that is playing, else the first zone", and the first zone can be
+idle. A stopped zone carries no `now_playing` and no queue at all, so the dump came back full of
+settings and output names — a complete-looking answer to a question it could not address. The whole
+point of the endpoint is the fields that exist only while a track is loaded.
+
+- The zone is now chosen by whether it **has a track loaded**, not merely whether it is playing — a
+  paused zone carries the `now_playing` this exists to inspect; a stopped one carries nothing.
+- When the chosen zone is idle the response **says so first**, names the state, and lists every zone
+  with its state, track and whether it has a `now_playing` — so the next request can name one.
+
+### Added — samples captured as tracks change, so timing stops mattering
+
+The real fix. The interesting fields only exist *while* something plays, which made the diagnostic a
+coordination exercise: load the URL at the right moment, on the right zone. Instead the last eight
+`now_playing` payloads are now recorded as the track changes — bounded, in memory only, a few KB —
+and returned whether or not anything is playing when you ask.
+
+So the question becomes: play a Qobuz album, play a local one, then read `sample_fields` at leisure.
+It is the **union** of every field across the samples, with `seen` counting how many carried each —
+and a field present in some samples and not others is precisely what a source marker would look
+like. Intersecting them would throw the answer away, which is what the mutation test for this pins.
+
+- `unionPaths()` added to `lib/objshape.js` (7 more tests): merges field listings across payloads,
+  keeps the populated sample over an empty one, and reports a field whose type varies rather than
+  picking one.
+
+### Changed
+- `recordNpSample` and its ring are declared beside `zones` at the top of the file rather than 12,000
+  lines below their call site. Safe either way — the subscription callback only runs long after
+  module load — but it is the temporal-dead-zone shape this project's own rules forbid.
+
+**Nothing user-visible changes in this release.** It is still a diagnostic build.
+
+- 841 unit / 513 DOM / 82 static tests
+
+## [1.8.1] — 2026-09-02
+
+### Added — `/api/debug/zone-dump`, to answer one question before building on a guess
+
+Groundwork for waveforms on Qobuz and TIDAL albums. Making that work needs the extension to know
+that Roon is playing a **streamed** track rather than a local one, and today the only thing
+resembling an answer is `albumSource()`, which really answers a different question: *"is this album
+in your favourites?"* Local wins over a streaming match there, and an album favourited in both
+services returns nothing rather than a coin flip — good rules, but an inference either way.
+
+**Roon may simply say.** The extension API is thinly documented and `/api/zone-state` hand-picks the
+fields this app already knows about, so anything the Core sends beyond that set is invisible from
+inside the app. This endpoint returns the zone and the next few queue items **exactly as Roon sends
+them**, so that can be checked rather than assumed.
+
+- `GET /api/debug/zone-dump` — no arguments needed; it defaults to whatever is playing.
+  `?zone=<id>` picks one, `?items=<1-10>` sets how much of the queue to read.
+- Returns `zone_shape` and `queue_shape` (a sorted listing of every field path, with types and short
+  samples — the scannable form), `zone_raw` and `queue_raw` (untouched), and `app_thinks`: what
+  `albumSource` and the local-file lookup currently conclude, so the dump can be read against it.
+- Read-only. The zone comes from the cache the transport subscription already maintains, so asking
+  costs the Core nothing; the queue read is the same one-shot subscribe/read/unsubscribe the
+  waveform prefetch uses.
+
+### Added
+- `lib/objshape.js` — lists every field an object carries as sorted dotted paths. Pure, no I/O,
+  14 tests. Arrays are described once with their length plus the shape of element 0, because a
+  200-item queue described 200 times over is the wall of JSON this exists to replace. Cycles are
+  marked rather than followed, and a non-plain value (a Date, a Buffer) is reported by its
+  constructor and stringified rather than walked into — walking it finds no enumerable keys and
+  loses the value, which is the one thing a field listing must never do.
+
+### Changed
+- `wfPeekNext` now sits on a shared `peekQueueRaw(zoneId, count)` rather than carrying its own copy
+  of the subscribe/read/unsubscribe dance, so the dump and the waveform prefetch read the queue the
+  same way. No behaviour change.
+
+**Nothing user-visible changes in this release.** It is a diagnostic build.
+
+- 834 unit / 513 DOM / 82 static tests
+
 ## [1.8.0] — 2026-09-02
 
 Version jump for the waveform feature. The code is what shipped in v1.7.90 and v1.7.91 — this

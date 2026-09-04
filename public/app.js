@@ -8287,13 +8287,20 @@
 
     const cs = getComputedStyle(document.documentElement);
     const played = cs.getPropertyValue("--accent").trim() || "#4cb7e6";
-    const ahead  = cs.getPropertyValue("--border").trim() || "#666";
+    // The track ahead is drawn in the TEXT colour, not the border colour: it is
+    // the shape of the music and it should be as legible as the title above it.
+    // `--text` is near-white on the dark palettes and near-black on the light
+    // ones, so "white" here means "reads clearly", in both.
+    const ahead  = cs.getPropertyValue("--text").trim() || "#e9eaec";
     const at = Number.isFinite(pos) ? pos : npNow();
     const frac = npLen > 0 ? Math.max(0, Math.min(1, at / npLen)) : 0;
 
-    // One bar per 3 CSS pixels: finer than that and it reads as a solid block
-    // on a phone, coarser and the shape goes.
-    const barW = 2, gap = 1, step = barW + gap;
+    // One bar per 2 CSS pixels. The stored waveform holds 1000 values and a
+    // phone is ~390 CSS px wide, so at the old 3px step only 130 of them were
+    // ever drawn — 8 collapsed into every bar. Halving the step shows 195, and
+    // the data to fill them was already there. Below 2px the bars stop being
+    // separable at all and it reads as a filled shape rather than a waveform.
+    const barW = 1, gap = 1, step = barW + gap;
     const bars = Math.max(1, Math.floor(w / step));
     const mid = h / 2;
     for (let i = 0; i < bars; i++) {
@@ -8308,7 +8315,9 @@
       const barH = Math.max(1, (v / 255) * (h - 2));
       const done = (i / bars) <= frac;
       ctx.fillStyle = done ? played : ahead;
-      ctx.globalAlpha = done ? 0.95 : 0.42;
+      // The played side goes to full strength so the accent still reads as the
+      // position marker against a now-bright track ahead of it.
+      ctx.globalAlpha = done ? 1 : 0.72;
       ctx.fillRect(i * step, mid - barH / 2, barW, barH);
     }
     ctx.globalAlpha = 1;
@@ -8346,9 +8355,14 @@
     drawWave();                          // plain bar while we ask
     const mine = ++npWaveReq;
     try {
+      // The LENGTH goes with it. For a streaming track the server has no file
+      // and matches the track on the service by title AND duration — without
+      // this it cannot tell a song from a remaster of it that shares the title,
+      // so it declines rather than guessing and nothing is ever drawn.
       const q = "track=" + encodeURIComponent(id.track) +
                 "&album=" + encodeURIComponent(id.album) +
-                "&artist=" + encodeURIComponent(id.artist);
+                "&artist=" + encodeURIComponent(id.artist) +
+                "&length=" + encodeURIComponent(npLen || 0);
       const r = await fetch("/api/waveform?" + q);
       if (!r.ok) return;
       const j = await r.json();
@@ -9734,8 +9748,9 @@
     });
   }
 
-  const qobuzUserInput  = document.getElementById("qobuz-username-input");
-  const qobuzPassInput  = document.getElementById("qobuz-password-input");
+  const qobuzPasteRow   = document.getElementById("qobuz-signin-paste");
+  const qobuzPasteUrl   = document.getElementById("qobuz-signin-url");
+  const qobuzPasteGo    = document.getElementById("qobuz-signin-finish");
   const qobuzConnect    = document.getElementById("qobuz-connect");
   const qobuzDisconnect = document.getElementById("qobuz-disconnect");
   const qobuzStatus     = document.getElementById("qobuz-status");
@@ -9755,6 +9770,9 @@
         ? ("Connected" + (j.displayName ? " as " + j.displayName : ""))
         : "Not connected";
       if (qobuzDisconnect) qobuzDisconnect.classList.toggle("hidden", !j.connected);
+      // The sign-in landed by itself; the recovery field has nothing left to do.
+      if (qobuzPasteRow && j.connected) qobuzPasteRow.hidden = true;
+      if (qobuzConnect) qobuzConnect.classList.toggle("hidden", !!j.connected);
       if (qobuzTopbarBtn) qobuzTopbarBtn.classList.toggle("hidden", !j.connected);
       if (qobuzMenuItem)  qobuzMenuItem.classList.toggle("hidden", !j.connected);
       // Deliberately NOT force-closing an open Qobuz browser: hideOverlay() is
@@ -9764,31 +9782,49 @@
     } catch (_) { /* display-only status — stale on failure is fine */ }
   }
 
+  // One sign-in for everything Qobuz. It happens on Qobuz's own page, so no
+  // password is typed into this app, and the token it returns serves the
+  // catalogue, the favourites and the waveforms alike.
   if (qobuzConnect) {
     qobuzConnect.addEventListener("click", async () => {
-      const username = qobuzUserInput ? qobuzUserInput.value.trim() : "";
-      const password = qobuzPassInput ? qobuzPassInput.value : "";
-      if (!username || !password) { showToast("Enter your Qobuz email and password", "error"); return; }
       qobuzConnect.disabled = true;
       try {
-        const r = await fetch("/api/settings/qobuz", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username, password })
-        });
-        const j = await r.json();
-        if (j.ok) {
-          if (qobuzPassInput) qobuzPassInput.value = "";
-          showToast("Qobuz connected" + (j.displayName ? " as " + j.displayName : ""), "ok");
-          loadQobuzStatus();
-        } else {
-          showToast(j.error || "Qobuz connect failed", "error");
+        const r = await fetch("/api/qobuz/oauth/start");
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.url) throw new Error(j.error || "Couldn't start the Qobuz sign-in");
+        // Opened rather than navigated, so this page keeps its state; the tab
+        // that comes back carries the code straight to the server.
+        window.open(j.url, "_blank", "noopener");
+        if (qobuzPasteRow) qobuzPasteRow.hidden = false;
+        if (qobuzStatus) {
+          qobuzStatus.textContent = "Sign in on the Qobuz tab, then come back here. " +
+            "If it does not connect by itself, paste the address you landed on below.";
         }
       } catch (e) {
-        showToast("Failed: " + e.message, "error");
+        showToast(e.message, "error");
       } finally {
         qobuzConnect.disabled = false;
       }
+    });
+  }
+
+  if (qobuzPasteGo && qobuzPasteUrl) {
+    qobuzPasteGo.addEventListener("click", async () => {
+      qobuzPasteGo.disabled = true;
+      try {
+        const r = await fetch("/api/qobuz/oauth/paste", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: qobuzPasteUrl.value })
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || j.error) throw new Error(j.error || "Couldn't finish signing in");
+        qobuzPasteUrl.value = "";
+        if (qobuzPasteRow) qobuzPasteRow.hidden = true;
+        showToast("Qobuz connected", "ok");
+        loadQobuzStatus();
+      } catch (e) {
+        showToast(e.message, "error");
+      } finally { qobuzPasteGo.disabled = false; }
     });
   }
 
@@ -10215,6 +10251,7 @@
       const j = await r.json();
       waveEnabledEl.checked = !!j.enabled;
       window.__waveformOn = !!j.enabled;
+      showQobuzSecretState(j);
       if (waveEnabledNote) {
         waveEnabledNote.textContent = j.enabled
           ? "On. Local files only \u2014 Roon streams Qobuz and TIDAL to the endpoint, " +
@@ -10223,6 +10260,30 @@
       }
     } catch (e) { /* keep the last shown value */ }
   }
+  // ----- Qobuz app secret (streaming waveforms) -----
+  // Blank is the default and the off switch: with no secret the server never
+  // asks Qobuz for audio and streaming tracks keep the plain bar.
+  const qSecStatus = document.getElementById("qobuz-secret-status");
+
+  // No controls of its own any more: one Qobuz sign-in under Streaming accounts
+  // covers browsing, favourites and waveforms alike, so this only reports what
+  // that sign-in means for waveforms.
+  function showQobuzSecretState(j) {
+    if (!qSecStatus) return;
+    if (j && j.qobuz_connected) {
+      qSecStatus.textContent = "Using your Qobuz sign-in. Qobuz tracks will show a " +
+        "waveform once analysed.";
+      return;
+    }
+    if (j && j.qobuz_secret_set) {
+      qSecStatus.textContent = "Using saved credentials from an earlier version. " +
+        "Reconnect Qobuz under Streaming accounts to replace them.";
+      return;
+    }
+    qSecStatus.textContent = "Connect Qobuz under Streaming accounts to enable this. " +
+      "Qobuz tracks keep the plain bar until then.";
+  }
+
   if (waveEnabledEl) {
     waveEnabledEl.addEventListener("change", async () => {
       const on = waveEnabledEl.checked;

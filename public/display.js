@@ -217,9 +217,11 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    // A wall display is watched from across a room, so the bars are wider than
-    // the phone's and the played/unplayed contrast is harder.
-    const barW = 3, gap = 2, step = barW + gap;
+    // A wall display is watched from across a room, so the bars stay wider than
+    // the phone's — thin bars mush together at distance. The GAP tightens
+    // instead: 3+1 draws 480 of the stored 1000 values on a 1920px screen where
+    // 3+2 drew 384, without making a single bar harder to see.
+    const barW = 3, gap = 1, step = barW + gap;
     const bars = Math.max(1, Math.floor(w / step));
     const mid = h / 2;
     const f = Math.max(0, Math.min(1, frac || 0));
@@ -230,7 +232,9 @@
       for (let j = a; j < b && j < wavePeaks.length; j++) if (wavePeaks[j] > v) v = wavePeaks[j];
       const barH = Math.max(1, (v / 255) * (h - 2));
       const done = (i / bars) <= f;
-      ctx.fillStyle = done ? "#ffffff" : "rgba(255,255,255,.34)";
+      // The track ahead was barely there at .34 — it is the shape of the music,
+      // not a background rule, and it should read as such from across the room.
+      ctx.fillStyle = done ? "#ffffff" : "rgba(255,255,255,.70)";
       ctx.fillRect(i * step, mid - barH / 2, barW, barH);
     }
   }
@@ -255,9 +259,14 @@
     drawWave(0);
     const mine = ++waveReq;
     try {
+      // The LENGTH goes with it. For a streaming track the server has no file
+      // and matches the track on the service by title AND duration — without
+      // this it cannot tell a song from a remaster of it that shares the title,
+      // so it declines rather than guessing and nothing is ever drawn.
       const q = "track=" + encodeURIComponent(id.track) +
                 "&album=" + encodeURIComponent(id.album) +
-                "&artist=" + encodeURIComponent(id.artist);
+                "&artist=" + encodeURIComponent(id.artist) +
+                "&length=" + encodeURIComponent((np && np.length) || 0);
       const j = await jget("/api/waveform?" + q);
       // The display polls continuously and tracks change under it. A waveform
       // that arrives after the song has moved on is the wrong shape for what is
