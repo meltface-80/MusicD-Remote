@@ -1824,9 +1824,42 @@ function savePersistedSettings(patch) {
 }
 
 // Load persisted API keys (set via web UI settings).
+//
+// The environment is a FIRST-RUN SEED, nothing more. RRA_DISCOGS_KEY and
+// RRA_FANART_KEY let the install command carry a key so a fresh container has
+// label logos and artwork from its very first scan, before anyone opens
+// Settings. A key saved in Settings always wins — that is where a user expects
+// to change one — and an env-seeded key is deliberately NOT written to
+// settings.json: unsetting the variable then removes the key, instead of
+// leaving a ghost behind that nothing in the UI can explain.
+//
+// On the names: the RRA_ prefix is not decoration. Pre-flight step 2 greps this
+// file for the two bare upper-snake key names, to catch the UPPER_SNAKE drift
+// that once broke the auth headers, and that grep matches substrings — so an
+// env var carrying either of those names inside it would trip the check and
+// fail the build. (A pre-flight step that cries wolf gets ignored, which is how
+// a real one gets waved through, so this comment does not spell them out
+// either.) RRA_DISCOGS_KEY and RRA_FANART_KEY are clear of it and match the
+// RRA_DEBUG / RRA_GITHUB_TOKEN convention already in use.
 const _persisted = loadPersistedSettings();
-let discogsToken = _persisted.discogsToken || "";
-let fanartKey    = _persisted.fanartKey    || "";
+/**
+ * @returns {{value: string, source: "settings"|"env"|""}} where the key came
+ * from, so /api/settings/* can tell the user which one they are looking at.
+ */
+function seedApiKey(saved, envName) {
+  const s = String(saved || "").trim();
+  if (s) return { value: s, source: "settings" };
+  const e = String(process.env[envName] || "").trim();
+  return e ? { value: e, source: "env" } : { value: "", source: "" };
+}
+const _discogsSeed = seedApiKey(_persisted.discogsToken, "RRA_DISCOGS_KEY");
+const _fanartSeed  = seedApiKey(_persisted.fanartKey,    "RRA_FANART_KEY");
+let discogsToken   = _discogsSeed.value;
+let discogsSource  = _discogsSeed.source;
+let fanartKey      = _fanartSeed.value;
+let fanartSource   = _fanartSeed.source;
+if (discogsSource === "env") console.log("[settings] discogs token seeded from RRA_DISCOGS_KEY (" + discogsToken.length + " chars)");
+if (fanartSource  === "env") console.log("[settings] fanart key seeded from RRA_FANART_KEY (" + fanartKey.length + " chars)");
 // When > 0, the file scan takes the album's label from the folder at this depth
 // under the music root instead of the per-file label tag — for libraries
 // organised in label folders (e.g. /music/Jazz/Blue Note Records/Album → depth 2).
@@ -10492,13 +10525,15 @@ app.get("/api/music-mount", (req, res) => {
 app.get("/api/settings/discogs-token", (req, res) => {
   res.json({
     set: !!discogsToken,
-    masked: discogsToken ? "••••••••" + discogsToken.slice(-4) : ""
+    masked: discogsToken ? "••••••••" + discogsToken.slice(-4) : "",
+    source: discogsSource   // "env" means the install command supplied it
   });
 });
 app.post("/api/settings/discogs-token", (req, res) => {
   const token = ((req.body && req.body.token) || "").trim();
   if (!token) return res.status(400).json({ ok: false, error: "token is empty" });
   discogsToken = token;
+  discogsSource = "settings";   // a saved key outranks the env seed from here on
   const saved = savePersistedSettings({ discogsToken: token });
   console.log("[settings] discogs token set (" + token.length + " chars), persisted=" + saved);
   res.json({ ok: true, saved });
@@ -10508,13 +10543,15 @@ app.post("/api/settings/discogs-token", (req, res) => {
 app.get("/api/settings/fanart-key", (req, res) => {
   res.json({
     set: !!fanartKey,
-    masked: fanartKey ? "••••••••" + fanartKey.slice(-4) : ""
+    masked: fanartKey ? "••••••••" + fanartKey.slice(-4) : "",
+    source: fanartSource    // "env" means the install command supplied it
   });
 });
 app.post("/api/settings/fanart-key", (req, res) => {
   const key = ((req.body && req.body.key) || "").trim();
   if (!key) return res.status(400).json({ ok: false, error: "key is empty" });
   fanartKey = key;
+  fanartSource = "settings";    // a saved key outranks the env seed from here on
   const saved = savePersistedSettings({ fanartKey: key });
   // A key saved AFTER the first scans used to be dead on arrival: every label
   // already carried a cached "no logo" verdict (recorded while the key was

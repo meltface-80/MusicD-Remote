@@ -9596,7 +9596,13 @@
       const r = await fetch("/api/settings/discogs-token");
       const j = await r.json();
       if (discogsTokenStatus) {
-        discogsTokenStatus.textContent = j.set ? ("Current: " + j.masked) : "Not set";
+        // Naming where an env-seeded key came from is the whole point of
+        // reporting the source: without it a key set by the install command
+        // looks identical to a saved one, and editing settings.json to change
+        // it appears to do nothing.
+        discogsTokenStatus.textContent = j.set
+          ? ("Current: " + j.masked + (j.source === "env" ? " — from the install command (RRA_DISCOGS_KEY). Saving here overrides it." : ""))
+          : "Not set";
       }
     } catch (_) { /* display-only status — if the fetch fails, silence is fine; status just stays stale */ }
   }
@@ -9637,7 +9643,10 @@
       const r = await fetch("/api/settings/fanart-key");
       const j = await r.json();
       if (fanartKeyStatus) {
-        fanartKeyStatus.textContent = j.set ? ("Current: " + j.masked) : "Not set";
+        // Same reasoning as the Discogs status above: say where it came from.
+        fanartKeyStatus.textContent = j.set
+          ? ("Current: " + j.masked + (j.source === "env" ? " — from the install command (RRA_FANART_KEY). Saving here overrides it." : ""))
+          : "Not set";
       }
     } catch (_) { /* display-only status — if the fetch fails, silence is fine; status just stays stale */ }
   }

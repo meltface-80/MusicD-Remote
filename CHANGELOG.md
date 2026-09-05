@@ -2,6 +2,51 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.23] — 2026-09-05
+
+### Added
+- **The install builder can carry the Discogs and FanArt.tv keys.** Both are
+  optional fields on the configurator now, and both are seeded through new
+  `RRA_DISCOGS_KEY` / `RRA_FANART_KEY` variables, so a fresh container has label
+  logos and artwork from its *first* scan rather than from whenever someone
+  remembers to open Settings.
+- The keys are emitted into a **`.env` file** (`--env-file .env` for `docker
+  run`, `env_file:` for compose) rather than inline with `-e`. A secret on the
+  command line ends up in shell history and in `docker inspect`; a file with
+  `600` does not. They are also deliberately kept out of the page's address bar,
+  which every other field syncs into — the same class of mistake as putting a
+  secret in a query string that a request logger then writes to disk.
+- **Multiple music folders**, and a **time zone**, in the same builder (see the
+  docs commit that preceded this one). `MUSIC_DIR` is one root scanned
+  recursively, so extra folders mount as subdirectories of `/music`; a mount at
+  `/music2` would never be looked at.
+
+### Changed
+- Settings now says where a key came from: an env-seeded key reads *"from the
+  install command (RRA_DISCOGS_KEY). Saving here overrides it."* Without that,
+  a key set at install is indistinguishable from a saved one, and editing
+  `settings.json` to change it appears to do nothing.
+- Precedence, pinned by test: a **key saved in Settings always wins**; the
+  environment only seeds when nothing is saved; and an env-seeded key is *not*
+  persisted, so unsetting the variable removes the key instead of leaving a
+  ghost the UI cannot explain. An empty persisted string is not a choice — it
+  falls through to the environment.
+
+### Notes
+- **Qobuz and TIDAL cannot be configured this way, and it is not a policy
+  choice — there is no password to carry.** Qobuz signs in on Qobuz's own page
+  (the extension never sees the password) and TIDAL uses its OAuth device flow;
+  both mint a token only after the container is running, and both rotate. The
+  configurator has nothing it could collect.
+- Class of error guarded against: a secret travelling through a channel that
+  gets recorded. Three of them here — the address bar, shell history, and
+  `docker inspect` — plus the heredoc itself, which is why a pasted key is
+  filtered to the character set these services actually issue and the page says
+  so out loud when it removes anything, rather than silently handing back a
+  shortened key that will never work.
+- The `RRA_` prefix is load-bearing: pre-flight step 2 fails the build on either
+  bare upper-snake key name anywhere in `index.js`, and it matches substrings.
+
 ## [1.8.22] — 2026-09-03
 
 ### Changed — the decode moved from 8 kHz to 16 kHz
