@@ -289,6 +289,8 @@ docker run -d \
 
 Set `-e TZ=` to your own zone (`Europe/London`, `America/New_York`, …). A container runs on UTC otherwise, which changes which midnight **Album of the day** turns over on and the hour **Smart Picks** switches.
 
+The optional **Discogs** and **FanArt.tv** keys can be supplied at install too, via `RRA_DISCOGS_KEY` and `RRA_FANART_KEY` — put them in a `.env` file next to the command and add `--env-file .env`, rather than inline with `-e`, which would leave them in your shell history and in `docker inspect`. They are first-run seeds only: a key saved in **Settings** always wins, and the [install configurator](https://meltface-80.github.io/MusicD-Remote/#install) writes the `.env` block for you. Qobuz and TIDAL cannot be set this way — both sign in through the service's own page after the container is running, so there is no password for the command to carry.
+
 **More than one music folder?** The scan reads everything under `/music` recursively, so mount each one as its own subdirectory rather than adding a second root — `-v /mnt/nas/Albums:/music/Albums:ro -v /mnt/usb/Vinyl:/music/Vinyl:ro`. A mount at `/music2` would never be looked at. The [install configurator](https://meltface-80.github.io/MusicD-Remote/#install) builds the whole command for you. Note that **Label from folder depth** in Settings counts from `/music`, so with several folders every depth goes up by one.
 
 You should see the extension appear in **Roon → Settings → Extensions** under **MusicD**. Click **Enable**, then browse to `http://<your-server-ip>:3399`.
@@ -462,6 +464,8 @@ Please let me know if you run into any trouble.
 | `RRA_DEBUG`  | on in Docker | Verbose logging (timestamps, Roon API call traces with durations, API request traces). **On by default inside Docker** — set to `0` for quiet logs, or `1` to force it on outside Docker |
 | `MUSIC_DIR`  | `/music`  | Path where your music library is mounted inside the container. The scan reads everything **under** it, so several libraries can be mounted as subdirectories — `/music/Albums`, `/music/Vinyl` — rather than as a second root |
 | `TZ`         | `Etc/UTC` | The container's local time. Sets which midnight **Album of the day** turns over on and the hour **Smart Picks** switches. The 6- and 12-month "not played" windows count elapsed time, so they read the same in any zone |
+| `RRA_DISCOGS_KEY` | *(unset)* | Seeds the Discogs token on a fresh data volume, so label logos work from the very first scan instead of waiting for a visit to Settings. A token saved in **Settings** always wins over it, and an env-seeded key is **not** written to disk — unset the variable and the key is gone |
+| `RRA_FANART_KEY` | *(unset)* | Seeds the FanArt.tv key the same way |
 | `ROON_CORE_IP` | *(discover)* | Roon Core address, for setups where multicast discovery can't reach it (macOS / Docker Desktop). When set, the extension connects to the Core directly instead of discovering it |
 | `ROON_CORE_PORT` | `9330` | Roon Core API port used with `ROON_CORE_IP` — only change it if your Core runs its API on a non-standard port |
 

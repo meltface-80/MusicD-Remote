@@ -154,6 +154,8 @@
   .fields { display: grid; gap: 14px; }
   .field label { display: block; font-size: 12.5px; font-weight: 600; color: var(--muted); margin-bottom: 5px; letter-spacing: .02em; }
   .field label .req { color: var(--copper-hi); }
+  .field label .opt { font-weight: 500; text-transform: none; letter-spacing: 0; opacity: .65; }
+  .hint .warn { color: var(--copper-hi); font-weight: 600; }
   /* .mrow is here too: the extra music-folder rows are built in script, so they
      sit outside any .field and would otherwise render as bare browser inputs
      next to the styled one directly above them. */
@@ -451,6 +453,26 @@
               <b>12 months</b> windows count elapsed time, not calendar days, so they read the
               same in any zone. Pre-filled from this browser.</div>
           </div>
+
+          <!-- Optional API keys. These are SECRETS, so two rules apply below:
+               they never reach syncUrl() (the address bar is shared, bookmarked
+               and logged), and they are emitted into a .env file rather than
+               inline on the command line, which would put them in shell history
+               and in `docker inspect`. Both are first-run seeds — a key saved
+               later in Settings wins. -->
+          <div class="field">
+            <label for="discogskey">Discogs token <span class="opt">optional</span></label>
+            <input type="text" id="discogskey" value="" placeholder="Paste your Discogs personal access token" spellcheck="false" autocomplete="off">
+          </div>
+
+          <div class="field">
+            <label for="fanartkey">FanArt.tv key <span class="opt">optional</span></label>
+            <input type="text" id="fanartkey" value="" placeholder="Paste your FanArt.tv personal API key" spellcheck="false" autocomplete="off">
+            <div class="hint" id="keys-hint">Both are optional and both improve label logos and
+              artwork &mdash; see <a href="#apikeys">API keys</a> below for where to get them. You can
+              skip them here and paste them into <b>Settings</b> after first launch instead; a key
+              saved there always wins over one set at install.</div>
+          </div>
         </div>
 
         <div class="out">
@@ -544,6 +566,8 @@ docker run -d \
           <tr><td>ROON_CORE_PORT</td><td><code>9330</code></td><td>Roon Core API port used with ROON_CORE_IP — only change it if your Core runs its API on a non-standard port</td></tr>
           <tr><td>MUSIC_DIR</td><td><code>/music</code></td><td>Where the optional read-only music mount lives inside the container — the scan reads everything under it, so several folders can be mounted as subdirectories (only used for file-tag label scanning)</td></tr>
           <tr><td>TZ</td><td><code>Etc/UTC</code></td><td>The container's local time. Affects <b>Album of the day</b> (which midnight it turns over on) and the hour <b>Smart Picks</b> switches. The 6- and 12-month "not played" windows are counted in absolute time and are unaffected</td></tr>
+          <tr><td>RRA_DISCOGS_KEY</td><td><i>(unset)</i></td><td>Seeds the Discogs token on a fresh data volume, so label logos work from the first scan. A token saved in <b>Settings</b> wins over it, and an env-seeded one is not written to disk — unset the variable and the key is gone</td></tr>
+          <tr><td>RRA_FANART_KEY</td><td><i>(unset)</i></td><td>Seeds the FanArt.tv key the same way</td></tr>
           <tr><td>RRA_DEBUG</td><td><i>on in Docker</i></td><td>Verbose logging (timestamps, Roon API call traces with durations). On by default inside Docker — <code>0</code> for quiet logs</td></tr>
         </tbody>
       </table>
@@ -593,6 +617,9 @@ docker run -d \
     addMount:   document.getElementById("add-mount"),
     mountHint:  document.getElementById("mount-hint"),
     tzone:      document.getElementById("tzone"),
+    discogskey: document.getElementById("discogskey"),
+    fanartkey:  document.getElementById("fanartkey"),
+    keysHint:   document.getElementById("keys-hint"),
     cmd:        document.getElementById("cmd"),
     copy:       document.getElementById("copy"),
     tabRun:     document.getElementById("tab-run"),
@@ -671,6 +698,36 @@ docker run -d \
     return v === "" ? "Etc/UTC" : v;
   }
 
+  // The optional API keys, as { name, value } pairs in .env order. Empty fields
+  // are dropped, so a user who supplies neither gets no .env block at all.
+  //
+  // Sanitised to the character sets the two services actually issue
+  // (alphanumerics, and the - _ . ~ that turn up in tokens). That is not
+  // cosmetic: the value is written into a shell heredoc and a .env file, and a
+  // newline or a quote in it would end the block early and leave the rest of a
+  // pasted secret sitting in the terminal as a command.
+  var KEY_OK = /[^A-Za-z0-9._~-]/g;
+  function keyVals() {
+    var out = [];
+    [["RRA_DISCOGS_KEY", els.discogskey], ["RRA_FANART_KEY", els.fanartkey]].forEach(function (pair) {
+      var raw = pair[1].value.trim();
+      var val = raw.replace(KEY_OK, "");
+      if (val) out.push({ name: pair[0], value: val, dropped: val !== raw });
+    });
+    return out;
+  }
+
+  // The .env block, or "" when there is nothing to write. Emitted as its own
+  // paste step ahead of the run command: a key on the command line ends up in
+  // shell history and in `docker inspect`, where a file with 600 does not.
+  function envBlock() {
+    var keys = keyVals();
+    if (!keys.length) return "";
+    return "cat > .env <<'EOF'\n" +
+           keys.map(function (k) { return k.name + "=" + k.value; }).join("\n") +
+           "\nEOF\nchmod 600 .env";
+  }
+
   function renderMountHint() {
     var pairs = mountPairs();
     // Nothing to explain with no mount, or with the single historic /music.
@@ -681,6 +738,21 @@ docker run -d \
       "Settings &rarr; <b>Label from folder depth</b> counts from <code>/music</code>, so with " +
       "several folders every depth goes up by one — level 1 is the name above, not your own " +
       "top folder.";
+  }
+
+  // A key that had characters removed is a key that will not work, so say so
+  // rather than handing back a quietly shortened one. Usually a stray space or
+  // a smart quote picked up from wherever the token was copied.
+  var KEYS_HINT_BASE = "";
+  function renderKeysHint() {
+    if (!KEYS_HINT_BASE) KEYS_HINT_BASE = els.keysHint.innerHTML;
+    var bad = keyVals().filter(function (k) { return k.dropped; })
+                       .map(function (k) { return k.name; });
+    els.keysHint.innerHTML = KEYS_HINT_BASE + (bad.length
+      ? "<br><b class=\"warn\">Characters were removed from " + bad.join(" and ") +
+        ".</b> These keys are letters, digits and <code>. _ ~ -</code> only — check for a stray " +
+        "space or a curly quote from wherever you copied it."
+      : "");
   }
 
   function addMountRow(value) {
@@ -721,6 +793,14 @@ docker run -d \
       out.push({ t: "sudo mkdir -p /opt/musicd-remote\ncd /opt/musicd-remote\nsudo wget " + url +
                     "\nsudo tar -xzf " + tarball + "\ndocker build -t " + IMAGE + ":" + v + " .", c: "" });
     }
+    var env = envBlock();
+    if (env) {
+      out.push({ t: "", c: "" });
+      out.push({ t: "# API keys, in a file rather than on the command line — a key passed with -e\n" +
+                    "# lands in your shell history and in `docker inspect`", c: "c" });
+      out.push({ t: env, c: "" });
+    }
+
     out.push({ t: "", c: "" });
     out.push({ t: "# Run it", c: "c" });
 
@@ -739,6 +819,7 @@ docker run -d \
     // the bookworm-slim base this image is built on. Grouped with the other -e
     // flags rather than after the volumes.
     cmd.push("  -e TZ=" + tzVal() + " \\");
+    if (env) cmd.push("  --env-file .env \\");
     cmd.push("  -v musicd-remote-data:/app/data \\");
     if (els.mount.checked) {
       mountPairs().forEach(function (m) {
@@ -754,6 +835,14 @@ docker run -d \
   function buildCompose() {
     var v = state.version;
     var mac = state.mode === "macos";
+    var env = envBlock();
+    var out = [];
+    if (env) {
+      out.push({ t: "# API keys, in a file rather than in the compose document — keeps them out\n" +
+                    "# of the file you might paste into an issue or commit to a repo", c: "c" });
+      out.push({ t: env, c: "" });
+      out.push({ t: "", c: "" });
+    }
     var y = [];
     // Emit a paste-safe command: bare YAML pasted into a shell makes bash try
     // to run every line ("services:: command not found"), so wrap the file
@@ -778,6 +867,10 @@ docker run -d \
     y.push("    environment:");
     y.push("      TZ: \"" + tzVal() + "\"   # local time: Album of the day, Smart Picks hour");
     if (mac) y.push("      ROON_CORE_IP: \"" + ipVal() + "\"");
+    // env_file, not the bare .env file: compose reads .env for SUBSTITUTION
+    // inside this document, which is a different thing from passing it to the
+    // container. Naming it here is what actually delivers the keys.
+    if (env) y.push("    env_file: .env   # API keys — see the block above");
     y.push("    volumes:");
     y.push("      - musicd-remote-data:/app/data");
     if (els.mount.checked) {
@@ -792,7 +885,8 @@ docker run -d \
     y.push("    external: false   # keep this volume — it holds your Roon pairing + history");
     y.push("EOF");
     y.push("docker compose up -d");
-    return [{ t: y.join("\n"), c: "" }];
+    out.push({ t: y.join("\n"), c: "" });
+    return out;
   }
 
   // very light highlighter for the pre block: comments, then flags/env keys
@@ -812,6 +906,7 @@ docker run -d \
     }).join("\n");
 
     renderMountHint();
+    renderKeysHint();
     els.modeNote.innerHTML = NOTES[state.mode];
 
     els.afterNote.innerHTML = state.mode === "macos"
@@ -878,7 +973,10 @@ docker run -d \
   });
 
   els.addMount.addEventListener("click", function () { addMountRow(""); render(); });
-  ["coreip", "appport", "musicpath", "tzone"].forEach(function (id) {
+  // discogskey/fanartkey are wired for rendering but are deliberately absent
+  // from syncUrl() — the address bar is shared, bookmarked, and logged by
+  // anything sitting in front of this page, and a secret does not belong in it.
+  ["coreip", "appport", "musicpath", "tzone", "discogskey", "fanartkey"].forEach(function (id) {
     els[id].addEventListener("input", render);
   });
 
