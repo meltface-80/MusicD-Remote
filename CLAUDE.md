@@ -230,8 +230,11 @@ Do not commit with known CONFIRMED or PLAUSIBLE bugs. Fix them all in the same v
     create them if the workflow didn't. Do NOT touch README / docs-site versions yet.
   - **"marked/moved to latest"** = the user is happy and has promoted the release. NOW run
     the full promotion pass: every README version reference, the docs-site fallback
-    version/examples, and this file's current-stable note + version-history table, as a
-    docs-only commit on the freshly-restarted branch.
+    version/examples, **`docker-compose.yml`'s pinned tag and image**, and this file's
+    current-stable note + version-history table, as a docs-only commit on the freshly-restarted
+    branch. `docker-compose.yml` is on that list because it was NOT, and sat at v1.7.73 through
+    twenty releases: nothing generates it (the docs-site builder writes its own, per user), so
+    it only ever changes when someone remembers. It is a version reference like the README's.
   - After every merge, VERIFY the release actually appeared (`list_releases` / `git
     ls-remote --tags`). The workflow failing silently is how v1.6.52-v1.6.55 shipped with
     no tag and no release at all.
@@ -246,7 +249,10 @@ Do not commit with known CONFIRMED or PLAUSIBLE bugs. Fix them all in the same v
 ## Every build — required steps (in order)
 
 **Docs-only exception:** a change that touches only `docs/` (the GitHub Pages site) and/or
-repo documentation (`README.md`, `CHANGELOG.md`, `CLAUDE.md`) is NOT a build. It skips the
+repo documentation (`README.md`, `CHANGELOG.md`, `CLAUDE.md`, `docker-compose.yml`) is NOT a
+build. `docker-compose.yml` counts because it can only ever pin an ALREADY-PUBLISHED tag —
+bumping it inside the release it names is impossible, so it is a post-release edit by nature,
+exactly like the README's install commands. It skips the
 version bump, the CHANGELOG entry, the tarball rebuild, and the docker install command —
 `docs/` is excluded from the tarball and is never part of the running extension. Pre-flight
 steps 1–2 still run (they are cheap and index.js must stay untouched), and the change still

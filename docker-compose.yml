@@ -1,14 +1,31 @@
 # Run with:  docker compose up -d
 # Builds straight from the GitHub release tag — no container registry and no
 # manual download step needed.
+#
+# THE MINIMAL PIN, NOT THE FULL RECIPE. The install builder on the docs site
+# (https://meltface-80.github.io/MusicD-Remote/) writes a docker-compose.yml of
+# its own, with the three things this file cannot carry because they are
+# specific to your machine:
+#
+#   TZ            or the container runs on UTC, and Album of the day and Smart
+#                 Picks change over at the wrong hour
+#   env_file      the Discogs / FanArt.tv keys, kept in a .env rather than in
+#                 this document (v1.8.23)
+#   a music mount your library path, read-only — without it there is no label
+#                 scanning and no waveform for local files
+#
+# Use the builder if you want any of those. This file is here so `docker compose
+# up -d` works from a clone with nothing to fill in.
 services:
   musicd-remote:
-    build: https://github.com/meltface-80/MusicD-Remote.git#v1.7.73
-    image: musicd-remote:1.7.73
+    build: https://github.com/meltface-80/MusicD-Remote.git#v1.8.24
+    image: musicd-remote:1.8.24
     container_name: musicd-remote
     restart: unless-stopped
     network_mode: host
     volumes:
+      # KEEP THIS VOLUME — it holds the Roon pairing and the play history. A
+      # renamed one silently starts empty: re-pairing, and the history gone.
       - musicd-remote-data:/app/data
 
 volumes:
