@@ -141,6 +141,28 @@ If step 3 cannot run (Roon not available), run steps 1 and 2 and explicitly note
   screenshot-time pixel scans. Never one of each. (The real 2px defect in the same area was found
   the correct way, and the pixel test that pins it now scans for the waveform's bars AND the thumb
   in the one image.)
+- **Ask what a statistic SATURATES at, and reduce with the same one at every scale.** The
+  waveform drew a brick for five versions because each bar was the loudest SAMPLE in its slice,
+  and a limiter puts something on the ceiling inside nearly any window you can name — so the
+  measurement had no range left to show and every bar came out the same height. **v1.8.24**: a
+  bar is an RMS level now, and the reduction is RMS too, because the RMS of RMS values IS the
+  RMS of the whole span — a bar folded twice equals one computed once, so the picture does not
+  depend on how many bars fit the screen. The rule the first version broke was never "prefer
+  peaks", it was DO NOT AVERAGE PEAKS; measuring a level and then keeping the LOUDEST one is
+  the same mistake one layer down and draws the same brick. Two corollaries learned the same
+  day: **a downmix is an ADDITION** (`-ac 1` averages the channels rather than taking the
+  louder, so an out-of-phase passage decodes to silence — RMS 0 against the pair's 2896), and
+  **a short decode is not a short track** (a waveform is a map from time to a picture, so
+  two thirds of a file drawn across the whole bar puts the playhead over the wrong music, by a
+  margin that grows as it plays, and nothing about it looks wrong).
+- **Two mappings from time to x will disagree, and the disagreement is zero in the middle.** A
+  range input cannot let its thumb hang off either end, so its thumb travels `thumbW/2` to
+  `w - thumbW/2` while anything drawn under it is laid from 0 to `w`. The error is
+  `thumbW * (0.5 - frac)`: half a thumb ahead of the music at the start, level halfway,
+  half a thumb behind at the end. **A test written at the midpoint passes against both
+  mappings and says nothing** — which is exactly why v1.8.0's shipped for four versions.
+  Anything drawn to line up with a native control is inset to that control's travel, and the
+  width it travels in is ONE number both of them read (`--seek-thumb`).
 - **A canvas is transparent between what it draws.** A fixture whose waveform is quiet where the
   assertion looks will pass with the drawing wrong, because the page shows through the gaps. Pixel
   tests over a canvas need a full-scale fixture at the point being checked, and a paused zone, or
@@ -287,7 +309,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
 - The README contains version references (install commands, tarball URLs, `docker build` tags).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.8.22** (until the user says otherwise).
+- Current stable version in the README: **v1.8.24** (until the user says otherwise).
 - The extension is being renamed **MusicD Remote** ("for Roon" is descriptive, not part of the name). The Roon `extension_id` must NEVER change — it would force every user to re-authorize.
 
 ---
@@ -460,4 +482,7 @@ docker run -d \
 | v1.8.19 | superseded | The way out: sign in on Qobuz's own page. The redirect flow mints a token under the app whose secret ships, so the three parts agree by construction. Redirect address taken from the request, so it works unchanged in Docker and from a phone |
 | v1.8.20 | superseded | One Qobuz sign-in for everything — the browser token reads the catalogue AND signs, so the password login went. Plus TIDAL waveforms, which needed no new credentials at all: the device sign-in already present carries a Bearer token, refreshes itself, and TIDAL signs nothing |
 | v1.8.21 | superseded | The track ahead drawn in the text colour rather than a hairline, and 195 bars where 130 were drawn from 1000 stored values |
-| v1.8.22 | **Latest (stable)** | The decode moved 8 kHz → 16 kHz. 8 kHz made ffmpeg lowpass at 4 kHz first, so cymbals and snare cracks were filtered away before they could register — a systematic under-read of 16/255 mean, up to 52/255, measured against the bars actually drawn. Close to free: 44.1 kHz (5× the PCM) measured the same wall clock. A rate change now clears every stored waveform, because a library holding both would draw two kinds of picture with nothing to say which is which. 975 unit / 513 DOM / 87 static — README points here |
+| v1.8.22 | stable (superseded) | The decode moved 8 kHz → 16 kHz. 8 kHz made ffmpeg lowpass at 4 kHz first, so cymbals and snare cracks were filtered away before they could register — a systematic under-read of 16/255 mean, up to 52/255, measured against the bars actually drawn. Close to free: 44.1 kHz (5× the PCM) measured the same wall clock. A rate change now clears every stored waveform, because a library holding both would draw two kinds of picture with nothing to say which is which. 975 unit / 513 DOM / 87 static — README points here |
+| v1.8.23 | stable (superseded) | The install builder carries the Discogs and FanArt.tv keys (`RRA_DISCOGS_KEY` / `RRA_FANART_KEY`, emitted into a `.env` rather than inline with `-e`); multiple music folders and a time zone in the same builder. Never promoted — the README went straight from v1.8.22 to v1.8.24 |
+| v1.8.24 | **Latest (stable)** | The waveform made true. A bar was the loudest SAMPLE in its slice, and a limiter puts something on the ceiling in nearly any window — so every bar was the same height and the control said almost nothing. A bar is an RMS level now, folded by RMS (which IS the RMS of the whole span, so a bar built from twenty stored values equals one analysed straight into that many; measuring a level and keeping the loudest is the same brick one layer down). `-ac 1` was AVERAGING the channels, not taking the louder, so an out-of-phase passage came back RMS 0 against the pair's 2896 — both channels now, at 44.1 kHz rather than 16, which is free because nearly every file already is 44.1. A truncated decode is refused rather than stretched across the whole bar with the playhead over the wrong music. And the shape is inset to the thumb's TRAVEL: a range input cannot let its thumb hang off either end, so bars laid across the whole canvas ran up to 7px out — ahead at the start, behind at the end, **zero in the middle**, which is why it survived being looked at. 4000 stored values, one bar per device pixel, heights unrounded, canvases 34→64 and 40→72. The whole analysis (statistic:rate:channels) is stamped beside the table, so two generations can never mix. 996 unit / 526 DOM / 87 static — README points here |
+
