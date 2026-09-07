@@ -332,7 +332,7 @@
      <a href="https://roon.app">Roon</a> — random-album browsing, instant whole-library
      search, rich label &amp; artist pages, and seamless playback with Roon Server at the heart.</p>
   <div class="badges">
-    <span class="badge" id="ver-badge">v1.8.22</span>
+    <span class="badge" id="ver-badge">v1.8.24</span>
     <span class="badge plain">Docker</span>
     <span class="badge plain">MIT licence</span>
     <span class="badge plain">Pairs with your Roon Core over the network</span>
@@ -349,7 +349,11 @@
       <div class="card is-new"><h3><span class="em">〰️</span>Waveform<span class="new">New</span></h3>
         <p>The seek bar on Now playing and the wall display's progress strip draw the shape of the
            track you're listening to — where the quiet intro ends, where the loud middle is. Off by
-           default; switch it on in Settings&nbsp;→ Playback and it stays on. Each track is analysed
+           default; switch it on in Settings&nbsp;→ Playback and it stays on. Every bar is the
+           <b>level</b> of its slice of the track, measured from both channels at full rate: a bar
+           that is the loudest <i>moment</i> in its slice says nothing about a modern master, because
+           something touches the ceiling almost everywhere in one. The shape sits under the playhead
+           at every point in the track, not only halfway through. Each track is analysed
            once and stored, and the next one in the queue is prepared while the current one plays, so
            it's there the moment the track changes. Works for local files and for Qobuz and TIDAL
            tracks in your favourites — Roon streams those straight to your endpoint and never to an
@@ -485,9 +489,9 @@
             <button class="copy-btn" id="copy" type="button">Copy</button>
             <pre id="cmd">sudo mkdir -p /opt/musicd-remote
 cd /opt/musicd-remote
-sudo wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.22/MusicD-Remote-v1.8.22.tar.gz
-sudo tar -xzf MusicD-Remote-v1.8.22.tar.gz
-docker build -t musicd-remote:1.8.22 .
+sudo wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.24/MusicD-Remote-v1.8.24.tar.gz
+sudo tar -xzf MusicD-Remote-v1.8.24.tar.gz
+docker build -t musicd-remote:1.8.24 .
 
 # Run it
 docker run -d \
@@ -497,13 +501,13 @@ docker run -d \
   -e TZ=Etc/UTC \
   -v musicd-remote-data:/app/data \
   -v "/your/path/to/Music:/music:ro" \
-  musicd-remote:1.8.22</pre>
+  musicd-remote:1.8.24</pre>
           </div>
           <noscript><p class="after-note">JavaScript is off, so the configurator can't rebuild this
              command — what's shown is the standard Linux install. The macOS and streaming-only
              variants are in the <a href="https://github.com/meltface-80/MusicD-Remote#install-docker">README</a>.</p></noscript>
           <p class="after-note" id="after-note"></p>
-          <p class="after-note">Installing <b id="ver-line">v1.8.22</b> <span id="ver-note">(checking for the latest release…)</span>.
+          <p class="after-note">Installing <b id="ver-line">v1.8.24</b> <span id="ver-note">(checking for the latest release…)</span>.
              If your user isn't in the <code>docker</code> group, prefix the <code>docker</code>
              commands with <code>sudo</code>.</p>
           <div class="note"><b>One volume to rule them all.</b> The <code>musicd-remote-data</code>
@@ -602,7 +606,7 @@ docker run -d \
 
   var IMAGE = "musicd-remote";
   var REPO  = "meltface-80/MusicD-Remote";
-  var FALLBACK_VERSION = "1.8.22";   // latest published release when this page was built
+  var FALLBACK_VERSION = "1.8.24";   // latest published release when this page was built
 
   var els = {
     modes:      document.getElementById("modes"),
