@@ -224,7 +224,12 @@ body.show-ui .controls { opacity: 1; pointer-events: auto; }
    the setting off, an undecodable file) none of this applies and the bar is
    exactly what it was. */
 .bb-track.has-wave {
-  height: 40px; border-radius: 0;
+  /* 72px rather than the 40 it shipped at, for the reason --wave-h moved on the
+     phone: a bar is the RMS of its slice now, not the loudest sample in it, and
+     RMS values sit far lower against a peak-normalised ceiling. At 40px the
+     whole difference between a quiet verse and a chorus was a few pixels seen
+     from across a room. */
+  height: 72px; border-radius: 0;
   background: transparent;
   overflow: visible;
 }

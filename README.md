@@ -20,7 +20,7 @@ MusicD Remote is for Roon and is a feature-rich music discovery companion for Ro
 * **Off by default** — turn it on in Settings → Playback → Waveform, and it stays on until you turn it off
 * Each track is analysed once and stored, so it is instant every time after the first
 * The next track in the queue is prepared while the current one plays, so it is already there when the track changes
-* **Local files, and Qobuz and TIDAL tracks in your favourites.** Roon streams those services straight to your endpoint and never to an extension, so the track is fetched from the service with your own account, turned into a thousand loudness values and discarded — no audio is written to disk, and Roon still handles all playback
+* **Local files, and Qobuz and TIDAL tracks in your favourites.** Roon streams those services straight to your endpoint and never to an extension, so the track is fetched from the service with your own account, turned into a few thousand loudness values and discarded — no audio is written to disk, and Roon still handles all playback
 * Anything the app cannot read — a track outside your favourites, or one a service delivers in a protected container — simply keeps the plain progress bar
 
 ⸻

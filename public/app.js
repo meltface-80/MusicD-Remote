@@ -8295,33 +8295,98 @@
     const at = Number.isFinite(pos) ? pos : npNow();
     const frac = npLen > 0 ? Math.max(0, Math.min(1, at / npLen)) : 0;
 
-    // One bar per 2 CSS pixels. The stored waveform holds 1000 values and a
-    // phone is ~390 CSS px wide, so at the old 3px step only 130 of them were
-    // ever drawn — 8 collapsed into every bar. Halving the step shows 195, and
-    // the data to fill them was already there. Below 2px the bars stop being
-    // separable at all and it reads as a filled shape rather than a waveform.
-    const barW = 1, gap = 1, step = barW + gap;
-    const bars = Math.max(1, Math.floor(w / step));
-    const mid = h / 2;
+    /*
+     * WHERE THE THUMB ACTUALLY IS, which is not frac * width.
+     *
+     * A range input cannot let its thumb hang off either end, so the CENTRE
+     * travels from thumbW/2 to width - thumbW/2 rather than from 0 to width.
+     * The bars were laid from 0 to w regardless, so the two mappings from TIME
+     * to X disagreed by thumbW * (0.5 - frac): half a thumb ahead of the music
+     * at the start, level in the middle, half a thumb behind it at the end. On
+     * a phone that is seven pixels of a ~350px bar — several seconds of a
+     * five-minute track — and it reads as the waveform failing to keep up.
+     * Zero in the middle, which is how it survived being looked at.
+     *
+     * So the shape is inset to the thumb's travel and both are computed from
+     * `span`. A peak is then under the dot at the moment you hear it, at every
+     * point in the track rather than only halfway through.
+     */
+    // Read from the PROGRESS block, which is where --seek-thumb is declared —
+    // a custom property inherits downward, so asking documentElement (its
+    // ancestor, not its descendant) would silently get nothing and fall back.
+    const thumbW = parseFloat(
+      getComputedStyle(npProgressEl).getPropertyValue("--seek-thumb")) || 14;
+    const inset = thumbW / 2;
+    const span = Math.max(1, w - thumbW);
+    const head = inset + frac * span;
+
+    /*
+     * ONE BAR PER DEVICE-PIXEL PITCH, not per 2 CSS pixels.
+     *
+     * A phone has three device pixels to every CSS one and the old step threw
+     * two of them away: ~190 bars for a five-minute track, a second and a half
+     * each, which is a coarse picture of a record however well it is measured.
+     * Two device pixels of ink and one of gap gives ~360 on the same phone, and
+     * each one lands on a whole device pixel, so they stay separate instead of
+     * blurring into a band. The store holds 4000 values, so there is data for
+     * them.
+     *
+     * Drawn in DEVICE pixels for that reason — the transform is dropped here
+     * and put back at the end. A screen with no pixels to spare keeps the old
+     * one-and-one, because at 1x a two-pixel bar and a one-pixel gap is a
+     * different, worse drawing rather than a finer one.
+     */
+    const pitch = dpr >= 2 ? 3 : 2;
+    const ink = pitch - 1;
+    const devSpan = span * dpr, devInset = inset * dpr, devHead = head * dpr;
+    const bars = Math.max(1, Math.floor(devSpan / pitch));
+    // Fractional so the bars fill the travel exactly; the LEFT EDGE of each is
+    // rounded, which is what keeps them crisp.
+    const step = devSpan / bars;
+    const mid = Math.round((h / 2) * dpr);
+    const height = (h - 2) * dpr;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     for (let i = 0; i < bars; i++) {
-      // Max across the peaks this bar covers, for the same reason the server
-      // resamples by max: averaging flattens exactly what is worth seeing.
+      /*
+       * Folded the way the server folds, and for the same reason: these are RMS
+       * levels, so the RMS of them is exactly the level of the whole span — a
+       * bar drawn from eleven stored values is the same height it would be if
+       * the track had been analysed straight into this many buckets. A MAXIMUM
+       * here would put the flattening straight back, because the loudest bucket
+       * in a bar of a limited record is the same number in every bar of it.
+       */
       const a = Math.floor(i * peaks.length / bars);
-      const b = Math.max(a + 1, Math.floor((i + 1) * peaks.length / bars));
-      let v = 0;
-      for (let j = a; j < b && j < peaks.length; j++) if (peaks[j] > v) v = peaks[j];
-      // A floor of 1px so silence is a line rather than a gap — a gap reads as
-      // "the waveform stopped loading", which is a different thing entirely.
-      const barH = Math.max(1, (v / 255) * (h - 2));
-      const done = (i / bars) <= frac;
+      const b = Math.min(peaks.length, Math.max(a + 1, Math.floor((i + 1) * peaks.length / bars)));
+      let sum = 0;
+      for (let j = a; j < b; j++) sum += peaks[j] * peaks[j];
+      const v = Math.sqrt(sum / (b - a));
+      /*
+       * NOT ROUNDED TO A WHOLE PIXEL. Everything up to here is exact and then
+       * the height used to be snapped to a pixel, which threw away more than
+       * the stored value ever had: at 34px a whole pixel is 2.9% of full scale
+       * against a stored value good to 0.4%. A fractional height antialiases
+       * the two END CAPS and nothing else — the bar stays on whole device
+       * pixels horizontally, so the top edge gains precision rather than the
+       * whole shape losing crispness.
+       *
+       * The floor stays, in device pixels: silence is a line rather than a gap,
+       * because a gap reads as "the waveform stopped loading".
+       */
+      const barH = Math.max(1, (v / 255) * height);
+      const x = Math.round(devInset + i * step);
+      // A bar counts as played once its MIDDLE is behind the playhead, so the
+      // boundary lands where the dot is rather than a bar's width either side.
+      const done = (x + ink / 2) <= devHead;
       ctx.fillStyle = done ? played : ahead;
       // The played side goes to full strength so the accent still reads as the
       // position marker against a now-bright track ahead of it.
       ctx.globalAlpha = done ? 1 : 0.72;
-      ctx.fillRect(i * step, mid - barH / 2, barW, barH);
+      // Centred on the midline exactly. Rounding the offset as well as the
+      // height pushed an odd-numbered bar half a pixel upwards, every time.
+      ctx.fillRect(x, mid - barH / 2, ink, barH);
     }
     ctx.globalAlpha = 1;
-
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
   // The switch's state, fetched once. loadWaveformEnabled() in the settings

@@ -35,28 +35,36 @@ const pcm = (n, fn) => {
   return b;
 };
 
-test("the flags ask for exactly one mono stream", () => {
+test("the flags ask for exactly one stream, in stereo", () => {
   const a = d.args("/music/x.flac");
   // -map 0:a:0 is the one that is easy to drop and hard to notice: without it
   // a rip carrying a commentary track can have its SECOND stream chosen, and
   // the waveform is of the wrong audio while looking perfectly plausible.
   assert.ok(a.includes("-map") && a[a.indexOf("-map") + 1] === "0:a:0",
     "the first audio stream is not pinned: " + a.join(" "));
-  assert.equal(a[a.indexOf("-ac") + 1], "1", "not downmixed to mono");
+  // BOTH CHANNELS. `-ac 1` averages them, and an average of two out-of-phase
+  // channels is silence — a wide or phase-flipped passage drew as nothing.
+  assert.equal(a[a.indexOf("-ac") + 1], "2",
+    "the audio is being downmixed to mono, which cancels out-of-phase stereo");
   assert.equal(a[a.indexOf("-f") + 1], "s16le");
   assert.ok(a.includes("-nostdin"), "ffmpeg could block waiting on stdin");
   assert.equal(a[a.length - 1], "-", "output does not go to the pipe");
 });
 
+// The decoder's own stride — the samples in one LEVEL_MS window at the rate and
+// channel count it asks for. Fixtures are built in whole multiples of it, so a
+// silent-to-loud boundary lands on a level edge rather than inside one: a level
+// straddling the boundary reads half loud, correctly, and then the assertion is
+// about arithmetic instead of about the waveform.
+const WFM = require("../../lib/waveform");
+const STRIDE = Math.round(d.DECODE_RATE * d.DECODE_CHANNELS * WFM.LEVEL_MS / 1000);
+
 test("a decode that works returns the waveform", async () => {
   const child = fakeChild();
   const p = d.decodeWaveform("/music/a.flac", { spawn: () => child, buckets: 8 });
-  // 8192 samples at the default 256 stride is 32 intermediate peaks, so 8
-  // buckets are 4 peaks each and the halfway boundary falls exactly on a
-  // bucket edge. A ragged count puts the transition INSIDE a bucket, which
-  // then reads loud — correctly, but it makes the assertion about arithmetic
-  // rather than about the waveform.
-  child.stdout.emit("data", pcm(8192, i => (i < 4096 ? 0 : 12000)));
+  // 32 whole windows: 8 buckets of 4 levels each, with the halfway boundary on
+  // a bucket edge.
+  child.stdout.emit("data", pcm(STRIDE * 32, i => (i < STRIDE * 16 ? 0 : 12000)));
   child.emit("close", 0);
   const wf = await p;
   assert.ok(wf instanceof Uint8Array);
@@ -154,8 +162,10 @@ test("the piped form reads stdin and does not pass -nostdin", () => {
   // drawn from different numbers than a local one. The rate comes from the
   // constant rather than a literal: hard-coding it here meant a rate change had
   // to be made in two places, and this test failed for the wrong reason when
-  // the decode moved from 8 kHz to 16 kHz.
-  for (const flag of ["-map", "0:a:0", "-f", "s16le", "-ac", "1", "-ar", String(d.DECODE_RATE)]) {
+  // the decode moved from 8 kHz to 16 kHz. The channel count is read the same
+  // way, for the same reason.
+  for (const flag of ["-map", "0:a:0", "-f", "s16le", "-ac", String(d.DECODE_CHANNELS),
+                      "-ar", String(d.DECODE_RATE)]) {
     assert.ok(a.includes(flag), `the piped decode dropped ${flag}`);
   }
 });
@@ -179,10 +189,11 @@ test("audio piped in comes back out as peaks", async () => {
     buckets: 4,
     spawn: () => child,
   });
-  // ffmpeg's answer: loud, then quiet.
-  const pcm = Buffer.alloc(1600);
-  for (let i = 0; i < 400; i++) pcm.writeInt16LE(30000, i * 2);
-  child.stdout.emit("data", pcm);
+  // ffmpeg's answer: loud, then quiet. Four whole level windows, so the two
+  // halves land on bucket edges.
+  const buf = Buffer.alloc(STRIDE * 4 * 2);
+  for (let i = 0; i < STRIDE * 2; i++) buf.writeInt16LE(30000, i * 2);
+  child.stdout.emit("data", buf);
   child.emit("close", 0);
   const peaks = await p;
   assert.equal(peaks.length, 4);
@@ -228,28 +239,71 @@ test("THE other one: giving up stops the download too", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// v1.8.22 — the decode rate.
+// The decode rate, and the channel count.
 //
-// 8 kHz made ffmpeg lowpass at 4 kHz before peaks were taken, so cymbals,
-// snare cracks and sibilance — most of whose energy is above that — were
-// filtered away before they could register. Measured over a track of
-// transients, 8 kHz under-read the drawn bars by a mean of 16/255 and by up to
-// 52/255, and under-read on the majority of them: a systematic flattening.
+// v1.8.22 moved the rate 8 kHz → 16 kHz: 8 kHz made ffmpeg lowpass at 4 kHz
+// before levels were taken, so cymbals, snare cracks and sibilance were
+// filtered away before they could register.
 //
-// It is close to free: the decode of the compressed source dominates, and
-// 44.1 kHz (five times the PCM) measured the same wall clock as 8 kHz.
+// This version takes it to 44.1 kHz, which is not a cost: nearly every file in
+// a library already IS 44.1 kHz, so asking for it means ffmpeg has nothing to
+// resample and no anti-alias filter to run — the same three-minute track
+// measured 141ms at 16 kHz and 133ms at 44.1.
+//
+// And it asks for BOTH CHANNELS, which is the larger of the two corrections. A
+// mono downmix is an average, and the average of two inverted channels is
+// silence: a phase-flipped or very wide passage was drawn quieter than it is,
+// and in the limit as nothing at all.
 // ---------------------------------------------------------------------------
 
-test("both decode forms ask for the same rate, and it is 16 kHz", () => {
+test("both decode forms ask for the same rate, and it is 44.1 kHz", () => {
   const D = require("../../lib/waveform-decode");
-  assert.equal(D.DECODE_RATE, 16000);
+  assert.equal(D.DECODE_RATE, 44100);
   for (const argv of [D.args("/music/x.flac"), D.pipeArgs()]) {
     const i = argv.indexOf("-ar");
     assert.ok(i >= 0, "-ar missing from " + JSON.stringify(argv));
-    assert.equal(argv[i + 1], "16000",
+    assert.equal(argv[i + 1], "44100",
       "a file decode and a stream decode must use the SAME rate — different " +
       "rates would give a local and a streamed copy of one track different shapes");
   }
+});
+
+test("both decode forms ask for both channels", () => {
+  // The streaming half matters as much as the local one here: a Qobuz or TIDAL
+  // track goes through pipeArgs(), and a mono downmix there would draw the
+  // streamed copy of a record differently from the local copy of the same
+  // record — the exact inconsistency this feature cannot explain on screen.
+  const D = require("../../lib/waveform-decode");
+  assert.equal(D.DECODE_CHANNELS, 2);
+  for (const argv of [D.args("/music/x.flac"), D.pipeArgs()]) {
+    const i = argv.indexOf("-ac");
+    assert.ok(i >= 0, "-ac missing from " + JSON.stringify(argv));
+    assert.equal(argv[i + 1], "2",
+      "a downmix reads an out-of-phase passage as silence: " + JSON.stringify(argv));
+  }
+});
+
+test("the level window is ten milliseconds of what was actually asked for", async () => {
+  // THE thing that breaks silently when the rate or the channel count moves. A
+  // stride expressed in SAMPLES means a different length of TIME at every rate,
+  // and doubling the channels halves it again — which is how a "10ms level"
+  // quietly became a 5ms one. The decoder computes it from both constants, and
+  // this MEASURES the number that actually reaches the accumulator rather than
+  // recomputing it: three windows at three levels, read back as three buckets.
+  const WF = require("../../lib/waveform");
+  assert.equal(STRIDE, WF.STRIDE, "the decoder's stride and the module default disagree");
+
+  const child = fakeChild();
+  const p = d.decodeWaveform("/music/x.flac", { spawn: () => child, buckets: 3 });
+  child.stdout.emit("data", pcm(STRIDE * 3, i => 10000 * (Math.floor(i / STRIDE) + 1)));
+  child.emit("close", 0);
+  const out = await p;
+  // 10000 / 20000 / 30000 normalised against 30000. Any other stride mixes the
+  // three plateaux together and no bucket comes out at these values.
+  assert.deepEqual([...out], [85, 170, 255],
+    "three whole level windows read back as " + [...out].join(",") +
+    " — the stride is not " + STRIDE + " samples, so a level is not " +
+    WF.LEVEL_MS + "ms of audio");
 });
 
 test("nothing in the argv names a file to write", () => {
@@ -263,16 +317,87 @@ test("nothing in the argv names a file to write", () => {
   assert.deepEqual(looksLikePath, [], "argv carries a path: " + JSON.stringify(argv));
 });
 
-test("the stride still leaves ample headroom above the stored buckets", () => {
-  // At 16 kHz with stride 256 each intermediate peak covers ~16ms, so a
-  // three-minute track holds ~11,250 of them before the reduction to 1,000.
-  // If this ever drops below BUCKETS the stored waveform is being upsampled,
-  // which is padding rather than detail.
+test("the stride still leaves headroom above the stored buckets", () => {
+  // Each intermediate level covers LEVEL_MS, so a track holds 100 of them a
+  // second. If that ever drops below BUCKETS for a real track the stored
+  // waveform is being upsampled, which is padding rather than detail — and it
+  // is the check that would have caught raising BUCKETS too far.
   const WF = require("../../lib/waveform");
-  const D = require("../../lib/waveform-decode");
-  const perSecond = D.DECODE_RATE / WF.STRIDE;
+  const perSecond = 1000 / WF.LEVEL_MS;
   const shortestRealTrack = 60;
   assert.ok(perSecond * shortestRealTrack > WF.BUCKETS,
     "a one-minute track yields " + Math.round(perSecond * shortestRealTrack) +
-    " peaks for " + WF.BUCKETS + " buckets — the store would be stretching");
+    " levels for " + WF.BUCKETS + " buckets — the store would be stretching");
+});
+
+// ---------------------------------------------------------------------------
+// A SHORT DECODE IS NOT A SHORT TRACK.
+//
+// The stored buckets are a map from time to a picture: bucket 2000 of 4000 is
+// the middle of the track and the playhead is drawn on that assumption. A file
+// that decodes two thirds of the way — a damaged rip, a half-copied download, a
+// stream cut off — draws those two thirds across the WHOLE bar. It looks
+// perfect: real audio, right order, right levels, about the wrong moment, by a
+// margin that grows through the track. And it is written to the database as
+// though it were the answer, so it is wrong for as long as the file exists.
+// ---------------------------------------------------------------------------
+
+test("a decode that covers the whole track is kept", async () => {
+  const child = fakeChild();
+  // 4 seconds of audio for a track said to be 4 seconds long.
+  const secs = 4;
+  const p = d.decodeWaveform("/music/a.flac", {
+    spawn: () => child, buckets: 8, expectSeconds: secs,
+  });
+  child.stdout.emit("data", pcm(d.DECODE_RATE * d.DECODE_CHANNELS * secs, () => 9000));
+  child.emit("close", 0);
+  assert.ok(await p, "a complete decode was rejected");
+});
+
+test("a decode that stops short of the track is refused, not stretched", async () => {
+  const child = fakeChild();
+  const secs = 4;
+  const p = d.decodeWaveform("/music/a.flac", {
+    spawn: () => child, buckets: 8, expectSeconds: secs,
+  });
+  // Half the track, and ffmpeg complaining on the way out — the shape of a
+  // truncated file. The old code kept this: "most of the way is a perfectly
+  // good picture of the track", which is true of the SHAPE and false of every
+  // position in it.
+  child.stdout.emit("data", pcm(d.DECODE_RATE * d.DECODE_CHANNELS * (secs / 2), () => 9000));
+  child.stderr.emit("data", Buffer.from("Invalid data found when processing input\n"));
+  child.emit("close", 1);
+  assert.equal(await p, null,
+    "half a track was accepted as the whole of it — every bar would be drawn at " +
+    "twice the time it belongs to, and the playhead would sit over the wrong music");
+  assert.match(d.lastDecodeError(), /decoded 2\.0s of a 4\.0s track/,
+    "the reason was not recorded, so 'no waveform' is undiagnosable: " +
+    JSON.stringify(d.lastDecodeError()));
+});
+
+test("a track of unknown length still gets whatever decoded", async () => {
+  // The guard is opt-in on purpose. Roon does not always say how long a track
+  // is, and "no length" must mean "no opinion" rather than "reject" — otherwise
+  // the feature would go dark on the tracks it can least afford to.
+  const child = fakeChild();
+  const p = d.decodeWaveform("/music/a.flac", { spawn: () => child, buckets: 8 });
+  child.stdout.emit("data", pcm(1000, () => 9000));
+  child.emit("close", 0);
+  assert.ok(await p, "a decode with no stated length was rejected");
+});
+
+test("a small disagreement about the length is tolerated", async () => {
+  // The two numbers come from different places — a service's metadata against
+  // what ffmpeg decoded — and a second either way on a three-minute track is
+  // ordinary. MIN_COVERAGE is the line, and this pins which side of it a
+  // normal disagreement falls on.
+  const child = fakeChild();
+  const secs = 100;
+  const p = d.decodeWaveform("/music/a.flac", {
+    spawn: () => child, buckets: 8, expectSeconds: secs,
+  });
+  const short = secs * (d.MIN_COVERAGE + (1 - d.MIN_COVERAGE) / 2);   // 95% of it
+  child.stdout.emit("data", pcm(Math.round(d.DECODE_RATE * d.DECODE_CHANNELS * short), () => 9000));
+  child.emit("close", 0);
+  assert.ok(await p, "a track " + (100 - short) + "% short was thrown away");
 });

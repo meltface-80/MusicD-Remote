@@ -217,26 +217,62 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    // A wall display is watched from across a room, so the bars stay wider than
-    // the phone's — thin bars mush together at distance. The GAP tightens
-    // instead: 3+1 draws 480 of the stored 1000 values on a 1920px screen where
-    // 3+2 drew 384, without making a single bar harder to see.
-    const barW = 3, gap = 1, step = barW + gap;
-    const bars = Math.max(1, Math.floor(w / step));
-    const mid = h / 2;
+    /*
+     * A wall display is watched from across a room, so the bars stay wider than
+     * the phone's — thin bars mush together at distance, and a TV is almost
+     * always 1x, where the phone's two-device-pixel bar would be a hairline.
+     * 3+1 draws 480 of the stored 4000 values on a 1920px screen; the fold
+     * below is what makes those 480 an honest picture of all 4000 rather than a
+     * sample of them.
+     *
+     * Drawn in DEVICE pixels so the bars land on whole ones and stay separate
+     * instead of blurring into a band — the transform is dropped here and put
+     * back at the end.
+     */
+    const inkCss = 3, gapCss = 1;
+    const ink = Math.max(1, Math.round(inkCss * dpr));
+    const pitch = ink + Math.max(1, Math.round(gapCss * dpr));
+    const devW = w * dpr;
+    const bars = Math.max(1, Math.floor(devW / pitch));
+    // Fractional so the bars fill the strip exactly; the LEFT EDGE of each is
+    // rounded, which is what keeps them crisp.
+    const step = devW / bars;
+    const mid = Math.round((h / 2) * dpr);
+    const height = (h - 2) * dpr;
     const f = Math.max(0, Math.min(1, frac || 0));
+    const head = f * devW;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     for (let i = 0; i < bars; i++) {
+      /*
+       * Folded by RMS, exactly as the server folds and for the same reason:
+       * these are RMS levels, so the RMS of them IS the level of the whole
+       * span — a bar built from eight stored values is the height it would have
+       * been had the track been analysed straight into this many buckets. A
+       * maximum here would flatten the picture back out, because the loudest
+       * bucket in a bar of a limited record is the same number in every bar.
+       */
       const a = Math.floor(i * wavePeaks.length / bars);
-      const b = Math.max(a + 1, Math.floor((i + 1) * wavePeaks.length / bars));
-      let v = 0;
-      for (let j = a; j < b && j < wavePeaks.length; j++) if (wavePeaks[j] > v) v = wavePeaks[j];
-      const barH = Math.max(1, (v / 255) * (h - 2));
-      const done = (i / bars) <= f;
+      const b = Math.min(wavePeaks.length,
+                         Math.max(a + 1, Math.floor((i + 1) * wavePeaks.length / bars)));
+      let sum = 0;
+      for (let j = a; j < b; j++) sum += wavePeaks[j] * wavePeaks[j];
+      const v = Math.sqrt(sum / (b - a));
+      // NOT rounded to a whole pixel: everything up to here is exact, and
+      // snapping the height throws away more than the stored byte ever had. A
+      // fractional height antialiases the two end caps and nothing else. The
+      // floor stays, so silence is a line rather than a gap — a gap reads as
+      // "the waveform stopped loading".
+      const barH = Math.max(1, (v / 255) * height);
+      const x = Math.round(i * step);
+      // A bar counts as played once its MIDDLE is behind the playhead, so the
+      // boundary lands on the position rather than a bar's width either side.
+      const done = (x + ink / 2) <= head;
       // The track ahead was barely there at .34 — it is the shape of the music,
       // not a background rule, and it should read as such from across the room.
       ctx.fillStyle = done ? "#ffffff" : "rgba(255,255,255,.70)";
-      ctx.fillRect(i * step, mid - barH / 2, barW, barH);
+      ctx.fillRect(x, mid - barH / 2, ink, barH);
     }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
   async function waveformOn() {
