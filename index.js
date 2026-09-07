@@ -2418,7 +2418,7 @@ function openLabelsDb() {
       -- query here that would otherwise scan. (These are the first indexes in
       -- this database — every other table is read by primary key.)
       CREATE INDEX IF NOT EXISTS album_tracks_tkey ON album_tracks(tkey);
-      -- Waveforms: ~1000 normalised peaks per track, base64, about 1.4 KB a row.
+      -- Waveforms: 4000 normalised levels per track, base64, about 5.4 KB a row.
       --
       -- Keyed by album identity + canonical title (lib/waveform.js trackKey),
       -- never by offset, for the same reason album_tracks is: offsets are
@@ -2426,8 +2426,14 @@ function openLabelsDb() {
       -- decode costs seconds of CPU that should survive one.
       --
       -- The n column is the bucket count the row was written with. Stored
-      -- assumed so the constant can change without invalidating anything —
-      -- the renderer resamples whatever it is handed.
+      -- rather than assumed so the constant can change without invalidating
+      -- anything — the renderer resamples whatever it is handed.
+      --
+      -- What CANNOT change without invalidating the table is HOW the numbers
+      -- were arrived at: the decode rate, the channel count and the statistic.
+      -- That stamp lives in settings.json (waveformAnalysis) rather than in a
+      -- column, because a change to it makes every row wrong at once — see
+      -- wfCheckAnalysis().
       CREATE TABLE IF NOT EXISTS waveforms (
         tkey  TEXT PRIMARY KEY,
         peaks TEXT NOT NULL,
@@ -12402,39 +12408,60 @@ function wfGet(tkey) {
   } catch (e) { return null; }   // a read failure is "no waveform", not an outage
 }
 /*
- * Throw away every stored waveform when the decode rate changes.
+ * Throw away every stored waveform when the ANALYSIS changes.
  *
- * A waveform is only comparable with others taken the same way. Decoding to
- * 8 kHz lowpasses at 4 kHz and loses the top of every transient; 16 kHz keeps
- * them, and the two produce visibly different shapes for the same audio. A
- * library holding both would draw two kinds of picture with nothing on screen
- * to say which is which — worse than either choice on its own, because the
+ * A waveform is only comparable with others taken the same way, and there are
+ * three ways "the same way" can move:
+ *
+ *   the decode RATE — 16 kHz lowpasses at 8 kHz and loses the top of every
+ *     cymbal; 44.1 kHz keeps it, and the two draw visibly different shapes for
+ *     the same audio
+ *   the CHANNEL COUNT — a mono downmix is an addition, so an out-of-phase
+ *     passage reads as silence where both channels read as full scale
+ *   the STATISTIC (WF.WAVE_GEN) — the loudest sample in a slice and the RMS of
+ *     that slice are different numbers about the same audio, and the first one
+ *     draws a brick
+ *
+ * None of those is visible on screen, and a stored row is never re-decoded, so
+ * a library holding two generations would draw two kinds of picture with
+ * nothing to say which is which — worse than either on its own, because the
  * inconsistency is invisible and unexplainable.
  *
- * So the rate is recorded next to the data, and a change wipes it. That costs a
- * re-analysis: local files are re-read from disk, and streamed tracks are
- * fetched again the next time they play. Both are the ordinary first-play cost,
- * paid once.
+ * So the whole stamp is recorded next to the data, and any change to it wipes
+ * the table. That costs a re-analysis: local files are re-read from disk, and
+ * streamed tracks are fetched again the next time they play. Both are the
+ * ordinary first-play cost, paid once.
  */
-function wfCheckDecodeRate() {
+function wfAnalysisStamp() {
+  return WF.WAVE_GEN + ":" + WFD.DECODE_RATE + ":" + WFD.DECODE_CHANNELS;
+}
+
+function wfCheckAnalysis() {
   if (!labelsDb) return;
-  const want = WFD.DECODE_RATE;
-  const had = parseInt(_persisted.waveformRate, 10) || 0;
+  const want = wfAnalysisStamp();
+  // A missing key is a mismatch on purpose: it is either a fresh install (the
+  // table is empty, so the wipe is free) or an upgrade from a version that
+  // recorded only the rate — whose rows were measured with the old statistic
+  // and have to go regardless of what that rate was.
+  const had = String(_persisted.waveformAnalysis || "");
   if (had === want) return;
   try {
     const n = labelsDb.prepare("SELECT COUNT(*) c FROM waveforms").get().c;
     if (n) {
       labelsDb.prepare("DELETE FROM waveforms").run();
-      console.log("[waveform] decode rate " + (had || "unset") + " → " + want +
-                  "Hz: cleared " + n + " stored waveform" + (n === 1 ? "" : "s") +
-                  ", they will be re-analysed on next play");
+      console.log("[waveform] analysis " + (had || "unset") + " → " + want +
+                  " (gen:rate:channels): cleared " + n + " stored waveform" +
+                  (n === 1 ? "" : "s") + ", they will be re-analysed on next play");
     }
-    savePersistedSettings({ waveformRate: want });
+    // waveformRate is the key this replaced. Set to undefined rather than
+    // left behind: JSON.stringify omits an undefined value, so the old key
+    // goes out of settings.json instead of sitting there meaning nothing.
+    savePersistedSettings({ waveformAnalysis: want, waveformRate: undefined });
   } catch (e) {
     // A failure here means the table is unreadable, which the next wfGet will
     // report anyway. Not fatal: the feature degrades to the plain bar rather
     // than taking startup with it.
-    console.error("[waveform] could not clear waveforms for the rate change:", e.message);
+    console.error("[waveform] could not clear waveforms for the analysis change:", e.message);
   }
 }
 
@@ -12449,10 +12476,10 @@ function wfPut(tkey, u8) {
   }
 }
 
-// Run once at startup, here rather than beside the schema: WFD is required at
-// the top of this section, and _persisted and the database are both ready long
-// before it.
-wfCheckDecodeRate();
+// Run once at startup, here rather than beside the schema: WF and WFD are both
+// required at the top of this section, and _persisted and the database are
+// ready long before it.
+wfCheckAnalysis();
 
 // Which albumKey (if any) this album/artist is known locally under.
 //
@@ -12550,24 +12577,29 @@ const _wfInflight = new Map();
 // wfPeekNext costs a Core round trip, so nothing below it may run per-push.
 const _wfLastNp = new Map();
 
-function wfCompute(albumKey, track, signal) {
+function wfCompute(albumKey, track, signal, seconds) {
   const tkey = WF.trackKey(albumKey, track);
   if (!tkey) return Promise.resolve(null);
   const have = wfGet(tkey);
   if (have) return Promise.resolve(have);
   const already = _wfInflight.get(tkey);
   if (already) return already;
-  const p = wfDecodeOnce(albumKey, track, tkey, signal)
+  const p = wfDecodeOnce(albumKey, track, tkey, signal, seconds)
     .finally(() => { _wfInflight.delete(tkey); });
   _wfInflight.set(tkey, p);
   return p;
 }
 
-async function wfDecodeOnce(albumKey, track, tkey, signal) {
+async function wfDecodeOnce(albumKey, track, tkey, signal, seconds) {
   const file = await wfResolveFile(albumKey, track);
   if (!file) return null;
   const t0 = Date.now();
-  const peaks = await WFD.decodeWaveform(file, { signal });
+  // The track's length goes with the decode. A waveform is a map from time to a
+  // picture, so a file that decodes two thirds of the way — a damaged rip, a
+  // half-copied download — draws those two thirds across the WHOLE bar and puts
+  // the playhead over the wrong moment. decodeWaveform refuses rather than
+  // storing it; see MIN_COVERAGE.
+  const peaks = await WFD.decodeWaveform(file, { signal, expectSeconds: seconds || 0 });
   if (!peaks) {
     const why = WFD.lastDecodeError();
     console.log("[waveform] no waveform for " + track + (why ? " (" + why + ")" : ""));
@@ -12668,7 +12700,7 @@ async function wfPrefetchNext(zone) {
   if (_wfPrefetch) _wfPrefetch.signal.aborted = true;
   const signal = { aborted: false };
   _wfPrefetch = { tkey, signal };
-  wfCompute(akey, next.track, signal)
+  wfCompute(akey, next.track, signal, next.seconds || 0)
     .catch(e => { if (DEBUG) console.error("[waveform] prefetch:", e.message); })
     .finally(() => { if (_wfPrefetch && _wfPrefetch.tkey === tkey) _wfPrefetch = null; });
 }
@@ -12922,7 +12954,10 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
     }
     // Node's fetch gives a web ReadableStream; ffmpeg wants a node Readable.
     const input = require("node:stream").Readable.fromWeb(r.body);
-    peaks = await WFD.decodeWaveform(null, { input, signal });
+    // The length goes with it for the same reason as a local file, and it
+    // matters more here: a download cut off halfway looks exactly like a short
+    // track, and the shape would be stored as the answer for that recording.
+    peaks = await WFD.decodeWaveform(null, { input, signal, expectSeconds: seconds || 0 });
   } catch (e) {
     console.log("[waveform] qobuz: stream failed for \"" + track + "\": " + e.message);
     return null;
@@ -12990,7 +13025,9 @@ async function wfTidalCompute(albumId, track, seconds, signal) {
     finally { clearInterval(poll); }
     if (!r.ok || !r.body) { console.log("[waveform] tidal: stream HTTP " + r.status); return null; }
     const input = require("node:stream").Readable.fromWeb(r.body);
-    peaks = await WFD.decodeWaveform(null, { input, signal });
+    // As with Qobuz: a truncated download is indistinguishable from a short
+    // track unless the length is stated, and the wrong shape would be stored.
+    peaks = await WFD.decodeWaveform(null, { input, signal, expectSeconds: seconds || 0 });
   } catch (e) {
     console.log("[waveform] tidal: stream failed for \"" + track + "\": " + e.message);
     return null;
@@ -13178,7 +13215,7 @@ app.get("/api/waveform", async (req, res) => {
   }
   _wfBusy = tkey;
   try {
-    const out = await wfCompute(akey, track, null);
+    const out = await wfCompute(akey, track, null, Number(req.query.length) || 0);
     if (!out) return res.json({ peaks: null, reason: "undecodable" });
     res.set("Cache-Control", "public, max-age=604800, immutable");
     res.json({ peaks: out.peaks, n: out.n, cached: false });

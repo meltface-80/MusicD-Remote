@@ -2027,8 +2027,23 @@ main {
   /* The waveform's height, and with it the height of the bar in waveform mode.
      Named because two rules have to agree on it: the canvas draws at this
      height and the input is grown to match, so the whole shape is draggable
-     rather than just the 4px line the plain bar occupies. */
-  --wave-h: 34px;
+     rather than just the 4px line the plain bar occupies.
+
+     64px rather than the 34 it shipped at, because the measurement changed
+     under it. A bar is now the RMS of its slice rather than the loudest sample
+     in it, and RMS values sit much lower against a peak-normalised ceiling — a
+     quiet verse that used to draw at 90% of full height draws at 25%. At 34px
+     that whole range is eight pixels and the difference between a verse and a
+     chorus is invisible; at 64 there is somewhere for it to show. It also
+     halves what a single screen pixel is worth, which pulls the same way as
+     drawing the bars unrounded. */
+  --wave-h: 64px;
+  /* The seek thumb's diameter, in ONE place. Both vendor thumb rules read it,
+     and so does drawWave() — which has to know, because a range input cannot
+     let its thumb hang off either end, so the shape has to be inset to the same
+     travel or the two disagree about where a moment in the track is. Three
+     copies of 14 in three languages is exactly the drift this avoids. */
+  --seek-thumb: 14px;
 }
 /* The waveform sits UNDER the seek input, which keeps every one of its own
    behaviours (drag, keyboard, the elapsed fill painted into --seek-fill). The
@@ -2057,8 +2072,9 @@ main {
 /* NOT flex: .np-progress also holds .np-times, and a row would put the elapsed
    and remaining times beside the bar instead of under it.
    The input grows to the canvas's height instead. A range centres its track and
-   thumb vertically in its own box, so a 34px input puts the thumb exactly on
-   the waveform's midline with no offsets to keep in step. */
+   thumb vertically in its own box, so an input grown to --wave-h puts the thumb
+   exactly on the waveform's midline with no offsets to keep in step — at 34px
+   as at 64. */
 .np-progress.has-wave .np-seek { height: var(--wave-h); position: relative; z-index: 1; }
 .np-progress.has-wave .np-seek::-webkit-slider-thumb { margin-top: -5px; }
 .np-seek {
@@ -2080,7 +2096,7 @@ main {
 }
 .np-seek::-webkit-slider-thumb {
   -webkit-appearance: none; appearance: none;
-  width: 14px; height: 14px; border-radius: 50%;
+  width: var(--seek-thumb); height: var(--seek-thumb); border-radius: 50%;
   background: var(--text); border: 0; cursor: pointer;
   margin-top: -5px;   /* (14px thumb − 4px track) / 2 */
 }
@@ -2089,7 +2105,7 @@ main {
   background: var(--seek-fill);
 }
 .np-seek::-moz-range-thumb {
-  width: 14px; height: 14px; border-radius: 50%;
+  width: var(--seek-thumb); height: var(--seek-thumb); border-radius: 50%;
   background: var(--text); border: 0; cursor: pointer;
 }
 .np-seek:disabled::-webkit-slider-thumb { background: var(--text-faint); }

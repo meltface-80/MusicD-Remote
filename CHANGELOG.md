@@ -2,6 +2,101 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.24] — 2026-09-07
+
+### Fixed — the waveform is what the track actually does
+
+Everything here is one claim: the shape under the seek bar should be a true
+picture of the audio, in the right place. Five things stood between it and that,
+and four of them drew something plausible and wrong rather than failing.
+Ported from the measurements MusicD Server made against records with known
+envelopes.
+
+- **A bar is the LEVEL of its slice now, not its loudest moment.** This is the
+  big one and it explains why the waveform looked like a brick: every bar was
+  the loudest single sample in its span, and a modern master is limited, so
+  something touches the ceiling inside nearly any window you can name. The
+  answer to "was anything loud in here?" is *yes*, everywhere, and every bar
+  came out the same height. A bar is an RMS level now — a quiet verse reads
+  quieter than the chorus after it.
+- **And it is folded the way it is measured.** Combining RMS values by RMS is
+  exactly the RMS of the whole span, so a bar built from twenty stored values is
+  the height it would have been had the track been analysed straight into that
+  many. Measuring a level and then keeping the *loudest* one is the same mistake
+  one layer down, and it draws the same brick: two rounds of "the loudest moment
+  in here" over a second and a half of a record is very nearly a constant. Both
+  the phone and the wall display fold this way, and a test pins each — a sparse
+  loud passage and a steady one at the same level have to draw the same height.
+- **Both channels, because a downmix is an ADDITION and additions cancel.** The
+  decode asked ffmpeg for mono, and ffmpeg *averages* the two channels rather
+  than taking the louder. On a passage whose channels are out of phase that
+  averages to silence: measured on a file built that way, RMS 0 where the pair
+  is RMS 2896. Any record with a wide, mid/side or phase-flipped passage was
+  drawn quieter than it is, and in the limit as nothing at all.
+- **Analysed at 44.1 kHz** rather than 16, which turned out to be *free*: nearly
+  every file already is 44.1 kHz, so asking for it means ffmpeg has nothing to
+  resample and no anti-alias filter to run. 16 kHz lowpassed at 8 kHz first, so
+  cymbals and sibilance were filtered away before they could count.
+- **A short decode is no longer stretched over the whole bar.** A waveform is a
+  map from time to a picture, so a file — or a download — that only decodes two
+  thirds of the way draws those two thirds across the *whole* track and puts the
+  playhead over the wrong music, by a margin that grows as it plays. Nothing
+  about it looks wrong. The track's length now travels with the decode, and one
+  that falls short of 90% of it is refused rather than stored.
+
+### Fixed — where the shape sits
+
+- **The shape lines up with the playhead at every point in the track.** A range
+  input cannot let its thumb hang off either end, so the thumb's centre travels
+  from half a thumb in to half a thumb from the end, while the bars were laid
+  across the whole canvas. The two disagreed by up to seven pixels — half a
+  thumb ahead of the music at the start, level in the middle, half a thumb
+  behind it at the end. Zero halfway through is exactly why it survived being
+  looked at. The shape is inset to the thumb's travel now, and a test measures
+  a silent notch in a fixture against the playhead at 90% of the track, where
+  the old error was at its worst.
+- **The thumb's width is one number** (`--seek-thumb`), read by the stylesheet
+  and by the canvas, instead of three copies in two languages.
+
+### Changed — more of the picture, and somewhere to draw it
+
+- **Four times the stored resolution** (4000 values a track, ~4 KB) and **one
+  bar per device-pixel pitch** rather than per two CSS pixels: about 360 bars on
+  a phone where there were 195, and each on a whole device pixel so they stay
+  separate instead of blurring into a band.
+- **A bar is no longer rounded to a whole pixel.** Everything before that step
+  was exact and then the height was snapped, which threw away more than the
+  stored byte ever held. A fractional height antialiases the two end caps and
+  nothing else — the bar stays on whole device pixels horizontally.
+- **Taller**: 34px → 64 on the phone, 40px → 72 on the wall display. RMS values
+  sit far lower against a peak-normalised ceiling than peaks did, so the
+  difference between a quiet verse and a loud chorus needs somewhere to show.
+- **Every stored waveform is re-analysed once**, the first time each track
+  plays, because the numbers come out differently for audio that has not
+  changed. The whole analysis — the statistic, the decode rate and the channel
+  count — is stamped beside the table now (`waveformAnalysis`), rather than the
+  decode rate alone, so a change to any of the three cannot go unnoticed. A
+  library holding two generations would draw two kinds of picture with nothing
+  on screen to say which is which.
+
+### Class of error
+
+Two, and both look like working code. **A statistic that saturates**: the
+loudest sample in a slice of a limited record is always full scale, so the
+measurement had no range left to show. The rule broken was never "prefer peaks",
+it was *do not average peaks* — whatever the statistic is, ask what it saturates
+at, and reduce with the same one at every scale. And **two mappings from time to
+x that disagree**: the browser's thumb and this app's bars each computed their
+own, correctly, from different widths.
+
+### Tests
+
+1609 (87 static / 996 unit / 526 DOM), up from 1575. The new ones are
+`test/dom/waveform-accuracy.test.js` — the fold and the alignment, every number
+taken at driver time out of the canvas's own pixels, never against a screenshot
+taken later (CLAUDE.md, v1.7.90). Each was checked against a mutant: folding by
+maximum, folding by mean, and laying the bars across the canvas all fail it.
+
 ## [1.8.23] — 2026-09-05
 
 ### Added
