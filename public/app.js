@@ -9164,6 +9164,8 @@
       let labelText  = "";
       let reviewText = "";
       let links      = null;
+      let score      = null;
+      let bestNew    = false;
       try {
         const params = new URLSearchParams({ title, artist });
         const r = await fetch("/api/album/extras?" + params, { cache: "no-store" });
@@ -9173,6 +9175,11 @@
           if (j.year) releaseRaw = j.year;
           if (j.album && j.album.year && !releaseRaw) releaseRaw = String(j.album.year);
           if (j.album && j.album.label) labelText = String(j.album.label);
+          // Pitchfork's number and their Best New Music flag — never their
+          // prose, which the server nulls before it leaves fetchAlbumBios.
+          // The chip under the card is the link to read it at theirs.
+          if (j.album && j.album.score != null) score = j.album.score;
+          if (j.album && j.album.isBestNewMusic) bestNew = true;
           const desc = j.album && j.album.description;
           if (desc) {
             // Card height grows to fit, so show most of the review.
@@ -9200,7 +9207,9 @@
         artist,
         releaseRaw,
         label: labelText,
-        review: reviewText
+        review: reviewText,
+        score,
+        bestNewMusic: bestNew
       });
 
       const dataUrl = await blobToDataUrl(blob);

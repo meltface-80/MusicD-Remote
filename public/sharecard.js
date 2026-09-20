@@ -55,6 +55,21 @@ const ShareCard = (() => {
   const WORDMARK_PAD = 34;
 
   // The dark the card is built on, and the pane drawn over the softened cover.
+  // The score badge sits INSIDE the cover's top-right corner, so the surface
+  // under it is the album art itself — unknown, and possibly white. It carries
+  // its own opaque ground for exactly that reason: everything else on this card
+  // is solved against a worst-case sleeve, and a badge over the art cannot be.
+  const SCORE_PAD   = 14;   // inset from the cover's edges
+  const SCORE_H     = 54;
+  const SCORE_R     = 12;
+  const SCORE_SIZE  = 30;
+  const BNM_H       = 26;
+  const BNM_SIZE    = 15;
+  const DESC_SIZE   = 22;
+  const DESC_LH     = 31;
+  const DESC_GAP    = 22;   // above the description
+  const DESC_MAX    = 6;    // lines, when there is room for them
+
   const GROUND    = '#12151a';
   const PANE_FILL = 'rgba(18,21,26,.5)';
   const PANE_EDGE = 'rgba(255,255,255,.14)';
@@ -207,7 +222,13 @@ const ShareCard = (() => {
 
     // --- Measure text blocks ---
     const releaseStr = formatReleaseDate(data.releaseRaw);
-    const metaText   = releaseStr ? 'Released ' + releaseStr : null;
+    // The label rides on the release line rather than earning a line of its
+    // own: it was already being fetched for the card and then dropped on the
+    // floor, and a second 30px row costs more than the fact is worth.
+    const metaParts  = [];
+    if (releaseStr) metaParts.push('Released ' + releaseStr);
+    if (data.label) metaParts.push(String(data.label));
+    const metaText   = metaParts.length ? metaParts.join('  \u00b7  ') : null;
     const META_SIZE  = 26;
     const META_H     = META_SIZE + 4;
     const META_GAP   = 24;   // gap below the year line
@@ -224,8 +245,30 @@ const ShareCard = (() => {
 
     const BLOCK_GAP  = 18;   // gap between title and artist
 
+    // Height of everything that is not negotiable.
+    const fixedH = (metaText ? META_H + META_GAP : 0) + titleH + BLOCK_GAP + artistH;
+
+    // --- The description, into whatever vertical room is left ---
+    //
+    // Last in and first out. A four-line title and a four-line artist already
+    // very nearly fill the pane, so the description gets the remainder and is
+    // dropped entirely when the remainder will not hold two lines — a single
+    // orphaned line that stops mid-sentence reads as a rendering fault rather
+    // than as a summary.
+    //
+    // NOTE ON WHAT CAN APPEAR HERE: index.js emits no Pitchfork prose (only
+    // their score, the Best New Music flag and a link — see fetchAlbumBios),
+    // so this text is Qobuz's or Wikipedia's, and score and description are
+    // in practice mutually exclusive.
+    const availH  = PANE_H - PANE_PAD * 2 - fixedH - DESC_GAP;
+    const maxDesc = Math.min(DESC_MAX, Math.floor(availH / DESC_LH));
+    const desc = (data.review && maxDesc >= 2)
+      ? fitText(ctx, String(data.review), TEXT_W, maxDesc, 400, [DESC_SIZE], DESC_LH / DESC_SIZE)
+      : null;
+    const descH = desc ? desc.lines.length * desc.lh : 0;
+
     // Total height of the text block
-    const blockH = (metaText ? META_H + META_GAP : 0) + titleH + BLOCK_GAP + artistH;
+    const blockH = fixedH + (desc ? DESC_GAP + descH : 0);
 
     // Vertically centre the block in the pane, with a slight upward nudge
     // (optical centre sits a little above mathematical centre).
@@ -255,6 +298,63 @@ const ShareCard = (() => {
     ctx.fillStyle = '#cdd3d9';
     ctx.font = `400 ${artist.size}px "Manrope", sans-serif`;
     artist.lines.forEach((line, i) => ctx.fillText(line, TEXT_X, ry + i * artist.lh));
+    ry += artistH;
+
+    // --- Description ---
+    if (desc) {
+      ry += DESC_GAP;
+      ctx.fillStyle = '#c2cad3';
+      ctx.font = `400 ${desc.size}px "Manrope", sans-serif`;
+      desc.lines.forEach((line, i) => ctx.fillText(line, TEXT_X, ry + i * desc.lh));
+    }
+
+    // --- Pitchfork score, over the cover's top-right corner ---
+    //
+    // Only the number and the Best New Music flag, never a word of the review:
+    // fetchAlbumBios nulls Pitchfork's prose before it leaves the server, and
+    // the chip under the card is the link to read it at theirs.
+    if (data.score != null && isFinite(data.score)) {
+      const scoreStr = String(data.score);
+      ctx.font = `700 ${SCORE_SIZE}px "Manrope", sans-serif`;
+      const sw = Math.ceil(ctx.measureText(scoreStr).width) + 30;
+      const sx = ART_X + ART_W - SCORE_PAD - sw;
+      const sy = ART_Y + SCORE_PAD;
+
+      ctx.save();
+      roundRectPath(ctx, sx, sy, sw, SCORE_H, SCORE_R);
+      // Opaque, not translucent: this one sits on the album art rather than on
+      // the solved pane, so its own ground is the only thing keeping it legible
+      // over a white sleeve.
+      ctx.fillStyle = '#0c0e12';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,.18)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `700 ${SCORE_SIZE}px "Manrope", sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillText(scoreStr, sx + sw / 2, sy + Math.round((SCORE_H - SCORE_SIZE) / 2) - 2);
+      ctx.textAlign = 'left';
+
+      if (data.bestNewMusic) {
+        ctx.font = `700 ${BNM_SIZE}px "Manrope", sans-serif`;
+        const bw = Math.ceil(ctx.measureText('BEST NEW MUSIC').width) + 22;
+        const bx = ART_X + ART_W - SCORE_PAD - bw;
+        const by = sy + SCORE_H + 8;
+        ctx.save();
+        roundRectPath(ctx, bx, by, bw, BNM_H, 8);
+        ctx.fillStyle = '#e8482b';   // Pitchfork's own flag colour, opaque
+        ctx.fill();
+        ctx.restore();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `700 ${BNM_SIZE}px "Manrope", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.fillText('BEST NEW MUSIC', bx + bw / 2, by + Math.round((BNM_H - BNM_SIZE) / 2) - 1);
+        ctx.textAlign = 'left';
+      }
+    }
 
     // --- Wordmark pinned bottom-right (only if a wordmark image was supplied) ---
     if (wm) {

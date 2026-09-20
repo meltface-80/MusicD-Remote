@@ -2,6 +2,46 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.31] — 2026-09-20
+
+### Added — the share card draws what it was already fetching
+
+Second part of the Share Card port. The card gains the album's description,
+its label and the Pitchfork score.
+
+- **Three of the four values were already being fetched and then dropped on the
+  floor.** `open()` called `/api/album/extras` on every share, took the release
+  year, the label and the description — trimming the last to ten sentences —
+  and handed all of them to `ShareCard.render()`, which read `coverUrl`,
+  `wordmarkUrl`, `releaseRaw`, `title` and `artist` and ignored the rest. The
+  score and the Best New Music flag were in the response and never read at all.
+  Nobody noticed because a card with no description looks exactly like a card
+  for a record that has none.
+- **The score sits in the cover's top-right corner, on its own opaque ground.**
+  Everything else on this card is solved against a worst-case white sleeve, but
+  a badge drawn OVER the album art has no known surface under it — so it
+  carries its own, and the test asserts that fill never becomes translucent.
+  Best New Music is a second flag beneath it, in Pitchfork's own red.
+- **Only the number and the flag, never a word of the review.** `fetchAlbumBios`
+  nulls Pitchfork's prose before it leaves the server (UK law — see the note
+  there), and the chip under the card is the link to read it at theirs. In
+  practice a score and a description are mutually exclusive: the score comes
+  from the Pitchfork branch, which emits no text, and the description comes
+  from Qobuz or Wikipedia, which carry no score.
+- **The label rides on the release line** (`RELEASED 1977 · RCA`) rather than
+  earning a 30px row of its own.
+- **The description is last in and first out.** It takes whatever vertical room
+  is left after the title and artist — which at four lines each is nearly the
+  whole pane — and is dropped entirely when fewer than two lines fit, because a
+  single orphaned line stopping mid-sentence reads as a rendering fault rather
+  than as a summary.
+
+The contrast test grew a tier for the description and a case for the badge.
+What it could not see is whether the values ever arrive, so a DOM test stubs
+the renderer and reads its argument — a canvas assertion cannot tell "no
+description was sent" from "no description exists" either. Mutation-checked by
+removing the pass-through. 964 unit / 552 DOM / 90 static.
+
 ## [1.8.30] — 2026-09-20
 
 ### Fixed — two real holes in the waveform pipeline, and its silence
