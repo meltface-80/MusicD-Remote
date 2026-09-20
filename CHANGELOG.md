@@ -2,6 +2,41 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.29] — 2026-09-20
+
+### Fixed — the progress bar sawtooth against a stuck zone feed
+
+Reported as "0 to 4 seconds then returns to 0, and repeats all the time". That
+period is this code's own arithmetic rather than a coincidence.
+
+- **The position is a base plus elapsed wall clock** (v1.7.69), and the poll
+  re-baselines to the server whenever the two disagree by more than 3s. When
+  the server's `seek_position` stops advancing, the local clock counts up,
+  crosses 3s, is yanked back to the same stale number, and starts again — a
+  ~4s sawtooth, forever. Reproduced exactly in the harness before anything was
+  changed: `1 2 3 4 0 1 2 3 4 0 …`.
+- **The reconcile now needs a value that has MOVED.** A zone reporting the same
+  position twice while claiming to play is a stuck feed, not new information,
+  and overriding a running clock with it is strictly worse than ignoring it —
+  the track IS playing, so time really is passing. A track change or a
+  play/pause transition still takes the server's position outright, and our own
+  seeks keep their own hold.
+
+**This is a robustness fix, not the root cause.** Nothing in v1.8.24–v1.8.28
+touches the position path — the diff is clean in `public/app.js`,
+`public/index.html`, `public/style.css` and the zone half of `index.js` — and
+against a healthy feed the bar was already smooth (measured: 3s → 22s over 20s,
+zero backwards steps). What is not yet explained is why one Core's
+`seek_position` stopped advancing: `/api/zone-state` reads it straight off the
+object the Roon SDK mutates in place on `zones_seek_changed`, and nothing else
+in the app writes that map.
+
+Three fixtures, because a fix here can fail in two opposite directions: a
+healthy feed must stay smooth, a stuck feed must not sawtooth, and **an
+external seek from Roon's own app must still be followed** — simply distrusting
+the server would pass the second and quietly break the third. Both failure
+directions mutation-checked red. 956 unit / 549 DOM / 88 static.
+
 ## [1.8.28] — 2026-09-20
 
 ### Added — the share card links out, and two Settings pages decide where

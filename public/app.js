@@ -7824,6 +7824,10 @@
   let npBaseAt = 0;             // Date.now() when npBase was set
   let npWasPlaying = false;     // play state over the interval just elapsed
   let npSeekHold = 0;           // ignore server re-baselining until this time
+  // The last position the server reported, to tell a MOVING feed from a stuck
+  // one. See the reconcile in refreshTransport for why a repeated value must
+  // not be treated as news.
+  let npPrevSrv = null;
   function npPlaying() {
     return !!currentZone && (currentZone.state === "playing" || currentZone.state === "loading");
   }
@@ -7965,7 +7969,7 @@
     currentZone = zone;
     const np = zone && zone.now_playing;
     if (!np) {
-      npLen = 0; npSetBase(0);
+      npLen = 0; npSetBase(0); npPrevSrv = null;
       paintBarProgress();
       refreshVisibility();
       updateNpScreen();
@@ -8062,8 +8066,26 @@
     // counted up to a poll interval of the wrong state. Both bypass the seek
     // hold: gating the track change behind it meant scrubbing to the end of a
     // track — a normal way to skip on — opened the next one pinned at 100%.
+    // A server position that has not MOVED since the last poll is not news,
+    // it is a stuck feed — and re-baselining to it is how a stuck feed turns
+    // into a sawtooth: the local clock counts up, crosses the 3s threshold,
+    // gets yanked back to the same stale number, and starts again. Reported
+    // as "0 to 4 seconds then returns to 0, and repeats all the time", which
+    // is exactly the period this threshold and the poll interval produce.
+    //
+    // Reconcile against a value that has CHANGED, therefore. When the feed is
+    // stuck the local wall clock is the better answer anyway: the track is
+    // playing, so time really is passing, whatever the zone last said.
+    //
+    // A track change or a play/pause transition still takes the server's
+    // position outright even when the number repeats — both are unambiguous
+    // new information, and at a track change the repeat is usually a genuine
+    // 0. Our own seeks are exact and keep their own hold (npSeekHold).
+    const srvMoved = npPrevSrv === null || srv !== npPrevSrv;
+    npPrevSrv = srv;
+
     if (npLen !== prevLen || stateChanged) npSetBase(srv);
-    else if (Date.now() >= npSeekHold && Math.abs(srv - npNow()) > 3) npSetBase(srv);
+    else if (srvMoved && Date.now() >= npSeekHold && Math.abs(srv - npNow()) > 3) npSetBase(srv);
     paintBarProgress();
 
     refreshVisibility();
