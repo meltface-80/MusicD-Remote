@@ -2,6 +2,32 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.27] — 2026-09-20
+
+### Changed — Settings is a two-column grid of cards
+
+Groundwork for the Share Card pages, which take the landing past a dozen
+categories. Nine already filled the sheet.
+
+- **One full-width row per category became two columns of icon-over-title
+  cards.** Nine categories go from nine rows to five, and the whole list fits a
+  phone screen with room for three more.
+- **The caret went**, because nothing else on a tile was tappable — it pointed
+  at itself.
+- **The description moved into the panel it describes**, under the title, rather
+  than being copied there. Two copies of the same sentence drift; the test
+  asserts no tile still carries one and every panel does.
+- **`minmax(0, 1fr)`, not `1fr`.** A grid track's default minimum width is its
+  CONTENT, so one title that cannot wrap widens its column past its share and
+  the sheet scrolls sideways. Today's titles all fit, which means a plain `1fr`
+  passes every measurement you would think to take — so the test sets a long
+  unbreakable title and measures the overflow, where `1fr` comes back 32px out.
+
+The assertion that will earn its keep as categories are added is neither of
+those: every tile's `data-pane` must match a panel and every panel must have a
+tile. A misspelt tile is a dead button and an unreferenced panel is
+unreachable, and neither shows up in a screenshot. 538 DOM / 87 static.
+
 ## [1.8.26] — 2026-09-20
 
 ### Fixed — Back from an artist view lands where you were

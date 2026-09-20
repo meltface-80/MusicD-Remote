@@ -2731,28 +2731,54 @@ input.vol-range::-moz-range-thumb {
 .settings-divider { height: 1px; background: var(--border); margin: 18px 0; }
 
 /* Settings home: category list. Each row pushes into a pane. */
-.settings-nav { display: flex; flex-direction: column; gap: 6px; }
+/* Two columns of icon-over-title cards. The list was one full-width row per
+   category with an icon, a title, a description and a caret; at nine
+   categories that was already a screenful, and the Share Card pages take it
+   past a dozen. A card drops the caret (nothing else on the tile is tappable,
+   so it pointed at itself) and the description, which MOVED into the panel it
+   describes — moved, not copied, so the two cannot drift.
+   minmax(0,1fr) rather than 1fr: a grid track's default min-width is its
+   content, so a long title would push the column wider than its share and the
+   sheet would scroll sideways. */
+.settings-nav {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
 .settings-nav-item {
-  display: flex; align-items: center; gap: 14px; width: 100%;
-  padding: 12px 14px; border-radius: 14px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; width: 100%;
+  /* 104px keeps a two-line title from making one card taller than its
+     neighbour — the row is sized by the tallest, so an uneven pair reads as a
+     mistake rather than as a grid. */
+  min-height: 104px;
+  padding: 16px 10px; border-radius: 14px;
   border: 1px solid var(--border); background: var(--bg-elev-2);
-  color: var(--text); text-align: left; cursor: pointer;
+  color: var(--text); text-align: center; cursor: pointer;
   transition: background .15s ease, border-color .15s ease;
 }
 .settings-nav-item:hover { background: var(--bg-elev); border-color: var(--text-faint); }
-.settings-nav-item:active { transform: scale(.995); }
+.settings-nav-item:active { transform: scale(.985); }
 .settings-nav-ico {
   flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
-  width: 38px; height: 38px; border-radius: 10px;
+  width: 44px; height: 44px; border-radius: 12px;
   background: var(--bg-elev); color: var(--accent-text);
 }
-.settings-nav-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
-.settings-nav-title { font-size: 16px; font-weight: 600; color: var(--text); }
-.settings-nav-desc { font-size: 12.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.settings-nav-caret { flex: 0 0 auto; color: var(--text-faint); }
+.settings-nav-txt { display: flex; flex-direction: column; align-items: center; min-width: 0; }
+.settings-nav-title {
+  font-size: 14.5px; font-weight: 600; color: var(--text);
+  line-height: 1.25; text-wrap: balance;
+}
+
+/* The description the tile used to carry, now under the title of the panel it
+   belongs to. Indented past the back button so it starts under the <h2>. */
+.settings-pane-desc {
+  margin: 0 0 18px 38px;
+  font-size: 13.5px; line-height: 1.35; color: var(--text-faint);
+}
 
 /* Pane header: back chevron + title, mirroring a pushed page. */
-.settings-pane-head { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+.settings-pane-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .settings-pane-head h2 { margin: 0; font-size: 22px; font-weight: 700; color: var(--text); }
 .settings-back {
   flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
