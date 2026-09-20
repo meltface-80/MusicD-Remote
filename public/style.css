@@ -1552,6 +1552,50 @@ main {
 .share-actions a:active { transform: scale(.97); }
 .share-actions svg { width: 18px; height: 18px; }
 
+/* The links row under the share card: services and review sites, as chips.
+   A GRID with equal columns and one shared height, not a wrap of inline
+   buttons — so the row reads as a row. Which also means no chip's label may
+   come from the record: a credit like "Stan Getz / Cal Tjader / Alan Jay
+   Lerner / Frederick Loewe" made a chip six lines deep in the app this is
+   ported from, and every chip beside it became a circle. lib/share-links.js
+   keeps the labels constant, and its test holds them there. */
+/* The Services / Reviews toggle lists. Rows are built by app.js from the
+   server's table, so this only has to space them. */
+.share-toggle-list { display: flex; flex-direction: column; }
+
+.share-links {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  /* Every row the same height, not just every chip within a row. Grid rows
+     size independently, so "Amazon Music" wrapping to two lines made its row
+     taller than the ones above and below it and the block read as ragged. */
+  grid-auto-rows: 1fr;
+  gap: 8px;
+  width: 100%;
+  margin-top: 12px;
+}
+.share-link {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 44px; padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border); background: var(--bg-elev-2);
+  color: var(--text); text-decoration: none;
+  font-size: 13px; font-weight: 600; line-height: 1.2; text-align: center;
+  /* A long constant like "Wikipedia artist" still has to fit a quarter of a
+     phone; it wraps to two lines inside the shared height rather than widening
+     its column. */
+  overflow-wrap: anywhere;
+}
+.share-link:hover  { background: var(--bg-elev); border-color: var(--text-faint); }
+.share-link:active { transform: scale(.985); }
+/* The review chips read as the quieter half — they are about the record
+   rather than a way to play it. The difference is the FILL, not the text
+   colour: dimming the label as well put it near the contrast floor on the
+   light palettes, and a link you have to squint at is not quieter, it is
+   worse. Same text, hollow chip. */
+.share-link.is-review { background: transparent; }
+.share-link.is-review:hover { background: var(--bg-elev-2); }
+
 .share-hint { color: var(--text-faint); font-size: 13px; margin: 10px 4px 0; }
 .share-err  { color: var(--danger);     font-size: 13px; margin: 10px 4px 0; min-height: 1em; }
 
@@ -2296,11 +2340,32 @@ main { padding-bottom: calc(94px + env(safe-area-inset-bottom)); }
   color: var(--text);
   cursor: pointer;
   flex: 0 0 auto;
-  font-size: 22px;
-  font-weight: 500;
+  /* No font sizing: the glyphs are SVG, not text (see .vol-step-icon). */
+  padding: 0;
+  line-height: 0;
 }
 .vol-step:hover  { background: var(--border); }
 .vol-step:active { transform: scale(.95); }
+/* The − and + are DRAWN, not typed. As characters they were centred by their
+   LINE BOX, and a line box is not the glyph: "+" and "−" sit on the maths axis
+   with the font's descender space hanging below them, so the box lands dead
+   centre while the ink in it does not, and no amount of align-items moves it —
+   the offset lives inside the font, and changes with the font. Two lines in a
+   symmetric 24-unit box are centred on the box itself, at any size, in any
+   font. Stroke width is the weight, for the same reason: font-weight on a
+   system symbol may do nothing, and the text minus drew a 1.3px line here
+   against the 2.75px this renders (3 user units mapped into 22px). */
+.vol-step-icon {
+  display: block;
+  width: 22px; height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 3;
+  stroke-linecap: round;
+  /* The click belongs to the button; without this the target is the <svg>,
+     and every listener here is bound to the button. */
+  pointer-events: none;
+}
 
 /* Big touch-friendly slider (the native 4px hairline was unusable on
    phones). Track fill uses --vol-fill, kept in sync from JS, because
@@ -2710,28 +2775,54 @@ input.vol-range::-moz-range-thumb {
 .settings-divider { height: 1px; background: var(--border); margin: 18px 0; }
 
 /* Settings home: category list. Each row pushes into a pane. */
-.settings-nav { display: flex; flex-direction: column; gap: 6px; }
+/* Two columns of icon-over-title cards. The list was one full-width row per
+   category with an icon, a title, a description and a caret; at nine
+   categories that was already a screenful, and the Share Card pages take it
+   past a dozen. A card drops the caret (nothing else on the tile is tappable,
+   so it pointed at itself) and the description, which MOVED into the panel it
+   describes — moved, not copied, so the two cannot drift.
+   minmax(0,1fr) rather than 1fr: a grid track's default min-width is its
+   content, so a long title would push the column wider than its share and the
+   sheet would scroll sideways. */
+.settings-nav {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
 .settings-nav-item {
-  display: flex; align-items: center; gap: 14px; width: 100%;
-  padding: 12px 14px; border-radius: 14px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; width: 100%;
+  /* 104px keeps a two-line title from making one card taller than its
+     neighbour — the row is sized by the tallest, so an uneven pair reads as a
+     mistake rather than as a grid. */
+  min-height: 104px;
+  padding: 16px 10px; border-radius: 14px;
   border: 1px solid var(--border); background: var(--bg-elev-2);
-  color: var(--text); text-align: left; cursor: pointer;
+  color: var(--text); text-align: center; cursor: pointer;
   transition: background .15s ease, border-color .15s ease;
 }
 .settings-nav-item:hover { background: var(--bg-elev); border-color: var(--text-faint); }
-.settings-nav-item:active { transform: scale(.995); }
+.settings-nav-item:active { transform: scale(.985); }
 .settings-nav-ico {
   flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
-  width: 38px; height: 38px; border-radius: 10px;
+  width: 44px; height: 44px; border-radius: 12px;
   background: var(--bg-elev); color: var(--accent-text);
 }
-.settings-nav-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
-.settings-nav-title { font-size: 16px; font-weight: 600; color: var(--text); }
-.settings-nav-desc { font-size: 12.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.settings-nav-caret { flex: 0 0 auto; color: var(--text-faint); }
+.settings-nav-txt { display: flex; flex-direction: column; align-items: center; min-width: 0; }
+.settings-nav-title {
+  font-size: 14.5px; font-weight: 600; color: var(--text);
+  line-height: 1.25; text-wrap: balance;
+}
+
+/* The description the tile used to carry, now under the title of the panel it
+   belongs to. Indented past the back button so it starts under the <h2>. */
+.settings-pane-desc {
+  margin: 0 0 18px 38px;
+  font-size: 13.5px; line-height: 1.35; color: var(--text-faint);
+}
 
 /* Pane header: back chevron + title, mirroring a pushed page. */
-.settings-pane-head { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+.settings-pane-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .settings-pane-head h2 { margin: 0; font-size: 22px; font-weight: 700; color: var(--text); }
 .settings-back {
   flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;

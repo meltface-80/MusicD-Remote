@@ -7824,6 +7824,10 @@
   let npBaseAt = 0;             // Date.now() when npBase was set
   let npWasPlaying = false;     // play state over the interval just elapsed
   let npSeekHold = 0;           // ignore server re-baselining until this time
+  // The last position the server reported, to tell a MOVING feed from a stuck
+  // one. See the reconcile in refreshTransport for why a repeated value must
+  // not be treated as news.
+  let npPrevSrv = null;
   function npPlaying() {
     return !!currentZone && (currentZone.state === "playing" || currentZone.state === "loading");
   }
@@ -7965,7 +7969,7 @@
     currentZone = zone;
     const np = zone && zone.now_playing;
     if (!np) {
-      npLen = 0; npSetBase(0);
+      npLen = 0; npSetBase(0); npPrevSrv = null;
       paintBarProgress();
       refreshVisibility();
       updateNpScreen();
@@ -8062,8 +8066,26 @@
     // counted up to a poll interval of the wrong state. Both bypass the seek
     // hold: gating the track change behind it meant scrubbing to the end of a
     // track — a normal way to skip on — opened the next one pinned at 100%.
+    // A server position that has not MOVED since the last poll is not news,
+    // it is a stuck feed — and re-baselining to it is how a stuck feed turns
+    // into a sawtooth: the local clock counts up, crosses the 3s threshold,
+    // gets yanked back to the same stale number, and starts again. Reported
+    // as "0 to 4 seconds then returns to 0, and repeats all the time", which
+    // is exactly the period this threshold and the poll interval produce.
+    //
+    // Reconcile against a value that has CHANGED, therefore. When the feed is
+    // stuck the local wall clock is the better answer anyway: the track is
+    // playing, so time really is passing, whatever the zone last said.
+    //
+    // A track change or a play/pause transition still takes the server's
+    // position outright even when the number repeats — both are unambiguous
+    // new information, and at a track change the repeat is usually a genuine
+    // 0. Our own seeks are exact and keep their own hold (npSeekHold).
+    const srvMoved = npPrevSrv === null || srv !== npPrevSrv;
+    npPrevSrv = srv;
+
     if (npLen !== prevLen || stateChanged) npSetBase(srv);
-    else if (Date.now() >= npSeekHold && Math.abs(srv - npNow()) > 3) npSetBase(srv);
+    else if (srvMoved && Date.now() >= npSeekHold && Math.abs(srv - npNow()) > 3) npSetBase(srv);
     paintBarProgress();
 
     refreshVisibility();
@@ -9086,6 +9108,7 @@
   const overlay   = document.getElementById("share-overlay");
   const frame     = document.getElementById("share-frame");
   const actions   = document.getElementById("share-actions");
+  const linksEl   = document.getElementById("share-links");
   const hintEl    = document.getElementById("share-hint");
   const errEl     = document.getElementById("share-err");
   const modalBtn  = document.getElementById("modal-share-btn");
@@ -9108,6 +9131,7 @@
     frame.innerHTML =
       `<div class="share-placeholder"><div class="share-spinner"></div><div>Generating card…</div></div>`;
     actions.innerHTML = "";
+    if (linksEl) { linksEl.innerHTML = ""; linksEl.classList.add("hidden"); }
     hintEl.textContent = "";
     errEl.textContent  = "";
   }
@@ -9125,6 +9149,7 @@
     if (!title) return;
 
     actions.innerHTML = "";
+    if (linksEl) { linksEl.innerHTML = ""; linksEl.classList.add("hidden"); }
     hintEl.textContent = "";
     errEl.textContent  = "";
     frame.innerHTML =
@@ -9138,14 +9163,23 @@
       let releaseRaw = "";
       let labelText  = "";
       let reviewText = "";
+      let links      = null;
+      let score      = null;
+      let bestNew    = false;
       try {
         const params = new URLSearchParams({ title, artist });
         const r = await fetch("/api/album/extras?" + params, { cache: "no-store" });
         if (r.ok) {
           const j = await r.json();
+          if (j.links) links = j.links;
           if (j.year) releaseRaw = j.year;
           if (j.album && j.album.year && !releaseRaw) releaseRaw = String(j.album.year);
           if (j.album && j.album.label) labelText = String(j.album.label);
+          // Pitchfork's number and their Best New Music flag — never their
+          // prose, which the server nulls before it leaves fetchAlbumBios.
+          // The chip under the card is the link to read it at theirs.
+          if (j.album && j.album.score != null) score = j.album.score;
+          if (j.album && j.album.isBestNewMusic) bestNew = true;
           const desc = j.album && j.album.description;
           if (desc) {
             // Card height grows to fit, so show most of the review.
@@ -9173,18 +9207,57 @@
         artist,
         releaseRaw,
         label: labelText,
-        review: reviewText
+        review: reviewText,
+        score,
+        bestNewMusic: bestNew
       });
 
       const dataUrl = await blobToDataUrl(blob);
       frame.innerHTML = `<img src="${dataUrl}" alt="Share card">`;
       buildActions(blob, title, artist);
+      renderLinks(links);
     } catch (e) {
       frame.innerHTML = `<div class="share-placeholder">Could not generate the card.</div>`;
       errEl.textContent = (e && e.message) ? e.message : String(e);
     }
   }
   window.__openShareCard = open;
+
+  /*
+   * The services and review sites under the card.
+   *
+   * Every url is built server-side by lib/share-links.js and arrives on the
+   * extras response the card already waits for, so there is no second request
+   * and nothing renders twice. The labels are constants from that module —
+   * never anything off the record, which is what keeps one six-line chip from
+   * setting the height of the whole grid.
+   *
+   * rel="noreferrer" as well as noopener: these are search pages on other
+   * people's sites, and there is no reason to tell them which library sent the
+   * visitor.
+   */
+  function renderLinks(links) {
+    if (!linksEl) return;
+    linksEl.innerHTML = "";
+    const all = [
+      ...((links && links.services) || []).map(l => ({ link: l, review: false })),
+      ...((links && links.reviews)  || []).map(l => ({ link: l, review: true  })),
+    ];
+    for (const { link, review } of all) {
+      if (!link || !link.url) continue;
+      const a = document.createElement("a");
+      a.className = "share-link" + (review ? " is-review" : "");
+      a.href = link.url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      // textContent, not innerHTML: the label is a constant today, and this is
+      // what keeps it harmless if it ever stops being one.
+      a.textContent = link.chip || link.name || link.id;
+      linksEl.appendChild(a);
+    }
+    // An empty row is a gap under the card, not a row.
+    linksEl.classList.toggle("hidden", !linksEl.children.length);
+  }
 
   function buildActions(blob, title, artist) {
     actions.innerHTML = "";
@@ -10085,6 +10158,93 @@
   // Settings. Qobuz was missing from this and so was never gated at all.
   loadQobuzStatus();
   loadTidalStatus();
+
+  // ----- Share card: services and reviews -----
+  //
+  // Both lists are BUILT FROM THE SERVER'S ANSWER rather than from markup, for
+  // the same reason the theme picker is built from the THEMES table: the list
+  // of what can be linked to lives in lib/share-links.js, and a hand-written
+  // copy here would be a second place for it to be wrong. The screen shows
+  // what CAN be shown, which is why the endpoint serves the full table
+  // alongside the enabled set and not just the set.
+  //
+  // Saving sends the whole array, never a delta. An empty array is a real
+  // answer — "all of them off" — and the server tells the two apart by
+  // Array.isArray, so a user who switches everything off gets what they asked
+  // for instead of the defaults back.
+  const shareServicesList = document.getElementById("share-services-list");
+  const shareReviewsList  = document.getElementById("share-reviews-list");
+  let shareLinkState = null;   // { services: {all, enabled}, reviews: {...} }
+
+  function renderShareToggles(listEl, group, onSave) {
+    if (!listEl || !group) return;
+    listEl.innerHTML = "";
+    const on = new Set(group.enabled || []);
+    for (const item of group.all || []) {
+      const row = document.createElement("div");
+      row.className = "settings-row";
+
+      const label = document.createElement("span");
+      label.className = "settings-label";
+      // The chip label where there is one, so this screen reads the same as
+      // the row it controls — "AllMusic artist", not "AllMusic" twice.
+      label.textContent = item.chip || item.name;
+
+      const sw = document.createElement("label");
+      sw.className = "switch";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = on.has(item.id);
+      input.setAttribute("aria-label", item.chip || item.name);
+      input.dataset.id = item.id;
+      const track = document.createElement("span");
+      track.className = "switch-track";
+      const thumb = document.createElement("span");
+      thumb.className = "switch-thumb";
+      track.appendChild(thumb);
+      sw.appendChild(input); sw.appendChild(track);
+
+      input.addEventListener("change", () => {
+        // Read the whole list off the DOM rather than tracking a set: what is
+        // on screen IS the answer being saved, so the two cannot drift.
+        const ids = Array.prototype.filter
+          .call(listEl.querySelectorAll('input[type="checkbox"]'), c => c.checked)
+          .map(c => c.dataset.id);
+        group.enabled = ids;
+        onSave(ids);
+      });
+
+      row.appendChild(label); row.appendChild(sw);
+      listEl.appendChild(row);
+    }
+  }
+
+  async function saveShareLinks(patch) {
+    try {
+      const r = await fetch("/api/settings/share-links", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch)
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+    } catch (e) {
+      if (window.__showToast) window.__showToast("Couldn't save that", "err");
+    }
+  }
+
+  async function loadShareLinkSettings() {
+    if (!shareServicesList && !shareReviewsList) return;
+    try {
+      const r = await fetch("/api/settings/share-links");
+      if (!r.ok) return;
+      shareLinkState = await r.json();
+      renderShareToggles(shareServicesList, shareLinkState.services,
+        ids => saveShareLinks({ services: ids }));
+      renderShareToggles(shareReviewsList, shareLinkState.reviews,
+        ids => saveShareLinks({ reviews: ids }));
+    } catch (e) { /* the panes stay empty; nothing else depends on them */ }
+  }
+  loadShareLinkSettings();
 
   // Settings is a two-level view: a category home list and one pane per
   // category. Only one .settings-view is visible at a time. The controls and
@@ -11934,18 +12094,25 @@ initServiceBrowser({
     // "← Back" button restores it exactly.
     // Move the live nodes out into fragments rather than copying markup — see
     // exitArtistView for why (tile listeners + album identity live on the nodes).
+    // Read the scroll position BEFORE the grid is drained. Moving every tile
+    // out collapses <main> to a couple of hundred pixels, and a scroller that
+    // no longer has the range CLAMPS its scrollTop to 0 there and then — so
+    // reading it after the drain stored 0 every time, and the restore below
+    // faithfully put 0 back. The comment at the bottom of exitArtistView has
+    // always said "land back where the user was"; it never could.
+    const mainEl = document.querySelector("main");
+    const savedScrollTop = mainEl ? mainEl.scrollTop : 0;
     const gridNodes = document.createDocumentFragment();
     while (grid.firstChild) gridNodes.appendChild(grid.firstChild);
     const countNodes = document.createDocumentFragment();
     if (countBar) while (countBar.firstChild) countNodes.appendChild(countBar.firstChild);
-    const mainEl = document.querySelector("main");
     saved = {
       gridNodes,
       countNodes,
       libraryWallWasActive,
       libraryWallSeq,
       labels,
-      scrollTop:          mainEl ? mainEl.scrollTop : 0,
+      scrollTop:          savedScrollTop,
       gridHidden:         grid.classList.contains("hidden"),
       homeViewHidden:     homeView     ? homeView.classList.contains("hidden")     : true,
       homeSectionsHidden: homeSections ? homeSections.classList.contains("hidden") : true,

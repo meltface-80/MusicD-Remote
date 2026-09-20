@@ -663,8 +663,8 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
                              aria-label="Volume">
                       <div class="vol-scale" aria-hidden="true"><span id="np-vol-min">0</span><span id="np-vol-max">100</span></div>
                     </div>
-                    <button class="vol-step" id="np-vol-minus" aria-label="Volume down">−</button>
-                    <button class="vol-step" id="np-vol-plus" aria-label="Volume up">+</button>
+                    <button class="vol-step" id="np-vol-minus" aria-label="Volume down"><svg class="vol-step-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+                    <button class="vol-step" id="np-vol-plus" aria-label="Volume up"><svg class="vol-step-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
                   </div>
                   <div class="np-vol-fixed hidden" id="np-vol-fixed">
                     <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -780,8 +780,8 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
         <input type="range" id="mt-vol-slider" class="vol-range" min="0" max="100" step="1" value="50" aria-label="Volume level">
         <div class="vol-scale" aria-hidden="true"><span id="mt-vol-min">0</span><span id="mt-vol-max">100</span></div>
       </div>
-      <button class="vol-step" id="mt-vol-minus" aria-label="Volume down">−</button>
-      <button class="vol-step" id="mt-vol-plus" aria-label="Volume up">+</button>
+      <button class="vol-step" id="mt-vol-minus" aria-label="Volume down"><svg class="vol-step-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
+      <button class="vol-step" id="mt-vol-plus" aria-label="Volume up"><svg class="vol-step-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button>
     </div>
   </div>
 
@@ -802,6 +802,10 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
         </div>
       </div>
       <div class="share-actions" id="share-actions"></div>
+      <!-- Where to hear it, and where to read about it. Built from
+           /api/album/extras' links block (lib/share-links.js) — the same round
+           trip the card already makes, so the chips arrive with it. -->
+      <nav class="share-links hidden" id="share-links" aria-label="Find this album"></nav>
       <p class="share-hint" id="share-hint"></p>
       <p class="share-err"  id="share-err"></p>
     </div>
@@ -930,9 +934,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             </span>
             <span class="settings-nav-txt">
               <span class="settings-nav-title">Playback</span>
-              <span class="settings-nav-desc">Output zone &amp; random album radio</span>
             </span>
-            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
 
           <button class="settings-nav-item" type="button" data-pane="labels">
@@ -941,9 +943,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             </span>
             <span class="settings-nav-txt">
               <span class="settings-nav-title">Labels</span>
-              <span class="settings-nav-desc">Ordering, thresholds &amp; rescan</span>
             </span>
-            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
 
           <button class="settings-nav-item" type="button" data-pane="metadata">
@@ -952,9 +952,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             </span>
             <span class="settings-nav-txt">
               <span class="settings-nav-title">Artwork &amp; metadata</span>
-              <span class="settings-nav-desc">Discogs &amp; FanArt.tv keys</span>
             </span>
-            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
 
           <button class="settings-nav-item" type="button" data-pane="streaming">
@@ -963,9 +961,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             </span>
             <span class="settings-nav-txt">
               <span class="settings-nav-title">Streaming accounts</span>
-              <span class="settings-nav-desc">Qobuz &amp; Tidal</span>
             </span>
-            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
 
           <button class="settings-nav-item" type="button" data-pane="homescreen">
@@ -974,9 +970,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             </span>
             <span class="settings-nav-txt">
               <span class="settings-nav-title">Home Screen</span>
-              <span class="settings-nav-desc">Which rows show, and in what order</span>
             </span>
-            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
 
           <button class="settings-nav-item" type="button" data-pane="smartpicks">
@@ -985,9 +979,25 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             </span>
             <span class="settings-nav-txt">
               <span class="settings-nav-title">Smart Picks</span>
-              <span class="settings-nav-desc">Daily discoveries &amp; schedule</span>
             </span>
-            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+
+          <button class="settings-nav-item" type="button" data-pane="services">
+            <span class="settings-nav-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            </span>
+            <span class="settings-nav-txt">
+              <span class="settings-nav-title">Services</span>
+            </span>
+          </button>
+
+          <button class="settings-nav-item" type="button" data-pane="reviews">
+            <span class="settings-nav-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            </span>
+            <span class="settings-nav-txt">
+              <span class="settings-nav-title">Reviews</span>
+            </span>
           </button>
 
           <button class="settings-nav-item" type="button" data-pane="display">
@@ -996,9 +1006,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             </span>
             <span class="settings-nav-txt">
               <span class="settings-nav-title">Wall display</span>
-              <span class="settings-nav-desc">Always-on screen &amp; video</span>
             </span>
-            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
 
           <button class="settings-nav-item" type="button" data-pane="appearance">
@@ -1007,9 +1015,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             </span>
             <span class="settings-nav-txt">
               <span class="settings-nav-title">Appearance</span>
-              <span class="settings-nav-desc">Theme &amp; colours</span>
             </span>
-            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
 
           <button class="settings-nav-item" type="button" data-pane="system">
@@ -1018,9 +1024,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             </span>
             <span class="settings-nav-txt">
               <span class="settings-nav-title">System</span>
-              <span class="settings-nav-desc">Updates &amp; version</span>
             </span>
-            <svg class="settings-nav-caret" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
         </nav>
 
@@ -1045,6 +1049,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
           </button>
           <h2>Playback</h2>
         </div>
+        <p class="settings-pane-desc">Output zone &amp; random album radio</p>
 
         <div class="settings-block">
           <div class="settings-row">
@@ -1109,6 +1114,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
           </button>
           <h2>Labels</h2>
         </div>
+        <p class="settings-pane-desc">Ordering, thresholds &amp; rescan</p>
 
         <div class="settings-block">
           <div class="settings-row">
@@ -1187,6 +1193,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
           </button>
           <h2>Artwork &amp; metadata</h2>
         </div>
+        <p class="settings-pane-desc">Discogs &amp; FanArt.tv keys</p>
 
         <div class="settings-block">
           <div class="settings-row">
@@ -1221,6 +1228,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
           </button>
           <h2>Streaming accounts</h2>
         </div>
+        <p class="settings-pane-desc">Qobuz &amp; Tidal</p>
 
         <div class="settings-block">
           <div class="settings-row">
@@ -1254,6 +1262,47 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
         </div>
       </div>
 
+      <!-- Services — which streaming services the share card links to -->
+      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="services">
+        <div class="settings-pane-head">
+          <button class="settings-back" type="button" data-settings-back aria-label="Back to settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h2>Services</h2>
+        </div>
+        <p class="settings-pane-desc">Where the share card links to hear a record</p>
+
+        <div class="settings-block">
+          <!-- Filled from /api/settings/share-links: the list of what CAN be
+               linked to lives in lib/share-links.js, so this screen and the
+               chips can never disagree about which services exist. -->
+          <div id="share-services-list" class="share-toggle-list"></div>
+          <p class="settings-note" id="share-services-note">
+            Each one opens a search for the album on that service. Nothing is
+            looked up until you tap a link.
+          </p>
+        </div>
+      </div>
+
+      <!-- Reviews — which writing the share card links to -->
+      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="reviews">
+        <div class="settings-pane-head">
+          <button class="settings-back" type="button" data-settings-back aria-label="Back to settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h2>Reviews</h2>
+        </div>
+        <p class="settings-pane-desc">Where the share card links to read about one</p>
+
+        <div class="settings-block">
+          <div id="share-reviews-list" class="share-toggle-list"></div>
+          <p class="settings-note">
+            Pitchfork and Wikipedia link to the actual page when it has already
+            been found for the card, and to a search when it has not.
+          </p>
+        </div>
+      </div>
+
       <!-- Wall display -->
       <div class="settings-view settings-pane hidden" data-view="pane" data-pane="display">
         <div class="settings-pane-head">
@@ -1262,6 +1311,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
           </button>
           <h2>Wall display</h2>
         </div>
+        <p class="settings-pane-desc">Always-on screen &amp; video</p>
 
         <div class="settings-block">
           <div class="settings-row">
@@ -1287,6 +1337,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
           </button>
           <h2>Appearance</h2>
         </div>
+        <p class="settings-pane-desc">Theme &amp; colours</p>
 
         <div class="settings-block">
           <span class="settings-label">Theme</span>
@@ -1320,6 +1371,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
           </button>
           <h2>Home Screen</h2>
         </div>
+        <p class="settings-pane-desc">Which rows show, and in what order</p>
 
         <div class="settings-block">
           <div class="settings-note">Hold the handle to drag a row into a new position. A row switched off is not fetched at all — it does no work in the background.</div>
@@ -1335,6 +1387,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
           </button>
           <h2>Smart Picks</h2>
         </div>
+        <p class="settings-pane-desc">Daily discoveries &amp; schedule</p>
 
         <div class="settings-block">
           <div class="settings-row">
@@ -1383,6 +1436,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
           </button>
           <h2>System</h2>
         </div>
+        <p class="settings-pane-desc">Updates &amp; version</p>
 
         <div class="settings-block">
           <div class="settings-row">

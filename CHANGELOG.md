@@ -2,6 +2,265 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.31] — 2026-09-20
+
+### Added — the share card draws what it was already fetching
+
+Second part of the Share Card port. The card gains the album's description,
+its label and the Pitchfork score.
+
+- **Three of the four values were already being fetched and then dropped on the
+  floor.** `open()` called `/api/album/extras` on every share, took the release
+  year, the label and the description — trimming the last to ten sentences —
+  and handed all of them to `ShareCard.render()`, which read `coverUrl`,
+  `wordmarkUrl`, `releaseRaw`, `title` and `artist` and ignored the rest. The
+  score and the Best New Music flag were in the response and never read at all.
+  Nobody noticed because a card with no description looks exactly like a card
+  for a record that has none.
+- **The score sits in the cover's top-right corner, on its own opaque ground.**
+  Everything else on this card is solved against a worst-case white sleeve, but
+  a badge drawn OVER the album art has no known surface under it — so it
+  carries its own, and the test asserts that fill never becomes translucent.
+  Best New Music is a second flag beneath it, in Pitchfork's own red.
+- **Only the number and the flag, never a word of the review.** `fetchAlbumBios`
+  nulls Pitchfork's prose before it leaves the server (UK law — see the note
+  there), and the chip under the card is the link to read it at theirs. In
+  practice a score and a description are mutually exclusive: the score comes
+  from the Pitchfork branch, which emits no text, and the description comes
+  from Qobuz or Wikipedia, which carry no score.
+- **The label rides on the release line** (`RELEASED 1977 · RCA`) rather than
+  earning a 30px row of its own.
+- **The description is last in and first out.** It takes whatever vertical room
+  is left after the title and artist — which at four lines each is nearly the
+  whole pane — and is dropped entirely when fewer than two lines fit, because a
+  single orphaned line stopping mid-sentence reads as a rendering fault rather
+  than as a summary.
+
+The contrast test grew a tier for the description and a case for the badge.
+What it could not see is whether the values ever arrive, so a DOM test stubs
+the renderer and reads its argument — a canvas assertion cannot tell "no
+description was sent" from "no description exists" either. Mutation-checked by
+removing the pass-through. 964 unit / 552 DOM / 90 static.
+
+## [1.8.30] — 2026-09-20
+
+### Fixed — two real holes in the waveform pipeline, and its silence
+
+**The report that prompted this was not explained by either fix.** "Enabled,
+local files only, nothing produced" resolved on its own before any of this was
+installed, so nothing below is the cause of it and this entry does not claim to
+be. What follows is what looking for it turned up: two genuine defects that
+were reachable from that symptom, plus the reason nobody could tell which — the
+pipeline had five ways to fail and one answer for all of them.
+
+Recorded this way deliberately. v1.7.88–89 spent two versions and a false root
+cause on a symptom that turned out not to be in the code, and the lesson the
+project rules took from it was that shipping a fix under a claim that turns out
+to be false is worse than shipping no fix at all.
+
+- **`ffmpeg-static` exports a path whether or not the binary is there.** It
+  downloads a platform build in a postinstall script, and `require` of it only
+  reports where that build was *supposed* to land — so a download that never
+  happened (an offline or rate-limited `docker build`, an unsupported platform)
+  leaves a perfectly good-looking absolute path pointing at nothing. The code
+  took it on trust, and the image ships no ffmpeg of its own, so every decode
+  spawned a file that does not exist, got ENOENT, and resolved null — for the
+  life of the container, with no log line anywhere. The path is checked before
+  it is trusted now, and a system ffmpeg on PATH is the fallback the comment
+  already claimed to provide.
+- **Keys without directories never scheduled a rebuild.** `local-albums.json`
+  gained a `dirs` map in v1.7.90 and the file's version was NOT bumped, so
+  every index written before it loads cleanly with keys and no directories.
+  Local badges work; the waveform has nothing to resolve against, for ever.
+  The comment beside it said "until the next walk" and nothing scheduled one.
+  It does now, on the same delay the old-format branch uses.
+- **`[waveform] ffmpeg ready via …` / `NO WORKING FFMPEG …` at startup.** One
+  spawn at boot, so this particular failure can never be silent again.
+
+### Added — `GET /api/debug/waveform`
+
+Every step of the chain in one request: the setting, the ffmpeg probe, the
+`/music` mount, how many album keys and directories the last walk recorded,
+the resolved album key and directory, every file in that folder with its title
+tag, which one the playing track matched, whether a waveform is already stored,
+and a plain-English verdict. With no query it uses whatever is playing.
+
+This is the Qobuz lesson applied before the fact rather than after: five
+versions went into one signature question because the only way to test a
+hypothesis was to ship a build, and a probe endpoint ended it in one. A missing
+ffmpeg, an unmounted `/music`, an album with no recorded directory, a track
+title that matches no tag and a corrupt file were all `"undecodable"` or
+`"no-local-file"` — indistinguishable, and each needing a different fix.
+
+964 unit / 549 DOM / 88 static.
+
+## [1.8.29] — 2026-09-20
+
+### Fixed — the progress bar sawtooth against a stuck zone feed
+
+Reported as "0 to 4 seconds then returns to 0, and repeats all the time". That
+period is this code's own arithmetic rather than a coincidence.
+
+- **The position is a base plus elapsed wall clock** (v1.7.69), and the poll
+  re-baselines to the server whenever the two disagree by more than 3s. When
+  the server's `seek_position` stops advancing, the local clock counts up,
+  crosses 3s, is yanked back to the same stale number, and starts again — a
+  ~4s sawtooth, forever. Reproduced exactly in the harness before anything was
+  changed: `1 2 3 4 0 1 2 3 4 0 …`.
+- **The reconcile now needs a value that has MOVED.** A zone reporting the same
+  position twice while claiming to play is a stuck feed, not new information,
+  and overriding a running clock with it is strictly worse than ignoring it —
+  the track IS playing, so time really is passing. A track change or a
+  play/pause transition still takes the server's position outright, and our own
+  seeks keep their own hold.
+
+**This is a robustness fix, not the root cause.** Nothing in v1.8.24–v1.8.28
+touches the position path — the diff is clean in `public/app.js`,
+`public/index.html`, `public/style.css` and the zone half of `index.js` — and
+against a healthy feed the bar was already smooth (measured: 3s → 22s over 20s,
+zero backwards steps). What is not yet explained is why one Core's
+`seek_position` stopped advancing: `/api/zone-state` reads it straight off the
+object the Roon SDK mutates in place on `zones_seek_changed`, and nothing else
+in the app writes that map.
+
+Three fixtures, because a fix here can fail in two opposite directions: a
+healthy feed must stay smooth, a stuck feed must not sawtooth, and **an
+external seek from Roon's own app must still be followed** — simply distrusting
+the server would pass the second and quietly break the third. Both failure
+directions mutation-checked red. 956 unit / 549 DOM / 88 static.
+
+## [1.8.28] — 2026-09-20
+
+### Added — the share card links out, and two Settings pages decide where
+
+First half of the MusicD Share Card port. Tap Share and the card now carries a
+row of chips under it: where to hear the record, and where to read about it.
+
+- **Where to hear it** — Qobuz, TIDAL, Spotify, Apple Music, Amazon Music,
+  Deezer and Bandcamp, each a search for the album on that service.
+- **Where to read about it** — Wikipedia, Pitchfork and AllMusic, plus the
+  same two for the artist if you switch them on. Wikipedia and Pitchfork link
+  to the ACTUAL page when the extras pipeline has already found it, and to a
+  search when it has not — which meant teaching `fetchAlbumBios` to keep the
+  Wikipedia article it had located even when a Pitchfork review outranked it.
+  It was finding the page and throwing it away.
+- **Settings → Services and Settings → Reviews**, both built from the server's
+  own table rather than from markup, so the screen can never offer something
+  the links builder does not know about.
+
+`lib/share-links.js` is the port proper, and it is pure — no network, no cache,
+no Core — because the rules in it look arbitrary and are not. Each one is now
+an assertion rather than a comment:
+
+- **A space is `%20`, never `+`.** Four of these take the query as a PATH
+  segment, where `+` is not a space and gets searched for literally.
+- **A slash is spent as a space, not encoded.** Qobuz decodes `%2F` back into
+  a path segment on the redirect, so "AC/DC" arrives as two segments and 404s.
+- **Only the first credited act.** "Stan Getz / Cal Tjader / Alan Jay Lerner /
+  Frederick Loewe" searched for all four names at once and AllMusic said so in
+  as many words. The separator set is the Share Card app's, adopted verbatim:
+  a slash only when spaced, a semicolon, feat./ft. — and NOT a comma or an
+  ampersand, because "Hall & Oates" and "Emerson, Lake & Palmer" are one act
+  each and mangling a band name finds nothing. My first attempt split on the
+  ampersand and turned Hall & Oates into Hall.
+- **Qobuz always has a storefront and Apple never does.** There are exactly
+  thirty Qobuz storefronts and anything else is a 404, so the table is
+  consulted rather than constructed; Apple redirects a storefront-less URL to
+  the visitor's own, which beats keeping ~175 country codes that 404 when
+  wrong. The storefront comes from the request's `Accept-Language`.
+- **Chip labels are constants, never built from the record.** That same
+  four-act credit made a chip six lines deep in the app this is ported from,
+  and because the row is a grid with one shared height, the one tall chip
+  turned the rest into circles.
+
+The chips ride on the extras request the card already makes — no second round
+trip — and the test asserts that, because "it works" and "it works once" look
+identical on screen. 956 unit / 545 DOM / 88 static.
+
+## [1.8.27] — 2026-09-20
+
+### Changed — Settings is a two-column grid of cards
+
+Groundwork for the Share Card pages, which take the landing past a dozen
+categories. Nine already filled the sheet.
+
+- **One full-width row per category became two columns of icon-over-title
+  cards.** Nine categories go from nine rows to five, and the whole list fits a
+  phone screen with room for three more.
+- **The caret went**, because nothing else on a tile was tappable — it pointed
+  at itself.
+- **The description moved into the panel it describes**, under the title, rather
+  than being copied there. Two copies of the same sentence drift; the test
+  asserts no tile still carries one and every panel does.
+- **`minmax(0, 1fr)`, not `1fr`.** A grid track's default minimum width is its
+  CONTENT, so one title that cannot wrap widens its column past its share and
+  the sheet scrolls sideways. Today's titles all fit, which means a plain `1fr`
+  passes every measurement you would think to take — so the test sets a long
+  unbreakable title and measures the overflow, where `1fr` comes back 32px out.
+
+The assertion that will earn its keep as categories are added is neither of
+those: every tile's `data-pane` must match a panel and every panel must have a
+tile. A misspelt tile is a dead button and an unreferenced panel is
+unreachable, and neither shows up in a screenshot. 538 DOM / 87 static.
+
+## [1.8.26] — 2026-09-20
+
+### Fixed — Back from an artist view lands where you were
+
+Found during a navigation audit, not reported: the wall comes back whole and at
+the top, however far down it you were when you tapped the artist.
+
+- **The snapshot read the scroll position after emptying the screen.**
+  `showArtistAlbums()` moves every tile out of `#album-grid` into a fragment,
+  then reads `main.scrollTop` into the snapshot. By that point `<main>` has
+  collapsed from ~3800px to a few hundred, and a scroller that no longer has
+  the range clamps its scrollTop to 0 there and then — so the snapshot stored
+  0, every time, and `exitArtistView()` restored that 0 faithfully. The comment
+  under the restore has read "Land back where the user was, not at the top of
+  the wall" since v1.6.52; it never could. The read now happens before the
+  drain, and nothing else changed.
+
+Class of error: an ordering bug twenty lines away from the code that looks
+wrong. The restore was correct all along, which is why reading it found
+nothing — proven instead by moving the one line on a copy of `public/` and
+watching 0 become 800.
+
+Pinned by `test/dom/artist-back-scroll.test.js`, which scrolls a real wall,
+drives the round trip and reads the position back together with the page height
+in the same frame — a restored position means nothing if the page is too short
+to hold it. 532 DOM / 87 static.
+
+## [1.8.25] — 2026-09-20
+
+### Changed — the volume − and + are drawn, not typed
+
+Reported from a phone: the marks sit high in their circles and read as faint.
+Both complaints came out of the same decision — they were text characters
+("−" and "+") centred by `align-items: center` on a 44px flex circle.
+
+- **Flex centres the line box, and a line box is not the glyph.** "+" and
+  "−" are drawn on the maths axis with the font's descender space hanging
+  below them, so the BOX was centred perfectly while the ink inside it was not.
+  Nothing in the CSS looks wrong, and no amount of `align-items` would have
+  moved it — the offset lives inside the font. Measured out of one screenshot
+  (circle edges and ink scanned from the same image, never one number from the
+  layout and another from a picture): both marks sat 0.33px high before, and
+  sit dead centre now.
+- **Weight had a ceiling too.** A font's stem width is whatever the font says,
+  and `font-weight` on a system symbol may do nothing at all: the minus drew a
+  1.3px line and the plus stood 10.6px tall inside a 44px circle. They are two
+  `<line>`s in a symmetric 24-unit box now — 2.75px of stroke in a 22px mark,
+  so "bolder" is a number this app chooses rather than a hint to the font.
+- **The tap still belongs to the button.** The icons are `pointer-events: none`;
+  every listener is on the `<button>`, and a hit test at the centre of each
+  circle is part of the test below.
+
+Class of error: centring a box and calling it centring the thing inside it.
+Both halves are pinned now — the icon's box against the circle, and the drawn
+geometry against its own viewBox — for all four buttons (the mini bar's sheet
+and the now-playing sheet are separate markup, so a fix applied to one only
+fails). 529 DOM / 87 static.
+
 ## [1.8.24] — 2026-09-07
 
 ### Fixed — the waveform is what the track actually does

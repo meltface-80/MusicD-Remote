@@ -68,6 +68,9 @@ test("the card's text survives a white sleeve", async (t) => {
     // Both of these are set right after their own comment/marker in render().
     ["the artist", fill("--- Artist ---"), 4.5],
     ["the release line", fill("if \\(metaText\\) \\{"), 4.5],
+    // v1.8.31. Sits on the same solved pane as everything above it, so it is
+    // held to the same floor — 22px is not large text.
+    ["the description", fill("--- Description ---"), 4.5],
   ];
 
   for (const [what, colour, floor] of TIERS) {
@@ -80,6 +83,30 @@ test("the card's text survives a white sleeve", async (t) => {
         `one nobody tests against by eye.`);
     });
   }
+
+  // The score badge is the one thing on this card that does NOT sit on the
+  // solved pane — it is drawn over the album art, whose colour is whatever the
+  // sleeve happens to be. Everything else here is solved against a white
+  // cover; a badge on the cover cannot be, so it has to carry its own ground.
+  await t.test("the score badge does not rely on the sleeve under it", () => {
+    const badge = /roundRectPath\(ctx, sx, sy, sw, SCORE_H, SCORE_R\);[\s\S]{0,400}?ctx\.fillStyle = '(#[0-9a-f]{6})'/.exec(SRC);
+    assert.ok(badge, "could not find the score badge's fill — is it still opaque?");
+    const onBadge = contrast(hex("#ffffff"), hex(badge[1]));
+    assert.ok(onBadge >= 4.5,
+      `the score reads ${onBadge.toFixed(2)}:1 on its own badge, need 4.5`);
+    // An rgba() fill here would let the album art through, and the number
+    // would be unreadable on roughly half of all sleeves.
+    const translucent = /roundRectPath\(ctx, sx, sy, sw, SCORE_H, SCORE_R\);[\s\S]{0,400}?ctx\.fillStyle = 'rgba\(/.test(SRC);
+    assert.equal(translucent, false,
+      "the score badge's ground is translucent, so the album art shows through it — " +
+      "this is the one element on the card that cannot be solved against a known surface");
+
+    const bnm = /ctx\.fillStyle = '(#[0-9a-f]{6})';\s*\/\/ Pitchfork's own flag colour/.exec(SRC);
+    assert.ok(bnm, "could not find the Best New Music flag colour");
+    const onBnm = contrast(hex("#ffffff"), hex(bnm[1]));
+    assert.ok(onBnm >= 3,
+      `BEST NEW MUSIC reads ${onBnm.toFixed(2)}:1 on its flag, need 3 (bold 15px)`);
+  });
 
   await t.test("the pane is genuinely translucent", () => {
     // If it were opaque the softened cover behind it would be invisible and the
