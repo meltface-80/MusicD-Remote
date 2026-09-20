@@ -11934,18 +11934,25 @@ initServiceBrowser({
     // "← Back" button restores it exactly.
     // Move the live nodes out into fragments rather than copying markup — see
     // exitArtistView for why (tile listeners + album identity live on the nodes).
+    // Read the scroll position BEFORE the grid is drained. Moving every tile
+    // out collapses <main> to a couple of hundred pixels, and a scroller that
+    // no longer has the range CLAMPS its scrollTop to 0 there and then — so
+    // reading it after the drain stored 0 every time, and the restore below
+    // faithfully put 0 back. The comment at the bottom of exitArtistView has
+    // always said "land back where the user was"; it never could.
+    const mainEl = document.querySelector("main");
+    const savedScrollTop = mainEl ? mainEl.scrollTop : 0;
     const gridNodes = document.createDocumentFragment();
     while (grid.firstChild) gridNodes.appendChild(grid.firstChild);
     const countNodes = document.createDocumentFragment();
     if (countBar) while (countBar.firstChild) countNodes.appendChild(countBar.firstChild);
-    const mainEl = document.querySelector("main");
     saved = {
       gridNodes,
       countNodes,
       libraryWallWasActive,
       libraryWallSeq,
       labels,
-      scrollTop:          mainEl ? mainEl.scrollTop : 0,
+      scrollTop:          savedScrollTop,
       gridHidden:         grid.classList.contains("hidden"),
       homeViewHidden:     homeView     ? homeView.classList.contains("hidden")     : true,
       homeSectionsHidden: homeSections ? homeSections.classList.contains("hidden") : true,

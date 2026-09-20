@@ -2,6 +2,33 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.26] — 2026-09-20
+
+### Fixed — Back from an artist view lands where you were
+
+Found during a navigation audit, not reported: the wall comes back whole and at
+the top, however far down it you were when you tapped the artist.
+
+- **The snapshot read the scroll position after emptying the screen.**
+  `showArtistAlbums()` moves every tile out of `#album-grid` into a fragment,
+  then reads `main.scrollTop` into the snapshot. By that point `<main>` has
+  collapsed from ~3800px to a few hundred, and a scroller that no longer has
+  the range clamps its scrollTop to 0 there and then — so the snapshot stored
+  0, every time, and `exitArtistView()` restored that 0 faithfully. The comment
+  under the restore has read "Land back where the user was, not at the top of
+  the wall" since v1.6.52; it never could. The read now happens before the
+  drain, and nothing else changed.
+
+Class of error: an ordering bug twenty lines away from the code that looks
+wrong. The restore was correct all along, which is why reading it found
+nothing — proven instead by moving the one line on a copy of `public/` and
+watching 0 become 800.
+
+Pinned by `test/dom/artist-back-scroll.test.js`, which scrolls a real wall,
+drives the round trip and reads the position back together with the page height
+in the same frame — a restored position means nothing if the page is too short
+to hold it. 532 DOM / 87 static.
+
 ## [1.8.25] — 2026-09-20
 
 ### Changed — the volume − and + are drawn, not typed
