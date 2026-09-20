@@ -2296,11 +2296,32 @@ main { padding-bottom: calc(94px + env(safe-area-inset-bottom)); }
   color: var(--text);
   cursor: pointer;
   flex: 0 0 auto;
-  font-size: 22px;
-  font-weight: 500;
+  /* No font sizing: the glyphs are SVG, not text (see .vol-step-icon). */
+  padding: 0;
+  line-height: 0;
 }
 .vol-step:hover  { background: var(--border); }
 .vol-step:active { transform: scale(.95); }
+/* The − and + are DRAWN, not typed. As characters they were centred by their
+   LINE BOX, and a line box is not the glyph: "+" and "−" sit on the maths axis
+   with the font's descender space hanging below them, so the box lands dead
+   centre while the ink in it does not, and no amount of align-items moves it —
+   the offset lives inside the font, and changes with the font. Two lines in a
+   symmetric 24-unit box are centred on the box itself, at any size, in any
+   font. Stroke width is the weight, for the same reason: font-weight on a
+   system symbol may do nothing, and the text minus drew a 1.3px line here
+   against the 2.75px this renders (3 user units mapped into 22px). */
+.vol-step-icon {
+  display: block;
+  width: 22px; height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 3;
+  stroke-linecap: round;
+  /* The click belongs to the button; without this the target is the <svg>,
+     and every listener here is bound to the button. */
+  pointer-events: none;
+}
 
 /* Big touch-friendly slider (the native 4px hairline was unusable on
    phones). Track fill uses --vol-fill, kept in sync from JS, because

@@ -2,6 +2,37 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.25] — 2026-09-20
+
+### Changed — the volume − and + are drawn, not typed
+
+Reported from a phone: the marks sit high in their circles and read as faint.
+Both complaints came out of the same decision — they were text characters
+("−" and "+") centred by `align-items: center` on a 44px flex circle.
+
+- **Flex centres the line box, and a line box is not the glyph.** "+" and
+  "−" are drawn on the maths axis with the font's descender space hanging
+  below them, so the BOX was centred perfectly while the ink inside it was not.
+  Nothing in the CSS looks wrong, and no amount of `align-items` would have
+  moved it — the offset lives inside the font. Measured out of one screenshot
+  (circle edges and ink scanned from the same image, never one number from the
+  layout and another from a picture): both marks sat 0.33px high before, and
+  sit dead centre now.
+- **Weight had a ceiling too.** A font's stem width is whatever the font says,
+  and `font-weight` on a system symbol may do nothing at all: the minus drew a
+  1.3px line and the plus stood 10.6px tall inside a 44px circle. They are two
+  `<line>`s in a symmetric 24-unit box now — 2.75px of stroke in a 22px mark,
+  so "bolder" is a number this app chooses rather than a hint to the font.
+- **The tap still belongs to the button.** The icons are `pointer-events: none`;
+  every listener is on the `<button>`, and a hit test at the centre of each
+  circle is part of the test below.
+
+Class of error: centring a box and calling it centring the thing inside it.
+Both halves are pinned now — the icon's box against the circle, and the drawn
+geometry against its own viewBox — for all four buttons (the mini bar's sheet
+and the now-playing sheet are separate markup, so a fix applied to one only
+fails). 529 DOM / 87 static.
+
 ## [1.8.24] — 2026-09-07
 
 ### Fixed — the waveform is what the track actually does
