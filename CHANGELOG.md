@@ -4,12 +4,19 @@ All notable changes to MusicD Remote (formerly Roon Random Albums) are documente
 
 ## [1.8.30] — 2026-09-20
 
-### Fixed — waveforms that never appear now say why
+### Fixed — two real holes in the waveform pipeline, and its silence
 
-Reported as "enabled, local files only, nothing produced". The pipeline had
-five ways to fail and one answer for all of them, so the report was
-un-actionable from outside. Two real holes found, and the silence itself
-treated as the defect.
+**The report that prompted this was not explained by either fix.** "Enabled,
+local files only, nothing produced" resolved on its own before any of this was
+installed, so nothing below is the cause of it and this entry does not claim to
+be. What follows is what looking for it turned up: two genuine defects that
+were reachable from that symptom, plus the reason nobody could tell which — the
+pipeline had five ways to fail and one answer for all of them.
+
+Recorded this way deliberately. v1.7.88–89 spent two versions and a false root
+cause on a symptom that turned out not to be in the code, and the lesson the
+project rules took from it was that shipping a fix under a claim that turns out
+to be false is worse than shipping no fix at all.
 
 - **`ffmpeg-static` exports a path whether or not the binary is there.** It
   downloads a platform build in a postinstall script, and `require` of it only
