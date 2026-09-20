@@ -18,6 +18,7 @@ const RoonApiTransport = require("node-roon-api-transport");
 const RoonApiSettings  = require("node-roon-api-settings");
 
 const { createUpdater } = require("./lib/updater");
+const shareLinks = require("./lib/share-links");
 // Title-only album matching, for the albums Roon supplies no artist for. Pure —
 // see lib/albumkeys.js. Required up here rather than beside the waveform code
 // because albumSource reads it, and that runs from every list endpoint.
@@ -5553,7 +5554,21 @@ async function fetchAlbumBios(title, artist) {
     if (!album.description) album.description = null;
   }
 
-  return { album, artist: artistObj };
+  // The resolved pages, kept whichever source won above. `album.url` carries
+  // only the winner — Pitchfork outranks Qobuz outranks Wikipedia — so a
+  // Wikipedia article found alongside a Pitchfork review was being thrown
+  // away, and the share card's Wikipedia chip fell back to a search for a page
+  // this function had already located. Additive: nothing reads these but the
+  // links builder.
+  return {
+    album,
+    artist: artistObj,
+    urls: {
+      wikipediaAlbum:  (wiki && wiki.album && wiki.album.url) || null,
+      wikipediaArtist: (artistObj && artistObj.url) || null,
+      pitchfork:       (pitchfork && pitchfork.url) || null,
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -12221,6 +12236,53 @@ app.get("/api/smart-picks", async (req, res) => {
   }
 });
 
+// Share card links: which streaming services and which review sites appear
+// under the card. Both lists are the ones lib/share-links.js knows — the
+// screen shows what CAN be linked to, which is why it is served even when
+// there is no album in hand.
+//
+// A stored set outliving a service it names is the ordinary case after an
+// update, not an error, so both are sanitised against the live table on the
+// way out as well as on the way in.
+app.get("/api/settings/share-links", (req, res) => {
+  const st = loadPersistedSettings();
+  res.json({
+    services: {
+      all:     shareLinks.SERVICES,
+      enabled: st.shareServices === undefined
+        ? shareLinks.defaultServiceIds()
+        : shareLinks.sanitiseIds(st.shareServices, shareLinks.knownServiceIds()),
+    },
+    reviews: {
+      all:     shareLinks.REVIEWS,
+      enabled: st.shareReviews === undefined
+        ? shareLinks.defaultReviewIds()
+        : shareLinks.sanitiseIds(st.shareReviews, shareLinks.knownReviewIds()),
+    },
+  });
+});
+app.post("/api/settings/share-links", (req, res) => {
+  const body = req.body || {};
+  const patch = {};
+  // `undefined` means "not being changed" and an empty ARRAY means "the user
+  // turned them all off". Conflating the two is how an off switch quietly
+  // turns itself back on, so only Array.isArray gets through.
+  if (Array.isArray(body.services)) {
+    patch.shareServices = shareLinks.sanitiseIds(body.services, shareLinks.knownServiceIds());
+  }
+  if (Array.isArray(body.reviews)) {
+    patch.shareReviews = shareLinks.sanitiseIds(body.reviews, shareLinks.knownReviewIds());
+  }
+  if (!Object.keys(patch).length) {
+    return res.status(400).json({ error: "services and/or reviews array required" });
+  }
+  savePersistedSettings(patch);
+  const st = loadPersistedSettings();
+  res.json({ ok: true,
+             services: st.shareServices === undefined ? shareLinks.defaultServiceIds() : st.shareServices,
+             reviews:  st.shareReviews  === undefined ? shareLinks.defaultReviewIds()  : st.shareReviews });
+});
+
 // Smart Picks settings: when the daily build runs, and whether the five
 // adjacent picks are added automatically.
 app.get("/api/settings/smart-picks", (req, res) => {
@@ -14246,10 +14308,41 @@ app.get("/api/album/extras", async (req, res) => {
       if (!bios.album) bios.album = {};
       bios.album.label = canonLabel;
     }
+    // Where to hear it and where to read about it. Pure string building, so
+    // it costs nothing and rides along on the round trip the card already
+    // makes — no second request, and the chips arrive with the card rather
+    // than a moment after it.
+    //
+    // The resolved article and review are handed over when the pipeline above
+    // found them, so a chip lands on the actual page rather than on a search
+    // for it. `source` is what says which of them bios.album.url IS: the
+    // aggregator prefers Pitchfork, then Qobuz, then Wikipedia, and one field
+    // carries whichever won.
+    const st       = loadPersistedSettings();
+    const services = st.shareServices === undefined
+      ? shareLinks.defaultServiceIds()
+      : shareLinks.sanitiseIds(st.shareServices, shareLinks.knownServiceIds());
+    const reviews  = st.shareReviews === undefined
+      ? shareLinks.defaultReviewIds()
+      : shareLinks.sanitiseIds(st.shareReviews, shareLinks.knownReviewIds());
+    const links = {
+      services: shareLinks.serviceLinks(artist, title, {
+        locale:  shareLinks.localeFromAcceptLanguage(req.headers["accept-language"]),
+        enabled: services,
+      }),
+      reviews: shareLinks.reviewLinks(artist, title, {
+        enabled: reviews,
+        wikipediaUrl:       bios && bios.urls ? bios.urls.wikipediaAlbum  : null,
+        pitchforkUrl:       bios && bios.urls ? bios.urls.pitchfork       : null,
+        wikipediaArtistUrl: bios && bios.urls ? bios.urls.wikipediaArtist : null,
+      }),
+    };
+
     res.json({
       year,
       album:  bios ? bios.album  : null,
-      artist: bios ? bios.artist : null
+      artist: bios ? bios.artist : null,
+      links
     });
   } catch (e) {
     res.status(500).json({ error: e.message });

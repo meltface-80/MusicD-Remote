@@ -9086,6 +9086,7 @@
   const overlay   = document.getElementById("share-overlay");
   const frame     = document.getElementById("share-frame");
   const actions   = document.getElementById("share-actions");
+  const linksEl   = document.getElementById("share-links");
   const hintEl    = document.getElementById("share-hint");
   const errEl     = document.getElementById("share-err");
   const modalBtn  = document.getElementById("modal-share-btn");
@@ -9108,6 +9109,7 @@
     frame.innerHTML =
       `<div class="share-placeholder"><div class="share-spinner"></div><div>Generating card…</div></div>`;
     actions.innerHTML = "";
+    if (linksEl) { linksEl.innerHTML = ""; linksEl.classList.add("hidden"); }
     hintEl.textContent = "";
     errEl.textContent  = "";
   }
@@ -9125,6 +9127,7 @@
     if (!title) return;
 
     actions.innerHTML = "";
+    if (linksEl) { linksEl.innerHTML = ""; linksEl.classList.add("hidden"); }
     hintEl.textContent = "";
     errEl.textContent  = "";
     frame.innerHTML =
@@ -9138,11 +9141,13 @@
       let releaseRaw = "";
       let labelText  = "";
       let reviewText = "";
+      let links      = null;
       try {
         const params = new URLSearchParams({ title, artist });
         const r = await fetch("/api/album/extras?" + params, { cache: "no-store" });
         if (r.ok) {
           const j = await r.json();
+          if (j.links) links = j.links;
           if (j.year) releaseRaw = j.year;
           if (j.album && j.album.year && !releaseRaw) releaseRaw = String(j.album.year);
           if (j.album && j.album.label) labelText = String(j.album.label);
@@ -9179,12 +9184,49 @@
       const dataUrl = await blobToDataUrl(blob);
       frame.innerHTML = `<img src="${dataUrl}" alt="Share card">`;
       buildActions(blob, title, artist);
+      renderLinks(links);
     } catch (e) {
       frame.innerHTML = `<div class="share-placeholder">Could not generate the card.</div>`;
       errEl.textContent = (e && e.message) ? e.message : String(e);
     }
   }
   window.__openShareCard = open;
+
+  /*
+   * The services and review sites under the card.
+   *
+   * Every url is built server-side by lib/share-links.js and arrives on the
+   * extras response the card already waits for, so there is no second request
+   * and nothing renders twice. The labels are constants from that module —
+   * never anything off the record, which is what keeps one six-line chip from
+   * setting the height of the whole grid.
+   *
+   * rel="noreferrer" as well as noopener: these are search pages on other
+   * people's sites, and there is no reason to tell them which library sent the
+   * visitor.
+   */
+  function renderLinks(links) {
+    if (!linksEl) return;
+    linksEl.innerHTML = "";
+    const all = [
+      ...((links && links.services) || []).map(l => ({ link: l, review: false })),
+      ...((links && links.reviews)  || []).map(l => ({ link: l, review: true  })),
+    ];
+    for (const { link, review } of all) {
+      if (!link || !link.url) continue;
+      const a = document.createElement("a");
+      a.className = "share-link" + (review ? " is-review" : "");
+      a.href = link.url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      // textContent, not innerHTML: the label is a constant today, and this is
+      // what keeps it harmless if it ever stops being one.
+      a.textContent = link.chip || link.name || link.id;
+      linksEl.appendChild(a);
+    }
+    // An empty row is a gap under the card, not a row.
+    linksEl.classList.toggle("hidden", !linksEl.children.length);
+  }
 
   function buildActions(blob, title, artist) {
     actions.innerHTML = "";
@@ -10085,6 +10127,93 @@
   // Settings. Qobuz was missing from this and so was never gated at all.
   loadQobuzStatus();
   loadTidalStatus();
+
+  // ----- Share card: services and reviews -----
+  //
+  // Both lists are BUILT FROM THE SERVER'S ANSWER rather than from markup, for
+  // the same reason the theme picker is built from the THEMES table: the list
+  // of what can be linked to lives in lib/share-links.js, and a hand-written
+  // copy here would be a second place for it to be wrong. The screen shows
+  // what CAN be shown, which is why the endpoint serves the full table
+  // alongside the enabled set and not just the set.
+  //
+  // Saving sends the whole array, never a delta. An empty array is a real
+  // answer — "all of them off" — and the server tells the two apart by
+  // Array.isArray, so a user who switches everything off gets what they asked
+  // for instead of the defaults back.
+  const shareServicesList = document.getElementById("share-services-list");
+  const shareReviewsList  = document.getElementById("share-reviews-list");
+  let shareLinkState = null;   // { services: {all, enabled}, reviews: {...} }
+
+  function renderShareToggles(listEl, group, onSave) {
+    if (!listEl || !group) return;
+    listEl.innerHTML = "";
+    const on = new Set(group.enabled || []);
+    for (const item of group.all || []) {
+      const row = document.createElement("div");
+      row.className = "settings-row";
+
+      const label = document.createElement("span");
+      label.className = "settings-label";
+      // The chip label where there is one, so this screen reads the same as
+      // the row it controls — "AllMusic artist", not "AllMusic" twice.
+      label.textContent = item.chip || item.name;
+
+      const sw = document.createElement("label");
+      sw.className = "switch";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = on.has(item.id);
+      input.setAttribute("aria-label", item.chip || item.name);
+      input.dataset.id = item.id;
+      const track = document.createElement("span");
+      track.className = "switch-track";
+      const thumb = document.createElement("span");
+      thumb.className = "switch-thumb";
+      track.appendChild(thumb);
+      sw.appendChild(input); sw.appendChild(track);
+
+      input.addEventListener("change", () => {
+        // Read the whole list off the DOM rather than tracking a set: what is
+        // on screen IS the answer being saved, so the two cannot drift.
+        const ids = Array.prototype.filter
+          .call(listEl.querySelectorAll('input[type="checkbox"]'), c => c.checked)
+          .map(c => c.dataset.id);
+        group.enabled = ids;
+        onSave(ids);
+      });
+
+      row.appendChild(label); row.appendChild(sw);
+      listEl.appendChild(row);
+    }
+  }
+
+  async function saveShareLinks(patch) {
+    try {
+      const r = await fetch("/api/settings/share-links", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch)
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+    } catch (e) {
+      if (window.__showToast) window.__showToast("Couldn't save that", "err");
+    }
+  }
+
+  async function loadShareLinkSettings() {
+    if (!shareServicesList && !shareReviewsList) return;
+    try {
+      const r = await fetch("/api/settings/share-links");
+      if (!r.ok) return;
+      shareLinkState = await r.json();
+      renderShareToggles(shareServicesList, shareLinkState.services,
+        ids => saveShareLinks({ services: ids }));
+      renderShareToggles(shareReviewsList, shareLinkState.reviews,
+        ids => saveShareLinks({ reviews: ids }));
+    } catch (e) { /* the panes stay empty; nothing else depends on them */ }
+  }
+  loadShareLinkSettings();
 
   // Settings is a two-level view: a category home list and one pane per
   // category. Only one .settings-view is visible at a time. The controls and

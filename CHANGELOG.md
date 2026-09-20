@@ -2,6 +2,54 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.28] — 2026-09-20
+
+### Added — the share card links out, and two Settings pages decide where
+
+First half of the MusicD Share Card port. Tap Share and the card now carries a
+row of chips under it: where to hear the record, and where to read about it.
+
+- **Where to hear it** — Qobuz, TIDAL, Spotify, Apple Music, Amazon Music,
+  Deezer and Bandcamp, each a search for the album on that service.
+- **Where to read about it** — Wikipedia, Pitchfork and AllMusic, plus the
+  same two for the artist if you switch them on. Wikipedia and Pitchfork link
+  to the ACTUAL page when the extras pipeline has already found it, and to a
+  search when it has not — which meant teaching `fetchAlbumBios` to keep the
+  Wikipedia article it had located even when a Pitchfork review outranked it.
+  It was finding the page and throwing it away.
+- **Settings → Services and Settings → Reviews**, both built from the server's
+  own table rather than from markup, so the screen can never offer something
+  the links builder does not know about.
+
+`lib/share-links.js` is the port proper, and it is pure — no network, no cache,
+no Core — because the rules in it look arbitrary and are not. Each one is now
+an assertion rather than a comment:
+
+- **A space is `%20`, never `+`.** Four of these take the query as a PATH
+  segment, where `+` is not a space and gets searched for literally.
+- **A slash is spent as a space, not encoded.** Qobuz decodes `%2F` back into
+  a path segment on the redirect, so "AC/DC" arrives as two segments and 404s.
+- **Only the first credited act.** "Stan Getz / Cal Tjader / Alan Jay Lerner /
+  Frederick Loewe" searched for all four names at once and AllMusic said so in
+  as many words. The separator set is the Share Card app's, adopted verbatim:
+  a slash only when spaced, a semicolon, feat./ft. — and NOT a comma or an
+  ampersand, because "Hall & Oates" and "Emerson, Lake & Palmer" are one act
+  each and mangling a band name finds nothing. My first attempt split on the
+  ampersand and turned Hall & Oates into Hall.
+- **Qobuz always has a storefront and Apple never does.** There are exactly
+  thirty Qobuz storefronts and anything else is a 404, so the table is
+  consulted rather than constructed; Apple redirects a storefront-less URL to
+  the visitor's own, which beats keeping ~175 country codes that 404 when
+  wrong. The storefront comes from the request's `Accept-Language`.
+- **Chip labels are constants, never built from the record.** That same
+  four-act credit made a chip six lines deep in the app this is ported from,
+  and because the row is a grid with one shared height, the one tall chip
+  turned the rest into circles.
+
+The chips ride on the extras request the card already makes — no second round
+trip — and the test asserts that, because "it works" and "it works once" look
+identical on screen. 956 unit / 545 DOM / 88 static.
+
 ## [1.8.27] — 2026-09-20
 
 ### Changed — Settings is a two-column grid of cards

@@ -1552,6 +1552,50 @@ main {
 .share-actions a:active { transform: scale(.97); }
 .share-actions svg { width: 18px; height: 18px; }
 
+/* The links row under the share card: services and review sites, as chips.
+   A GRID with equal columns and one shared height, not a wrap of inline
+   buttons — so the row reads as a row. Which also means no chip's label may
+   come from the record: a credit like "Stan Getz / Cal Tjader / Alan Jay
+   Lerner / Frederick Loewe" made a chip six lines deep in the app this is
+   ported from, and every chip beside it became a circle. lib/share-links.js
+   keeps the labels constant, and its test holds them there. */
+/* The Services / Reviews toggle lists. Rows are built by app.js from the
+   server's table, so this only has to space them. */
+.share-toggle-list { display: flex; flex-direction: column; }
+
+.share-links {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  /* Every row the same height, not just every chip within a row. Grid rows
+     size independently, so "Amazon Music" wrapping to two lines made its row
+     taller than the ones above and below it and the block read as ragged. */
+  grid-auto-rows: 1fr;
+  gap: 8px;
+  width: 100%;
+  margin-top: 12px;
+}
+.share-link {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 44px; padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border); background: var(--bg-elev-2);
+  color: var(--text); text-decoration: none;
+  font-size: 13px; font-weight: 600; line-height: 1.2; text-align: center;
+  /* A long constant like "Wikipedia artist" still has to fit a quarter of a
+     phone; it wraps to two lines inside the shared height rather than widening
+     its column. */
+  overflow-wrap: anywhere;
+}
+.share-link:hover  { background: var(--bg-elev); border-color: var(--text-faint); }
+.share-link:active { transform: scale(.985); }
+/* The review chips read as the quieter half — they are about the record
+   rather than a way to play it. The difference is the FILL, not the text
+   colour: dimming the label as well put it near the contrast floor on the
+   light palettes, and a link you have to squint at is not quieter, it is
+   worse. Same text, hollow chip. */
+.share-link.is-review { background: transparent; }
+.share-link.is-review:hover { background: var(--bg-elev-2); }
+
 .share-hint { color: var(--text-faint); font-size: 13px; margin: 10px 4px 0; }
 .share-err  { color: var(--danger);     font-size: 13px; margin: 10px 4px 0; min-height: 1em; }
 

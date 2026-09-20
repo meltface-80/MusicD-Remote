@@ -802,6 +802,10 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
         </div>
       </div>
       <div class="share-actions" id="share-actions"></div>
+      <!-- Where to hear it, and where to read about it. Built from
+           /api/album/extras' links block (lib/share-links.js) — the same round
+           trip the card already makes, so the chips arrive with it. -->
+      <nav class="share-links hidden" id="share-links" aria-label="Find this album"></nav>
       <p class="share-hint" id="share-hint"></p>
       <p class="share-err"  id="share-err"></p>
     </div>
@@ -975,6 +979,24 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             </span>
             <span class="settings-nav-txt">
               <span class="settings-nav-title">Smart Picks</span>
+            </span>
+          </button>
+
+          <button class="settings-nav-item" type="button" data-pane="services">
+            <span class="settings-nav-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            </span>
+            <span class="settings-nav-txt">
+              <span class="settings-nav-title">Services</span>
+            </span>
+          </button>
+
+          <button class="settings-nav-item" type="button" data-pane="reviews">
+            <span class="settings-nav-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+            </span>
+            <span class="settings-nav-txt">
+              <span class="settings-nav-title">Reviews</span>
             </span>
           </button>
 
@@ -1237,6 +1259,47 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
           <div id="tidal-status" class="settings-token-status"></div>
           <button id="tidal-disconnect" class="settings-update-btn hidden" type="button">Disconnect</button>
           <div class="settings-token-status" style="opacity:.6;font-size:11px;margin-top:6px;">Unofficial Tidal API — against Tidal ToS, may break, use at your own risk.</div>
+        </div>
+      </div>
+
+      <!-- Services — which streaming services the share card links to -->
+      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="services">
+        <div class="settings-pane-head">
+          <button class="settings-back" type="button" data-settings-back aria-label="Back to settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h2>Services</h2>
+        </div>
+        <p class="settings-pane-desc">Where the share card links to hear a record</p>
+
+        <div class="settings-block">
+          <!-- Filled from /api/settings/share-links: the list of what CAN be
+               linked to lives in lib/share-links.js, so this screen and the
+               chips can never disagree about which services exist. -->
+          <div id="share-services-list" class="share-toggle-list"></div>
+          <p class="settings-note" id="share-services-note">
+            Each one opens a search for the album on that service. Nothing is
+            looked up until you tap a link.
+          </p>
+        </div>
+      </div>
+
+      <!-- Reviews — which writing the share card links to -->
+      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="reviews">
+        <div class="settings-pane-head">
+          <button class="settings-back" type="button" data-settings-back aria-label="Back to settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h2>Reviews</h2>
+        </div>
+        <p class="settings-pane-desc">Where the share card links to read about one</p>
+
+        <div class="settings-block">
+          <div id="share-reviews-list" class="share-toggle-list"></div>
+          <p class="settings-note">
+            Pitchfork and Wikipedia link to the actual page when it has already
+            been found for the card, and to a search when it has not.
+          </p>
         </div>
       </div>
 
