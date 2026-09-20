@@ -3183,6 +3183,24 @@ function loadLocalAlbumKeys() {
       localAlbumDirs = new Map(Array.isArray(raw.dirs) ? raw.dirs : []);
       if (DEBUG) console.log("[local] loaded", localAlbumKeys.size, "local album keys,",
         localAlbumDirs.size, "directories");
+      // KEYS BUT NO DIRECTORIES is a real state, not a corrupt file: every
+      // index written before v1.7.90 has it, and the version did not change
+      // when `dirs` was added — so this branch accepted the file, the badges
+      // worked, and the waveform had nothing to resolve against for ever. The
+      // comment beside localAlbumDirs said "until the next walk" and nothing
+      // scheduled one. It does now, on the same delay the old-format branch
+      // below uses and for the same reason.
+      if (localAlbumKeys.size && !localAlbumDirs.size) {
+        console.log("[local] " + localAlbumKeys.size + " album keys but no directories — " +
+                    "rescanning " + MUSIC_DIR + " so waveforms can resolve local files");
+        const t = setTimeout(() => {
+          if (!core || labelsIndex.building) return;
+          runFileMetadataScan("local dirs missing").catch(e => {
+            if (DEBUG) console.error("[local] dirs rebuild scan:", e.message);
+          });
+        }, 60000);
+        if (t.unref) t.unref();
+      }
     } else {
       // Old format: the /music walk rebuilds it. Kicked shortly so local badges
       // come back in minutes rather than at the next 12h cycle. The WALK, not
@@ -12543,6 +12561,29 @@ function wfPut(tkey, u8) {
 // ready long before it.
 wfCheckAnalysis();
 
+/*
+ * Say once, at startup, whether ffmpeg is actually there.
+ *
+ * Every decode failure resolves to the same silent null, so an image built
+ * without a working ffmpeg-static binary produced "the switch is on and
+ * nothing is drawn" with not one line anywhere to explain it. One spawn of
+ * `ffmpeg -version` at boot costs nothing and turns that into an answer in the
+ * log — and names WHICH ffmpeg won, because "the npm one" and "whatever is on
+ * PATH" fail in different ways.
+ *
+ * Unconditional, not gated on the setting: the setting can be switched on at
+ * any time, and the line is worth having in the log from before that happens.
+ */
+WFD.ffmpegProbe().then(p => {
+  if (p.ok) {
+    console.log("[waveform] ffmpeg ready via " + p.source + (p.version ? " — " + p.version : ""));
+  } else {
+    console.error("[waveform] NO WORKING FFMPEG (" + p.source + "): " +
+                  (p.error || "unknown") + " — no waveforms can be produced. " +
+                  "GET /api/debug/waveform for the whole chain.");
+  }
+}).catch(() => { /* the probe is diagnostics; it must never take startup down */ });
+
 // Which albumKey (if any) this album/artist is known locally under.
 //
 // The second rung is for the albums Roon supplies no artist for — it sends
@@ -13286,6 +13327,116 @@ app.get("/api/waveform", async (req, res) => {
   } finally {
     _wfBusy = null;
   }
+});
+
+/*
+ * GET /api/debug/waveform[?track=&album=&artist=][&zone=<id>]
+ *
+ * Why a waveform is not being drawn — every step of the chain, in one request.
+ *
+ * WHY THIS EXISTS: the whole pipeline answers with the same four words. A
+ * missing ffmpeg, an unmounted /music, an album the walk never recorded a
+ * directory for, a track title that does not match any tag in that folder and
+ * a genuinely corrupt file are all `{peaks: null, reason: "undecodable"}` or
+ * `"no-local-file"`, and nothing is logged for any of them. "It is switched on
+ * and there are no waveforms" is therefore un-actionable from outside, and the
+ * only way to tell the five apart was to ship a build with a log line in it and
+ * wait. Five versions went that way on the Qobuz signature before a probe
+ * endpoint ended it in one; this is that lesson applied before the fact rather
+ * than after.
+ *
+ * Read-only and cheap: it reads the same caches the real route reads, does not
+ * decode, and does not touch the Core beyond the zone it is already told about.
+ * With no track given it uses whatever the zone is playing, which is the case
+ * anybody actually wants to ask about.
+ */
+app.get("/api/debug/waveform", async (req, res) => {
+  const out = { enabled: waveformEnabled, analysis: wfAnalysisStamp() };
+
+  // 1. ffmpeg. First because it is the one failure that affects every track at
+  //    once, and the one that no amount of staring at a library can explain.
+  try {
+    out.ffmpeg = await WFD.ffmpegProbe();
+  } catch (e) {
+    out.ffmpeg = { ok: false, error: e.message };
+  }
+
+  // 2. The /music mount and what the last walk recorded from it. dirs is the
+  //    one the waveform needs: an index written before v1.7.90 carries keys
+  //    but no directories, and then nothing local can ever resolve.
+  out.music = {
+    dir: MUSIC_DIR,
+    mounted: musicDirMounted(),
+    local_album_keys: localAlbumKeys.size,
+    local_album_dirs: localAlbumDirs.size,
+  };
+
+  // 3. The track. Either the one asked about, or whatever the zone is playing.
+  let track  = String(req.query.track  || "").trim();
+  let album  = String(req.query.album  || "").trim();
+  let artist = String(req.query.artist || "").trim();
+  if (!track) {
+    const zone = req.query.zone ? zones[String(req.query.zone)]
+                                : Object.values(zones).find(z => z && z.state === "playing");
+    const np = zone && zone.now_playing;
+    const tl = (np && np.three_line) || {};
+    if (np) {
+      track  = tl.line1 || np.line1 || "";
+      artist = tl.line2 || np.line2 || "";
+      album  = tl.line3 || np.line3 || "";
+      out.from_zone = zone.display_name || zone.zone_id;
+    }
+  }
+  out.track = { track, album, artist };
+  if (!track) {
+    out.verdict = "nothing playing and no track given — pass ?track=&album=&artist=";
+    return res.json(out);
+  }
+
+  // 4. Does the walk know a directory for this album?
+  const akey = wfAlbumKey(album, artist);
+  out.album_key = akey || null;
+  if (!akey) {
+    out.verdict = localAlbumDirs.size
+      ? "no local directory for this album — it is a streamed track, or the /music walk never saw it"
+      : "the /music walk has recorded no directories at all (see music.local_album_dirs)";
+    return res.json(out);
+  }
+  out.album_dir = localAlbumDirs.get(akey) || null;
+
+  // 5. Which files are in it, and does the playing title match one of them?
+  //    The titles come from the tags, and Roon's title is what is matched
+  //    against them — so a mismatch here is the answer, and it is visible.
+  let files = [];
+  try { files = await wfAlbumFiles(akey); } catch (e) { out.files_error = e.message; }
+  out.files = files.map(f => ({ file: path.basename(f.file), title: f.title }));
+  const file = await wfResolveFile(akey, track);
+  out.matched_file = file ? path.basename(file) : null;
+  if (!file) {
+    out.verdict = files.length
+      ? "no file in that folder has a title matching \"" + track + "\" — compare it with files[] above"
+      : "that folder holds no audio files this build recognises";
+    return res.json(out);
+  }
+  try {
+    out.matched_file_bytes = fs.statSync(file).size;
+  } catch (e) {
+    out.verdict = "the matched file cannot be read: " + e.message;
+    return res.json(out);
+  }
+
+  // 6. Is it already stored? A stored row is served without decoding, so a
+  //    track that is stored AND not drawing is a client-side problem.
+  const tkey = WF.trackKey(akey, track);
+  const cached = wfGet(tkey);
+  out.stored = !!cached;
+  out.stored_buckets = cached ? cached.n : 0;
+
+  out.verdict = !out.ffmpeg.ok
+    ? "everything resolves, but ffmpeg does not run — no track can ever be decoded (see ffmpeg)"
+    : (cached ? "stored and ready: if no waveform is drawn, the problem is in the client"
+              : "resolves to a readable file and ffmpeg runs — play this track and it should decode");
+  res.json(out);
 });
 
 /*

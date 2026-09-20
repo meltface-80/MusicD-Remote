@@ -2,6 +2,51 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.30] — 2026-09-20
+
+### Fixed — waveforms that never appear now say why
+
+Reported as "enabled, local files only, nothing produced". The pipeline had
+five ways to fail and one answer for all of them, so the report was
+un-actionable from outside. Two real holes found, and the silence itself
+treated as the defect.
+
+- **`ffmpeg-static` exports a path whether or not the binary is there.** It
+  downloads a platform build in a postinstall script, and `require` of it only
+  reports where that build was *supposed* to land — so a download that never
+  happened (an offline or rate-limited `docker build`, an unsupported platform)
+  leaves a perfectly good-looking absolute path pointing at nothing. The code
+  took it on trust, and the image ships no ffmpeg of its own, so every decode
+  spawned a file that does not exist, got ENOENT, and resolved null — for the
+  life of the container, with no log line anywhere. The path is checked before
+  it is trusted now, and a system ffmpeg on PATH is the fallback the comment
+  already claimed to provide.
+- **Keys without directories never scheduled a rebuild.** `local-albums.json`
+  gained a `dirs` map in v1.7.90 and the file's version was NOT bumped, so
+  every index written before it loads cleanly with keys and no directories.
+  Local badges work; the waveform has nothing to resolve against, for ever.
+  The comment beside it said "until the next walk" and nothing scheduled one.
+  It does now, on the same delay the old-format branch uses.
+- **`[waveform] ffmpeg ready via …` / `NO WORKING FFMPEG …` at startup.** One
+  spawn at boot, so this particular failure can never be silent again.
+
+### Added — `GET /api/debug/waveform`
+
+Every step of the chain in one request: the setting, the ffmpeg probe, the
+`/music` mount, how many album keys and directories the last walk recorded,
+the resolved album key and directory, every file in that folder with its title
+tag, which one the playing track matched, whether a waveform is already stored,
+and a plain-English verdict. With no query it uses whatever is playing.
+
+This is the Qobuz lesson applied before the fact rather than after: five
+versions went into one signature question because the only way to test a
+hypothesis was to ship a build, and a probe endpoint ended it in one. A missing
+ffmpeg, an unmounted `/music`, an album with no recorded directory, a track
+title that matches no tag and a corrupt file were all `"undecodable"` or
+`"no-local-file"` — indistinguishable, and each needing a different fix.
+
+964 unit / 549 DOM / 88 static.
+
 ## [1.8.29] — 2026-09-20
 
 ### Fixed — the progress bar sawtooth against a stuck zone feed
