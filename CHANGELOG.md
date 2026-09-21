@@ -2,6 +2,34 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.33] — 2026-09-21
+
+### Fixed — the review chips were invisible on the light palettes
+
+- **Every chip looks the same now.** The review half was hollow —
+  `background: transparent` — on the theory that a place to read about a record
+  is quieter than a place to play it. On the dark palettes that read as
+  intended. On the light ones `--bg-elev-2` is barely off the panel it sits on,
+  so the fill was carrying the whole chip, and removing it left five labels
+  floating with no button under them.
+  The lesson is not "transparent was too subtle". It is that **a variant
+  defined by REMOVING the thing that gives an element its edges has no floor** —
+  how visible it stays depends entirely on how far apart two theme tokens
+  happen to be, which is a different answer per palette. `.is-review` stays as
+  a hook for grouping and for the tests; it no longer changes how anything
+  looks. My fault, and only ever checked on dark.
+- **The Share Card toggle rows have room between them.** Each row is exactly
+  its switch's height, so five switches that were all ON merged into one
+  unbroken column of colour and stopped reading as five controls.
+
+The chip test runs on all four palettes and compares the computed fill of a
+review chip against a service chip — the bug existed only on light, so a test
+that ran on one palette would have said nothing. The gap test opens the pane
+first: the rows are populated whether or not it is showing, so reading their
+text works while hidden, but `getBoundingClientRect` on a hidden subtree is all
+zeros, and zeros look exactly like rows that are touching. Both
+mutation-checked. 968 unit / 554 DOM / 90 static.
+
 ## [1.8.32] — 2026-09-21
 
 ### Fixed — a Pitchfork-reviewed album showed no words at all

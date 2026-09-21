@@ -1575,7 +1575,10 @@ main {
   letter-spacing: .06em; text-transform: uppercase; color: var(--text-faint);
 }
 
-.share-toggle-list { display: flex; flex-direction: column; }
+/* A gap between the rows. Without one, consecutive switches touch: each row
+   is exactly its switch's height, so five that are all ON merge into a single
+   unbroken column of colour and stop reading as five controls. */
+.share-toggle-list { display: flex; flex-direction: column; gap: 14px; }
 
 .share-links {
   display: grid;
@@ -1602,13 +1605,18 @@ main {
 }
 .share-link:hover  { background: var(--bg-elev); border-color: var(--text-faint); }
 .share-link:active { transform: scale(.985); }
-/* The review chips read as the quieter half — they are about the record
-   rather than a way to play it. The difference is the FILL, not the text
-   colour: dimming the label as well put it near the contrast floor on the
-   light palettes, and a link you have to squint at is not quieter, it is
-   worse. Same text, hollow chip. */
-.share-link.is-review { background: transparent; }
-.share-link.is-review:hover { background: var(--bg-elev-2); }
+/* EVERY CHIP LOOKS THE SAME. The review half was hollow for a while — same
+   text, no fill, on the theory that a place to read about a record is quieter
+   than a place to play it. On the DARK palettes that read as intended; on the
+   light ones --bg-elev-2 is barely off the panel it sits on, so the fill was
+   carrying the whole chip and removing it left five labels floating with no
+   button under them at all. Reported from a phone, and the screenshots make it
+   plain.
+   The lesson is not "transparent was too subtle" — it is that a variant
+   defined by REMOVING the thing that gives an element its edges has no floor,
+   because how visible it stays depends entirely on how far apart two theme
+   tokens happen to be. `.is-review` stays as a hook for grouping and for the
+   tests; it no longer changes how anything looks. */
 
 .share-hint { color: var(--text-faint); font-size: 13px; margin: 10px 4px 0; }
 .share-err  { color: var(--danger);     font-size: 13px; margin: 10px 4px 0; min-height: 1em; }
