@@ -2,6 +2,48 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.36] — 2026-09-21
+
+### Fixed — the Qobuz link opens the Qobuz app, not their download store
+
+Reported: a suggestion with Qobuz as the default landed on the store's search
+results. That is not a badly chosen search URL — **no search URL anywhere can
+do better**, and the Share Card app carries the whole finding:
+
+- `open.qobuz.com` is Qobuz's own "open this in the app" host, and both
+  platforms hand it every path because Qobuz publishes an `assetlinks.json` and
+  an `apple-app-site-association` claiming all of them. Its router understands
+  exactly five shapes and **every one of them is an ID**:
+  `/album/:id`, `/artist/:id`, `/track/:id`, `/playlist/:id`, `/:type/:id`.
+- There is no search route, on that host or in the app behind it. An
+  `open.qobuz.com/search?q=` link opens the app on Discover with the query
+  thrown away, and pointing at the web player does not help either —
+  `play.qobuz.com` is claimed by the same app and lands in the same place.
+
+So the id is the whole feature. It comes off Qobuz's own public search page,
+the same way this app already reads pitchfork.com: no API, no key, no account.
+
+**A wrong album is worse than a search page**, because the search page at least
+shows the right words — Qobuz answers a query it cannot place with its nearest
+guess rather than with nothing. So the first hit is never taken on trust: an
+exact "album-then-artist" slug wins wherever it appears in the results (a
+search for *Mezzanine* returns the remixes album too, and that often sorts
+above the record), a slug that merely starts with the album and mentions the
+artist is the fallback (a remaster, a deluxe edition), and anything else is
+declined. Both sides are reduced to letters and digits, because Qobuz's
+slugging cannot be reproduced: an apostrophe and a full stop vanish
+("Ol' Dirty Bastard" → `ol-dirty-bastard`, "good kid, m.A.A.d city" →
+`good-kid-maad-city`) while a slash becomes a separator ("AC/DC" → `ac-dc`).
+
+**After the row is drawn and never before it.** The lookup costs a page read,
+so a suggestion must not wait on it, and a failure leaves the search link that
+was already there. The card's own Qobuz chip gets the same upgrade — it is
+always on screen and always points at Qobuz — while the suggestion rows are
+only looked up when Qobuz is the **default**, since that is the only link they
+point at.
+
+1004 unit / 571 DOM / 93 static.
+
 ## [1.8.35] — 2026-09-21
 
 ### Added — a suggestion is somewhere to go

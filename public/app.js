@@ -9281,6 +9281,9 @@
       frame.innerHTML = `<img src="${dataUrl}" alt="Share card">`;
       buildActions(blob, title, artist);
       renderLinks(links);
+      // The card's own Qobuz chip lands on the download store for exactly the
+      // same reason the suggestions did, so it gets the same upgrade.
+      upgradeQobuzChip(title, artist, mySeq);
       // AFTER the card, and deliberately not awaited: this costs up to five
       // Deezer calls and the card must not wait behind it. A generation stamp
       // rather than a plain flag, because the sheet can be reopened on another
@@ -9347,6 +9350,10 @@
     markPreferredChip();
     renderLinks(lastLinks);       // the tick moves
     renderSimilar(lastActs);      // and so does where the suggestions point
+    // Switching TO Qobuz means the rows now point at search links that have
+    // never been upgraded, so they get the same treatment they would have had
+    // if Qobuz had been the default when they were drawn.
+    upgradeQobuzLinks(lastActs, shareSeq);
     if (window.__showToast) {
       const svc = (lastLinks && lastLinks.services || []).find(x => x.id === id);
       window.__showToast((svc ? svc.name : id) + " is now the default", "ok");
@@ -9422,6 +9429,75 @@
     if (seq !== shareSeq) return;   // the sheet moved on, or closed
     lastActs = acts;
     renderSimilar(acts);
+    upgradeQobuzLinks(acts, seq);
+  }
+
+  /*
+   * A Qobuz search link lands on their DOWNLOAD STORE and never opens the app.
+   * Only an album id does — see lib/qobuz-deeplink.js for why no search URL
+   * anywhere can. Getting an id costs a page read on the server, so it happens
+   * AFTER the rows are on screen and never before them: a suggestion must not
+   * wait on it, and a failure leaves the search link that was already there.
+   *
+   * ONLY WHEN QOBUZ IS THE DEFAULT, because that is the only link the rows
+   * actually point at. Switching the default to Qobuz later runs this again.
+   *
+   * The row is found again by what it LINKS TO rather than held onto: the list
+   * may have been rebuilt while a lookup was in flight (a change of default
+   * repaints it), and a reference to a discarded node would upgrade nothing.
+   */
+  async function upgradeQobuzLinks(acts, seq) {
+    if (!similarLs) return;
+    for (const act of (acts || [])) {
+      if (seq !== shareSeq) return;                 // the sheet moved on
+      if (!act || !act.album || act.in_library) continue;
+      const svc = (act.services || []).find(x => x.id === "qobuz");
+      if (!svc || !svc.url) continue;
+      const ids = (act.services || []).map(x => x.id);
+      if (preferredService(ids) !== "qobuz") continue;
+      if (svc.url.indexOf("open.qobuz.com") === 0) continue;   // already upgraded
+      try {
+        const params = new URLSearchParams({ album: act.album, artist: act.name || "" });
+        const r = await fetch("/api/qobuz-link?" + params);
+        if (!r.ok) continue;
+        const j = await r.json();
+        if (!j || !j.url) continue;
+        if (seq !== shareSeq) return;
+        const before = svc.url;
+        // Remember it on the act, so a repaint (a change of default and back)
+        // keeps the good link instead of asking again.
+        svc.url = j.url;
+        const row = similarLs.querySelector('a[href="' + cssEscapeUrl(before) + '"]');
+        if (row) row.href = j.url;
+      } catch (e) { /* the search link is still there, which is not nothing */ }
+    }
+  }
+
+  /*
+   * The card's Qobuz chip, upgraded the same way and for the same reason.
+   * Separate from the suggestions only because it is one link rather than
+   * three and it is about the record on the card, not about an act like it.
+   */
+  async function upgradeQobuzChip(title, artist, seq) {
+    if (!linksEl || !title) return;
+    const svc = (lastLinks && lastLinks.services || []).find(x => x.id === "qobuz");
+    if (!svc || !svc.url || svc.url.indexOf("open.qobuz.com") === 0) return;
+    try {
+      const params = new URLSearchParams({ album: title, artist: artist || "" });
+      const r = await fetch("/api/qobuz-link?" + params);
+      if (!r.ok) return;
+      const j = await r.json();
+      if (!j || !j.url || seq !== shareSeq) return;
+      const before = svc.url;
+      svc.url = j.url;
+      const chip = linksEl.querySelector('a[href="' + cssEscapeUrl(before) + '"]');
+      if (chip) chip.href = j.url;
+    } catch (e) { /* the search link is still there */ }
+  }
+
+  /** Quotes and backslashes, so a URL can sit inside an attribute selector. */
+  function cssEscapeUrl(value) {
+    return String(value).replace(/["\\]/g, "\\$&");
   }
 
   /*

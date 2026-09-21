@@ -21,6 +21,7 @@ const { createUpdater } = require("./lib/updater");
 const shareLinks = require("./lib/share-links");
 const wikiMatch  = require("./lib/wiki-match");
 const similar    = require("./lib/similar");
+const qobuzDeep  = require("./lib/qobuz-deeplink");
 // Title-only album matching, for the albums Roon supplies no artist for. Pure —
 // see lib/albumkeys.js. Required up here rather than beside the waveform code
 // because albumSource reads it, and that runs from every list endpoint.
@@ -12280,6 +12281,70 @@ app.get("/api/smart-picks", async (req, res) => {
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+/*
+ * GET /api/qobuz-link?album=&artist=
+ *
+ * The Qobuz link that opens the Qobuz APP, or null.
+ *
+ * WHY THIS IS A SECOND REQUEST AND NOT PART OF THE LINK ROW. Every other
+ * service link is a pure string built from the title and the artist —
+ * lib/share-links.js, no network at all. Qobuz is the one that cannot be: a
+ * search URL lands on their download store and never opens the app, and only
+ * an album ID does (see lib/qobuz-deeplink.js for the full reason). Getting
+ * that id costs a page read, so it happens AFTER the row is drawn and never
+ * before it: nothing here may hold up a suggestion appearing, and a failure
+ * leaves the search link that was already there, which is not nothing.
+ *
+ * Cached including the misses. A record Qobuz does not carry is a fact about
+ * the record, and re-asking every time the same card opens would spend a
+ * request to be told so again.
+ */
+const qobuzLinkCache = new Map();          // "store|artist|album" -> id or ""
+const QOBUZ_LINK_TTL_MS = 7 * 24 * 60 * 60 * 1000;   // a catalogue moves, but not in a week
+const QOBUZ_LINK_CACHE_MAX = 500;
+
+async function fetchQobuzAlbumId(store, artist, album) {
+  const key = store + "|" + similar.normalize(artist || "") + "|" + similar.normalize(album || "");
+  const hit = qobuzLinkCache.get(key);
+  if (hit && (Date.now() - hit.at) < QOBUZ_LINK_TTL_MS) return hit.id || null;
+
+  let id = "";
+  try {
+    const query = shareLinks.searchQuery(artist, album);
+    if (query) {
+      await qobuzWait();
+      const html = await httpText(qobuzDeep.searchUrl(store, query),
+        { "User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9" });
+      id = qobuzDeep.pickAlbumId(html, store, artist, album) || "";
+    }
+  } catch (e) {
+    if (DEBUG) console.error("[qobuz-link]", e.message);
+    id = "";
+  }
+
+  if (qobuzLinkCache.size >= QOBUZ_LINK_CACHE_MAX) {
+    qobuzLinkCache.delete(qobuzLinkCache.keys().next().value);
+  }
+  qobuzLinkCache.set(key, { at: Date.now(), id });
+  return id || null;
+}
+
+app.get("/api/qobuz-link", async (req, res) => {
+  const album  = String(req.query.album  || "").trim();
+  const artist = String(req.query.artist || "").trim();
+  if (!album) return res.status(400).json({ error: "album query parameter required" });
+  const store = shareLinks.qobuzStorefront(
+    shareLinks.localeFromAcceptLanguage(req.headers["accept-language"]));
+  try {
+    // The FIRST credited act, the same rule every other link here uses.
+    const id = await fetchQobuzAlbumId(store, shareLinks.primaryArtist(artist), album);
+    res.set("Cache-Control", "public, max-age=604800");
+    res.json({ url: qobuzDeep.deepLink(id) });
+  } catch (e) {
+    res.json({ url: null });   // the search link is still there
   }
 });
 
