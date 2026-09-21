@@ -1280,9 +1280,20 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
                linked to lives in lib/share-links.js, so this screen and the
                chips can never disagree about which services exist. -->
           <div id="share-services-list" class="share-toggle-list"></div>
+          <div class="settings-row settings-row-top">
+            <span class="settings-label">Default <button class="settings-info-btn" data-info="Where a suggestion goes when the record is not in your Roon library. You can also set it by holding a service button under the share card. This is per device, so a phone and a tablet can differ." aria-label="Info">&#9432;</button></span>
+            <div class="settings-select-wrap">
+              <select id="share-default-service" class="settings-select" aria-label="Default service"></select>
+              <svg class="settings-caret" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </div>
+          </div>
           <p class="settings-note" id="share-services-note">
             Each one opens a search for the album on that service. Nothing is
-            looked up until you tap a link.
+            looked up until you tap a link. A suggestion that IS in your library
+            queues it instead.
           </p>
         </div>
 

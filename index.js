@@ -12353,6 +12353,56 @@ async function fetchSimilarActs(artist) {
   return acts;
 }
 
+/*
+ * Is this suggested record in the Roon library, and if so where?
+ *
+ * STRICT ON THE TITLE, FORGIVING ON THE ARTIST. The title must match exactly
+ * once normalised, because this answer becomes a QUEUE: getting it wrong does
+ * not show the wrong text, it plays the wrong record. The artist is matched
+ * with namesOverlap, which is the permissive rule — "Eno" has to find "Brian
+ * Eno", and an edition credited to the band rather than the frontman is the
+ * same album.
+ *
+ * A title that matches several albums by DIFFERENT acts and no artist to
+ * separate them is not an answer, so it returns null and the row falls back to
+ * the streaming service. Several editions of the same record by the same act
+ * are all the right answer; the first will do.
+ */
+/*
+ * A title reduced to the part two catalogues agree on.
+ *
+ * normalize() turns every run of non-alphanumerics into ONE SPACE, which is
+ * right for matching within one catalogue and wrong across two: Roon's
+ * "Sgt. Pepper's Lonely Hearts Club Band" becomes "sgt pepper s lonely…" while
+ * Deezer's "Sgt. Peppers…" becomes "sgt peppers lonely…", and those are not
+ * equal. Every apostrophe in the library is a missed match, and a missed match
+ * sends a record you own out to a streaming service.
+ *
+ * So the spaces go too, and "&" is spelled out first — the two spellings of an
+ * ampersand are the other difference these catalogues have about the same
+ * record. What is left is strict enough to be safe (it is still every
+ * character of the title, in order) and blind to the punctuation nobody agrees
+ * on.
+ */
+function albumTitleKey(s) {
+  return normalize(String(s == null ? "" : s).replace(/&/g, " and ")).replace(/\s+/g, "");
+}
+
+function resolveLibraryAlbum(title, artist) {
+  const t = albumTitleKey(title);
+  if (!t || !albumIndex.albums.length) return null;
+  const hits = albumIndex.albums.filter(al => albumTitleKey(al.title) === t);
+  if (!hits.length) return null;
+
+  const want = String(artist || "").trim();
+  if (!want) return hits.length === 1 ? hits[0] : null;
+
+  const byArtist = hits.filter(al =>
+    namesOverlap(al.subtitle || "", want) ||
+    (al.artistNames || []).some(n => namesOverlap(n, want)));
+  return byArtist.length ? byArtist[0] : null;
+}
+
 app.get("/api/similar", async (req, res) => {
   const artist = String(req.query.artist || "").trim();
   if (!artist) return res.status(400).json({ error: "artist query parameter required" });
@@ -12360,10 +12410,47 @@ app.get("/api/similar", async (req, res) => {
     // The FIRST credited act, the same rule the links row uses: a four-act
     // credit searched whole finds nobody at all.
     const acts = await fetchSimilarActs(shareLinks.primaryArtist(artist));
-    // A day, matching the cache above — the answer is about an act, not about
-    // what is playing, so it does not go stale when the track changes.
-    res.set("Cache-Control", "public, max-age=86400");
-    res.json({ acts });
+    /*
+     * Each suggestion is a PLACE TO GO, so every row is told where.
+     *
+     *   in the library -> its offset, and the identity to send with the queue
+     *     so a drifted offset is relocated rather than played blind (the same
+     *     contract /api/play enforces everywhere else);
+     *   not in the library -> a url per enabled service, and the CLIENT picks
+     *     which. The default service is a per-device preference in
+     *     localStorage, so sending them all means changing it costs nothing —
+     *     no round trip, and no server write for a display choice.
+     *
+     * Resolution is NOT cached with the acts: the suggestion list is about an
+     * artist and lasts a day, but whether a record is in the library changes
+     * with the library. It is an in-memory index scan over a handful of rows.
+     */
+    const st = loadPersistedSettings();
+    const enabled = st.shareServices === undefined
+      ? shareLinks.defaultServiceIds()
+      : shareLinks.sanitiseIds(st.shareServices, shareLinks.knownServiceIds());
+    const locale = shareLinks.localeFromAcceptLanguage(req.headers["accept-language"]);
+
+    const out = acts.map(act => {
+      const inLib = act.album ? resolveLibraryAlbum(act.album, act.name) : null;
+      return Object.assign({}, act, {
+        in_library: !!inLib,
+        offset:     inLib ? inLib.offset : null,
+        // What the LIBRARY calls it, which is what the queue must be sent —
+        // Deezer's title and Roon's can differ in punctuation, and the identity
+        // check compares against Roon's.
+        library_title:    inLib ? inLib.title : null,
+        library_subtitle: inLib ? (inLib.subtitle || "") : null,
+        services: inLib ? [] : shareLinks.serviceLinks(act.name, act.album || "", {
+          locale, enabled,
+        }),
+      });
+    });
+
+    // A day for the ACTS, but the library half is not cacheable — a record
+    // added since would keep answering "not here" until tomorrow.
+    res.set("Cache-Control", "no-store");
+    res.json({ acts: out });
   } catch (e) {
     res.json({ acts: [] });   // a suggestion row is never worth an error
   }

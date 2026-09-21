@@ -550,6 +550,15 @@
   // Labels/search reuse the shared grid but aren't the random-album wall, so
   // they show Back but not Refresh.
   window.__setTopbarNav = setTopbarNav;
+  // The zone every "play this somewhere" action targets, for the modules that
+  // live in their own IIFEs (the share sheet's suggestions). The SELECT wins
+  // when it has a value — it is what the user last touched — with the
+  // in-memory value behind it, which is the same order every caller inside
+  // this scope already uses.
+  window.__selectedZoneId = () => {
+    const sel = document.getElementById("zone-select");
+    return (sel && sel.value) || selectedZoneId || null;
+  };
 
   if (topbarBack)    topbarBack.addEventListener("click", showHome);
   if (topbarRefresh) topbarRefresh.addEventListener("click", () => loadRandom());
@@ -9163,6 +9172,7 @@
     actions.innerHTML = "";
     if (linksEl) { linksEl.innerHTML = ""; linksEl.classList.add("hidden"); }
     if (similarEl && similarLs) { similarLs.innerHTML = ""; similarEl.classList.add("hidden"); }
+    lastActs = [];
     hintEl.textContent = "";
     errEl.textContent  = "";
   }
@@ -9201,6 +9211,7 @@
     actions.innerHTML = "";
     if (linksEl) { linksEl.innerHTML = ""; linksEl.classList.add("hidden"); }
     if (similarEl && similarLs) { similarLs.innerHTML = ""; similarEl.classList.add("hidden"); }
+    lastActs = [];
     hintEl.textContent = "";
     errEl.textContent  = "";
     frame.innerHTML =
@@ -9302,6 +9313,97 @@
   let shareSeq = 0;
 
   /*
+   * THE DEFAULT SERVICE — where a suggestion goes when the record is not in
+   * the library.
+   *
+   * PER DEVICE, IN localStorage, which is the Share Card app's choice and the
+   * right one: the phone and the tablet across the house can reasonably differ,
+   * and a display preference is not worth a server write. Every touch of
+   * storage is guarded — it throws outright in a private window — and the
+   * fallback is the first service that is switched on rather than a hardcoded
+   * name, so a user who has turned Qobuz off is never sent to it.
+   *
+   * SET BY HOLDING A SERVICE CHIP, the gesture the Share Card app uses, and
+   * also from Settings -> Share Card. The gesture is the discoverable one once
+   * you know it; the setting is the discoverable one before that.
+   */
+  const SHARE_PREF_KEY = "musicd-share-service";
+
+  function preferredService(available) {
+    const list = available || [];
+    let stored = null;
+    try { stored = localStorage.getItem(SHARE_PREF_KEY); }
+    catch (e) { /* private browsing — the fallback below stands */ }
+    // A remembered service that is now switched off (or was removed from the
+    // build) must not win: it would send a tap somewhere the user cannot see.
+    if (stored && (!list.length || list.indexOf(stored) > -1)) return stored;
+    return list.length ? list[0] : "qobuz";
+  }
+
+  function setPreferredService(id) {
+    if (!id) return;
+    try { localStorage.setItem(SHARE_PREF_KEY, id); }
+    catch (e) { /* the choice lasts this session, which beats none */ }
+    markPreferredChip();
+    renderLinks(lastLinks);       // the tick moves
+    renderSimilar(lastActs);      // and so does where the suggestions point
+    if (window.__showToast) {
+      const svc = (lastLinks && lastLinks.services || []).find(x => x.id === id);
+      window.__showToast((svc ? svc.name : id) + " is now the default", "ok");
+    }
+  }
+
+  /** Exactly one chip carries the tick, so the old one has to lose it. */
+  function markPreferredChip() {
+    if (!linksEl) return;
+    const chips = linksEl.querySelectorAll("a[data-service]");
+    const ids = Array.prototype.map.call(chips, c => c.dataset.service);
+    const chosen = preferredService(ids);
+    for (const chip of chips) {
+      const mine = chip.dataset.service === chosen;
+      chip.classList.toggle("is-default", mine);
+      chip.setAttribute("aria-pressed", mine ? "true" : "false");
+    }
+  }
+
+  /*
+   * A HOLD, NOT A TAP, AND THE TAP STILL HAS TO WORK.
+   *
+   * There is no long-press event, so it is a timer armed on touchstart and
+   * cancelled by a move or a lift. When it fires, the click that follows on
+   * both platforms has to be swallowed, or choosing a service would also open
+   * it. contextmenu covers the desktop right-click and is what iOS raises when
+   * the callout is suppressed — preventing it is what stops a held chip
+   * showing a link preview instead of choosing.
+   */
+  const HOLD_MS = 500;
+  function holdToPrefer(chip, id) {
+    let timer = null, held = false;
+    const cancel = () => { if (timer) clearTimeout(timer); timer = null; };
+    chip.addEventListener("touchstart", () => {
+      held = false; cancel();
+      timer = setTimeout(() => { held = true; setPreferredService(id); }, HOLD_MS);
+    }, { passive: true });
+    chip.addEventListener("touchmove",   cancel, { passive: true });
+    chip.addEventListener("touchend",    cancel);
+    chip.addEventListener("touchcancel", cancel);
+    chip.addEventListener("click", (e) => {
+      if (!held) return;
+      held = false;
+      e.preventDefault();      // the hold already did something
+    });
+    chip.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      setPreferredService(id);
+    });
+  }
+
+  // What is currently on screen, so a change of default can repaint both rows
+  // without asking the server again.
+  let lastLinks = null;
+  let lastActs  = [];
+
+  /*
    * "If you like this" — three acts, each with one record.
    *
    * Never blocks the card and never reports a failure: a suggestion row is the
@@ -9318,31 +9420,123 @@
       acts = (j && j.acts) || [];
     } catch (e) { return; }      // no row, no message
     if (seq !== shareSeq) return;   // the sheet moved on, or closed
+    lastActs = acts;
+    renderSimilar(acts);
+  }
 
+  /*
+   * Each suggestion is somewhere to GO, not a line of text.
+   *
+   *   IN THE LIBRARY -> a button that queues it. The server resolved it and
+   *     sent the offset plus the library's own title and artist, and those go
+   *     with the request: /api/play relocates a drifted offset rather than
+   *     playing whatever now sits at it, and that guarantee is worth nothing
+   *     if the caller does not send the identity to check against.
+   *   NOT IN THE LIBRARY -> a link to the default service's search for it.
+   *
+   * The two are visibly different before they are tapped, because "this adds
+   * to your queue" and "this leaves the app" should not look the same.
+   */
+  function renderSimilar(acts) {
+    if (!similarEl || !similarLs) return;
     similarLs.innerHTML = "";
-    for (const act of acts) {
+    for (const act of (acts || [])) {
       if (!act || !act.name) continue;
-      const row = document.createElement("div");
-      row.className = "share-similar-act";
-      const name = document.createElement("span");
-      name.className = "share-similar-name";
-      name.textContent = act.name;
-      row.appendChild(name);
+
+      const label = document.createElement("span");
+      label.className = "share-similar-name";
+      label.textContent = act.name;
+      const rec = document.createElement("span");
+      rec.className = "share-similar-rec";
       // An act whose records could not be named is still worth showing, so the
       // record line is optional rather than the row being dropped.
-      if (act.album) {
-        const rec = document.createElement("span");
-        rec.className = "share-similar-rec";
-        rec.textContent = act.year ? act.album + " \u00b7 " + act.year : act.album;
-        row.appendChild(rec);
+      if (act.album) rec.textContent = act.year ? act.album + " \u00b7 " + act.year : act.album;
+
+      let row;
+      if (act.in_library && typeof act.offset === "number") {
+        row = document.createElement("button");
+        row.type = "button";
+        row.className = "share-similar-act is-library";
+        row.appendChild(label);
+        if (act.album) row.appendChild(rec);
+        row.appendChild(tagEl("Queue"));
+        row.addEventListener("click", () => queueSuggestion(act, row));
+      } else {
+        const ids = (act.services || []).map(x => x.id);
+        const svc = (act.services || []).find(x => x.id === preferredService(ids));
+        if (svc) {
+          row = document.createElement("a");
+          row.className = "share-similar-act is-service";
+          row.href = svc.url;
+          row.target = "_blank";
+          row.rel = "noopener noreferrer";
+          row.appendChild(label);
+          if (act.album) row.appendChild(rec);
+          row.appendChild(tagEl(svc.name));
+        } else {
+          // Nothing to link to — every service switched off, or no record was
+          // named. Still shown, because the act itself is the suggestion.
+          row = document.createElement("div");
+          row.className = "share-similar-act";
+          row.appendChild(label);
+          if (act.album) row.appendChild(rec);
+        }
       }
       similarLs.appendChild(row);
     }
     similarEl.classList.toggle("hidden", !similarLs.children.length);
   }
 
+  function tagEl(text) {
+    const t = document.createElement("span");
+    t.className = "share-similar-tag";
+    t.textContent = text;
+    return t;
+  }
+
+  /*
+   * Queue a suggestion that is in the library.
+   *
+   * Sends the LIBRARY's title and artist, not Deezer's: /api/play compares the
+   * identity against what sits at the offset and relocates or refuses when
+   * they disagree, and Deezer's punctuation is not Roon's.
+   */
+  async function queueSuggestion(act, row) {
+    const zone = (window.__selectedZoneId && window.__selectedZoneId()) || null;
+    if (!zone) { if (window.__showToast) window.__showToast("Pick a zone first", "err"); return; }
+    if (row.dataset.busy === "1") return;
+    row.dataset.busy = "1";
+    const tag = row.querySelector(".share-similar-tag");
+    const was = tag ? tag.textContent : "";
+    if (tag) tag.textContent = "\u2026";
+    try {
+      const r = await fetch("/api/play", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          offset:   act.offset,
+          title:    act.library_title    || act.album || "",
+          subtitle: act.library_subtitle || "",
+          zone_or_output_id: zone,
+          kind: "queue",
+        })
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+      if (typeof j.offset === "number" && j.offset >= 0) act.offset = j.offset;
+      if (tag) tag.textContent = "Queued";
+      if (window.__showToast) window.__showToast("Queued " + (act.album || act.name), "ok");
+    } catch (e) {
+      if (tag) tag.textContent = was;
+      if (window.__showToast) window.__showToast("Couldn't queue that", "err");
+    } finally {
+      row.dataset.busy = "";
+    }
+  }
+
   function renderLinks(links) {
     if (!linksEl) return;
+    lastLinks = links || null;
     linksEl.innerHTML = "";
     const all = [
       ...((links && links.services) || []).map(l => ({ link: l, review: false })),
@@ -9358,10 +9552,17 @@
       // textContent, not innerHTML: the label is a constant today, and this is
       // what keeps it harmless if it ever stops being one.
       a.textContent = link.chip || link.name || link.id;
+      // Only a SERVICE can be the default — a review site is not somewhere to
+      // hear a record, so holding one does nothing.
+      if (!review) {
+        a.dataset.service = link.id;
+        holdToPrefer(a, link.id);
+      }
       linksEl.appendChild(a);
     }
     // An empty row is a gap under the card, not a row.
     linksEl.classList.toggle("hidden", !linksEl.children.length);
+    markPreferredChip();
   }
 
   function buildActions(blob, title, artist) {
@@ -10317,6 +10518,9 @@
           .map(c => c.dataset.id);
         group.enabled = ids;
         onSave(ids);
+        // Switching a service off can invalidate the default, so the list of
+        // candidates is rebuilt from what is left.
+        if (listEl === shareServicesList) renderShareDefault(group);
       });
 
       row.appendChild(label); row.appendChild(sw);
@@ -10337,6 +10541,59 @@
     }
   }
 
+  /*
+   * The default service, in Settings as well as on the chip.
+   *
+   * THE SAME localStorage KEY the share sheet uses — one preference, two ways
+   * in. It is per device and not a server setting (see the note beside
+   * preferredService in the share module), which is why this reads and writes
+   * storage directly rather than posting anything.
+   *
+   * The list is the ENABLED services only: offering a default that is switched
+   * off would send a tap somewhere the user has already said they do not want.
+   * Turning off the current default therefore changes it, so the select is
+   * rebuilt whenever the toggles are.
+   */
+  const shareDefaultSel = document.getElementById("share-default-service");
+  const SHARE_PREF_KEY_SETTINGS = "musicd-share-service";
+
+  function renderShareDefault(group) {
+    if (!shareDefaultSel || !group) return;
+    const all = group.all || [];
+    const on  = new Set(group.enabled || []);
+    const enabled = all.filter(s => on.has(s.id));
+    shareDefaultSel.innerHTML = "";
+    if (!enabled.length) {
+      const o = document.createElement("option");
+      o.textContent = "No services switched on";
+      o.value = "";
+      shareDefaultSel.appendChild(o);
+      shareDefaultSel.disabled = true;
+      return;
+    }
+    shareDefaultSel.disabled = false;
+    let stored = null;
+    try { stored = localStorage.getItem(SHARE_PREF_KEY_SETTINGS); }
+    catch (e) { /* private browsing */ }
+    const chosen = (stored && enabled.some(s => s.id === stored)) ? stored : enabled[0].id;
+    for (const svc of enabled) {
+      const o = document.createElement("option");
+      o.value = svc.id;
+      o.textContent = svc.name;
+      o.selected = svc.id === chosen;
+      shareDefaultSel.appendChild(o);
+    }
+  }
+
+  if (shareDefaultSel) {
+    shareDefaultSel.addEventListener("change", () => {
+      const id = shareDefaultSel.value;
+      if (!id) return;
+      try { localStorage.setItem(SHARE_PREF_KEY_SETTINGS, id); }
+      catch (e) { /* the choice lasts this session */ }
+    });
+  }
+
   async function loadShareLinkSettings() {
     if (!shareServicesList && !shareReviewsList) return;
     try {
@@ -10347,6 +10604,7 @@
         ids => saveShareLinks({ services: ids }));
       renderShareToggles(shareReviewsList, shareLinkState.reviews,
         ids => saveShareLinks({ reviews: ids }));
+      renderShareDefault(shareLinkState.services);
     } catch (e) { /* the panes stay empty; nothing else depends on them */ }
   }
   loadShareLinkSettings();

@@ -2,6 +2,61 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.35] — 2026-09-21
+
+### Added — a suggestion is somewhere to go
+
+The rows under "If you like this" were plain text. Reported, fairly: a
+suggestion you cannot act on is half a feature. That was an omission of mine
+rather than a regression — I built them as text and only ever explained why
+they carry no artwork.
+
+Each row now does one of two things, and which one is **visible before it is
+tapped**, because "this adds to your queue" and "this leaves the app" must not
+look the same:
+
+- **In the Roon library → it queues.** The server resolves each suggestion
+  against the album index and sends the offset back with it.
+- **Not in the library → it opens the default streaming service's search.**
+
+**The queue sends the LIBRARY's title and artist, not Deezer's.** `/api/play`
+relocates a drifted offset rather than playing whatever now sits at it, and
+that guarantee is worth nothing if the caller does not send the identity to
+check against — Deezer writes "Here Come the Warm Jets" where the library
+writes "The", and the check would have refused a play that was correct.
+
+### Added — a default service, settable two ways
+
+- **Hold a service button under the card** and it takes the tick. That is the
+  Share Card app's gesture, ported with it: a timer armed on `touchstart`,
+  cancelled by a move or a lift, and the click that follows swallowed so
+  choosing a service does not also open it.
+- **Settings → Share Card → Default**, for before you know about the hold.
+
+Per device, in `localStorage`, which is the Share Card app's choice and the
+right one — a phone and a tablet across the house can reasonably differ, and a
+display preference is not worth a server write. The fallback is the first
+service that is **switched on** rather than a hardcoded name, so turning Qobuz
+off never leaves a row pointing at it.
+
+### Fixed — matching a record across two catalogues
+
+Found while testing the resolver, and it would have made the feature look
+broken: `normalize()` reduces every run of non-alphanumerics to **one space**,
+so Roon's "Sgt. Pepper's…" becomes `sgt pepper s lonely…` and Deezer's "Sgt.
+Peppers…" becomes `sgt peppers lonely…`. Not equal. **Every apostrophe in the
+library was a missed match**, and a missed match sends a record you already own
+out to a streaming service. Titles are compared on a key with the spaces
+removed and "&" spelled out — still every character in order, but blind to the
+punctuation the two catalogues disagree about.
+
+The resolver is strict on the title and forgiving on the artist, and the tests
+say why: this answer becomes a queue, so a wrong title plays the wrong record,
+while "Eno" has to find "Brian Eno". A title shared by two different acts with
+no artist to separate them is not an answer at all.
+
+995 unit / 565 DOM / 92 static.
+
 ## [1.8.34] — 2026-09-21
 
 ### Fixed — a self-titled album matched every other record by the same act
