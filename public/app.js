@@ -6323,6 +6323,30 @@
         srcLink.classList.add("hidden");
       }
 
+      // WHOSE WORDS THESE ARE, when that is not the same as where the link
+      // goes. A Pitchfork-reviewed album now shows WIKIPEDIA's description
+      // (their own prose never leaves the server), and the only link beside it
+      // says "Read the full review on Pitchfork" — which would read as though
+      // the paragraph above it were Pitchfork's. It is not, and one line saying
+      // so is the difference between a citation and a misattribution.
+      const textSrc = document.getElementById("album-bio-text-source");
+      if (textSrc) {
+        const ds = extras.album.description_source;
+        const show = !!(extras.album.description && ds && ds !== extras.album.source);
+        if (show && extras.album.description_url) {
+          textSrc.innerHTML = "";
+          const a = document.createElement("a");
+          a.href = extras.album.description_url;
+          a.target = "_blank";
+          a.rel = "noopener noreferrer";
+          a.textContent = "From " + ds;
+          textSrc.appendChild(a);
+        } else if (show) {
+          textSrc.textContent = "From " + ds;
+        }
+        textSrc.classList.toggle("hidden", !show);
+      }
+
       section.classList.remove("hidden");
       if (extras.album.description) setupBioToggle(text, toggle);
       else toggle.classList.add("hidden");

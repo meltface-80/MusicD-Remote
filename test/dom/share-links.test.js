@@ -60,9 +60,12 @@ const SHARE_SETTINGS = {
   },
 };
 
-const STUB = `
+const STUB_FOR = (theme) => `
 window.__posts = [];
-try { localStorage.setItem("rra-zone", "z1"); } catch (e) {}  // storage optional
+try {
+  localStorage.setItem("rra-zone", "z1");
+  localStorage.setItem("rra-theme-v2", ${JSON.stringify(theme)});
+} catch (e) {}  // storage optional
 window.__installFetch(function (u, opts) {
   if (u.indexOf("/api/settings/share-links") > -1) {
     if (opts && opts.method === "POST") {
@@ -106,6 +109,16 @@ const DRIVER = `
              w: Math.round(r.width), h: Math.round(r.height), y: Math.round(r.top) };
   }));
   T("links_visible", !document.getElementById("share-links").classList.contains("hidden"));
+  // The computed FILL of each chip, and the surface behind the row. A variant
+  // defined by removing its background has no floor: how visible it stays
+  // depends on how far apart two theme tokens are, which is a different answer
+  // per palette.
+  T("fills", chips.map(function (a) {
+    return { text: a.textContent, review: a.classList.contains("is-review"),
+             bg: getComputedStyle(a).backgroundColor,
+             border: getComputedStyle(a).borderTopColor };
+  }));
+  T("panel_bg", getComputedStyle(document.querySelector("#share-overlay .share-panel")).backgroundColor);
   // One round trip, not two: the chips ride on the request the card makes.
   T("extras_calls", window.__callsMatching("/api/album/extras") - extrasBefore);
 
@@ -128,6 +141,27 @@ const DRIVER = `
   }
   T("service_rows", rows("#share-services-list"));
   T("review_rows",  rows("#share-reviews-list"));
+  // Room between the switches. Each row is exactly its switch's height, so
+  // without a gap five that are all ON merge into one unbroken column of
+  // colour and stop reading as five controls.
+  //
+  // The PANE has to be open for this: the rows are populated at startup
+  // whether or not it is showing, so reading their text works while hidden —
+  // but getBoundingClientRect on a hidden subtree is all zeros, and zeros look
+  // exactly like rows that are touching.
+  document.querySelector('.settings-nav-item[data-pane="sharecard"]').click();
+  await window.__sleep(250);
+  T("pane_open", !document.querySelector('.settings-pane[data-pane="sharecard"]').classList.contains("hidden"));
+  function gapsIn(sel) {
+    var rs = document.querySelectorAll(sel + " .settings-row");
+    var out = [];
+    for (var i = 1; i < rs.length; i++) {
+      out.push(Math.round(rs[i].getBoundingClientRect().top - rs[i - 1].getBoundingClientRect().bottom));
+    }
+    return out;
+  }
+  T("service_gaps", gapsIn("#share-services-list"));
+  T("review_gaps",  gapsIn("#share-reviews-list"));
 
   // Turning one off posts the WHOLE list, not a delta.
   var tidal = document.querySelector('#share-services-list input[data-id="tidal"]');
@@ -143,9 +177,10 @@ const DRIVER = `
   T("post_all_off", window.__posts[window.__posts.length - 1] || null);
 `;
 
-function render(size) {
-  const r = harness.renderPage({ stub: STUB, driver: DRIVER,
-                                 name: "share-links-" + size.split("x")[0], windowSize: size });
+function render(size, theme) {
+  const t = theme || "dark";
+  const r = harness.renderPage({ stub: STUB_FOR(t), driver: DRIVER,
+                                 name: "share-links-" + t + "-" + size.split("x")[0], windowSize: size });
   harness.assertNoPageError(assert, r);
   return r;
 }
@@ -201,6 +236,52 @@ test("the share card links to services and reviews", { concurrency: 1 }, async (
     for (const c of r.chips) {
       assert.ok(c.h <= 72, c.text + " is " + c.h + "px tall — a chip that deep sets the row's height");
       assert.ok(c.h >= 36, c.text + " is only " + c.h + "px tall");
+    }
+  });
+
+  await t.test("every chip looks the same, on the light palettes too", () => {
+    // THE REPORTED BUG, and it only existed on light. The review chips were
+    // hollow — background: transparent — which on the dark palettes read as a
+    // quieter variant and on the light ones left five labels floating with no
+    // button under them, because --bg-elev-2 is barely off the panel there.
+    for (const theme of ["light", "brass-light", "dark", "copper-dark"]) {
+      const r = render("390x844", theme);
+      const services = r.fills.filter(f => !f.review);
+      const reviews  = r.fills.filter(f => f.review);
+      assert.ok(services.length && reviews.length,
+        "need both kinds of chip to compare on " + theme);
+
+      const want = services[0].bg;
+      for (const f of reviews) {
+        assert.equal(f.bg, want,
+          f.text + " is filled " + f.bg + " on the " + theme + " palette while the " +
+          "service chips are " + want + ". Every chip is meant to look the same: a " +
+          "variant defined by REMOVING the fill has no floor, because how visible it " +
+          "stays depends entirely on how far apart two theme tokens happen to be.");
+      }
+      // And independently of parity: no chip may be transparent, or it has no
+      // button under it whatever the services happen to look like.
+      for (const f of r.fills) {
+        assert.ok(!/rgba\(0,\s*0,\s*0,\s*0\)|transparent/.test(f.bg),
+          f.text + " has no fill at all on the " + theme + " palette");
+      }
+    }
+  });
+
+  await t.test("the toggle rows are not touching", () => {
+    for (const theme of ["light", "dark"]) {
+      const r = render("390x844", theme);
+      assert.equal(r.pane_open, true,
+        "the Share Card pane never opened, so every rect below is zero");
+      for (const [what, gaps] of [["Services", r.service_gaps], ["Reviews", r.review_gaps]]) {
+        assert.ok(gaps.length, "no " + what + " rows to measure on " + theme);
+        for (const g of gaps) {
+          assert.ok(g >= 8,
+            what + " rows are " + g + "px apart on " + theme + " — each row is exactly " +
+            "its switch's height, so without a gap five switches that are all ON merge " +
+            "into a single column of colour");
+        }
+      }
     }
   });
 

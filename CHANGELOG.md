@@ -2,6 +2,72 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.33] — 2026-09-21
+
+### Fixed — the review chips were invisible on the light palettes
+
+- **Every chip looks the same now.** The review half was hollow —
+  `background: transparent` — on the theory that a place to read about a record
+  is quieter than a place to play it. On the dark palettes that read as
+  intended. On the light ones `--bg-elev-2` is barely off the panel it sits on,
+  so the fill was carrying the whole chip, and removing it left five labels
+  floating with no button under them.
+  The lesson is not "transparent was too subtle". It is that **a variant
+  defined by REMOVING the thing that gives an element its edges has no floor** —
+  how visible it stays depends entirely on how far apart two theme tokens
+  happen to be, which is a different answer per palette. `.is-review` stays as
+  a hook for grouping and for the tests; it no longer changes how anything
+  looks. My fault, and only ever checked on dark.
+- **The Share Card toggle rows have room between them.** Each row is exactly
+  its switch's height, so five switches that were all ON merged into one
+  unbroken column of colour and stopped reading as five controls.
+
+The chip test runs on all four palettes and compares the computed fill of a
+review chip against a service chip — the bug existed only on light, so a test
+that ran on one palette would have said nothing. The gap test opens the pane
+first: the rows are populated whether or not it is showing, so reading their
+text works while hidden, but `getBoundingClientRect` on a hidden subtree is all
+zeros, and zeros look exactly like rows that are touching. Both
+mutation-checked. 968 unit / 554 DOM / 90 static.
+
+## [1.8.32] — 2026-09-21
+
+### Fixed — a Pitchfork-reviewed album showed no words at all
+
+Reported: "the wiki reviews, if available, weren't added to the share card".
+v1.8.31 was only half of it — that fixed the renderer ignoring the description
+it was handed, and this is the reason there was often nothing to hand it.
+
+- **`fetchAlbumBios` picks one winner and the Pitchfork branch emitted
+  `description: null`.** Their written review must not be displayed (UK law —
+  only the score, the Best New Music flag and a link to read it at theirs), so
+  the branch set the text to null and stopped. The unintended half: any record
+  Pitchfork had reviewed showed NO text anywhere — album view or share card —
+  while the Wikipedia article fetched in the same `Promise.all` sat unused two
+  lines away. **The rule is about THEIR prose, not about the album having
+  none.** Wikipedia's description is used there now.
+- **Which immediately made attribution a real question.** `source` says where
+  the LINK goes (the Pitchfork review); it stopped describing whose words are
+  on screen. So there is a second field — `description_source` — and the album
+  view prints "From Wikipedia" under the paragraph whenever the two differ.
+  Showing Wikipedia's writing under a link reading "Read the full review on
+  Pitchfork" would be a misattribution: the same failure the compliance rule
+  exists to prevent, pointing the other way. The artist-mismatch guard clears
+  the attribution along with the text it drops, or the citation outlives what
+  it cites.
+- Pitchfork's own prose still never leaves the server, and the test asserts
+  that from both directions.
+
+### Changed — Settings → Share Card
+
+Services and Reviews were two top-level tiles; they are one **Share Card** tile
+now, with both lists on its page under their own headings. Ten categories
+rather than eleven, and the two things that configure the same screen are in
+the same place. The tile also stops borrowing Artwork & metadata's picture
+glyph — it carries the share icon from the button it configures.
+
+968 unit / 552 DOM / 90 static.
+
 ## [1.8.31] — 2026-09-20
 
 ### Added — the share card draws what it was already fetching
