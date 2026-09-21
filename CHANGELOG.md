@@ -2,6 +2,119 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.37] — 2026-09-21
+
+### Added — Discover: new records by the acts you play
+
+The one question this app could not answer. Smart Picks is LATERAL discovery
+(acts next to your library that you do not own), and the Pitchfork, Qobuz and
+TIDAL screens are EDITORIAL (what somebody else rates this week). None of them
+can tell you whether anyone you actually listen to has put something out —
+that needs your listening history, and nobody outside this box has it.
+
+Off by default, like the other two opt-in features, and its menu entry appears
+only once it is on. Settings → Discover.
+
+- **Seeded from your PLAYS, not your library.** They are different questions
+  and only one of them is this feature's. The library is what you own — the
+  record a friend recommended once, the box set bought for one disc, everything
+  imported in bulk years ago. The plays table is what you came back to, which
+  is the whole claim the screen makes.
+- **Ranked by distinct DAYS played, not by play count.** Forty plays in one
+  night is an evening; eight plays on eight days is a habit, and a habit is
+  what predicts wanting the next record. Without this, one long session with
+  one album owns the entire seed list.
+- **And the TRACK artist is the right artist here**, which is the opposite of
+  the call the Home history row makes. That row takes the artist from the
+  snapshot because a compilation would otherwise name a performer rather than
+  the record. Here the performer is exactly the point: play one track off a
+  compilation forty times and that act is one you listen to.
+- **The name match is EXACT**, which is stricter than anywhere else in this
+  codebase. Everywhere else a near name is a near miss; here the seed is your
+  own listening, so it is already the act's real name as Roon files it, and a
+  partial match at that point is a tribute band. Their record would then be
+  presented as a new release by somebody you love, under a heading saying so.
+
+**The thing Deezer cannot tell you, and most of the work.** Its listing carries
+the date of THAT EDITION and there is no original-release field, so "released
+this month" and "is a new record" are different claims and a remaster sits in
+the gap. Three rules close it, and the shape of the middle one is the whole
+design:
+
+- a record already in your library is never offered, on a title key blind to
+  the punctuation two catalogues disagree about (v1.8.35's apostrophe bug one
+  layer along) — which is also what catches a reissue whose original Deezer no
+  longer lists;
+- **a re-release needs TWO independent signals, and either alone is wrong in a
+  way that shows.** The title must name an edition ("… (2021 Remaster)") AND
+  the act must have an older record that reduces to the same base title. On the
+  first alone, the deluxe pressing of a record released last week is thrown away
+  for its name. On the second alone, Sault's "Untitled (Black Is)" is discarded
+  as a reissue of "Untitled (Rise)" five months earlier — two different albums,
+  one act, one reduced title;
+- a record dated after today is not offered at all. Deezer carries announced
+  releases, and an album nobody can play yet is a disappointment rather than a
+  discovery.
+
+Each row is somewhere to GO, on the same contract the share card's suggestions
+use: in your library it queues (sending the LIBRARY's title and artist, because
+`/api/play` checks identity against what sits at the offset), and otherwise it
+opens your default service — Qobuz by way of the album link that opens the app,
+upgraded after the row is drawn and never before it. Both screens now share one
+row builder rather than two copies of the rules about where a tap goes.
+
+### Fixed — switching the default to Qobuz stopped upgrading the rows
+
+Caught by a test written for the refactor above, which is the only reason it is
+in this entry rather than in a later one. Parameterising `upgradeQobuzLinks`
+left its second caller — the one that runs when you change the default service
+— on the old positional signature, so it silently did nothing: rows drawn while
+TIDAL was the default kept a Qobuz SEARCH link after Qobuz became the default,
+and a search link opens their download store rather than the app.
+
+The path had no assertion until now, which is exactly how it broke quietly. It
+has one, and the mutation that restores the old call makes it red.
+
+### The six things the review found before this shipped
+
+All in code written for this version, all fixed here. Recorded because four of
+them are invisible from the screen — the feature would have looked like it was
+working.
+
+- **The dedup undid the reissue rule.** `isReissue` refuses to call Sault's two
+  2020 albums editions of each other, and then the per-base-title map merged
+  them anyway and kept the OLDER one. The distinction has to be made twice or
+  the second rule cancels the first: a bucket's plain rows are different
+  records and all survive; its edition rows are packagings and are dropped as
+  soon as any plain row is there.
+- **The owned check ignored the artist.** Title keys alone, so owning any
+  record called "Greatest Hits" — or any "Untitled" — suppressed every other
+  act's for ever, with nothing on screen to say why. The set is scoped to the
+  act now, matched the permissive way the library resolver matches an artist.
+  Which is the opposite strictness to the SEED name match, deliberately: too
+  loose here hides a row, too loose there shows a tribute band's record as
+  somebody's new album.
+- **The manual Refresh skipped the preconditions.** `force` was allowed past
+  "is there an album index yet", so a Refresh straight after a restart built
+  against an EMPTY owned set — a day persisted full of records the user already
+  has, and marked built so nothing corrected it until tomorrow. `force` now
+  overrides the schedule only. It never meant "build against nothing".
+- **A dead dedupe with a comment describing work it did not do.** The key was
+  the title plus the seed's own name, which cannot collide across seeds by
+  construction — so the split-release case it existed for never matched. Keyed
+  on Deezer's album id now, which is the only thing that means "the same
+  release"; the title alone would collide two acts' "Greatest Hits".
+- **Thirty rows was a network budget nobody had costed.** With Qobuz as the
+  default every row on screen is looked up so its link opens the app, and each
+  lookup is a rate-paced read of a Qobuz page — most of a minute of scraping
+  per screen open on a cold cache, a limit sized for the share card's three
+  suggestions. Twelve rows, so the worst case is under ten seconds.
+- Two section comments left labelling the wrong block.
+
+1091 unit / 582 DOM / 94 static, from 1061 / 571 / 93 — measured on this tree
+and on v1.8.36's. (v1.8.36's entry says 1004 unit; that tree's suite reports
+1061, so the number in that entry was wrong rather than the suite shrinking.)
+
 ## [1.8.36] — 2026-09-21
 
 ### Fixed — the Qobuz link opens the Qobuz app, not their download store

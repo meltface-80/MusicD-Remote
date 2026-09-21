@@ -306,6 +306,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5h7a3 3 0 0 1 3 3v11a2.5 2.5 0 0 0-2.5-2.5H2z"/><path d="M22 5h-7a3 3 0 0 0-3 3v11a2.5 2.5 0 0 1 2.5-2.5H22z"/></svg>
           <span>Pitchfork</span>
         </button>
+        <button class="menu-item hidden" type="button" data-action="discover" id="menu-item-discover">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></svg>
+          <span>Discover</span>
+        </button>
         <button class="menu-item" type="button" data-action="smart-picks" id="menu-item-picks">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.5-4.5"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>
           <span>Smart Picks</span>
@@ -984,6 +988,15 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             </span>
           </button>
 
+          <button class="settings-nav-item" type="button" data-pane="discover">
+            <span class="settings-nav-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></svg>
+            </span>
+            <span class="settings-nav-txt">
+              <span class="settings-nav-title">Discover</span>
+            </span>
+          </button>
+
           <button class="settings-nav-item" type="button" data-pane="smartpicks">
             <span class="settings-nav-ico" aria-hidden="true">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.5-4.5"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>
@@ -1380,6 +1393,44 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
         <div class="settings-block">
           <div class="settings-note">Hold the handle to drag a row into a new position. A row switched off is not fetched at all — it does no work in the background.</div>
           <ul class="home-rows-list" id="home-rows-list"></ul>
+        </div>
+      </div>
+
+      <!-- Discover -->
+      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="discover">
+        <div class="settings-pane-head">
+          <button class="settings-back" type="button" data-settings-back aria-label="Back to settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h2>Discover</h2>
+        </div>
+        <p class="settings-pane-desc">New records by the artists you play</p>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Discover <button class="settings-info-btn" data-info="Off by default. When on, the extension looks once a day for records released in the last two months by the artists you actually listen to — read from your own play history, not your whole library. It asks Deezer and nothing else, and never touches your Roon Core. When off it does nothing at all: no daily build, no timer, no requests to anybody." aria-label="Info">&#9432;</button></span>
+            <label class="switch">
+              <input type="checkbox" id="discover-enabled" aria-label="Discover">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+          <div class="settings-note">Off by default. Everything below applies only while this is on.</div>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Look for new records at <button class="settings-info-btn" data-info="The hour the daily check runs, in this server&#39;s local time. If the extension is off at that hour, it runs the next time it starts." aria-label="Info">&#9432;</button></span>
+            <select id="discover-hour" class="settings-select" aria-label="Discover build hour"></select>
+          </div>
+          <div class="settings-note" id="discover-note"></div>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Look again now</span>
+            <button id="discover-rebuild" class="settings-update-btn" type="button">Refresh</button>
+          </div>
+          <div class="settings-note">Discards today&#39;s list and looks again. Takes a minute or two.</div>
         </div>
       </div>
 

@@ -103,8 +103,20 @@ const DRIVER = `
   T("chip_after", chip ? chip.getAttribute("href") : null);
 `;
 
-function render(answer, pref) {
-  const r = harness.renderPage({ stub: stubFor(answer, pref), driver: DRIVER,
+// Starts with TIDAL as the default — so the rows were drawn pointing at a
+// service that needs no lookup — and then holds the Qobuz chip.
+const SWITCH_DRIVER = DRIVER + `
+  var chipFor = function (id) {
+    return document.querySelector('#share-links a[data-service="' + id + '"]');
+  };
+  T("href_before_switch", rowHref());
+  chipFor("qobuz").dispatchEvent(new Event("contextmenu", { bubbles: true, cancelable: true }));
+  await window.__sleep(1500);
+  T("href_after_switch", rowHref());
+`;
+
+function render(answer, pref, driver) {
+  const r = harness.renderPage({ stub: stubFor(answer, pref), driver: driver || DRIVER,
                                  name: "qobuz-deeplink-" + answer, windowSize: "390x900",
                                  budgetMs: 60000 });
   harness.assertNoPageError(assert, r);
@@ -157,6 +169,21 @@ test("the Qobuz link is upgraded to one that opens the app", { concurrency: 1 },
     assert.deepEqual(forRows, [],
       "a page read was spent on a link the rows do not point at: " + forRows.join(", "));
     assert.match(r.href_after, /tidal\.com/, "the row should point at the default service");
+  });
+
+  await t.test("switching the default TO Qobuz upgrades the rows already drawn", () => {
+    // The rows were drawn pointing at TIDAL, which needs no lookup, so at the
+    // moment the default changes every row holds an un-upgraded search link.
+    // Repainting them is not enough — the links have to be asked about too.
+    //
+    // This had no test until v1.8.37, and that is exactly how a refactor there
+    // (one caller left on an older signature) disabled it without any suite
+    // noticing. A path with no assertion is a path that will break quietly.
+    const r = render("deep", "tidal", SWITCH_DRIVER);
+    assert.match(r.href_before_switch, /tidal\.com/, r.href_before_switch);
+    assert.equal(r.href_after_switch, DEEP,
+      "the row kept a Qobuz SEARCH link after Qobuz became the default — it opens " +
+      "their download store, never the app");
   });
 
   await t.test("it asks for the act's record, not the card's", () => {
