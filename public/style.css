@@ -1578,7 +1578,65 @@ main {
 /* A gap between the rows. Without one, consecutive switches touch: each row
    is exactly its switch's height, so five that are all ON merge into a single
    unbroken column of colour and stop reading as five controls. */
+/* A settings row that follows a list it belongs to, rather than starting a
+   block of its own. */
+.settings-row-top { margin-top: 14px; }
+
 .share-toggle-list { display: flex; flex-direction: column; gap: 14px; }
+
+/* "If you like this" — three acts and one record each, under the links.
+   A LIST, not a grid of sleeves: Deezer names the record but its cover is the
+   act's press shot as often as the sleeve, and a wrong picture under an album
+   title is worse than no picture. Text only, so there is nothing to be wrong. */
+.share-similar { width: 100%; margin-top: 16px; }
+.share-similar-title {
+  margin: 0 0 8px; font-size: 13px; font-weight: 700;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--text-faint);
+}
+.share-similar-list { display: flex; flex-direction: column; gap: 6px; }
+.share-similar-act {
+  display: flex; align-items: baseline; gap: 8px;
+  width: 100%; min-height: 44px; padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border); background: var(--bg-elev-2);
+  color: var(--text); text-decoration: none; text-align: left;
+  font: inherit; cursor: pointer;
+}
+.share-similar-act:hover  { background: var(--bg-elev); border-color: var(--text-faint); }
+.share-similar-act:active { transform: scale(.995); }
+/* A plain <div> row — nothing to link to — is not a control and must not
+   pretend to be one. */
+div.share-similar-act { cursor: default; }
+div.share-similar-act:hover { background: var(--bg-elev-2); border-color: var(--border); }
+/* One line per row. The act's name keeps its whole self — it is the thing
+   being suggested — and the record beside it gives way, because a truncated
+   album title still reads as an album title while a wrapped name makes one row
+   taller than its neighbours for no gain. */
+.share-similar-name {
+  flex: 0 0 auto;
+  font-size: 14px; font-weight: 600; white-space: nowrap;
+}
+.share-similar-rec {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 12.5px; color: var(--text-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* What a tap DOES, said before it is tapped: "this adds to your queue" and
+   "this leaves the app" must not look the same. */
+.share-similar-tag {
+  margin-left: auto; flex: 0 0 auto;
+  font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 999px;
+  background: var(--bg-elev); color: var(--text-dim);
+}
+.share-similar-act.is-library .share-similar-tag { background: var(--accent); color: var(--on-accent, #fff); }
+
+/* The default service carries a tick. Held, not tapped — see holdToPrefer. */
+.share-link.is-default { border-color: var(--accent); }
+.share-link.is-default::after {
+  content: "\2713";
+  margin-left: 6px; font-weight: 700; color: var(--accent-text);
+}
 
 .share-links {
   display: grid;

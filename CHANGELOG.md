@@ -2,6 +2,180 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.36] — 2026-09-21
+
+### Fixed — the Qobuz link opens the Qobuz app, not their download store
+
+Reported: a suggestion with Qobuz as the default landed on the store's search
+results. That is not a badly chosen search URL — **no search URL anywhere can
+do better**, and the Share Card app carries the whole finding:
+
+- `open.qobuz.com` is Qobuz's own "open this in the app" host, and both
+  platforms hand it every path because Qobuz publishes an `assetlinks.json` and
+  an `apple-app-site-association` claiming all of them. Its router understands
+  exactly five shapes and **every one of them is an ID**:
+  `/album/:id`, `/artist/:id`, `/track/:id`, `/playlist/:id`, `/:type/:id`.
+- There is no search route, on that host or in the app behind it. An
+  `open.qobuz.com/search?q=` link opens the app on Discover with the query
+  thrown away, and pointing at the web player does not help either —
+  `play.qobuz.com` is claimed by the same app and lands in the same place.
+
+So the id is the whole feature. It comes off Qobuz's own public search page,
+the same way this app already reads pitchfork.com: no API, no key, no account.
+
+**A wrong album is worse than a search page**, because the search page at least
+shows the right words — Qobuz answers a query it cannot place with its nearest
+guess rather than with nothing. So the first hit is never taken on trust: an
+exact "album-then-artist" slug wins wherever it appears in the results (a
+search for *Mezzanine* returns the remixes album too, and that often sorts
+above the record), a slug that merely starts with the album and mentions the
+artist is the fallback (a remaster, a deluxe edition), and anything else is
+declined. Both sides are reduced to letters and digits, because Qobuz's
+slugging cannot be reproduced: an apostrophe and a full stop vanish
+("Ol' Dirty Bastard" → `ol-dirty-bastard`, "good kid, m.A.A.d city" →
+`good-kid-maad-city`) while a slash becomes a separator ("AC/DC" → `ac-dc`).
+
+**After the row is drawn and never before it.** The lookup costs a page read,
+so a suggestion must not wait on it, and a failure leaves the search link that
+was already there. The card's own Qobuz chip gets the same upgrade — it is
+always on screen and always points at Qobuz — while the suggestion rows are
+only looked up when Qobuz is the **default**, since that is the only link they
+point at.
+
+1004 unit / 571 DOM / 93 static.
+
+## [1.8.35] — 2026-09-21
+
+### Added — a suggestion is somewhere to go
+
+The rows under "If you like this" were plain text. Reported, fairly: a
+suggestion you cannot act on is half a feature. That was an omission of mine
+rather than a regression — I built them as text and only ever explained why
+they carry no artwork.
+
+Each row now does one of two things, and which one is **visible before it is
+tapped**, because "this adds to your queue" and "this leaves the app" must not
+look the same:
+
+- **In the Roon library → it queues.** The server resolves each suggestion
+  against the album index and sends the offset back with it.
+- **Not in the library → it opens the default streaming service's search.**
+
+**The queue sends the LIBRARY's title and artist, not Deezer's.** `/api/play`
+relocates a drifted offset rather than playing whatever now sits at it, and
+that guarantee is worth nothing if the caller does not send the identity to
+check against — Deezer writes "Here Come the Warm Jets" where the library
+writes "The", and the check would have refused a play that was correct.
+
+### Added — a default service, settable two ways
+
+- **Hold a service button under the card** and it takes the tick. That is the
+  Share Card app's gesture, ported with it: a timer armed on `touchstart`,
+  cancelled by a move or a lift, and the click that follows swallowed so
+  choosing a service does not also open it.
+- **Settings → Share Card → Default**, for before you know about the hold.
+
+Per device, in `localStorage`, which is the Share Card app's choice and the
+right one — a phone and a tablet across the house can reasonably differ, and a
+display preference is not worth a server write. The fallback is the first
+service that is **switched on** rather than a hardcoded name, so turning Qobuz
+off never leaves a row pointing at it.
+
+### Fixed — matching a record across two catalogues
+
+Found while testing the resolver, and it would have made the feature look
+broken: `normalize()` reduces every run of non-alphanumerics to **one space**,
+so Roon's "Sgt. Pepper's…" becomes `sgt pepper s lonely…` and Deezer's "Sgt.
+Peppers…" becomes `sgt peppers lonely…`. Not equal. **Every apostrophe in the
+library was a missed match**, and a missed match sends a record you already own
+out to a streaming service. Titles are compared on a key with the spaces
+removed and "&" spelled out — still every character in order, but blind to the
+punctuation the two catalogues disagree about.
+
+The resolver is strict on the title and forgiving on the artist, and the tests
+say why: this answer becomes a queue, so a wrong title plays the wrong record,
+while "Eno" has to find "Brian Eno". A title shared by two different acts with
+no artist to separate them is not an answer at all.
+
+995 unit / 565 DOM / 92 static.
+
+## [1.8.34] — 2026-09-21
+
+### Fixed — a self-titled album matched every other record by the same act
+
+Reported: Airbourne's self-titled 2026 album carried the Wikipedia article for
+*Runnin' Wild*, their 2007 debut. v1.8.32 did not cause this — it made it
+visible, by putting Wikipedia's text on Pitchfork-reviewed albums too.
+
+- **The title rule read the disambiguator.** An article had to contain the
+  album title as whole words, checked against the WHOLE Wikipedia page title:
+
+      "Runnin' Wild (Airbourne album)"  contains  "Airbourne"
+
+  For a self-titled record the album name IS the act's name, so the
+  parenthetical that exists to tell their albums apart matched every one of
+  them and the first search result won. The rule now reads only the part before
+  the disambiguator. `lib/wiki-match.js`, pure and tested, with the self-titled
+  cases first — that is where album matching goes wrong, and a debut, a
+  reinvention or a comeback makes it common.
+- **An album title with no word in it now matches nothing rather than
+  everything.** Sigur Rós's "( )" normalised to empty, and an empty needle
+  padded on both sides is inside every page title, so the first candidate won
+  there too.
+
+### Added — "If you like this", under the share card
+
+Three acts worth hearing next, each with one record. Ported from MusicD Share
+Card (`Similar.kt`).
+
+- **Deezer only, deliberately.** The original tries ListenBrainz first; its own
+  note on that path reads "this has never once answered in the field", and the
+  dataset name its query needs was never verified. Porting a path that has
+  never worked would be porting the appearance of a feature.
+- **An exact name beats a better-followed partial one** — a deviation from the
+  port. The shared `namesOverlap` is whole-word containment, because it also
+  has to call "Prince" and "Prince & The Revolution" the same act; that lets
+  "Sting Tribute Band" through, and ordering on follower count alone would then
+  ask the tribute act for related artists. Exact matches sort first.
+- **A suggestion is the act's earliest full album** — not their newest
+  (whatever they happened to release) and not their most popular (usually a
+  compilation). `record_type` must be "album": a two-track single is not an
+  answer to "what should I hear".
+
+**And a bug of my own, found by the test rather than by reading.** The row is
+generation-stamped so a late answer cannot land under a different record, and
+I stamped it where the suggestion fetch was ISSUED. Two opens can finish their
+awaits out of order — `ensureFont()` alone does it, loading the font once and
+resolving instantly afterwards — so the later stamp went to the earlier record
+and the wrong acts won. The stamp is taken when the open BEGINS now, and
+everything that open paints is gated on still being the current one, the card
+included: a superseded open painting its card over the live one is the same bug
+wearing a different hat. A superseded open also no longer spends its five
+Deezer calls.
+
+**And a flaky test, chased to its actual cause.** The first version raced two
+opens back to back and passed alone while failing about half the time in the
+full DOM suite. Two things were wrong with it, and only the second was
+interesting:
+
+- it waited on the CLOCK. `--virtual-time-budget` fast-forwards timers, so a
+  sleep can burn 1500 page-milliseconds while the real work it was waiting for
+  has not happened. Waiting on conditions fixed most of it;
+- **what it was waiting for was real time, not virtual.** A font load and a
+  `FileReader` sit between the Share tap and the card appearing, and neither
+  fast-forwards. Under the load of the whole suite they took long enough that
+  even a 60s budget ran out — still one failure in eight. Both are stubbed in
+  the drivers now; neither is what any assertion here is about.
+
+The racing case itself was deleted rather than repaired. Two drivers replace it
+by CHOOSING the interleaving instead of hoping for it: one closes the sheet
+while an answer is genuinely in flight, the other makes the first record's
+extras take 800ms and the second's none, so the opens finish in the opposite
+order to the one they started in. Both are deterministic, and between them they
+fail against every guard removed.
+
+985 unit / 560 DOM / 92 static.
+
 ## [1.8.33] — 2026-09-21
 
 ### Fixed — the review chips were invisible on the light palettes

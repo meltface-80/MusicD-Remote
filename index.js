@@ -19,6 +19,9 @@ const RoonApiSettings  = require("node-roon-api-settings");
 
 const { createUpdater } = require("./lib/updater");
 const shareLinks = require("./lib/share-links");
+const wikiMatch  = require("./lib/wiki-match");
+const similar    = require("./lib/similar");
+const qobuzDeep  = require("./lib/qobuz-deeplink");
 // Title-only album matching, for the albums Roon supplies no artist for. Pure —
 // see lib/albumkeys.js. Required up here rather than beside the waveform code
 // because albumSource reads it, and that runs from every list endpoint.
@@ -5319,7 +5322,6 @@ async function wikiExtract(pageTitle) {
 
 async function fetchWikiAlbum(title, artist) {
   if (!title) return null;
-  const titleN      = normalize(title);
   const artistFirst = normalize(artist || "").split(" ")[0];
   const candidates  = await wikiSearch(`${title} ${artist || ""} album`);
 
@@ -5329,15 +5331,15 @@ async function fetchWikiAlbum(title, artist) {
 
     const lead     = ext.description.slice(0, 400);
     const headNorm = normalize(ext.description.slice(0, 800));
-    const titleNorm = normalize(c.title);
 
     // (1) The article must actually be about THIS album: its Wikipedia title
-    //     should contain the album name as whole words (e.g. "Pang (album)",
-    //     "Everything Forever (Victories at Sea album)").  Padding with spaces
-    //     makes this a whole-word check so a short title like "Up" doesn't
-    //     match "Group" / "Setup".
-    const pad = s => " " + s + " ";
-    if (!pad(titleNorm).includes(pad(titleN))) continue;
+    //     must name the album, as whole words, BEFORE the disambiguator (see
+    //     lib/wiki-match.js). Reading the disambiguator too is what showed
+    //     Runnin' Wild for Airbourne's self-titled album — "Runnin' Wild
+    //     (Airbourne album)" contains "Airbourne", and for a self-titled
+    //     record the album name is the act's name, so every album they ever
+    //     made matched and the first search result won.
+    if (!wikiMatch.albumPageTitleMatches(title, c.title)) continue;
 
     // (2) Reject person biographies.  These slipped through before because a
     //     musician's bio mentions "albums" ("recorded five studio albums").
@@ -12279,6 +12281,243 @@ app.get("/api/smart-picks", async (req, res) => {
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+/*
+ * GET /api/qobuz-link?album=&artist=
+ *
+ * The Qobuz link that opens the Qobuz APP, or null.
+ *
+ * WHY THIS IS A SECOND REQUEST AND NOT PART OF THE LINK ROW. Every other
+ * service link is a pure string built from the title and the artist —
+ * lib/share-links.js, no network at all. Qobuz is the one that cannot be: a
+ * search URL lands on their download store and never opens the app, and only
+ * an album ID does (see lib/qobuz-deeplink.js for the full reason). Getting
+ * that id costs a page read, so it happens AFTER the row is drawn and never
+ * before it: nothing here may hold up a suggestion appearing, and a failure
+ * leaves the search link that was already there, which is not nothing.
+ *
+ * Cached including the misses. A record Qobuz does not carry is a fact about
+ * the record, and re-asking every time the same card opens would spend a
+ * request to be told so again.
+ */
+const qobuzLinkCache = new Map();          // "store|artist|album" -> id or ""
+const QOBUZ_LINK_TTL_MS = 7 * 24 * 60 * 60 * 1000;   // a catalogue moves, but not in a week
+const QOBUZ_LINK_CACHE_MAX = 500;
+
+async function fetchQobuzAlbumId(store, artist, album) {
+  const key = store + "|" + similar.normalize(artist || "") + "|" + similar.normalize(album || "");
+  const hit = qobuzLinkCache.get(key);
+  if (hit && (Date.now() - hit.at) < QOBUZ_LINK_TTL_MS) return hit.id || null;
+
+  let id = "";
+  try {
+    const query = shareLinks.searchQuery(artist, album);
+    if (query) {
+      await qobuzWait();
+      const html = await httpText(qobuzDeep.searchUrl(store, query),
+        { "User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9" });
+      id = qobuzDeep.pickAlbumId(html, store, artist, album) || "";
+    }
+  } catch (e) {
+    if (DEBUG) console.error("[qobuz-link]", e.message);
+    id = "";
+  }
+
+  if (qobuzLinkCache.size >= QOBUZ_LINK_CACHE_MAX) {
+    qobuzLinkCache.delete(qobuzLinkCache.keys().next().value);
+  }
+  qobuzLinkCache.set(key, { at: Date.now(), id });
+  return id || null;
+}
+
+app.get("/api/qobuz-link", async (req, res) => {
+  const album  = String(req.query.album  || "").trim();
+  const artist = String(req.query.artist || "").trim();
+  if (!album) return res.status(400).json({ error: "album query parameter required" });
+  const store = shareLinks.qobuzStorefront(
+    shareLinks.localeFromAcceptLanguage(req.headers["accept-language"]));
+  try {
+    // The FIRST credited act, the same rule every other link here uses.
+    const id = await fetchQobuzAlbumId(store, shareLinks.primaryArtist(artist), album);
+    res.set("Cache-Control", "public, max-age=604800");
+    res.json({ url: qobuzDeep.deepLink(id) });
+  } catch (e) {
+    res.json({ url: null });   // the search link is still there
+  }
+});
+
+/*
+ * GET /api/similar?artist=<name>
+ *
+ * Three acts worth hearing next, each with one record — the row under the
+ * share card. Ported from MusicD Share Card; lib/similar.js holds the rules
+ * and this holds the fetching.
+ *
+ * DEEZER, KEYED ON THE NAME. There is no keyless album-to-album similarity
+ * anywhere, so this answers "acts like this act" and names one record by each,
+ * which is what the row's wording promises and no more.
+ *
+ * COSTS UP TO FIVE CALLS, so the answer is cached for a day and a miss is
+ * cached too: an act Deezer does not know is a stable fact for the length of a
+ * listening session, and re-asking on every track of the same album would be
+ * four calls per song for the same "no".
+ */
+const similarCache = new Map();      // normalized artist -> { at, acts }
+const SIMILAR_TTL_MS = 24 * 60 * 60 * 1000;
+const SIMILAR_CACHE_MAX = 300;
+
+async function fetchSimilarActs(artist) {
+  const key = similar.normalize(artist);
+  if (!key) return [];
+  const hit = similarCache.get(key);
+  if (hit && (Date.now() - hit.at) < SIMILAR_TTL_MS) return hit.acts;
+
+  let acts = [];
+  try {
+    const search = await httpJson(
+      "https://api.deezer.com/search/artist?limit=" + similar.SEARCH_ROWS +
+      "&q=" + encodeURIComponent(artist));
+    const candidates = similar.readDeezerArtists(search, artist);
+
+    // Every candidate that carries the right name is tried, not just the best:
+    // an empty answer from the wrong Sting says nothing about the right one.
+    for (const cand of candidates.slice(0, similar.CANDIDATES)) {
+      const rel = await httpJson(
+        "https://api.deezer.com/artist/" + encodeURIComponent(cand.id) +
+        "/related?limit=" + similar.WANTED);
+      const related = similar.readDeezerRelated(rel);
+      if (!related.length) continue;
+      acts = [];
+      for (const act of related) {
+        let album = null;
+        try {
+          const albums = await httpJson(
+            "https://api.deezer.com/artist/" + encodeURIComponent(act.id) + "/albums?limit=50");
+          album = similar.readDeezerAlbums(albums);
+        } catch (e) {
+          // An act whose records could not be named is still worth showing —
+          // the row degrades to names rather than losing a suggestion.
+          if (DEBUG) console.error("[similar] albums for " + act.name + ":", e.message);
+        }
+        acts.push(similar.toAct(act, album));
+      }
+      break;
+    }
+  } catch (e) {
+    if (DEBUG) console.error("[similar]", e.message);
+    acts = [];
+  }
+
+  // A miss is cached too — see the note above.
+  if (similarCache.size >= SIMILAR_CACHE_MAX) {
+    similarCache.delete(similarCache.keys().next().value);
+  }
+  similarCache.set(key, { at: Date.now(), acts });
+  return acts;
+}
+
+/*
+ * Is this suggested record in the Roon library, and if so where?
+ *
+ * STRICT ON THE TITLE, FORGIVING ON THE ARTIST. The title must match exactly
+ * once normalised, because this answer becomes a QUEUE: getting it wrong does
+ * not show the wrong text, it plays the wrong record. The artist is matched
+ * with namesOverlap, which is the permissive rule — "Eno" has to find "Brian
+ * Eno", and an edition credited to the band rather than the frontman is the
+ * same album.
+ *
+ * A title that matches several albums by DIFFERENT acts and no artist to
+ * separate them is not an answer, so it returns null and the row falls back to
+ * the streaming service. Several editions of the same record by the same act
+ * are all the right answer; the first will do.
+ */
+/*
+ * A title reduced to the part two catalogues agree on.
+ *
+ * normalize() turns every run of non-alphanumerics into ONE SPACE, which is
+ * right for matching within one catalogue and wrong across two: Roon's
+ * "Sgt. Pepper's Lonely Hearts Club Band" becomes "sgt pepper s lonely…" while
+ * Deezer's "Sgt. Peppers…" becomes "sgt peppers lonely…", and those are not
+ * equal. Every apostrophe in the library is a missed match, and a missed match
+ * sends a record you own out to a streaming service.
+ *
+ * So the spaces go too, and "&" is spelled out first — the two spellings of an
+ * ampersand are the other difference these catalogues have about the same
+ * record. What is left is strict enough to be safe (it is still every
+ * character of the title, in order) and blind to the punctuation nobody agrees
+ * on.
+ */
+function albumTitleKey(s) {
+  return normalize(String(s == null ? "" : s).replace(/&/g, " and ")).replace(/\s+/g, "");
+}
+
+function resolveLibraryAlbum(title, artist) {
+  const t = albumTitleKey(title);
+  if (!t || !albumIndex.albums.length) return null;
+  const hits = albumIndex.albums.filter(al => albumTitleKey(al.title) === t);
+  if (!hits.length) return null;
+
+  const want = String(artist || "").trim();
+  if (!want) return hits.length === 1 ? hits[0] : null;
+
+  const byArtist = hits.filter(al =>
+    namesOverlap(al.subtitle || "", want) ||
+    (al.artistNames || []).some(n => namesOverlap(n, want)));
+  return byArtist.length ? byArtist[0] : null;
+}
+
+app.get("/api/similar", async (req, res) => {
+  const artist = String(req.query.artist || "").trim();
+  if (!artist) return res.status(400).json({ error: "artist query parameter required" });
+  try {
+    // The FIRST credited act, the same rule the links row uses: a four-act
+    // credit searched whole finds nobody at all.
+    const acts = await fetchSimilarActs(shareLinks.primaryArtist(artist));
+    /*
+     * Each suggestion is a PLACE TO GO, so every row is told where.
+     *
+     *   in the library -> its offset, and the identity to send with the queue
+     *     so a drifted offset is relocated rather than played blind (the same
+     *     contract /api/play enforces everywhere else);
+     *   not in the library -> a url per enabled service, and the CLIENT picks
+     *     which. The default service is a per-device preference in
+     *     localStorage, so sending them all means changing it costs nothing —
+     *     no round trip, and no server write for a display choice.
+     *
+     * Resolution is NOT cached with the acts: the suggestion list is about an
+     * artist and lasts a day, but whether a record is in the library changes
+     * with the library. It is an in-memory index scan over a handful of rows.
+     */
+    const st = loadPersistedSettings();
+    const enabled = st.shareServices === undefined
+      ? shareLinks.defaultServiceIds()
+      : shareLinks.sanitiseIds(st.shareServices, shareLinks.knownServiceIds());
+    const locale = shareLinks.localeFromAcceptLanguage(req.headers["accept-language"]);
+
+    const out = acts.map(act => {
+      const inLib = act.album ? resolveLibraryAlbum(act.album, act.name) : null;
+      return Object.assign({}, act, {
+        in_library: !!inLib,
+        offset:     inLib ? inLib.offset : null,
+        // What the LIBRARY calls it, which is what the queue must be sent —
+        // Deezer's title and Roon's can differ in punctuation, and the identity
+        // check compares against Roon's.
+        library_title:    inLib ? inLib.title : null,
+        library_subtitle: inLib ? (inLib.subtitle || "") : null,
+        services: inLib ? [] : shareLinks.serviceLinks(act.name, act.album || "", {
+          locale, enabled,
+        }),
+      });
+    });
+
+    // A day for the ACTS, but the library half is not cacheable — a record
+    // added since would keep answering "not here" until tomorrow.
+    res.set("Cache-Control", "no-store");
+    res.json({ acts: out });
+  } catch (e) {
+    res.json({ acts: [] });   // a suggestion row is never worth an error
   }
 });
 
