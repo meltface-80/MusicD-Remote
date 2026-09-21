@@ -810,6 +810,13 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
            /api/album/extras' links block (lib/share-links.js) — the same round
            trip the card already makes, so the chips arrive with it. -->
       <nav class="share-links hidden" id="share-links" aria-label="Find this album"></nav>
+      <!-- Acts worth hearing next. Asked for separately and AFTER the card is
+           on screen, because it costs up to five Deezer calls and the card
+           must not wait on it. -->
+      <section class="share-similar hidden" id="share-similar" aria-label="If you like this">
+        <h3 class="share-similar-title">If you like this</h3>
+        <div class="share-similar-list" id="share-similar-list"></div>
+      </section>
       <p class="share-hint" id="share-hint"></p>
       <p class="share-err"  id="share-err"></p>
     </div>

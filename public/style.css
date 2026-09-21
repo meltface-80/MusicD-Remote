@@ -1580,6 +1580,27 @@ main {
    unbroken column of colour and stop reading as five controls. */
 .share-toggle-list { display: flex; flex-direction: column; gap: 14px; }
 
+/* "If you like this" — three acts and one record each, under the links.
+   A LIST, not a grid of sleeves: Deezer names the record but its cover is the
+   act's press shot as often as the sleeve, and a wrong picture under an album
+   title is worse than no picture. Text only, so there is nothing to be wrong. */
+.share-similar { width: 100%; margin-top: 16px; }
+.share-similar-title {
+  margin: 0 0 8px; font-size: 13px; font-weight: 700;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--text-faint);
+}
+.share-similar-list { display: flex; flex-direction: column; gap: 6px; }
+.share-similar-act {
+  display: flex; align-items: baseline; gap: 8px;
+  min-height: 34px; padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border); background: var(--bg-elev-2);
+  color: var(--text); text-decoration: none; text-align: left;
+}
+.share-similar-act:hover { background: var(--bg-elev); border-color: var(--text-faint); }
+.share-similar-name { font-size: 14px; font-weight: 600; }
+.share-similar-rec  { font-size: 12.5px; color: var(--text-dim); overflow-wrap: anywhere; }
+
 .share-links {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));

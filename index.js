@@ -19,6 +19,8 @@ const RoonApiSettings  = require("node-roon-api-settings");
 
 const { createUpdater } = require("./lib/updater");
 const shareLinks = require("./lib/share-links");
+const wikiMatch  = require("./lib/wiki-match");
+const similar    = require("./lib/similar");
 // Title-only album matching, for the albums Roon supplies no artist for. Pure —
 // see lib/albumkeys.js. Required up here rather than beside the waveform code
 // because albumSource reads it, and that runs from every list endpoint.
@@ -5319,7 +5321,6 @@ async function wikiExtract(pageTitle) {
 
 async function fetchWikiAlbum(title, artist) {
   if (!title) return null;
-  const titleN      = normalize(title);
   const artistFirst = normalize(artist || "").split(" ")[0];
   const candidates  = await wikiSearch(`${title} ${artist || ""} album`);
 
@@ -5329,15 +5330,15 @@ async function fetchWikiAlbum(title, artist) {
 
     const lead     = ext.description.slice(0, 400);
     const headNorm = normalize(ext.description.slice(0, 800));
-    const titleNorm = normalize(c.title);
 
     // (1) The article must actually be about THIS album: its Wikipedia title
-    //     should contain the album name as whole words (e.g. "Pang (album)",
-    //     "Everything Forever (Victories at Sea album)").  Padding with spaces
-    //     makes this a whole-word check so a short title like "Up" doesn't
-    //     match "Group" / "Setup".
-    const pad = s => " " + s + " ";
-    if (!pad(titleNorm).includes(pad(titleN))) continue;
+    //     must name the album, as whole words, BEFORE the disambiguator (see
+    //     lib/wiki-match.js). Reading the disambiguator too is what showed
+    //     Runnin' Wild for Airbourne's self-titled album — "Runnin' Wild
+    //     (Airbourne album)" contains "Airbourne", and for a self-titled
+    //     record the album name is the act's name, so every album they ever
+    //     made matched and the first search result won.
+    if (!wikiMatch.albumPageTitleMatches(title, c.title)) continue;
 
     // (2) Reject person biographies.  These slipped through before because a
     //     musician's bio mentions "albums" ("recorded five studio albums").
@@ -12279,6 +12280,92 @@ app.get("/api/smart-picks", async (req, res) => {
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+/*
+ * GET /api/similar?artist=<name>
+ *
+ * Three acts worth hearing next, each with one record — the row under the
+ * share card. Ported from MusicD Share Card; lib/similar.js holds the rules
+ * and this holds the fetching.
+ *
+ * DEEZER, KEYED ON THE NAME. There is no keyless album-to-album similarity
+ * anywhere, so this answers "acts like this act" and names one record by each,
+ * which is what the row's wording promises and no more.
+ *
+ * COSTS UP TO FIVE CALLS, so the answer is cached for a day and a miss is
+ * cached too: an act Deezer does not know is a stable fact for the length of a
+ * listening session, and re-asking on every track of the same album would be
+ * four calls per song for the same "no".
+ */
+const similarCache = new Map();      // normalized artist -> { at, acts }
+const SIMILAR_TTL_MS = 24 * 60 * 60 * 1000;
+const SIMILAR_CACHE_MAX = 300;
+
+async function fetchSimilarActs(artist) {
+  const key = similar.normalize(artist);
+  if (!key) return [];
+  const hit = similarCache.get(key);
+  if (hit && (Date.now() - hit.at) < SIMILAR_TTL_MS) return hit.acts;
+
+  let acts = [];
+  try {
+    const search = await httpJson(
+      "https://api.deezer.com/search/artist?limit=" + similar.SEARCH_ROWS +
+      "&q=" + encodeURIComponent(artist));
+    const candidates = similar.readDeezerArtists(search, artist);
+
+    // Every candidate that carries the right name is tried, not just the best:
+    // an empty answer from the wrong Sting says nothing about the right one.
+    for (const cand of candidates.slice(0, similar.CANDIDATES)) {
+      const rel = await httpJson(
+        "https://api.deezer.com/artist/" + encodeURIComponent(cand.id) +
+        "/related?limit=" + similar.WANTED);
+      const related = similar.readDeezerRelated(rel);
+      if (!related.length) continue;
+      acts = [];
+      for (const act of related) {
+        let album = null;
+        try {
+          const albums = await httpJson(
+            "https://api.deezer.com/artist/" + encodeURIComponent(act.id) + "/albums?limit=50");
+          album = similar.readDeezerAlbums(albums);
+        } catch (e) {
+          // An act whose records could not be named is still worth showing —
+          // the row degrades to names rather than losing a suggestion.
+          if (DEBUG) console.error("[similar] albums for " + act.name + ":", e.message);
+        }
+        acts.push(similar.toAct(act, album));
+      }
+      break;
+    }
+  } catch (e) {
+    if (DEBUG) console.error("[similar]", e.message);
+    acts = [];
+  }
+
+  // A miss is cached too — see the note above.
+  if (similarCache.size >= SIMILAR_CACHE_MAX) {
+    similarCache.delete(similarCache.keys().next().value);
+  }
+  similarCache.set(key, { at: Date.now(), acts });
+  return acts;
+}
+
+app.get("/api/similar", async (req, res) => {
+  const artist = String(req.query.artist || "").trim();
+  if (!artist) return res.status(400).json({ error: "artist query parameter required" });
+  try {
+    // The FIRST credited act, the same rule the links row uses: a four-act
+    // credit searched whole finds nobody at all.
+    const acts = await fetchSimilarActs(shareLinks.primaryArtist(artist));
+    // A day, matching the cache above — the answer is about an act, not about
+    // what is playing, so it does not go stale when the track changes.
+    res.set("Cache-Control", "public, max-age=86400");
+    res.json({ acts });
+  } catch (e) {
+    res.json({ acts: [] });   // a suggestion row is never worth an error
   }
 });
 

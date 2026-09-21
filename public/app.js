@@ -9133,6 +9133,8 @@
   const frame     = document.getElementById("share-frame");
   const actions   = document.getElementById("share-actions");
   const linksEl   = document.getElementById("share-links");
+  const similarEl = document.getElementById("share-similar");
+  const similarLs = document.getElementById("share-similar-list");
   const hintEl    = document.getElementById("share-hint");
   const errEl     = document.getElementById("share-err");
   const modalBtn  = document.getElementById("modal-share-btn");
@@ -9151,11 +9153,16 @@
   }
 
   function close() {
+    // Anything still in flight for the record that was on screen is no longer
+    // wanted: without this a card or a suggestions row can arrive after the
+    // sheet has been shut and paint into it.
+    shareSeq++;
     overlay.classList.add("hidden");
     frame.innerHTML =
       `<div class="share-placeholder"><div class="share-spinner"></div><div>Generating card…</div></div>`;
     actions.innerHTML = "";
     if (linksEl) { linksEl.innerHTML = ""; linksEl.classList.add("hidden"); }
+    if (similarEl && similarLs) { similarLs.innerHTML = ""; similarEl.classList.add("hidden"); }
     hintEl.textContent = "";
     errEl.textContent  = "";
   }
@@ -9172,8 +9179,28 @@
     const artist = input.artist || "";
     if (!title) return;
 
+    /*
+     * WHICH OPEN THIS IS. Stamped here, at the top, and not where each
+     * asynchronous piece is issued — because two opens can finish their awaits
+     * OUT OF ORDER and the later stamp then belongs to the earlier record.
+     *
+     * Found by the test rather than by reading: open, close, open again, and
+     * the suggestions row came back showing acts for the first record under
+     * the second one's card. The stamp used to be taken where the suggestion
+     * fetch was issued (`++similarSeq` at the end of open), so whichever open
+     * got there first owned the newest number — and the first open is not
+     * always the first to get there. ensureFont() alone is enough to reorder
+     * them: it really loads the font once and resolves instantly afterwards.
+     *
+     * Everything this open paints is now gated on still being the current one,
+     * the card included — a superseded open painting its card over the live
+     * one is the same bug wearing a different hat.
+     */
+    const mySeq = ++shareSeq;
+
     actions.innerHTML = "";
     if (linksEl) { linksEl.innerHTML = ""; linksEl.classList.add("hidden"); }
+    if (similarEl && similarLs) { similarLs.innerHTML = ""; similarEl.classList.add("hidden"); }
     hintEl.textContent = "";
     errEl.textContent  = "";
     frame.innerHTML =
@@ -9237,10 +9264,20 @@
       });
 
       const dataUrl = await blobToDataUrl(blob);
+      // Superseded while we were rendering: another record's card is on screen
+      // (or the sheet is closed), and this one must not paint over it.
+      if (mySeq !== shareSeq) return;
       frame.innerHTML = `<img src="${dataUrl}" alt="Share card">`;
       buildActions(blob, title, artist);
       renderLinks(links);
+      // AFTER the card, and deliberately not awaited: this costs up to five
+      // Deezer calls and the card must not wait behind it. A generation stamp
+      // rather than a plain flag, because the sheet can be reopened on another
+      // record while this is still out — and three acts for the previous album
+      // under the new one's card is worse than none at all.
+      loadSimilar(artist, mySeq);
     } catch (e) {
+      if (mySeq !== shareSeq) return;   // a superseded open's failure is not news
       frame.innerHTML = `<div class="share-placeholder">Could not generate the card.</div>`;
       errEl.textContent = (e && e.message) ? e.message : String(e);
     }
@@ -9260,6 +9297,50 @@
    * people's sites, and there is no reason to tell them which library sent the
    * visitor.
    */
+  // Bumped by every open() and by close(), so anything still in flight can ask
+  // whether it is still wanted. See the note at the top of open().
+  let shareSeq = 0;
+
+  /*
+   * "If you like this" — three acts, each with one record.
+   *
+   * Never blocks the card and never reports a failure: a suggestion row is the
+   * page's business, and an error message where three names should be is worse
+   * than the row simply not being there.
+   */
+  async function loadSimilar(artist, seq) {
+    if (!similarEl || !similarLs || !artist) return;
+    let acts = [];
+    try {
+      const r = await fetch("/api/similar?artist=" + encodeURIComponent(artist));
+      if (!r.ok) return;
+      const j = await r.json();
+      acts = (j && j.acts) || [];
+    } catch (e) { return; }      // no row, no message
+    if (seq !== shareSeq) return;   // the sheet moved on, or closed
+
+    similarLs.innerHTML = "";
+    for (const act of acts) {
+      if (!act || !act.name) continue;
+      const row = document.createElement("div");
+      row.className = "share-similar-act";
+      const name = document.createElement("span");
+      name.className = "share-similar-name";
+      name.textContent = act.name;
+      row.appendChild(name);
+      // An act whose records could not be named is still worth showing, so the
+      // record line is optional rather than the row being dropped.
+      if (act.album) {
+        const rec = document.createElement("span");
+        rec.className = "share-similar-rec";
+        rec.textContent = act.year ? act.album + " \u00b7 " + act.year : act.album;
+        row.appendChild(rec);
+      }
+      similarLs.appendChild(row);
+    }
+    similarEl.classList.toggle("hidden", !similarLs.children.length);
+  }
+
   function renderLinks(links) {
     if (!linksEl) return;
     linksEl.innerHTML = "";

@@ -2,6 +2,83 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.34] — 2026-09-21
+
+### Fixed — a self-titled album matched every other record by the same act
+
+Reported: Airbourne's self-titled 2026 album carried the Wikipedia article for
+*Runnin' Wild*, their 2007 debut. v1.8.32 did not cause this — it made it
+visible, by putting Wikipedia's text on Pitchfork-reviewed albums too.
+
+- **The title rule read the disambiguator.** An article had to contain the
+  album title as whole words, checked against the WHOLE Wikipedia page title:
+
+      "Runnin' Wild (Airbourne album)"  contains  "Airbourne"
+
+  For a self-titled record the album name IS the act's name, so the
+  parenthetical that exists to tell their albums apart matched every one of
+  them and the first search result won. The rule now reads only the part before
+  the disambiguator. `lib/wiki-match.js`, pure and tested, with the self-titled
+  cases first — that is where album matching goes wrong, and a debut, a
+  reinvention or a comeback makes it common.
+- **An album title with no word in it now matches nothing rather than
+  everything.** Sigur Rós's "( )" normalised to empty, and an empty needle
+  padded on both sides is inside every page title, so the first candidate won
+  there too.
+
+### Added — "If you like this", under the share card
+
+Three acts worth hearing next, each with one record. Ported from MusicD Share
+Card (`Similar.kt`).
+
+- **Deezer only, deliberately.** The original tries ListenBrainz first; its own
+  note on that path reads "this has never once answered in the field", and the
+  dataset name its query needs was never verified. Porting a path that has
+  never worked would be porting the appearance of a feature.
+- **An exact name beats a better-followed partial one** — a deviation from the
+  port. The shared `namesOverlap` is whole-word containment, because it also
+  has to call "Prince" and "Prince & The Revolution" the same act; that lets
+  "Sting Tribute Band" through, and ordering on follower count alone would then
+  ask the tribute act for related artists. Exact matches sort first.
+- **A suggestion is the act's earliest full album** — not their newest
+  (whatever they happened to release) and not their most popular (usually a
+  compilation). `record_type` must be "album": a two-track single is not an
+  answer to "what should I hear".
+
+**And a bug of my own, found by the test rather than by reading.** The row is
+generation-stamped so a late answer cannot land under a different record, and
+I stamped it where the suggestion fetch was ISSUED. Two opens can finish their
+awaits out of order — `ensureFont()` alone does it, loading the font once and
+resolving instantly afterwards — so the later stamp went to the earlier record
+and the wrong acts won. The stamp is taken when the open BEGINS now, and
+everything that open paints is gated on still being the current one, the card
+included: a superseded open painting its card over the live one is the same bug
+wearing a different hat. A superseded open also no longer spends its five
+Deezer calls.
+
+**And a flaky test, chased to its actual cause.** The first version raced two
+opens back to back and passed alone while failing about half the time in the
+full DOM suite. Two things were wrong with it, and only the second was
+interesting:
+
+- it waited on the CLOCK. `--virtual-time-budget` fast-forwards timers, so a
+  sleep can burn 1500 page-milliseconds while the real work it was waiting for
+  has not happened. Waiting on conditions fixed most of it;
+- **what it was waiting for was real time, not virtual.** A font load and a
+  `FileReader` sit between the Share tap and the card appearing, and neither
+  fast-forwards. Under the load of the whole suite they took long enough that
+  even a 60s budget ran out — still one failure in eight. Both are stubbed in
+  the drivers now; neither is what any assertion here is about.
+
+The racing case itself was deleted rather than repaired. Two drivers replace it
+by CHOOSING the interleaving instead of hoping for it: one closes the sheet
+while an answer is genuinely in flight, the other makes the first record's
+extras take 800ms and the second's none, so the opens finish in the opposite
+order to the one they started in. Both are deterministic, and between them they
+fail against every guard removed.
+
+985 unit / 560 DOM / 92 static.
+
 ## [1.8.33] — 2026-09-21
 
 ### Fixed — the review chips were invisible on the light palettes
