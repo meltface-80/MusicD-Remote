@@ -5507,15 +5507,32 @@ async function fetchAlbumBios(title, artist) {
     fetchWikipedia(title, artist).catch(() => null)
   ]);
 
+  // Where the shown TEXT came from, which is not always where the LINK goes.
+  // `source`/`url` name the review being linked to; these name whoever wrote
+  // the words on screen. They differ on exactly one path — see below — and
+  // keeping them apart is what stops Wikipedia's prose appearing under a link
+  // that says Pitchfork.
+  const wikiText = (wiki && wiki.album && wiki.album.description) || null;
+  const wikiUrl  = (wiki && wiki.album && wiki.album.url) || null;
+
   let album = null;
   if (pitchfork && pitchfork.description) {
-    // COMPLIANCE (UK law): Pitchfork's written review must not be displayed —
+    // COMPLIANCE (UK law): PITCHFORK's written review must not be displayed —
     // only the score, the Best New Music flag, and a LINK to read the review
-    // on pitchfork.com are emitted. The fetched text stays internal (this
-    // branch's gate and fetchPitchfork's artist-verification guard read it);
-    // the description leaves this function as null.
+    // on pitchfork.com. Their text stays internal (this branch's gate and
+    // fetchPitchfork's artist-verification guard read it) and never leaves.
+    //
+    // That rule is about THEIR prose, not about the album having none. Until
+    // now this branch emitted description: null, which meant any record
+    // Pitchfork had reviewed showed no text at all — on the album view and on
+    // the share card — while the Wikipedia article fetched in the same
+    // Promise.all sat here unused. Reported: "the wiki reviews, if available,
+    // weren't added to the share card". Wikipedia's text is shown, and
+    // description_source says so, so the two are never confused.
     album = {
-      description:    null,
+      description:        wikiText,
+      description_source: wikiText ? "Wikipedia" : null,
+      description_url:    wikiText ? wikiUrl : null,
       year:           (qobuz && qobuz.year) || null,
       label:          (qobuz && qobuz.label) || null,
       url:            pitchfork.url,
@@ -5526,6 +5543,8 @@ async function fetchAlbumBios(title, artist) {
   } else if (qobuz && qobuz.description) {
     album = {
       description:    qobuz.description,
+      description_source: "Qobuz",
+      description_url:    qobuz.url || null,
       year:           qobuz.year  || (wiki && wiki.album && /(\d{4})/.exec(wiki.album.description || "") || [])[1] || null,
       label:          qobuz.label || null,
       url:            qobuz.url,
@@ -5536,6 +5555,8 @@ async function fetchAlbumBios(title, artist) {
   } else if (wiki && wiki.album) {
     album = {
       description:    wiki.album.description,
+      description_source: "Wikipedia",
+      description_url:    wiki.album.url || null,
       year:           null,
       label:          (qobuz && qobuz.label) ? qobuz.label : null,
       url:            wiki.album.url,
@@ -5545,7 +5566,9 @@ async function fetchAlbumBios(title, artist) {
     };
   } else if (qobuz) {
     album = {
-      description:    null,
+      description:        null,
+      description_source: null,
+      description_url:    null,
       year:           qobuz.year,
       label:          qobuz.label,
       url:            qobuz.url,
@@ -5570,6 +5593,11 @@ async function fetchAlbumBios(title, artist) {
       album.description = null;
     }
     if (!album.description) album.description = null;
+    // The attribution belongs to the TEXT. When the guard above drops the text
+    // for naming the wrong artist, the "View on …" link that describes it has
+    // to go too, or the album view offers a source for prose that is no longer
+    // on screen.
+    if (!album.description) { album.description_source = null; album.description_url = null; }
   }
 
   // The resolved pages, kept whichever source won above. `album.url` carries

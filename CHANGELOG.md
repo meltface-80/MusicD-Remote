@@ -2,6 +2,44 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.32] — 2026-09-21
+
+### Fixed — a Pitchfork-reviewed album showed no words at all
+
+Reported: "the wiki reviews, if available, weren't added to the share card".
+v1.8.31 was only half of it — that fixed the renderer ignoring the description
+it was handed, and this is the reason there was often nothing to hand it.
+
+- **`fetchAlbumBios` picks one winner and the Pitchfork branch emitted
+  `description: null`.** Their written review must not be displayed (UK law —
+  only the score, the Best New Music flag and a link to read it at theirs), so
+  the branch set the text to null and stopped. The unintended half: any record
+  Pitchfork had reviewed showed NO text anywhere — album view or share card —
+  while the Wikipedia article fetched in the same `Promise.all` sat unused two
+  lines away. **The rule is about THEIR prose, not about the album having
+  none.** Wikipedia's description is used there now.
+- **Which immediately made attribution a real question.** `source` says where
+  the LINK goes (the Pitchfork review); it stopped describing whose words are
+  on screen. So there is a second field — `description_source` — and the album
+  view prints "From Wikipedia" under the paragraph whenever the two differ.
+  Showing Wikipedia's writing under a link reading "Read the full review on
+  Pitchfork" would be a misattribution: the same failure the compliance rule
+  exists to prevent, pointing the other way. The artist-mismatch guard clears
+  the attribution along with the text it drops, or the citation outlives what
+  it cites.
+- Pitchfork's own prose still never leaves the server, and the test asserts
+  that from both directions.
+
+### Changed — Settings → Share Card
+
+Services and Reviews were two top-level tiles; they are one **Share Card** tile
+now, with both lists on its page under their own headings. Ten categories
+rather than eleven, and the two things that configure the same screen are in
+the same place. The tile also stops borrowing Artwork & metadata's picture
+glyph — it carries the share icon from the button it configures.
+
+968 unit / 552 DOM / 90 static.
+
 ## [1.8.31] — 2026-09-20
 
 ### Added — the share card draws what it was already fetching

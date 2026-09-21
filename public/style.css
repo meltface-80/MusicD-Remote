@@ -1225,6 +1225,12 @@ main { padding-top: calc(var(--topbar-h) + 14px); }
   margin-top: 6px;
   flex-wrap: wrap;
 }
+/* The text's own attribution, under the paragraph it belongs to. Quieter than
+   the review link in the footer: it is a citation, not an action. */
+.bio-text-source { margin-top: 6px; font-size: 12.5px; color: var(--text-faint); }
+.bio-text-source a { color: inherit; text-decoration: underline; }
+.bio-text-source a:hover { color: var(--text); }
+
 .bio-source {
   color: var(--text-dim);
   font-size: 13px;
@@ -1561,6 +1567,14 @@ main {
    keeps the labels constant, and its test holds them there. */
 /* The Services / Reviews toggle lists. Rows are built by app.js from the
    server's table, so this only has to space them. */
+/* A heading inside a settings pane, for a page holding more than one list.
+   Share Card carries Services and Reviews together; without a label the two
+   toggle lists read as one long one. */
+.settings-block-title {
+  margin: 0 0 10px; font-size: 13px; font-weight: 700;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--text-faint);
+}
+
 .share-toggle-list { display: flex; flex-direction: column; }
 
 .share-links {

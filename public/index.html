@@ -690,6 +690,10 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             <h3 class="section-label">About this album</h3>
             <div class="bio-meta" id="album-meta"></div>
             <div class="bio-text" id="album-bio-text" data-clipped="true"></div>
+            <!-- Whose words those are, shown only when it is NOT the same place
+                 the link below goes — which is the Pitchfork case, where the
+                 text is Wikipedia's and the link is the review. -->
+            <div class="bio-text-source hidden" id="album-bio-text-source"></div>
             <div class="bio-footer">
               <button class="bio-toggle hidden" type="button" id="album-bio-toggle">Show more</button>
               <a class="bio-source hidden" id="album-bio-source" target="_blank" rel="noopener noreferrer"></a>
@@ -982,21 +986,12 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             </span>
           </button>
 
-          <button class="settings-nav-item" type="button" data-pane="services">
+          <button class="settings-nav-item" type="button" data-pane="sharecard">
             <span class="settings-nav-ico" aria-hidden="true">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
             </span>
             <span class="settings-nav-txt">
-              <span class="settings-nav-title">Services</span>
-            </span>
-          </button>
-
-          <button class="settings-nav-item" type="button" data-pane="reviews">
-            <span class="settings-nav-ico" aria-hidden="true">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-            </span>
-            <span class="settings-nav-txt">
-              <span class="settings-nav-title">Reviews</span>
+              <span class="settings-nav-title">Share Card</span>
             </span>
           </button>
 
@@ -1262,17 +1257,18 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
         </div>
       </div>
 
-      <!-- Services — which streaming services the share card links to -->
-      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="services">
+      <!-- Share Card — the links under the card, grouped in one place -->
+      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="sharecard">
         <div class="settings-pane-head">
           <button class="settings-back" type="button" data-settings-back aria-label="Back to settings">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
           </button>
-          <h2>Services</h2>
+          <h2>Share Card</h2>
         </div>
-        <p class="settings-pane-desc">Where the share card links to hear a record</p>
+        <p class="settings-pane-desc">The links under the card</p>
 
         <div class="settings-block">
+          <h3 class="settings-block-title">Services</h3>
           <!-- Filled from /api/settings/share-links: the list of what CAN be
                linked to lives in lib/share-links.js, so this screen and the
                chips can never disagree about which services exist. -->
@@ -1282,19 +1278,9 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             looked up until you tap a link.
           </p>
         </div>
-      </div>
-
-      <!-- Reviews — which writing the share card links to -->
-      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="reviews">
-        <div class="settings-pane-head">
-          <button class="settings-back" type="button" data-settings-back aria-label="Back to settings">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
-          </button>
-          <h2>Reviews</h2>
-        </div>
-        <p class="settings-pane-desc">Where the share card links to read about one</p>
 
         <div class="settings-block">
+          <h3 class="settings-block-title">Reviews</h3>
           <div id="share-reviews-list" class="share-toggle-list"></div>
           <p class="settings-note">
             Pitchfork and Wikipedia link to the actual page when it has already
