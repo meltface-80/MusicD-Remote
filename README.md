@@ -4,7 +4,7 @@
 
 </div>
 
-# MusicD Remote (for Roon) - v1.8.24
+# MusicD Remote (for Roon) - v1.8.36
 
 **📖 Install guide & command builder: [meltface-80.github.io/MusicD-Remote](https://meltface-80.github.io/MusicD-Remote/)**
 
@@ -20,7 +20,7 @@ MusicD Remote is for Roon and is a feature-rich music discovery companion for Ro
 * **Off by default** — turn it on in Settings → Playback → Waveform, and it stays on until you turn it off
 * **Each bar is the level of its slice of the track**, measured from both channels at full rate. A bar that is the *loudest moment* in its slice says nothing about a modern master — something touches the ceiling almost everywhere in one — so it drew a brick; this draws the record
 * **The shape sits under the playhead**, at every point in the track rather than only halfway through
-* Each track is analysed once and stored, so it is instant every time after the first. Upgrading to v1.8.24 re-analyses them once, as they play, because the numbers come out differently
+* Each track is analysed once and stored, so it is instant every time after the first. Coming from a version before v1.8.24 re-analyses them once, as they play, because the numbers come out differently
 * The next track in the queue is prepared while the current one plays, so it is already there when the track changes
 * **Local files, and Qobuz and TIDAL tracks in your favourites.** Roon streams those services straight to your endpoint and never to an extension, so the track is fetched from the service with your own account, turned into a few thousand loudness values and discarded — no audio is written to disk, and Roon still handles all playback
 * Anything the app cannot read — a track outside your favourites, or one a service delivers in a protected container — simply keeps the plain progress bar
@@ -188,14 +188,16 @@ Supports information and artwork from:
 
 ⸻
 
-📤 Sharing
+📤 Share card — *rebuilt in v1.8.36*
 
-Create attractive share cards for social media featuring:
+Tap Share on any album or on Now playing and the record gets a card of its own, with somewhere to go underneath it.
 
-* Album artwork
-* Artist
-* Album title
-* Clean modern layout
+* **The card** — album artwork, artist, title, the release year and record label, a short description of the record, and the Pitchfork score with its Best New Music flag where there is one
+* **Where to hear it** — Qobuz, TIDAL, Spotify, Apple Music, Amazon Music, Deezer and Bandcamp, each opening a search for the album on that service. Qobuz opens the Qobuz **app** rather than their download store
+* **Where to read about it** — Wikipedia, Pitchfork and AllMusic, and the same for the artist if you want them. These link to the actual page when the app has already found it, and to a search when it has not
+* **A default service** — hold a service button to set it, or pick one in Settings → Share Card. Remembered per device
+* **"If you like this"** — three acts worth hearing next, one record each. Tap one that is in your Roon library and it goes in the queue; tap one that is not and it opens in your default service
+* Turn any of the services or review sites on and off in **Settings → Share Card**
 
 ⸻
 
@@ -271,9 +273,9 @@ FanArt.tv provides high-quality label logos for labels that have a MusicBrainz M
 ```bash
 sudo mkdir -p /opt/musicd-remote
 cd /opt/musicd-remote
-wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.24/MusicD-Remote-v1.8.24.tar.gz
-tar -xzf MusicD-Remote-v1.8.24.tar.gz
-docker build -t musicd-remote:1.8.24 .
+wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.36/MusicD-Remote-v1.8.36.tar.gz
+tar -xzf MusicD-Remote-v1.8.36.tar.gz
+docker build -t musicd-remote:1.8.36 .
 docker run -d \
   --name musicd-remote \
   --restart unless-stopped \
@@ -282,7 +284,7 @@ docker run -d \
   -v musicd-remote-data:/app/data \
 # remove the below line (and this line) if you only use Qobuz/Tidal
   -v /your/path/to/Music:/music:ro \
-  musicd-remote:1.8.24
+  musicd-remote:1.8.36
 ```
 
 > **The `musicd-remote-data` volume holds your Roon pairing, play history, and label cache — never rename it once created.** Point every future `docker run` at the same name and everything carries over; a different name makes Docker silently create a fresh empty volume (new pairing, lost history). **Upgrading from v1.6.31 or earlier?** Your data lives in the old `roon-random-albums-data` volume — move it once with the copy step in [Updating](#updating) below before using this command.
@@ -357,11 +359,11 @@ sudo systemctl disable roon-random-albums
 # 2. Create the build directory and download the tarball
 sudo mkdir -p /opt/musicd-remote
 cd /opt/musicd-remote
-wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.24/MusicD-Remote-v1.8.24.tar.gz
-tar -xzf MusicD-Remote-v1.8.24.tar.gz
+wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.36/MusicD-Remote-v1.8.36.tar.gz
+tar -xzf MusicD-Remote-v1.8.36.tar.gz
 
 # 3. Build and run
-docker build -t musicd-remote:1.8.24 .
+docker build -t musicd-remote:1.8.36 .
 docker run -d \
   --name musicd-remote \
   --restart unless-stopped \
@@ -370,7 +372,7 @@ docker run -d \
   -v musicd-remote-data:/app/data \
 # remove the below line (and this line) if you only use Qobuz/Tidal
   -v /your/path/to/Music:/music:ro \
-  musicd-remote:1.8.24
+  musicd-remote:1.8.36
 ```
 
 Confirm the extension appears in **Roon → Settings → Extensions** before removing the old install.
@@ -417,10 +419,10 @@ Open Terminal and run:
 ```
 mkdir -p ~/musicd-remote
 cd ~/musicd-remote
-curl -L -o MusicD-Remote-v1.8.24.tar.gz \
-https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.24/MusicD-Remote-v1.8.24.tar.gz
-tar -xzf MusicD-Remote-v1.8.24.tar.gz
-docker build -t musicd-remote:1.8.24 .
+curl -L -o MusicD-Remote-v1.8.36.tar.gz \
+https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.36/MusicD-Remote-v1.8.36.tar.gz
+tar -xzf MusicD-Remote-v1.8.36.tar.gz
+docker build -t musicd-remote:1.8.36 .
 ```
 
 ## 3. Run the container
@@ -435,7 +437,7 @@ docker run -d \
   -e TZ=Europe/London \
   -v musicd-remote-data:/app/data \
   -v /Users/yourusername/Music:/music:ro \
-  musicd-remote:1.8.24
+  musicd-remote:1.8.36
 ```
 
 Or if you only use Qobuz or TIDAL
@@ -448,7 +450,7 @@ docker run -d \
   -e ROON_CORE_IP=<IP_OF_YOUR_ROON_CORE> \
   -e TZ=Europe/London \
   -v musicd-remote-data:/app/data \
-  musicd-remote:1.8.24
+  musicd-remote:1.8.36
 ```
 
 ## 4. Open the extension
@@ -487,7 +489,7 @@ docker run --rm -v musicd-remote-data:/data alpine tar -czf - -C /data logs > mu
 Pass extra env vars with `-e` in the `docker run` command:
 
 ```bash
-docker run -d ... -e RRA_DEBUG=1 musicd-remote:1.8.24
+docker run -d ... -e RRA_DEBUG=1 musicd-remote:1.8.36
 ```
 
 ### Album metadata sources
