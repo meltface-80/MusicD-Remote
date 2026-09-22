@@ -13,10 +13,11 @@ const { loadIndexFunctions } = require("../lib/extract");
 
 const F = loadIndexFunctions(
   ["normalize", "canonText", "canonArtist", "albumKey", "albumKeys", "albumTitleVariants",
-   "addFavouriteKeys"],
+   "addFavouriteKeys", "favouriteTitleForms", "addQobuzAlbumId"],
   {}
 );
 const { normalize, canonText, canonArtist, albumKey, albumKeys, addFavouriteKeys } = F;
+const { addQobuzAlbumId } = F;
 
 test("normalize", async (t) => {
   await t.test("lowercases and collapses punctuation to single spaces", () => {
@@ -191,6 +192,117 @@ test("addFavouriteKeys — indexes a service favourite under every identity", as
     const keys = new Set();
     addFavouriteKeys(keys, "Title", null, ["", null, undefined, "Real"]);
     assert.deepEqual([...keys], ["title||real"]);
+  });
+
+  // -------------------------------------------------------------------------
+  // v1.8.53: the OTHER direction of the edition problem.
+  //
+  // The two title strings above handle a service that keeps the edition in its
+  // own `version` field. When the service bakes it INTO the title instead —
+  // one string, no version — the favourite was filed only under the long form,
+  // and Roon showing the clean title could never reach it.
+  //
+  // The lookup side has stripped edition markers since v1.6.55, but it strips
+  // ROON's title, which is the one with nothing to strip. So the two sides of a
+  // single key space ran different title rules, and the only symptom was a
+  // lookup that missed — reported as "this album is not in your favourites",
+  // because a failed Map lookup cannot tell absent from spelled-differently.
+  // -------------------------------------------------------------------------
+  await t.test("a baked-in edition is ALSO filed under the plain title", () => {
+    const keys = new Set();
+    addFavouriteKeys(keys, "Zebra IV (Remastered)", null, ["Zebra"]);
+    assert.ok(keys.has("zebra iv||zebra"),
+      "a favourite whose service title carries the edition inline is unreachable " +
+      "from the clean title Roon shows: " + JSON.stringify([...keys]));
+    assert.ok(keys.has("zebra iv remastered||zebra"), "…and the full form is kept too");
+  });
+
+  await t.test("the dash form is stripped on this side as well", () => {
+    const keys = new Set();
+    addFavouriteKeys(keys, "Kid A - 2016 Remaster", null, ["Radiohead"]);
+    assert.ok(keys.has("kid a||radiohead"));
+  });
+
+  await t.test("a dash that carries meaning is still left alone", () => {
+    // Widening must not merge two real records. "Part Two" is a different album.
+    const keys = new Set();
+    addFavouriteKeys(keys, "Album - Part Two", null, ["X"]);
+    assert.deepEqual([...keys], ["album part two||x"]);
+  });
+
+  await t.test("stripping never produces a title short enough to match anything", () => {
+    const keys = new Set();
+    addFavouriteKeys(keys, "OK (Deluxe)", null, ["X"]);
+    for (const k of keys) {
+      assert.ok(k.split("||")[0].length >= 2, `too-short key: ${k}`);
+    }
+    // "(Live)" is all marker: the stripped form would be empty and match every
+    // album by that artist.
+    const only = new Set();
+    addFavouriteKeys(only, "(Live)", null, ["X"]);
+    assert.ok(![...only].some(k => k.split("||")[0].length < 3),
+      "a marker-only title produced a key that would match everything: " +
+      JSON.stringify([...only]));
+  });
+
+  // -------------------------------------------------------------------------
+  // THE INVARIANT, finally asserted.
+  //
+  // addQobuzAlbumId's own comment says it is "keyed EXACTLY the way
+  // addFavouriteKeys keys, deliberately: ... if these two ever generated keys
+  // differently the feature would find an album the badge says is not there, or
+  // miss one it says is." Nothing checked it. They were two copies of one loop,
+  // and a v1.8.53 mutation that reverted only ONE of them to the raw title
+  // passed the entire suite — the badge would have said yes and the waveform
+  // would have had no id, which is precisely the failure the comment describes.
+  // -------------------------------------------------------------------------
+  await t.test("the key SET and the id MAP are filed identically", () => {
+    const cases = [
+      ["Zebra IV (Remastered)", null,             ["Zebra"]],
+      ["Rumours",               "Deluxe Edition", ["Fleetwood Mac"]],
+      ["Kid A - 2016 Remaster", null,             ["Radiohead"]],
+      ["Super Black Blues",     null,             ["T-Bone Walker", "Big Joe Turner"]],
+      ["Album - Part Two",      null,             ["X"]],
+      ["OK (Deluxe)",           null,             ["X"]],
+      ["÷",                     null,             ["Ed Sheeran"]],
+    ];
+    for (const [title, version, artists] of cases) {
+      const keys = new Set();
+      const map  = new Map();
+      addFavouriteKeys(keys, title, version, artists);
+      addQobuzAlbumId(map, title, version, artists, "id-1");
+      assert.deepEqual([...map.keys()].sort(), [...keys].sort(),
+        `"${title}" is filed under different identities by the two sides:\n` +
+        `  badge set: ${JSON.stringify([...keys].sort())}\n` +
+        `  id map:    ${JSON.stringify([...map.keys()].sort())}`);
+    }
+  });
+
+  await t.test("the id map keeps the FIRST writer, not the last", () => {
+    // Two favourites can canonicalise to one key. Overwriting would make which
+    // id you get depend on the page order the favourites arrived in.
+    const map = new Map();
+    addQobuzAlbumId(map, "Rumours", null, ["Fleetwood Mac"], "first");
+    addQobuzAlbumId(map, "Rumours", null, ["Fleetwood Mac"], "second");
+    assert.equal(map.get("rumours||fleetwood mac"), "first");
+  });
+
+  await t.test("an id map never stores a key with no album id", () => {
+    const map = new Map();
+    addQobuzAlbumId(map, "Rumours", null, ["Fleetwood Mac"], null);
+    assert.equal(map.size, 0);
+  });
+
+  await t.test("both sides of the key space now agree on the plain form", () => {
+    // THE invariant. The badge says an album is there and the waveform fetches
+    // it, so the index side and the lookup side must produce the same identity
+    // for the same record — whichever of them happens to hold the long title.
+    const keys = new Set();
+    addFavouriteKeys(keys, "Zebra IV (Remastered)", null, ["Zebra"]);
+    const looked = albumKeys("Zebra IV", "Zebra");
+    assert.ok(looked.some(k => keys.has(k)),
+      `nothing albumKeys() asks for is in what addFavouriteKeys() filed:\n` +
+      `  asked: ${JSON.stringify(looked)}\n  filed: ${JSON.stringify([...keys])}`);
   });
 });
 

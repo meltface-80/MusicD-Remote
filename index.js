@@ -3297,6 +3297,16 @@ let qobuzAlbumIds = new Map();
 let tidalAlbumIds = new Map();
 let qobuzAlbumKeys = new Set();
 let tidalAlbumKeys = new Set();
+// How many favourite ALBUMS the last read actually got, and how many the
+// service says there are. Declared here beside the sets they describe.
+//
+// The probe reported `favourite_albums_known: 11455` and that was the size of
+// the KEY map — one album is filed under several identities, so the number was
+// always larger than the library and could never show a truncated read. The two
+// numbers below are albums, and they are reported separately so "we read
+// everything" is a statement with evidence rather than an assumption.
+let qobuzFavouritesRead = 0, qobuzFavouritesTotal = 0;
+let tidalFavouritesRead = 0, tidalFavouritesTotal = 0;
 // Release years harvested from those same payloads — see harvestAlbumYears
 // below for what they are and why they are keyed this way. Declared HERE, beside
 // the key sets they are filled alongside, rather than next to the harvest code:
@@ -3306,28 +3316,60 @@ let tidalAlbumKeys = new Set();
 let fileAlbumYears  = new Map();   // albumKey → "YYYY", from /music file tags
 let qobuzAlbumYears = new Map();   // albumKey → "YYYY", from Qobuz favourites
 let tidalAlbumYears = new Map();   // albumKey → "YYYY", from TIDAL favourites
+/*
+ * The stream key file's OWN version, separate from SOURCE_KEY_VERSION.
+ *
+ * Both files used the one stamp, which made invalidating either of them mean
+ * invalidating both — and the local file's cost is a full /music re-walk of
+ * thousands of albums, while this one is a favourites refetch that takes
+ * seconds. So a change to how FAVOURITES are keyed could not be released
+ * without also throwing away the local index, and the safe move was always to
+ * leave the stamp alone and let the stale cache sit there.
+ *
+ * 3 (v1.8.53): favourites are now filed under albumTitleVariants of their
+ * title, so a stored set written by v1.8.52 or earlier is missing the stripped
+ * forms. Loading it would keep the bug alive behind a fix — which is how
+ * v1.8.51's gate fix would have waited twelve hours for a library sync had the
+ * startup refresh not been taught to ask about the account.
+ *
+ * 4 (v1.8.56): every set written before this was read under a ceiling of ten
+ * thousand favourite albums, so a bigger library's file is not merely stale, it
+ * is SHORT — and short in a way nothing downstream can detect. It has to go.
+ */
+const STREAM_KEY_VERSION = 4;
+
 function loadStreamAlbumKeys() {
   try {
     const raw = JSON.parse(fs.readFileSync(STREAM_ALBUMS_FILE, "utf8"));
     // Older key format: ignore it. The startup refresh below rebuilds from the
     // services within seconds, so nothing is lost.
-    if (!raw || raw.v !== SOURCE_KEY_VERSION) return;
+    if (!raw || raw.v !== STREAM_KEY_VERSION) return;
     if (Array.isArray(raw.qobuz)) qobuzAlbumKeys = new Set(raw.qobuz);
     if (Array.isArray(raw.tidal)) tidalAlbumKeys = new Set(raw.tidal);
     if (Array.isArray(raw.qobuzIds)) qobuzAlbumIds = new Map(raw.qobuzIds);
     if (Array.isArray(raw.tidalIds)) tidalAlbumIds = new Map(raw.tidalIds);
+    // The album COUNTS ride with the keys. Without them the probe reports
+    // "0 albums read" for the whole life of a process that restored a perfectly
+    // good index from disk — a false alarm, which is the fastest way to teach
+    // somebody to ignore the field that matters.
+    qobuzFavouritesRead  = Number(raw.qobuzRead)  || 0;
+    qobuzFavouritesTotal = Number(raw.qobuzTotal) || 0;
+    tidalFavouritesRead  = Number(raw.tidalRead)  || 0;
+    tidalFavouritesTotal = Number(raw.tidalTotal) || 0;
     if (DEBUG) console.log("[stream] loaded", qobuzAlbumKeys.size, "Qobuz +",
                            tidalAlbumKeys.size, "Tidal album keys");
   } catch (e) { /* absent on first run — rebuilt by the next favourites refresh */ }
 }
 function saveStreamAlbumKeys() {
   writeJsonAtomic(STREAM_ALBUMS_FILE,
-    { v: SOURCE_KEY_VERSION, qobuz: [...qobuzAlbumKeys], tidal: [...tidalAlbumKeys],
+    { v: STREAM_KEY_VERSION, qobuz: [...qobuzAlbumKeys], tidal: [...tidalAlbumKeys],
       // Written WITH the keys, because they are harvested together and are
       // useless apart. v1.8.6 persisted the keys and not these, so after any
       // restart the streaming waveform had no album to fetch and declined
       // silently — the feature simply never fired.
-      qobuzIds: [...qobuzAlbumIds], tidalIds: [...tidalAlbumIds] }, "[stream]");
+      qobuzIds: [...qobuzAlbumIds], tidalIds: [...tidalAlbumIds],
+      qobuzRead: qobuzFavouritesRead, qobuzTotal: qobuzFavouritesTotal,
+      tidalRead: tidalFavouritesRead, tidalTotal: tidalFavouritesTotal }, "[stream]");
 }
 loadStreamAlbumKeys();
 // First run (or a version upgrade) has no persisted keys: fetch them shortly
@@ -3337,9 +3379,24 @@ loadStreamAlbumKeys();
 // ...or when we have Qobuz keys but no album ids to go with them. That is what
 // an index written by a build before the ids existed looks like, and without
 // this the streaming waveform waits for a library sync that may be hours away.
+//
+// ...or when a service is CONNECTED and this index holds nothing at all for it.
+// Added with the v1.8.51 gate fix, and it is what makes that fix arrive. The
+// three tests above all ask about the index and none about the account, so a
+// user with Qobuz broken and TIDAL working answered "TIDAL has keys and ids,
+// nothing to do" and waited for a library sync to pick the fix up — hours, on
+// the 12h snapshot. Asking the account instead makes the first boot after the
+// upgrade the moment it heals.
+//
+// qobuzReady()/tidalReady() are function DECLARATIONS, so they are callable
+// from here; every `let` they read is declared around line 2040, hundreds of
+// lines above this. (The declaration-before-use rule — this is the check, not
+// an assumption.)
 if ((!qobuzAlbumKeys.size && !tidalAlbumKeys.size) ||
     (qobuzAlbumKeys.size && !qobuzAlbumIds.size) ||
-    (tidalAlbumKeys.size && !tidalAlbumIds.size)) {
+    (tidalAlbumKeys.size && !tidalAlbumIds.size) ||
+    (qobuzReady() && !qobuzAlbumIds.size) ||
+    (tidalReady() && !tidalAlbumIds.size)) {
   const t = setTimeout(() => {
     refreshStreamAlbumKeys("startup").catch(e => {
       if (DEBUG) console.error("[stream] startup refresh:", e.message);
@@ -3439,19 +3496,56 @@ function albumKeys(title, subtitle) {
   return out;
 }
 
-// Index one favourite under every identity Roon might show it as: each credited
-// artist, and — because the services return the edition separately from the
-// title while Roon often bakes it in — both "Album" and "Album (Deluxe)".
+/*
+ * Index one favourite under every identity Roon might show it as.
+ *
+ * Each credited artist, and — because the services return the edition
+ * separately from the title while Roon often bakes it in — both "Album" and
+ * "Album (Deluxe)".
+ *
+ * AND THE OTHER DIRECTION (v1.8.53). Those two title strings used to be the
+ * whole set, which handled only the case where the service keeps the edition
+ * apart. When the service bakes it INTO the title — "Zebra IV (Remastered)" as
+ * one string, with no `version` field — the favourite was filed only under the
+ * long form, and Roon showing the clean "Zebra IV" could never reach it.
+ *
+ * The lookup side has known how to strip an edition marker since v1.6.55, but
+ * it strips ROON's title, and Roon's title is the one with nothing to strip. So
+ * the two sides of one key space were running different title rules, and the
+ * only symptom is a lookup that misses — which then gets reported as "this
+ * album is not in your favourites", because a failed Map lookup cannot tell
+ * absent from spelled-differently. (lib/keymatch.js is what can.)
+ *
+ * albumTitleVariants is the SAME helper albumKeys uses, deliberately: one
+ * definition of what an edition marker is, read by both sides. It keeps the
+ * full form as well as the stripped one, and refuses stripped forms under three
+ * characters, so nothing here widens to a title that would match everything.
+ */
 function addFavouriteKeys(keys, title, version, artists) {
-  const titles = [title];
-  if (version) titles.push(title + " " + version);
-  for (const t of titles) {
+  for (const t of favouriteTitleForms(title, version)) {
     for (const artist of artists) {
       if (!artist) continue;
       const key = albumKey(t, artist);
       if (key) keys.add(key);
     }
   }
+}
+
+/*
+ * Every title form one favourite should be filed under.
+ *
+ * Its own function because addFavouriteKeys and addQobuzAlbumId MUST agree —
+ * the badge says an album is there and the waveform fetches it, so two
+ * different title sets would make the feature find an album the badge denies,
+ * or miss one it promises. They shared a copied loop before; now they share a
+ * call.
+ */
+function favouriteTitleForms(title, version) {
+  const out = [];
+  const add = (v) => { for (const c of albumTitleVariants(v)) if (!out.includes(c)) out.push(c); };
+  add(title);
+  if (version) add(title + " " + version);
+  return out;
 }
 
 /*
@@ -3469,9 +3563,9 @@ function addFavouriteKeys(keys, title, version, artists) {
  */
 function addQobuzAlbumId(map, title, version, artists, albumId) {
   if (!albumId) return;
-  const titles = [title];
-  if (version) titles.push(title + " " + version);
-  for (const t of titles) {
+  // The SAME forms addFavouriteKeys files under — one call, not a second copy
+  // of the loop. See favouriteTitleForms.
+  for (const t of favouriteTitleForms(title, version)) {
     for (const artist of artists) {
       if (!artist) continue;
       const key = albumKey(t, artist);
@@ -3495,11 +3589,42 @@ async function refreshStreamAlbumKeys(reason) {
   }
   _streamRefreshInFlight = true;
   try {
-    if (qobuzToken || (qobuzUsername && qobuzPasswordMd5)) {
+    // qobuzReady(), NOT the password credentials. This gate read
+    // `qobuzToken || (qobuzUsername && qobuzPasswordMd5)` — the LEGACY login —
+    // and since v1.8.20 removed that login nothing sets any of the three. So on
+    // an install connected the only way it can be connected (the browser
+    // sign-in, which sets qobuzWaveToken) this block never ran: no favourites,
+    // therefore no album ids, therefore wfQobuzAlbumId could never answer and
+    // every Qobuz track declined with "no Qobuz album id — 0 ids known". The
+    // sign-in handler's own refreshStreamAlbumKeys('qobuz sign-in') was a
+    // no-op for the same reason, so reconnecting could not clear it either.
+    if (qobuzReady()) {
       try {
         // Page until the service runs out: a one-page read silently badged only
         // the first 500 favourites and left the rest looking unmatched.
-        const PAGE = 500, MAX_PAGES = 20;
+        /*
+         * PAGE UNTIL QOBUZ RUNS OUT, not until a page counter does.
+         *
+         * This was `PAGE = 500, MAX_PAGES = 20` — a silent ceiling of TEN
+         * THOUSAND favourite albums. Past it the loop simply stopped: no error,
+         * no log line, and a `favourites: N albums` message that looked like a
+         * complete read. Everything sorting after the ten-thousandth favourite
+         * was invisible to the whole extension — no badge, no album id, and
+         * therefore no waveform, deterministically and for ever.
+         *
+         * The report that found it: "as this is a Roon extension then the only
+         * way the album would show via browse is if it is a favourite within my
+         * Qobuz account". Exactly right, and it is the argument that matters —
+         * Roon was playing the record, so it WAS a favourite, so a read that
+         * could not see it was the thing at fault. The probe said "genuinely
+         * never favourited" and the number it said it from, 11,455, was a count
+         * of KEYS rather than albums, so the ceiling was invisible there too.
+         *
+         * The guard below is a stop against a server that never advances, not a
+         * library-size limit — reaching it means something is wrong, and it now
+         * SAYS so instead of quietly returning a short list.
+         */
+        const PAGE = 500, MAX_PAGES = 400;   // 200,000 albums before the guard
         const keys = new Set();
         // Harvested alongside the keys from the SAME response — Qobuz's album
         // objects carry their release date, so the Decade filter gets it for
@@ -3508,9 +3633,13 @@ async function refreshStreamAlbumKeys(reason) {
         // And the album ids, for the streaming waveform: a key says the album
         // is a favourite, an id is what fetches its track list.
         const ids = new Map();
-        let fetched = 0, skipped = 0, qualities = 0;
-        for (let page = 0; page < MAX_PAGES; page++) {
-          const items = await qobuzWithToken((t) => qobuz.getFavoriteAlbums(t, PAGE, page * PAGE));
+        let fetched = 0, skipped = 0, qualities = 0, stated = 0, page = 0;
+        for (; page < MAX_PAGES; page++) {
+          const got = await qobuzWithToken((t) => qobuz.getFavoriteAlbumsPage(t, PAGE, page * PAGE));
+          const items = got.items;
+          // What Qobuz says the total is. Read so the loop can know it finished
+          // rather than assume it, and so the log can state both numbers.
+          if (got.total) stated = got.total;
           if (!items.length) break;
           fetched += items.length;
           for (const a of items) {
@@ -3528,6 +3657,15 @@ async function refreshStreamAlbumKeys(reason) {
             if (keys.size === before) skipped++;
           }
           if (items.length < PAGE) break;
+          if (stated && fetched >= stated) break;
+        }
+        if (page >= MAX_PAGES) {
+          // Never silent. A truncated favourites read makes albums vanish from
+          // badges and waveforms with no symptom that points here, which is
+          // precisely how the old ceiling survived.
+          console.error("[stream] Qobuz favourites TRUNCATED at " + fetched +
+                        " albums (guard of " + MAX_PAGES + " pages) — some albums " +
+                        "will have no badge and no waveform. Please report this.");
         }
         if (qualities) {
           // The Format/Sample rate/Bit depth facets just gained values, and the
@@ -3540,20 +3678,43 @@ async function refreshStreamAlbumKeys(reason) {
         qobuzAlbumKeys = keys;
         qobuzAlbumYears = years;
         qobuzAlbumIds  = ids;
-        console.log("[stream] Qobuz favourites: " + keys.size + " albums from " + fetched +
-                    " favourites (" + reason + ")" + (skipped ? ", " + skipped + " unkeyable" : "") +
-                    ", " + years.size + " dated, " + ids.size + " with an album id");
+        // ALBUMS read and albums Qobuz says there are, both, and in that order.
+        // The old line led with keys.size and called it "albums", which is what
+        // made a half-read library look like a whole one.
+        qobuzFavouritesRead = fetched;
+        qobuzFavouritesTotal = stated;
+        console.log("[stream] Qobuz favourites: read " + fetched + " albums" +
+                    (stated ? " of " + stated + " Qobuz states" : "") +
+                    " (" + reason + ") -> " + keys.size + " identity keys, " +
+                    ids.size + " with an album id" +
+                    (skipped ? ", " + skipped + " unkeyable" : "") +
+                    ", " + years.size + " dated" +
+                    (stated && fetched < stated
+                      ? " — INCOMPLETE, " + (stated - fetched) + " favourites were not read"
+                      : ""));
       } catch (e) {
         // Left untouched on failure: a network blip must not wipe working badges.
         console.error("[stream] Qobuz favourites failed (keys kept):", e.message);
       }
     }
-    if (tidalRefreshToken && tidalUserId) {
+    if (tidalReady()) {
       try {
         // Through tidalWithToken so a revoked/expired access token is refreshed
         // and retried, like every other Tidal call.
-        const rows = await tidalWithToken((token, cc) =>
-          tidal.getFavoriteAlbums(token, cc, tidalUserId));
+        // getFavoriteAlbumsAll, not getFavoriteAlbums: the old call asked for
+        // `limit: 5000` once and never paged, so a library past it came back
+        // truncated with no error and no way for this code to tell. TIDAL
+        // states totalNumberOfItems in the same response and nothing read it.
+        const all = await tidalWithToken((token, cc) =>
+          tidal.getFavoriteAlbumsAll(token, cc, tidalUserId));
+        const rows = all.items;
+        tidalFavouritesRead = rows.length;
+        tidalFavouritesTotal = all.total || rows.length;
+        if (all.truncated) {
+          console.error("[stream] Tidal favourites TRUNCATED at " + rows.length +
+                        " albums — some albums will have no badge and no waveform. " +
+                        "Please report this.");
+        }
         const keys = new Set();
         const ids  = new Map();    // identity -> TIDAL album id, for waveforms
         const years = new Map();   // free release dates — see the Qobuz note above
@@ -3578,9 +3739,15 @@ async function refreshStreamAlbumKeys(reason) {
         tidalAlbumKeys = keys;   // empty is a valid answer — see the Qobuz note
         tidalAlbumIds  = ids;
         tidalAlbumYears = years;
-        console.log("[stream] Tidal favourites: " + keys.size + " albums from " + rows.length +
-                    " favourites (" + reason + ")" + (skipped ? ", " + skipped + " unkeyable" : "") +
-                    ", " + years.size + " dated");
+        console.log("[stream] Tidal favourites: read " + rows.length + " albums" +
+                    (all.total ? " of " + all.total + " TIDAL states" : "") +
+                    " (" + reason + ") -> " + keys.size + " identity keys, " +
+                    ids.size + " with an album id" +
+                    (skipped ? ", " + skipped + " unkeyable" : "") +
+                    ", " + years.size + " dated" +
+                    (all.total && rows.length < all.total
+                      ? " — INCOMPLETE, " + (all.total - rows.length) + " favourites were not read"
+                      : ""));
       } catch (e) {
         console.error("[stream] Tidal favourites failed (keys kept):", e.message);
       }
@@ -3631,8 +3798,8 @@ function clearStreamAlbumKeys(which) {
 // its silence as "claims nothing" would call its albums local.
 function claimingServices() {
   const out = [];
-  if ((qobuzToken || (qobuzUsername && qobuzPasswordMd5)) && qobuzAlbumKeys.size) out.push("qobuz");
-  if (tidalRefreshToken && tidalAlbumKeys.size) out.push("tidal");
+  if (qobuzReady() && qobuzAlbumKeys.size) out.push("qobuz");
+  if (tidalReady() && tidalAlbumKeys.size) out.push("tidal");
   return out;
 }
 
@@ -11808,8 +11975,16 @@ async function smartSimilarRows(seedMbids) {
 // Smart Picks: turning a chosen artist into an album the user can actually add.
 // ---------------------------------------------------------------------------
 
-// Is each service usable? One definition each, so the three places that ask
-// cannot drift apart the way the pre-existing gates already have.
+// Is each service usable? ONE definition each, and every site that asks calls
+// it — there is no second spelling of this question anywhere in the file, and
+// the static suite fails if one appears.
+//
+// This comment used to say the three PRE-EXISTING gates had already drifted,
+// and left them drifted. They had: each tested the legacy password login on its
+// own, so after v1.8.20 removed that login they were all permanently false, and
+// the Qobuz favourites read, the source badges and the Qobuz artist bio went
+// with them. Naming a drift is not fixing it. (v1.8.51.)
+//
 // The browser sign-in counts as connected on its own — it is a full Qobuz
 // session, not an add-on to the password login.
 function qobuzReady() {
@@ -13288,6 +13463,13 @@ app.post("/api/settings/home-rows", (req, res) => {
  * library, most of which would never be asked about.
  */
 const WF = require("./lib/waveform");
+const WFV = require("./lib/waveform-verdict");
+// What the index holds NEAR a key that missed. The difference between "this
+// album is not in your favourites" and "it is, spelled differently".
+const KM = require("./lib/keymatch");
+// Which catalogue search result (if any) is the album that is playing. Pure —
+// the decision only; the keying stays here, where the key space lives.
+const ABS = require("./lib/albumsearch");
 const WFD = require("./lib/waveform-decode");
 // Field listing for /api/debug/zone-dump. Pure, no I/O — see lib/objshape.js.
 const SHAPE = require("./lib/objshape");
@@ -13505,13 +13687,52 @@ async function wfAlbumFiles(albumKey) {
   return out;
 }
 
-const wfCanon = (t) => String(t || "").toLowerCase().replace(/\s+/g, " ").trim();
+/*
+ * Is this the same track title?
+ *
+ * TM.canon, THE SAME ONE THE STREAMING MATCHER USES. This was its own weaker
+ * rule — lowercase and collapse whitespace, nothing else — and it made the two
+ * halves of one question disagree about punctuation:
+ *
+ *     Roon says   Don't Panic      (U+0027 apostrophe)
+ *     the tag says Don’t Panic      (U+2019, what nearly every tagger writes)
+ *
+ * Those are not equal, and they are not CONTAINED in one another either, so the
+ * fallback missed too and the track resolved to no file at all. Every track
+ * whose tag carries a typographic apostrophe — a huge share of any real library
+ * — silently had no local waveform, while the Qobuz and TIDAL paths handled it
+ * from the day they were written because they canonicalise properly.
+ *
+ * Found from a user's probe output: Parachutes resolved to its folder, all ten
+ * files listed, and matched_file null with "Don't Panic" sitting one line above
+ * "Don’t Panic". (v1.8.54.)
+ *
+ * ONE definition of "same title", not two. The same reason the Qobuz gates had
+ * to stop being spelled out three ways in v1.8.51: a second spelling of one
+ * question is a bug waiting for the day the two drift, and this one had already
+ * drifted.
+ */
+// A declaration, not a const arrow: the test suite extracts this by name, and a
+// helper that decides which track you are looking at should be reachable by the
+// tests that pin what "the same title" means.
+function wfCanon(t) { return TM.canon(t); }
 
 async function wfResolveFile(albumKey, trackTitle) {
   const want = wfCanon(trackTitle);
   if (!want) return null;
   const files = await wfAlbumFiles(albumKey);
-  let hit = files.find(f => wfCanon(f.title) === want);
+  // Every file that canonicalises the same, not the FIRST one. An album really
+  // can list a title twice (a reprise, a hidden duplicate), and picking one is
+  // a guess — the same guess TM.matchTrack refuses on the streaming side, for
+  // the same reason: a waveform of the wrong track looks authoritative and is
+  // simply a different song. `find` took the first and said nothing.
+  const exact = files.filter(f => wfCanon(f.title) === want);
+  if (exact.length > 1) {
+    console.log("[waveform] " + exact.length + " files in that folder are called \"" +
+                trackTitle + "\" — ambiguous, so no waveform rather than a guess");
+    return null;
+  }
+  let hit = exact[0];
   // Roon's track title can carry a suffix the tag does not (or the reverse),
   // so containment is the fallback — but only when it is UNAMBIGUOUS. Two
   // candidates means we do not know, and a waveform of the wrong track is
@@ -13730,16 +13951,20 @@ async function wfQobuzTrack(album, artist, track, seconds) {
       "Qobuz waveforms → Connect. Local files are unaffected.");
     return null;
   }
-  const albumId = wfQobuzAlbumId(album, artist);
+  // The favourites first — free, already in memory, and the only source that
+  // needs no call. Then the catalogue, which is what makes an album played from
+  // a search reachable at all. See wfQobuzSearchAlbumId.
+  let albumId = wfQobuzAlbumId(album, artist);
+  if (!albumId) albumId = await wfQobuzSearchAlbumId(album, artist);
   if (!albumId) {
     // Keyed by ALBUM: the clients re-ask every poll, and one line per album is
     // the useful amount — enough to see which records are unreachable, not
     // enough to drown the log.
     wfQobuzSayOnce("noid:" + album,
       "[waveform] qobuz: no Qobuz album id for \"" + album + "\" by \"" +
-      (artist || "(none)") + "\" — " + qobuzAlbumIds.size + " ids known" +
-      (qobuzAlbumIds.size ? " (is it in your Qobuz FAVOURITES? playing from search is not enough)"
-                          : " (favourites not read yet)"));
+      (artist || "(none)") + "\" — not among the " + qobuzAlbumIds.size +
+      " favourites and the catalogue search did not identify it either" +
+      (qobuzAlbumIds.size ? "" : " (favourites not read yet)"));
     return null;
   }
 
@@ -13784,17 +14009,103 @@ function wfQobuzAlbumId(album, artist) {
   return qobuzAlbumIds.get(found.qobuz[0]) || null;
 }
 
-/**
- * The waveform for a Qobuz track, or null with a logged reason.
+/*
+ * The Qobuz album id for something that is NOT in the favourites.
  *
- * `reason` is always logged rather than swallowed: "no waveform" with no
- * explanation is what makes this class of feature impossible to diagnose from a
- * user's report, and there are five separate ways to decline here.
+ * Until v1.8.55 the favourites were the only place an album id could come from,
+ * and that was stated as a hard limit — an album played from a search, an
+ * editorial list or Roon's own browser had no waveform and never would. A probe
+ * against 11,455 loaded favourites answered `near: []` for the album playing at
+ * the time: not spelled differently, not absent by accident, simply never
+ * favourited. It could have waited for ever.
+ *
+ * The catalogue is searchable with the token that already reads the favourites,
+ * so the id IS obtainable. Three things make using it safe:
+ *
+ *   the MATCH is an exact identity, built by favouriteTitleForms — the same
+ *     builder the favourites index uses, so a search hit and a favourite are
+ *     keyed the same way and cannot disagree;
+ *   AMBIGUITY DECLINES (lib/albumsearch.js). Qobuz answers a query it cannot
+ *     place with its nearest guess rather than with nothing, so "the first
+ *     result" is never an answer here;
+ *   and being wrong is survivable anyway: TM.matchTrack gates on title AND
+ *     duration, so a different pressing draws nothing rather than putting a
+ *     confident picture of another recording under the seek bar.
+ *
+ * Memoised per identity INCLUDING the misses, so an album that is not on Qobuz
+ * costs one search for the life of the process rather than one per poll.
  */
-async function wfQobuzCompute(albumId, track, seconds, signal) {
+const _wfQobuzSearched = new Map();    // wanted key -> album id or null
+const _wfQobuzSearching = new Map();   // wanted key -> in-flight promise
+async function wfQobuzSearchAlbumId(album, artist) {
+  if (!qobuzReady()) return null;
+  const wanted = albumKeys(album || "", artist || "");
+  if (!wanted.length) return null;
+  // Keyed on the FIRST identity, which is the whole-credit one: it is the same
+  // for every call about this album, while the list itself is order-stable but
+  // longer than a cache key wants to be.
+  const ck = wanted[0];
+  if (_wfQobuzSearched.has(ck)) return _wfQobuzSearched.get(ck);
+  const already = _wfQobuzSearching.get(ck);
+  if (already) return already;
+
+  const job = (async () => {
+    let items = [];
+    try {
+      const r = await qobuzWithToken((t) =>
+        qobuz.searchCatalog(t, (album || "") + " " + (artist || ""), 20, 0));
+      items = (r && r.albums && r.albums.items) || [];
+    } catch (e) {
+      // A failed search is NOT cached as "not on Qobuz": a rate limit or a
+      // network blip would otherwise switch the fallback off for this album
+      // until the container restarts.
+      console.log("[waveform] qobuz: catalogue search failed for \"" + album +
+                  "\": " + ((e && e.message) || "unknown"));
+      return undefined;
+    }
+    const candidates = items.map((a) => ({
+      id: a && a.id,
+      keys: favouriteTitleForms(a && a.title, a && a.version)
+        .flatMap((t) => [(a.artist && a.artist.name), (a.performer && a.performer.name)]
+          .filter(Boolean)
+          .map((who) => albumKey(t, who)))
+        .filter(Boolean),
+    }));
+    const picked = ABS.pickAlbumId(wanted, candidates);
+    console.log("[waveform] qobuz: \"" + album + "\" is not a favourite; catalogue " +
+                "search " + (picked.id ? "found album " + picked.id + " — " + picked.reason
+                                       : "declined — " + picked.reason));
+    return picked.id || null;
+  })().finally(() => { _wfQobuzSearching.delete(ck); });
+
+  _wfQobuzSearching.set(ck, job);
+  const got = await job;
+  // undefined means the search itself failed — try again next time.
+  if (got !== undefined) _wfQobuzSearched.set(ck, got);
+  return got || null;
+}
+
+/**
+ * Everything up to the audio: which credentials work, which track this is, and
+ * the time-limited url for it. Returns { url, stop, detail, tried }.
+ *
+ * SPLIT OUT OF wfQobuzCompute IN v1.8.52 so /api/debug/waveform can report the
+ * chain by RUNNING it rather than by re-implementing it. A probe that walks its
+ * own copy of this ladder answers about itself, and the first time the two drift
+ * the probe starts lying with total confidence — which is worse than no probe,
+ * because it is believed. One body, two callers.
+ *
+ * `stop` names where it got to: "no-credentials" | "album" | "track" | "audio"
+ * | "ok". `detail` is the sentence for a human; `tried` is what each credential
+ * set said, which is the difference between a diagnosis and a shrug.
+ */
+async function wfQobuzResolveAudio(albumId, track, seconds) {
   const secret = String(qobuzAppSecret || "").trim();
   // Off entirely only when there is neither a sign-in nor a legacy pasted secret.
-  if (!secret && !qobuzWaveToken) return null;
+  if (!secret && !qobuzWaveToken) {
+    return { url: null, stop: "no-credentials", tried: [],
+             detail: "no Qobuz sign-in and no pasted app secret" };
+  }
 
   // ONE TOKEN, SEVERAL PAIRS — the shape a working Qobuz client actually uses.
   // v1.8.11 swapped the TOKEN along with the app_id and broke the album read,
@@ -13853,7 +14164,11 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
   // Declared here, not with `var` inside the loop: the loop assigns it and the
   // check below reads it, and a hoisted declaration inside a block is the exact
   // shape this project has been bitten by (see the declaration-before-use rule).
-  let url = null;
+  //
+  // What the album read produced, if any set got that far. It is how "no
+  // credential could read the album" is told apart from "the album read fine
+  // and the audio was refused" once the loop has ended.
+  let matched = null;
   for (const a of attempts) {
     // Resolved here, not above: reaching this entry is what makes its cost worth
     // paying, and the common case never reaches past the first.
@@ -13882,23 +14197,63 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
     // The track match does not depend on the credentials, so a failure here is
     // final — retrying with another login would ask the same question twice.
     const m = TM.matchTrack(got.album.tracks, track, seconds);
-    if (!m.track) { console.log("[waveform] qobuz: " + m.reason); return null; }
+    if (!m.track) {
+      // Final, not a reason to try the next credential set: the track list is
+      // the same whoever asks, so retrying would put the identical question a
+      // second time. The album's track COUNT rides along because "no track
+      // called X" and "no track called X in the 50 of 137 we were sent" are
+      // different findings — see the paging fix in lib/qobuz.js.
+      return { url: null, stop: "track", tried: reasons, detail: m.reason,
+               album_title: got.album.title || "",
+               album_tracks: got.album.tracks.length };
+    }
 
     const f = await withTok((t) => qobuz.getFileUrlResult(t, m.track.id, useSecret, { appId: useSignAs }))
       .catch((e) => ({ url: null, reason: qobuz.describeFileUrlError(e) }));
-    if (f && f.url) { url = f.url; break; }
+    if (f && f.url) {
+      return { url: f.url, stop: "ok", tried: reasons, detail: m.reason,
+               album_title: got.album.title || "",
+               album_tracks: got.album.tracks.length,
+               track_id: m.track.id, track_duration: m.track.duration,
+               credentials: a.label };
+    }
     reasons.push(a.label + ": " + ((f && f.reason) || "unknown"));
+    matched = { title: got.album.title || "", n: got.album.tracks.length,
+                reason: m.reason, duration: m.track.duration };
     // A minted token that stops working has expired. Forget it so the next play
     // mints a fresh one rather than replaying a dead credential forever.
     if (tok && _qobuzSignTok && tok === _qobuzSignTok.token) _qobuzSignTok = null;
   }
 
-  if (!url) {
+  // Nothing yielded audio. Whether the track was ever even identified decides
+  // which stop this is: an album that could not be READ and a track that could
+  // not be STREAMED need different things from the user.
+  return { url: null, stop: matched ? "audio" : "album", tried: reasons,
+           detail: matched ? matched.reason : "no credential set could read the album",
+           album_title: matched ? matched.title : "",
+           album_tracks: matched ? matched.n : 0,
+           track_duration: matched ? matched.duration : null };
+}
+
+/**
+ * The waveform for a Qobuz track, or null with a logged reason.
+ *
+ * `reason` is always logged rather than swallowed: "no waveform" with no
+ * explanation is what makes this class of feature impossible to diagnose from a
+ * user's report, and there are five separate ways to decline here.
+ */
+async function wfQobuzCompute(albumId, track, seconds, signal) {
+  const got = await wfQobuzResolveAudio(albumId, track, seconds);
+  if (!got.url) {
+    if (got.stop === "no-credentials") return null;   // already said at the gate
+    if (got.stop === "track") { console.log("[waveform] qobuz: " + got.detail); return null; }
     // Every set that was tried, and what Qobuz said to each. One line, because
     // a cause per attempt is the difference between a diagnosis and a shrug.
-    console.log("[waveform] qobuz: no audio for \"" + track + "\" — " + reasons.join(" | "));
+    console.log("[waveform] qobuz: no audio for \"" + track + "\" — " +
+                (got.tried.length ? got.tried.join(" | ") : got.detail));
     return null;
   }
+  const url = got.url;
 
   const t0 = Date.now();
   let peaks = null;
@@ -13926,7 +14281,17 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
     console.log("[waveform] qobuz: stream failed for \"" + track + "\": " + e.message);
     return null;
   }
-  if (!peaks) { console.log("[waveform] qobuz: could not decode \"" + track + "\""); return null; }
+  if (!peaks) {
+    // WITH the reason. The local path has said why since v1.8.30 and this one
+    // did not, so the single most common streaming failure after a successful
+    // fetch — a truncated download refused by MIN_COVERAGE, which is
+    // indistinguishable from a short track and must be refused — arrived as
+    // four words with no cause in them.
+    const why = WFD.lastDecodeError();
+    console.log("[waveform] qobuz: could not decode \"" + track + "\"" +
+                (why ? " (" + why + ")" : ""));
+    return null;
+  }
   console.log("[waveform] qobuz: " + track + " in " + (Date.now() - t0) + "ms");
   return peaks;
 }
@@ -13996,7 +14361,12 @@ async function wfTidalCompute(albumId, track, seconds, signal) {
     console.log("[waveform] tidal: stream failed for \"" + track + "\": " + e.message);
     return null;
   }
-  if (!peaks) { console.log("[waveform] tidal: could not decode \"" + track + "\""); return null; }
+  if (!peaks) {
+    const why = WFD.lastDecodeError();
+    console.log("[waveform] tidal: could not decode \"" + track + "\"" +
+                (why ? " (" + why + ")" : ""));
+    return null;
+  }
   console.log("[waveform] tidal: " + track + " in " + (Date.now() - t0) + "ms");
   return peaks;
 }
@@ -14236,6 +14606,12 @@ app.get("/api/debug/waveform", async (req, res) => {
   let track  = String(req.query.track  || "").trim();
   let album  = String(req.query.album  || "").trim();
   let artist = String(req.query.artist || "").trim();
+  // The LENGTH, taken here with the rest of it. The duration gate is what tells
+  // this recording from another edition of the same album, so a probe run with
+  // no length has the one check that matters switched off — and the zone is
+  // holding the number. (?length= still wins, for asking about an album that is
+  // not playing.)
+  let seconds = Number(req.query.length) || 0;
   if (!track) {
     const zone = req.query.zone ? zones[String(req.query.zone)]
                                 : Object.values(zones).find(z => z && z.state === "playing");
@@ -14245,22 +14621,161 @@ app.get("/api/debug/waveform", async (req, res) => {
       track  = tl.line1 || np.line1 || "";
       artist = tl.line2 || np.line2 || "";
       album  = tl.line3 || np.line3 || "";
+      if (!seconds && Number.isFinite(np.length)) seconds = np.length;
       out.from_zone = zone.display_name || zone.zone_id;
     }
   }
-  out.track = { track, album, artist };
+  out.track = { track, album, artist, seconds: seconds || null };
   if (!track) {
     out.verdict = "nothing playing and no track given — pass ?track=&album=&artist=";
     return res.json(out);
+  }
+
+  /*
+   * 3b. THE STREAMING CHAIN, reported for every track and not only when the
+   * local one fails.
+   *
+   * This endpoint used to stop at step 4 with "it is a streamed track" and say
+   * nothing else, which left the Qobuz and TIDAL path with exactly the problem
+   * the local one was given this endpoint to cure: several ways to fail and one
+   * silence between them. It is the same five-versions lesson one path along.
+   *
+   * Reported in the order wfQobuzTrack and wfTidalTrack actually check, so the
+   * first `false` in each row is the thing to fix. Read-only: no audio is
+   * fetched, nothing is decoded, no service is called — every value below is
+   * already in memory.
+   */
+  const qId = wfQobuzAlbumId(album, artist);
+  const tId = wfTidalAlbumId(album, artist);
+  // What the lookup actually asked for, and — when it missed — what the index
+  // holds that is CLOSE. Without this a miss is reported as "not in your
+  // favourites", which is a guess: an exact-key lookup fails identically
+  // whether the record is absent or spelled differently, and those need
+  // opposite things from the user. See lib/keymatch.js.
+  const wantKeys = albumKeys(album || "", artist || "");
+  out.streaming = {
+    qobuz: {
+      // Either credential is enough: the browser token signs, and a pasted
+      // secret is the older route that still works.
+      signed_in_for_waveforms: !!qobuzWaveToken,
+      signed_in_as: qobuzWaveName || qobuzWaveUser || null,
+      has_pasted_secret: !!String(qobuzAppSecret || "").trim(),
+      account_connected: qobuzReady(),
+      // ALBUMS read vs albums Qobuz states. `identity_keys` is the old
+      // `favourite_albums_known` under its real name: it counts KEYS, one album
+      // is filed under several, and reporting it as an album count is what hid
+      // a ten-thousand-album ceiling behind the number 11455.
+      favourite_albums_read: qobuzFavouritesRead,
+      favourite_albums_total: qobuzFavouritesTotal || null,
+      favourites_complete: !qobuzFavouritesTotal || qobuzFavouritesRead >= qobuzFavouritesTotal,
+      identity_keys: qobuzAlbumIds.size,
+      favourite_albums_known: qobuzAlbumIds.size,   // kept: older probes quote it
+      album_id: qId || null,
+      stored: qId ? !!wfGet(WF.trackKey("qobuz:" + qId, track)) : false,
+      keys_tried: qId ? undefined : wantKeys,
+      near: qId ? undefined : KM.nearKeys(wantKeys, qobuzAlbumIds.keys()),
+    },
+    tidal: {
+      account_connected: tidalReady(),
+      favourite_albums_read: tidalFavouritesRead,
+      favourite_albums_total: tidalFavouritesTotal || null,
+      favourites_complete: !tidalFavouritesTotal || tidalFavouritesRead >= tidalFavouritesTotal,
+      identity_keys: tidalAlbumIds.size,
+      favourite_albums_known: tidalAlbumIds.size,
+      album_id: tId || null,
+      stored: tId ? !!wfGet(WF.trackKey("tidal:" + tId, track)) : false,
+      keys_tried: tId ? undefined : wantKeys,
+      near: tId ? undefined : KM.nearKeys(wantKeys, tidalAlbumIds.keys()),
+    },
+  };
+
+  // The first thing standing in the way, named. The order matters and is the
+  // code's own — see lib/waveform-verdict.js.
+  out.streaming.verdict = WFV.streamingVerdict(out.streaming.qobuz, out.streaming.tidal);
+
+  /*
+   * 3c. WALK IT (?deep=1). Opt-in, because unlike everything above it CALLS
+   * Qobuz — the album read and the signed file-url request, exactly the two the
+   * real path makes, through wfQobuzResolveAudio itself rather than a copy. It
+   * stops before the audio: no bytes are pulled and nothing is decoded or
+   * stored, so it is safe to run repeatedly.
+   *
+   * WHY IT EXISTS: v1.8.51 fixed the reason NO album had a waveform, and left
+   * the harder report — SOME albums do not. Everything static is already above
+   * and it is not enough, because the remaining stops (the track list, the
+   * duration gate, whether this account may stream this record) can only be
+   * seen by asking Qobuz about THAT album. Without this the only instrument is
+   * "play it and read the log", which cannot be pointed at an album on request.
+   *
+   * The url itself is deliberately NOT reported: it is a time-limited signed
+   * link to audio, and a diagnostic endpoint is not the place to hand one out.
+   * Whether one came back is the whole finding.
+   */
+  if (String(req.query.deep || "") === "1") {
+    // The favourites id if there is one, otherwise the CATALOGUE — which is
+    // what the playback path now does, so the probe has to do it too or it
+    // reports a dead end the real code walks straight past. (The static section
+    // above stays call-free and reports the favourites answer alone; this is
+    // the opt-in that is allowed to spend a request.)
+    let useId = qId;
+    if (!useId) {
+      useId = await wfQobuzSearchAlbumId(album, artist);
+      out.streaming.qobuz.album_id_from_search = useId || null;
+    }
+    if (!useId) {
+      out.streaming.deep = { ran: false,
+        why: "this album is not in your Qobuz favourites AND the catalogue search " +
+             "did not identify it either, so there is no id to ask Qobuz about. " +
+             "Check the log for '[waveform] qobuz: ... catalogue search' — it says " +
+             "whether the search missed or declined for ambiguity" };
+    } else {
+      const secs = seconds || 0;
+      const got = await wfQobuzResolveAudio(useId, track, secs);
+      out.streaming.deep = {
+        ran: true,
+        stop: got.stop,
+        detail: got.detail,
+        // What each credential set said. Empty on a clean first-try success.
+        tried: got.tried,
+        album_title_on_qobuz: got.album_title || null,
+        album_tracks_on_qobuz: got.album_tracks || 0,
+        album_id_used: useId,
+        album_id_came_from: qId ? "favourites" : "catalogue search",
+        roon_says_seconds: secs || null,
+        qobuz_says_seconds: got.track_duration != null ? got.track_duration : null,
+        got_audio_url: !!got.url,
+        credentials_used: got.credentials || null,
+      };
+      if (!secs) {
+        out.streaming.deep.note =
+          "no track length was supplied, and the duration gate is what separates " +
+          "this recording from another edition of it — pass &length=<seconds> " +
+          "(or run this while the track is playing)";
+      }
+      out.streaming.verdict = WFV.deepVerdict(out.streaming.deep);
+    }
   }
 
   // 4. Does the walk know a directory for this album?
   const akey = wfAlbumKey(album, artist);
   out.album_key = akey || null;
   if (!akey) {
-    out.verdict = localAlbumDirs.size
-      ? "no local directory for this album — it is a streamed track, or the /music walk never saw it"
-      : "the /music walk has recorded no directories at all (see music.local_album_dirs)";
+    // NOT "so it is a streamed track". That was an inference stated as a fact:
+    // the local index missing an album means the local index missed it, which
+    // happens both because the album really is streamed AND because the walk
+    // filed it under a different spelling. The second is a LOCAL waveform bug
+    // and the old sentence sent anybody who hit it off to read about Qobuz.
+    out.local_near = KM.nearKeys(wantKeys, localAlbumDirs.keys());
+    out.verdict = !localAlbumDirs.size
+      ? "the /music walk has recorded no directories at all (see music.local_album_dirs)"
+      : out.local_near.length
+        ? "no local directory matched, but the /music index holds " +
+          out.local_near.length + " near miss" + (out.local_near.length === 1 ? "" : "es") +
+          ' — closest is "' + out.local_near[0].key + '" (' + out.local_near[0].why +
+          "). This may be a LOCAL album the walk filed under a different spelling, " +
+          "not a streamed one: compare it with streaming.qobuz.keys_tried"
+        : "no local directory for this album and nothing in the /music index " +
+          "resembles it, so it is a streamed track — read streaming.verdict above";
     return res.json(out);
   }
   out.album_dir = localAlbumDirs.get(akey) || null;
@@ -15458,7 +15973,7 @@ function albumTitleMatches(candidate, wanted) {
 async function fetchServiceArtistBio(name, albumTitle) {
   const nameN = normalize(name || "");
   if (!nameN || !albumTitle) return null;
-  if (qobuzToken || (qobuzUsername && qobuzPasswordMd5)) {
+  if (qobuzReady()) {
     try {
       const r = await qobuzWithToken(t => qobuz.searchCatalog(t, name + " " + albumTitle, 8, 0));
       const items = (r && r.albums && r.albums.items) || [];
@@ -15484,7 +15999,7 @@ async function fetchServiceArtistBio(name, albumTitle) {
       }
     } catch (e) { if (DEBUG) console.error("[display:bio:qobuz]", e.message); }
   }
-  if (tidalRefreshToken) {
+  if (tidalReady()) {
     try {
       const r = await tidalWithToken((t, cc) => tidal.searchAlbums(t, cc, name + " " + albumTitle, 8, 0));
       const items = (r && r.items) || [];

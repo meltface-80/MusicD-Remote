@@ -2,6 +2,431 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.56] — 2026-09-22
+
+### Fixed — the Qobuz favourites read stopped at TEN THOUSAND albums
+
+The user's argument, not any number, found this:
+
+> "As this is a Roon extension then the only way the album would show via
+> browse is if it is a favourite within my Qobuz account and this Roon."
+
+Exactly right, and it is the argument that matters. Roon was playing the record,
+so it WAS a favourite, so a read that could not see it was the thing at fault —
+and v1.8.55's conclusion that the album had been "genuinely never favourited"
+was wrong.
+
+```js
+const PAGE = 500, MAX_PAGES = 20;     // 500 x 20 = 10,000. Then it stops.
+```
+
+Past that the loop simply ended. No error, no log line, and a message reading
+`Qobuz favourites: N albums` that looked like a complete read. Everything
+sorting after the ten-thousandth favourite was invisible to the entire
+extension — no source badge, no album id, therefore no waveform —
+deterministically and for ever. It is the exact shape of "a number of albums
+still fail": a fixed subset, every time, with everything else working.
+
+It pages until Qobuz runs out now, driven by the `total` Qobuz states in the
+same response and which nothing had ever read. The remaining page guard is a
+stop against a server that never advances, not a library-size limit, and
+reaching it logs an error instead of quietly returning a short list.
+
+### Fixed — TIDAL's favourites were never paged at all
+
+One call, `limit: 5000`, no loop. Same defect one service over and worse, since
+there was no page count to raise. TIDAL states `totalNumberOfItems` in the same
+response and nothing read that either. Nobody had reported it — which is the
+point: a truncated read has no symptom that points at the read.
+
+### Fixed — the probe's own number could never have shown this
+
+It reported `favourite_albums_known: 11455`, and that was the size of the KEY
+map. One album is filed under several identities, so the figure is always larger
+than the library and a 10,000-album ceiling can hide behind it indefinitely. It
+now reports `favourite_albums_read`, `favourite_albums_total` (what the service
+says) and `favourites_complete`, with the key count under its real name,
+`identity_keys`. The counts persist with the key sets, so a restored index does
+not report "0 albums read".
+
+An incomplete read is now the FIRST thing `streamingVerdict` says, ahead of
+everything including a successfully resolved album id: every other branch
+reasons from "what the index holds", so if the list is short then "not a
+favourite" and "nothing resembles it" are statements about a partial list made
+with total confidence. Which is what v1.8.53 and v1.8.55 did.
+
+### Changed — the stream key cache invalidates again (version 4)
+
+Any key set written before this was read under the ceiling, so it is not merely
+stale, it is SHORT — and short in a way nothing downstream can detect.
+
+### On v1.8.55
+
+The catalogue-search fallback stays. It is sound and it covers the genuine case
+of an album played from a search without being added. But its stated premise —
+that *Zebra IV* had never been favourited — was an inference from a truncated
+list, and this entry is the correction.
+
+1177 unit / 605 DOM / 108 static.
+
+## [1.8.55] — 2026-09-22
+
+The near-miss report answered *Zebra IV*, and the answer was not a bug:
+
+```
+"favourite_albums_known": 11455,
+"keys_tried": ["zebra iv||zebra"],
+"near": [],
+"local_near": []
+```
+
+Nothing in 11,455 Qobuz favourites resembles it. Nothing in 8,887 local albums
+resembles it. Not spelled differently, not absent by accident — **simply never
+favourited**, and played from a search or from Roon's own browser.
+
+### Added — the Qobuz CATALOGUE is searched when an album is not a favourite
+
+Until now the favourites were the only place a streaming album id could come
+from, and that was stated as a hard limit. It meant an album played from a
+search had no waveform and never would, however long you waited. The catalogue
+is searchable with the same token that reads the favourites, so the id was
+always obtainable; nothing had gone looking for it.
+
+Three things make using it safe:
+
+- **The match is an exact identity**, keyed by `favouriteTitleForms` — the same
+  builder the favourites index uses, so a search hit and a favourite cannot be
+  keyed differently.
+- **Ambiguity declines** (`lib/albumsearch.js`). Qobuz answers a query it cannot
+  place with its *nearest guess* rather than with nothing — v1.8.36 learned that
+  the expensive way on the share-card links — so "the first result" is never an
+  answer here. Two different albums matching one identity is not a tie to break.
+- **Being wrong is survivable anyway.** `TM.matchTrack` gates on title AND
+  duration, so a search hit that is a different pressing draws nothing rather
+  than putting a confident picture of another recording under the seek bar.
+
+Misses are memoised too, so an album genuinely not on Qobuz costs one search for
+the life of the process rather than one per poll. A search that *fails* — a rate
+limit, a network blip — is deliberately not cached, or one bad moment would
+switch the fallback off for that album until the container restarted.
+
+### Changed — the verdict no longer states a limit that has been removed
+
+`streamingVerdict` ended with "favourite membership is the only signal there is
+— playing from a search is not enough". That was true when it was written and is
+now false, and leaving it would send somebody to go and favourite a record to
+fix a problem the next poll may already have solved.
+
+The probe's `deep=1` walk runs the same fallback, for the same reason it shares
+`wfQobuzResolveAudio` with the playback path: a probe that reports a dead end
+the real code walks straight past is worse than no probe. It reports
+`album_id_from_search` and `album_id_came_from` so it is visible which route
+answered.
+
+### Not done
+
+TIDAL has the same limitation and the same available fix, and is left alone
+deliberately: this user has no TIDAL connected, so a TIDAL search path would
+ship untested against a live service on the strength of symmetry alone. It is a
+small addition when there is something to verify it against.
+
+1162 unit / 605 DOM / 108 static.
+
+## [1.8.54] — 2026-09-22
+
+**An apostrophe.** Found in a user's probe output, which named it outright:
+
+```
+"track":   { "track": "Don't Panic", "album": "Parachutes" }
+"album_dir": "/music/Coldplay - Parachutes (2016) [FLAC 24-192]"
+"files":   [ { "file": "01 - Don't Panic.flac", "title": "Don’t Panic" }, ... ]
+"matched_file": null
+```
+
+Roon reports `Don't Panic` with a typewriter apostrophe (U+0027). The file's tag
+carries `Don’t Panic` with a typographic one (U+2019) — which is what nearly
+every tagger writes. The album resolved, the folder was found, all ten files
+were listed, and the track matched none of them.
+
+### Fixed — the local file matcher had its own, weaker idea of "the same title"
+
+`wfCanon` lowercased and collapsed whitespace and did nothing else, so those two
+strings are not equal — and neither contains the other, so the containment
+fallback missed as well. The track resolved to no file, no waveform was drawn,
+and nothing was logged.
+
+The streaming path never had this. `TM.canon` reduces every run of
+non-alphanumerics to one space, so Qobuz and TIDAL have matched these titles
+since the day they were written. **Two spellings of one question, and they had
+already drifted** — the same shape as v1.8.51's Qobuz gates and v1.8.53's key
+space. `wfCanon` is `TM.canon` now. One definition of "same title".
+
+This is not a rare edge: every track whose tag carries a typographic apostrophe,
+in any library, silently had no local waveform. Accents and other punctuation
+were missing for the same reason.
+
+### Fixed — two files with the same title were a coin flip presented as an answer
+
+`files.find(...)` took the first match and said nothing. An album really can
+list a title twice, and `TM.matchTrack` refuses exactly this on the streaming
+side because a waveform of the wrong track looks authoritative and is simply a
+different song. The local path now refuses too, and logs why. A deliberate
+trade: it removes a waveform that was previously drawn, and it was right half
+the time.
+
+### A note on where the last three versions went
+
+v1.8.51 fixed why NO Qobuz album had a waveform. v1.8.52 and v1.8.53 built the
+instrument to answer the harder report — that SOME still failed — rather than
+guessing at it. This release is what the instrument found, on its second run,
+and it was not in the Qobuz path at all: the probe reported the album's folder,
+its files and their exact tag titles, and the answer was visible in the output
+with no further investigation. That is the whole case for spending two versions
+on a diagnostic instead of a third guess.
+
+*Zebra IV* is still unexplained — a different album, a different stop in the
+chain, and v1.8.53's near-miss report is what will name it.
+
+1153 unit / 605 DOM / 107 static.
+
+## [1.8.53] — 2026-09-22
+
+From a real probe run: Qobuz signed in, **11,006 favourites loaded**, playing
+"Arabian Nights" from *Zebra IV* by Zebra — and `album_id: null`, with the
+verdict "this album is in neither service's FAVOURITES".
+
+### Fixed — the verdict was stating something it could not know
+
+An album identity is `canonTitle||canonArtist`, and an exact lookup fails
+**identically** whether the record is absent from the favourites or is sitting
+there under a different spelling. Those two findings need opposite things from
+the user — favourite the album, or reconcile two names — and every caller
+reported the confident one.
+
+`lib/keymatch.js` answers what a failed Map lookup cannot: given what the lookup
+asked for and everything the index holds, what is NEARBY and how does it differ.
+The probe now reports `keys_tried` and `near` for both services, and the verdict
+only says "genuinely absent" when nothing resembles it. Where something does, it
+names the key and says the record is **not** absent.
+
+The same correction applies one screen over: `"no local directory for this album
+— it is a streamed track"` was an inference stated as a fact. A missing local
+album can equally be a LOCAL record the /music walk filed under a different
+spelling, which is a local waveform bug — and that sentence sent anybody who hit
+it off to read about Qobuz. It reports `local_near` now and only calls a track
+streamed when nothing in the /music index resembles it.
+
+### Fixed — the two sides of the key space ran different title rules
+
+The lookup side has stripped edition markers since v1.6.55 — `albumKeys()`
+files "Rumours (Deluxe Edition)" under `rumours` as well as the full form. The
+index side never did: `addFavouriteKeys` filed a favourite under its title and
+`title + " " + version`, and nothing else.
+
+That handles only the direction where the service keeps the edition in its own
+`version` field. When the service bakes it **into** the title — one string, no
+version — the favourite existed only under the long form, and Roon showing the
+clean title could never reach it. The lookup side knows how to strip, but it
+strips ROON's title, and Roon's title is the one with nothing to strip.
+
+Both sides now call `favouriteTitleForms()`, which runs the same
+`albumTitleVariants` the lookup uses. One definition of what an edition marker
+is, read by both.
+
+### Fixed — the invariant those two sides are supposed to hold was never tested
+
+`addQobuzAlbumId`'s own comment says it is "keyed EXACTLY the way
+addFavouriteKeys keys, deliberately: ... if these two ever generated keys
+differently the feature would find an album the badge says is not there, or
+miss one it says is." Nothing checked it. They were two copies of one loop, and
+a mutation reverting only one of them passed the entire suite — the badge would
+have said yes and the waveform would have had no id, which is the exact failure
+the comment describes. The suite now asserts the two produce identical key sets.
+
+### Changed — the stream key cache has its own version stamp
+
+`STREAM_KEY_VERSION`, separate from `SOURCE_KEY_VERSION`. Both files shared one
+stamp, so invalidating the favourites cache (seconds to refetch) meant also
+invalidating the local index (a full /music re-walk of thousands of albums) —
+which made a change to favourite keying effectively unreleasable, and the safe
+move was always to leave the stamp alone and let the stale cache sit. Bumped to
+3 here, so the widened key set arrives on the first boot rather than at the next
+library sync.
+
+### Still open
+
+Whether any of this is what *Zebra IV* was hitting is what the next probe run
+says. The near-miss report is the thing that answers it, and the edition
+asymmetry is fixed because it is a defect by inspection — not because it has
+been shown to be this album's cause.
+
+1145 unit / 605 DOM / 107 static.
+
+## [1.8.52] — 2026-09-22
+
+Follow-up to v1.8.51: "mostly fixed — a number of albums still fail to produce
+a waveform using Qobuz." Two established defects fixed, and an instrument for
+the rest, because the remaining stops cannot be told apart from outside and
+guessing at them is how v1.7.60–65 cost six versions.
+
+### Fixed — only the first page of an album's tracks was ever fetched
+
+`album/get` named no limit, so the track list arrived at whatever Qobuz's
+default page size is and everything past it was simply absent. A track beyond
+that point came back from the matcher as `no track called "X" on the album` —
+which reads as a title mismatch and is not one. Box sets, long compilations and
+multi-disc reissues drew their first tracks perfectly and lost their entire
+tail.
+
+The asymmetry is what identifies it: the same album works at track 12 and fails
+at track 60, every time. `lib/qobuz.js` now asks for an explicit limit and pages
+on `tracks.total`, which is correct whatever the default is — the default is
+Qobuz's to change and nothing here would have noticed it changing. A failed
+later page keeps the tracks already in hand rather than losing the album.
+
+### Fixed — the streaming decode failure said nothing about why
+
+The local path has reported `WFD.lastDecodeError()` since v1.8.30; the Qobuz
+and TIDAL paths threw it away and logged four words. So the commonest failure
+*after* a successful fetch — a truncated download refused by `MIN_COVERAGE`,
+which is indistinguishable from a short track and must be refused — arrived
+with no cause in it. Both now carry the reason.
+
+### Added — `GET /api/debug/waveform?deep=1` walks the chain instead of describing it
+
+Everything v1.8.51 added reports state already in memory, and its best possible
+answer is "the credentials are present, so any failure is later in the chain" —
+true, and the least useful true thing to be told. The stops that are left (the
+track list, the duration gate, whether this account may stream this record) can
+only be seen by asking Qobuz about that album.
+
+`deep=1` does exactly that: resolves the album id, reads the album, runs the
+track match and requests the file url — then stops, before any audio. Nothing is
+fetched, decoded or stored, so it is safe to run repeatedly. The url itself is
+deliberately not reported: it is a time-limited signed link to audio, and
+whether one came back is the whole finding.
+
+**It runs the real code, not a copy of it.** `wfQobuzResolveAudio()` was split
+out of `wfQobuzCompute()` so the probe and the playback path share one body. A
+probe walking its own ladder answers about itself, and the first time the two
+drift it starts lying with total confidence — which is worse than no probe,
+because it is believed.
+
+`deepVerdict()` names the stop. The branch worth having: when Roon and Qobuz
+disagree about a track's LENGTH, that is not a strict matcher — Roon streams the
+album it is streaming, so its duration comes from Qobuz's own metadata for that
+release. A disagreement means the id resolved to a **different edition**, and
+every track on that album will fail identically. It says so, with both numbers
+and what to do about it, instead of reporting a title mismatch that would send
+somebody hunting a spelling problem that is not there.
+
+### Not fixed, deliberately
+
+The album id for an identity is stored first-writer-wins, so favouriting two
+editions of one record picks between them by page order. That is a candidate
+for the remaining failures and it is **not** being changed on a guess — the
+deep probe says in one request whether it is what is happening here, and a fix
+shipped before that would attach an explanation to a change nobody can check.
+
+1123 unit / 605 DOM / 106 static.
+
+## [1.8.51] — 2026-09-22
+
+### Fixed — Qobuz waveforms: the favourites read had been switched off since v1.8.20
+
+Reported as "waveforms for Qobuz and I guess Tidal are not working, I do not
+know when this happened".
+
+**One gate that tested a login the app stopped offering.** A streamed track has
+no audio this extension can see, so the only way to draw its shape is to fetch
+it from the service — and that needs the service's own ALBUM ID, which can only
+be harvested from the user's favourites. `refreshStreamAlbumKeys()` is what
+harvests them, and its Qobuz half was gated on:
+
+```js
+if (qobuzToken || (qobuzUsername && qobuzPasswordMd5)) {
+```
+
+Those are the credentials of the PASSWORD login, which v1.8.20 removed —
+the browser sign-in replaced it and sets `qobuzWaveToken` instead. So on any
+install connected the only way the app still offers, that condition was false
+forever: the favourites were never read, `qobuzAlbumIds` stayed empty, and
+`wfQobuzAlbumId()` had nothing to answer with. Every Qobuz track declined with
+`no Qobuz album id — 0 ids known (favourites not read yet)`.
+
+Reconnecting could not clear it, because the sign-in handler's own
+`refreshStreamAlbumKeys('qobuz sign-in')` ran into the same gate and did
+nothing.
+
+**The same gate was spelled out in two other places**, and both were equally
+dead:
+
+- `claimingServices()` — so Qobuz never counted as a service that could be
+  claiming an album. That is the authority behind `unclaimedIsLocal()`, so on a
+  Qobuz-only install every album with no local file was taken to be local.
+- `fetchServiceArtistBio()` — so the Qobuz branch of the artist biography was
+  skipped outright and only the Tidal/Wikipedia paths ever ran.
+
+All three now call `qobuzReady()`, which has been the single correct definition
+since v1.7.x and which accepts the browser sign-in on its own.
+
+**Class of error: a partial migration, named and then left.** `qobuzReady()`
+was written with a comment saying the pre-existing gates had drifted — and the
+gates were left drifted. Nothing failed when they stayed that way, so nothing
+said so for thirty versions. `test/static/qobuz-gates.test.js` is the thing
+that fails now: the "is Qobuz connected" question may be spelled out exactly
+once in code, and that once must mention the browser sign-in token.
+
+### Fixed — the repaired read now arrives on the first boot, not the next sync
+
+The startup favourites refresh asked three questions about the stored index and
+none about the account. A user with Qobuz broken and TIDAL working therefore
+answered "TIDAL has keys and ids, nothing to do" and would have waited for a
+library sync — up to twelve hours — to pick the fix up. It now also fires when
+a service is connected and the index holds nothing for it.
+
+### Added — `GET /api/debug/waveform` reports the streaming chain
+
+The endpoint was built in v1.8.30 because "it is switched on and nothing is
+drawn" was one silence covering five local causes. It stopped at the local
+chain: for a Qobuz or TIDAL track it said "no local directory — it is a
+streamed track" and nothing further, leaving the streaming path with exactly
+the problem the endpoint existed to cure, one path along.
+
+It now reports, for both services, whether the credentials are there, how many
+favourite albums are known, the album id resolved for what is playing, and
+whether a waveform is already stored — plus one sentence naming the first stop
+in the chain. The sentence is `lib/waveform-verdict.js`, which is pure and
+whose branch ORDER is pinned by test, because naming the second cause while
+the first is also true sends somebody to the wrong screen.
+
+One of its branches exists because of this bug: "connected and knows nothing"
+used to fall into the same sentence as "not connected", which told a signed-in
+user to sign in. That was the state every install was in, so the one report
+this endpoint most needed to make was the one it could not.
+
+### Fixed — the same drift one service over, found while fixing this one
+
+`claimingServices()` asked TIDAL for a refresh token and nothing else, while
+`tidalReady()` — and `tidalWithToken()`, which cannot make a call without it —
+also require the user id. A half-connected TIDAL account therefore claimed
+albums it could never have read. Nothing had gone wrong with it yet, which is
+precisely the state the Qobuz gates were in for thirty versions, so it is
+fixed and pinned rather than noted. `refreshStreamAlbumKeys()` and the TIDAL
+artist-bio branch join it: one spelling each, and the static suite fails if a
+second appears.
+
+### Note on TIDAL waveforms
+
+TIDAL's waveform gate is `tidalReady()` and was never wrong, so TIDAL
+waveforms have no equivalent defect.
+One secondary effect did reach them: the title-only fallback in
+`wfTidalAlbumId()` weighs TIDAL against Qobuz to decide whether a title lands
+in exactly one place, and with the Qobuz set empty that judgement was made
+against half the evidence.
+
+1110 unit / 605 DOM / 106 static.
+
 ## [1.8.50] — 2026-09-22
 
 ### Fixed — the album view's last content sat under the now-playing pill

@@ -30,6 +30,9 @@ function build(opts) {
   return loadIndexFunctions(
     ["withSource", "albumSource", "sourceBadgesDistinguish",
      "claimingServices", "unclaimedIsLocal", "albumKeys",
+     // v1.8.51: the one definition of "is Qobuz connected", extracted for real
+     // — see the note in source.test.js.
+     "qobuzReady", "tidalReady",
      "albumTitleVariants", "canonText", "canonArtist", "normalize",
      // v1.8.4: the rung albumSource falls to when nothing can key. It must not
      // change the elimination rules these tests pin, so it is extracted for
@@ -46,7 +49,11 @@ function build(opts) {
       qobuzToken:       opts.qobuzToken || "",
       qobuzUsername:    opts.qobuzUsername || "",
       qobuzPasswordMd5: opts.qobuzPasswordMd5 || "",
+      // The browser sign-in. Since v1.8.20 this is the ONLY Qobuz credential a
+      // new install can obtain, so it is the default shape, not an exotic one.
+      qobuzWaveToken:   opts.qobuzWaveToken || "",
       tidalRefreshToken: opts.tidalRefreshToken || "",
+      tidalUserId:      opts.tidalUserId || "",
     });
 }
 
@@ -145,8 +152,48 @@ test("a connected service that told us nothing does not count as claiming", asyn
   });
 
   await t.test("both services are reported when both are live", () => {
-    const F = build({ qobuzToken: "t", qobuz: ["a"], tidalRefreshToken: "r", tidal: ["b"] });
+    const F = build({ qobuzToken: "t", qobuz: ["a"], tidalRefreshToken: "r",
+                      tidalUserId: "u", tidal: ["b"] });
     assert.deepEqual(F.claimingServices(), ["qobuz", "tidal"]);
     assert.equal(F.unclaimedIsLocal(), false);
+  });
+
+  await t.test("THE v1.8.51 one: the browser sign-in counts on its own", () => {
+    // Since v1.8.20 the browser sign-in is the only Qobuz credential the app
+    // offers a way to get — `qobuzToken` and the username/password pair are
+    // legacy and nothing sets them any more. This gate tested ONLY those, so
+    // it was false on every install connected the way the app connects, and
+    // Qobuz silently stopped counting as a service that claims anything.
+    //
+    // Same defect, same line, took the Qobuz favourites read with it — which
+    // is what stopped Qobuz waveforms: no favourites, no album ids, nothing to
+    // fetch a track list with.
+    const F = build({ qobuzWaveToken: "signed-in", qobuz: ["goo||sonic youth"] });
+    assert.deepEqual(F.claimingServices(), ["qobuz"],
+      "a Qobuz account connected by the browser sign-in is not being counted " +
+      "as connected — the legacy-credential gate is back");
+    assert.equal(F.unclaimedIsLocal(), false,
+      "with Qobuz claiming, an album no service claims can no longer be " +
+      "assumed local by elimination");
+  });
+
+  await t.test("a TIDAL refresh token with no user id is not connected", () => {
+    // claimingServices() used to ask for the refresh token alone while every
+    // other site required the user id as well — tidalWithToken cannot make a
+    // call without it, so a half-connected account claimed albums it could
+    // never have read.
+    const F = build({ tidalRefreshToken: "r", tidal: ["a||b"] });
+    assert.deepEqual(F.claimingServices(), []);
+
+    const G = build({ tidalRefreshToken: "r", tidalUserId: "u", tidal: ["a||b"] });
+    assert.deepEqual(G.claimingServices(), ["tidal"]);
+  });
+
+  await t.test("and with no credential at all, Qobuz still claims nothing", () => {
+    // The other half: widening the gate must not make a disconnected account
+    // count. Without this, the assertion above passes for a broken reason.
+    const F = build({ qobuz: ["goo||sonic youth"] });
+    assert.deepEqual(F.claimingServices(), []);
+    assert.equal(F.unclaimedIsLocal(), true);
   });
 });
