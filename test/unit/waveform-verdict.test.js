@@ -77,6 +77,40 @@ test("no favourites read at all is a DIFFERENT answer from 'not a favourite'", (
   assert.match(some, /12 TIDAL/, some);
 });
 
+test("a miss with near misses is NOT reported as absent", () => {
+  // THE v1.8.53 one. v1.8.52 told a user with 11,006 favourites loaded that
+  // their album was "in neither service's FAVOURITES" purely because an exact
+  // key missed. An exact lookup fails the same way whether the record is
+  // absent or spelled differently, and those need opposite things done.
+  const v = streamingVerdict(
+    { album_id: null, favourite_albums_known: 11006, signed_in_for_waveforms: true,
+      near: [{ key: "zebra iv remastered||zebra", why: "same artist, title extended" }] },
+    { album_id: null, favourite_albums_known: 0, account_connected: false });
+  assert.match(v, /NOT absent/, v);
+  assert.match(v, /zebra iv remastered\|\|zebra/, v);
+  assert.doesNotMatch(v, /genuinely absent/, v);
+});
+
+test("a miss with nothing nearby IS reported as absent, and says why it can say so", () => {
+  // The other half. If the evidence branch swallowed both cases the verdict
+  // would never be able to state the real finding.
+  const v = streamingVerdict(
+    { album_id: null, favourite_albums_known: 11006, signed_in_for_waveforms: true, near: [] },
+    { album_id: null, favourite_albums_known: 4, account_connected: true, near: [] });
+  assert.match(v, /genuinely absent/, v);
+  assert.match(v, /nothing in either resembles it/, v);
+  assert.match(v, /11006 Qobuz/, v);
+});
+
+test("a TIDAL near miss is attributed to TIDAL", () => {
+  const v = streamingVerdict(
+    { album_id: null, favourite_albums_known: 10, signed_in_for_waveforms: true, near: [] },
+    { album_id: null, favourite_albums_known: 10, account_connected: true,
+      near: [{ key: "rumours deluxe||fleetwood mac", why: "same artist, title extended" }] });
+  assert.match(v, /TIDAL holds/, v);
+  assert.doesNotMatch(v, /Qobuz holds/, v);
+});
+
 test("connected-and-knows-nothing is not the same answer as not-connected", () => {
   // THE v1.8.51 case. The favourites gate had been testing a login the app
   // stopped offering, so a signed-in account read zero favourites forever —

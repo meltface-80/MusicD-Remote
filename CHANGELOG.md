@@ -2,6 +2,79 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.53] — 2026-09-22
+
+From a real probe run: Qobuz signed in, **11,006 favourites loaded**, playing
+"Arabian Nights" from *Zebra IV* by Zebra — and `album_id: null`, with the
+verdict "this album is in neither service's FAVOURITES".
+
+### Fixed — the verdict was stating something it could not know
+
+An album identity is `canonTitle||canonArtist`, and an exact lookup fails
+**identically** whether the record is absent from the favourites or is sitting
+there under a different spelling. Those two findings need opposite things from
+the user — favourite the album, or reconcile two names — and every caller
+reported the confident one.
+
+`lib/keymatch.js` answers what a failed Map lookup cannot: given what the lookup
+asked for and everything the index holds, what is NEARBY and how does it differ.
+The probe now reports `keys_tried` and `near` for both services, and the verdict
+only says "genuinely absent" when nothing resembles it. Where something does, it
+names the key and says the record is **not** absent.
+
+The same correction applies one screen over: `"no local directory for this album
+— it is a streamed track"` was an inference stated as a fact. A missing local
+album can equally be a LOCAL record the /music walk filed under a different
+spelling, which is a local waveform bug — and that sentence sent anybody who hit
+it off to read about Qobuz. It reports `local_near` now and only calls a track
+streamed when nothing in the /music index resembles it.
+
+### Fixed — the two sides of the key space ran different title rules
+
+The lookup side has stripped edition markers since v1.6.55 — `albumKeys()`
+files "Rumours (Deluxe Edition)" under `rumours` as well as the full form. The
+index side never did: `addFavouriteKeys` filed a favourite under its title and
+`title + " " + version`, and nothing else.
+
+That handles only the direction where the service keeps the edition in its own
+`version` field. When the service bakes it **into** the title — one string, no
+version — the favourite existed only under the long form, and Roon showing the
+clean title could never reach it. The lookup side knows how to strip, but it
+strips ROON's title, and Roon's title is the one with nothing to strip.
+
+Both sides now call `favouriteTitleForms()`, which runs the same
+`albumTitleVariants` the lookup uses. One definition of what an edition marker
+is, read by both.
+
+### Fixed — the invariant those two sides are supposed to hold was never tested
+
+`addQobuzAlbumId`'s own comment says it is "keyed EXACTLY the way
+addFavouriteKeys keys, deliberately: ... if these two ever generated keys
+differently the feature would find an album the badge says is not there, or
+miss one it says is." Nothing checked it. They were two copies of one loop, and
+a mutation reverting only one of them passed the entire suite — the badge would
+have said yes and the waveform would have had no id, which is the exact failure
+the comment describes. The suite now asserts the two produce identical key sets.
+
+### Changed — the stream key cache has its own version stamp
+
+`STREAM_KEY_VERSION`, separate from `SOURCE_KEY_VERSION`. Both files shared one
+stamp, so invalidating the favourites cache (seconds to refetch) meant also
+invalidating the local index (a full /music re-walk of thousands of albums) —
+which made a change to favourite keying effectively unreleasable, and the safe
+move was always to leave the stamp alone and let the stale cache sit. Bumped to
+3 here, so the widened key set arrives on the first boot rather than at the next
+library sync.
+
+### Still open
+
+Whether any of this is what *Zebra IV* was hitting is what the next probe run
+says. The near-miss report is the thing that answers it, and the edition
+asymmetry is fixed because it is a defect by inspection — not because it has
+been shown to be this album's cause.
+
+1145 unit / 605 DOM / 107 static.
+
 ## [1.8.52] — 2026-09-22
 
 Follow-up to v1.8.51: "mostly fixed — a number of albums still fail to produce

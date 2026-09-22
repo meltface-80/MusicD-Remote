@@ -28,7 +28,7 @@ function fixture() {
   const ambiguousAlbumKeys = new Set();
   const F = loadIndexFunctions(
     ["normalize", "canonText", "canonArtist", "albumKey", "albumKeys", "albumTitleVariants",
-     "addFavouriteKeys", "withSource", "albumSource", "sourceBadgesDistinguish",
+     "addFavouriteKeys", "favouriteTitleForms", "withSource", "albumSource", "sourceBadgesDistinguish",
      "claimingServices", "unclaimedIsLocal",
      // v1.8.51: claimingServices() asks qobuzReady() rather than spelling the
      // credential test out itself, so the real predicate is extracted too. It

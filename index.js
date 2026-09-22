@@ -3306,12 +3306,30 @@ let tidalAlbumKeys = new Set();
 let fileAlbumYears  = new Map();   // albumKey → "YYYY", from /music file tags
 let qobuzAlbumYears = new Map();   // albumKey → "YYYY", from Qobuz favourites
 let tidalAlbumYears = new Map();   // albumKey → "YYYY", from TIDAL favourites
+/*
+ * The stream key file's OWN version, separate from SOURCE_KEY_VERSION.
+ *
+ * Both files used the one stamp, which made invalidating either of them mean
+ * invalidating both — and the local file's cost is a full /music re-walk of
+ * thousands of albums, while this one is a favourites refetch that takes
+ * seconds. So a change to how FAVOURITES are keyed could not be released
+ * without also throwing away the local index, and the safe move was always to
+ * leave the stamp alone and let the stale cache sit there.
+ *
+ * 3 (v1.8.53): favourites are now filed under albumTitleVariants of their
+ * title, so a stored set written by v1.8.52 or earlier is missing the stripped
+ * forms. Loading it would keep the bug alive behind a fix — which is how
+ * v1.8.51's gate fix would have waited twelve hours for a library sync had the
+ * startup refresh not been taught to ask about the account.
+ */
+const STREAM_KEY_VERSION = 3;
+
 function loadStreamAlbumKeys() {
   try {
     const raw = JSON.parse(fs.readFileSync(STREAM_ALBUMS_FILE, "utf8"));
     // Older key format: ignore it. The startup refresh below rebuilds from the
     // services within seconds, so nothing is lost.
-    if (!raw || raw.v !== SOURCE_KEY_VERSION) return;
+    if (!raw || raw.v !== STREAM_KEY_VERSION) return;
     if (Array.isArray(raw.qobuz)) qobuzAlbumKeys = new Set(raw.qobuz);
     if (Array.isArray(raw.tidal)) tidalAlbumKeys = new Set(raw.tidal);
     if (Array.isArray(raw.qobuzIds)) qobuzAlbumIds = new Map(raw.qobuzIds);
@@ -3322,7 +3340,7 @@ function loadStreamAlbumKeys() {
 }
 function saveStreamAlbumKeys() {
   writeJsonAtomic(STREAM_ALBUMS_FILE,
-    { v: SOURCE_KEY_VERSION, qobuz: [...qobuzAlbumKeys], tidal: [...tidalAlbumKeys],
+    { v: STREAM_KEY_VERSION, qobuz: [...qobuzAlbumKeys], tidal: [...tidalAlbumKeys],
       // Written WITH the keys, because they are harvested together and are
       // useless apart. v1.8.6 persisted the keys and not these, so after any
       // restart the streaming waveform had no album to fetch and declined
@@ -3454,19 +3472,56 @@ function albumKeys(title, subtitle) {
   return out;
 }
 
-// Index one favourite under every identity Roon might show it as: each credited
-// artist, and — because the services return the edition separately from the
-// title while Roon often bakes it in — both "Album" and "Album (Deluxe)".
+/*
+ * Index one favourite under every identity Roon might show it as.
+ *
+ * Each credited artist, and — because the services return the edition
+ * separately from the title while Roon often bakes it in — both "Album" and
+ * "Album (Deluxe)".
+ *
+ * AND THE OTHER DIRECTION (v1.8.53). Those two title strings used to be the
+ * whole set, which handled only the case where the service keeps the edition
+ * apart. When the service bakes it INTO the title — "Zebra IV (Remastered)" as
+ * one string, with no `version` field — the favourite was filed only under the
+ * long form, and Roon showing the clean "Zebra IV" could never reach it.
+ *
+ * The lookup side has known how to strip an edition marker since v1.6.55, but
+ * it strips ROON's title, and Roon's title is the one with nothing to strip. So
+ * the two sides of one key space were running different title rules, and the
+ * only symptom is a lookup that misses — which then gets reported as "this
+ * album is not in your favourites", because a failed Map lookup cannot tell
+ * absent from spelled-differently. (lib/keymatch.js is what can.)
+ *
+ * albumTitleVariants is the SAME helper albumKeys uses, deliberately: one
+ * definition of what an edition marker is, read by both sides. It keeps the
+ * full form as well as the stripped one, and refuses stripped forms under three
+ * characters, so nothing here widens to a title that would match everything.
+ */
 function addFavouriteKeys(keys, title, version, artists) {
-  const titles = [title];
-  if (version) titles.push(title + " " + version);
-  for (const t of titles) {
+  for (const t of favouriteTitleForms(title, version)) {
     for (const artist of artists) {
       if (!artist) continue;
       const key = albumKey(t, artist);
       if (key) keys.add(key);
     }
   }
+}
+
+/*
+ * Every title form one favourite should be filed under.
+ *
+ * Its own function because addFavouriteKeys and addQobuzAlbumId MUST agree —
+ * the badge says an album is there and the waveform fetches it, so two
+ * different title sets would make the feature find an album the badge denies,
+ * or miss one it promises. They shared a copied loop before; now they share a
+ * call.
+ */
+function favouriteTitleForms(title, version) {
+  const out = [];
+  const add = (v) => { for (const c of albumTitleVariants(v)) if (!out.includes(c)) out.push(c); };
+  add(title);
+  if (version) add(title + " " + version);
+  return out;
 }
 
 /*
@@ -3484,9 +3539,9 @@ function addFavouriteKeys(keys, title, version, artists) {
  */
 function addQobuzAlbumId(map, title, version, artists, albumId) {
   if (!albumId) return;
-  const titles = [title];
-  if (version) titles.push(title + " " + version);
-  for (const t of titles) {
+  // The SAME forms addFavouriteKeys files under — one call, not a second copy
+  // of the loop. See favouriteTitleForms.
+  for (const t of favouriteTitleForms(title, version)) {
     for (const artist of artists) {
       if (!artist) continue;
       const key = albumKey(t, artist);
@@ -13321,6 +13376,9 @@ app.post("/api/settings/home-rows", (req, res) => {
  */
 const WF = require("./lib/waveform");
 const WFV = require("./lib/waveform-verdict");
+// What the index holds NEAR a key that missed. The difference between "this
+// album is not in your favourites" and "it is, spelled differently".
+const KM = require("./lib/keymatch");
 const WFD = require("./lib/waveform-decode");
 // Field listing for /api/debug/zone-dump. Pure, no I/O — see lib/objshape.js.
 const SHAPE = require("./lib/objshape");
@@ -14379,6 +14437,12 @@ app.get("/api/debug/waveform", async (req, res) => {
    */
   const qId = wfQobuzAlbumId(album, artist);
   const tId = wfTidalAlbumId(album, artist);
+  // What the lookup actually asked for, and — when it missed — what the index
+  // holds that is CLOSE. Without this a miss is reported as "not in your
+  // favourites", which is a guess: an exact-key lookup fails identically
+  // whether the record is absent or spelled differently, and those need
+  // opposite things from the user. See lib/keymatch.js.
+  const wantKeys = albumKeys(album || "", artist || "");
   out.streaming = {
     qobuz: {
       // Either credential is enough: the browser token signs, and a pasted
@@ -14390,12 +14454,16 @@ app.get("/api/debug/waveform", async (req, res) => {
       favourite_albums_known: qobuzAlbumIds.size,
       album_id: qId || null,
       stored: qId ? !!wfGet(WF.trackKey("qobuz:" + qId, track)) : false,
+      keys_tried: qId ? undefined : wantKeys,
+      near: qId ? undefined : KM.nearKeys(wantKeys, qobuzAlbumIds.keys()),
     },
     tidal: {
       account_connected: tidalReady(),
       favourite_albums_known: tidalAlbumIds.size,
       album_id: tId || null,
       stored: tId ? !!wfGet(WF.trackKey("tidal:" + tId, track)) : false,
+      keys_tried: tId ? undefined : wantKeys,
+      near: tId ? undefined : KM.nearKeys(wantKeys, tidalAlbumIds.keys()),
     },
   };
 
@@ -14456,10 +14524,22 @@ app.get("/api/debug/waveform", async (req, res) => {
   const akey = wfAlbumKey(album, artist);
   out.album_key = akey || null;
   if (!akey) {
-    out.verdict = localAlbumDirs.size
-      ? "no local directory for this album — it is a streamed track, so read " +
-        "streaming.verdict above rather than this line"
-      : "the /music walk has recorded no directories at all (see music.local_album_dirs)";
+    // NOT "so it is a streamed track". That was an inference stated as a fact:
+    // the local index missing an album means the local index missed it, which
+    // happens both because the album really is streamed AND because the walk
+    // filed it under a different spelling. The second is a LOCAL waveform bug
+    // and the old sentence sent anybody who hit it off to read about Qobuz.
+    out.local_near = KM.nearKeys(wantKeys, localAlbumDirs.keys());
+    out.verdict = !localAlbumDirs.size
+      ? "the /music walk has recorded no directories at all (see music.local_album_dirs)"
+      : out.local_near.length
+        ? "no local directory matched, but the /music index holds " +
+          out.local_near.length + " near miss" + (out.local_near.length === 1 ? "" : "es") +
+          ' — closest is "' + out.local_near[0].key + '" (' + out.local_near[0].why +
+          "). This may be a LOCAL album the walk filed under a different spelling, " +
+          "not a streamed one: compare it with streaming.qobuz.keys_tried"
+        : "no local directory for this album and nothing in the /music index " +
+          "resembles it, so it is a streamed track — read streaming.verdict above";
     return res.json(out);
   }
   out.album_dir = localAlbumDirs.get(akey) || null;
