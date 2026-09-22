@@ -109,6 +109,15 @@ const DRIVER = `
   T("when_already_zero", calls.slice());
 
   window.scrollTo = realScrollTo;
+
+  // The reading that decides the NEXT step if the offset comes back: did the
+  // reset move the number, or not? "Tried and failed" and "never tried" need
+  // opposite answers and the panel shows the same thing for both.
+  T("pin_stats", window.__pinStats ? {
+    installed: window.__pinStats.installed,
+    fired: window.__pinStats.fired > 0,
+    reports_moved: window.__pinStats.moved !== null,
+  } : null);
 `;
 
 function render() {
@@ -147,6 +156,17 @@ test("the window is pinned at zero", { concurrency: 1 }, async (t) => {
     assert.deepEqual(r.while_typing, [],
       "the app fought iOS while an input was focused, which parks the field " +
       "under the keyboard: " + JSON.stringify(r.while_typing));
+  });
+
+  await t.test("the pin records whether the number actually moved", () => {
+    // v1.8.45 shipped the reset and the offset came back anyway, and nothing
+    // could say whether the reset had run and failed or had never run at all.
+    // Those need opposite next steps.
+    assert.ok(r.pin_stats, "the pin keeps no record of what it did");
+    assert.equal(r.pin_stats.installed, true);
+    assert.equal(r.pin_stats.fired, true, "the pin never fired in this run");
+    assert.equal(r.pin_stats.reports_moved, true,
+      "the pin does not report whether the scroll moved when it reset it");
   });
 
   await t.test("a window already at zero is not touched", () => {

@@ -2,6 +2,43 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.46] — 2026-09-22
+
+### Changed — the instrument now measures the FIX, not just the fault
+
+v1.8.45 reset the window scroll and the 62px offset came back anyway. The next
+reading showed the offset still there — and could not say **whether the reset
+had run and failed, or had never run at all.** The panel looks identical either
+way, and those two need opposite next steps. That gap is closed here.
+
+Three things the readout now states, each of which decides something:
+
+- **Which build it is.** `TAPDEBUG v1.8.46`. A screenshot of the panel could
+  not previously say whether it came from a build with the fix in it, and "did
+  it ship?" has to be answered before any other number on the panel means
+  anything.
+- **What the pin did.** `pin fired=3  62->62  <-- DID NOT MOVE`, or `(moved)`,
+  or `pin NOT IN THIS BUILD`. The reset records its own before and after at the
+  only place that knows, so the question becomes a boolean: **is this offset a
+  document scroll at all?** If the number will not move when it is set to
+  zero, no amount of scrolling will ever fix it and the cause is elsewhere.
+- **Whether anything overflows.** `overflow de=62 body=0` versus
+  `overflow de=0 body=0`. 62px is the device's top safe-area inset, so either
+  the document is exactly that much taller than the box showing it — something
+  overflows, and the fix is to stop it — or it is not, and the offset is not a
+  scroll in the ordinary sense at all.
+
+One detail from the last reading worth recording, because it shapes what to
+look for: at `+0ms` the rotation sample carried **no verdict**, and by `+300ms`
+it did. The offset is not present at the moment `orientationchange` fires; it
+appears while the web view settles. That is why the pin samples late as well as
+early, and it rules out anything that would have to be true before the
+rotation.
+
+The pin itself is unchanged apart from the recording, and it also clears
+`document.body.scrollTop` now — Safari has historically moved one scroller and
+not another, and a half-reset offset is the same bug at a smaller number.
+
 ## [1.8.45] — 2026-09-22
 
 ### Fixed — the iOS home-screen freeze: the window was scrolled, not the buttons dead

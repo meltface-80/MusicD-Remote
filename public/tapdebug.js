@@ -112,9 +112,30 @@
   }
 
   // ---- the numbers -------------------------------------------------------
+  // Fetched once. Which build this is, because a screenshot of this panel
+  // could not previously say whether it came from one with the fix in it.
+  let appVersion = "?";
+  fetch("/api/status").then(r => r.json()).then(j => {
+    if (j && j.version) { appVersion = String(j.version); render(); }
+  }).catch(() => { /* the rest of the panel is still worth reading */ });
+
   function metrics() {
     const vv = window.visualViewport;
+    const de = document.documentElement;
+    const bd = document.body;
     return {
+      /*
+       * IS THERE ANYTHING TO SCROLL? The offset is 62px, which is this
+       * device's top safe-area inset — so the question is whether the
+       * document is 62px taller than the box showing it (something overflows,
+       * and the fix is to stop it) or exactly as tall as it (nothing
+       * overflows, the offset is not a document scroll at all, and no amount
+       * of scrollTo will ever move it).
+       */
+      over: [de ? de.scrollHeight - de.clientHeight : -1,
+             bd ? bd.scrollHeight - bd.clientHeight : -1],
+      sTop: [de ? de.scrollTop : -1, bd ? bd.scrollTop : -1,
+             document.scrollingElement ? document.scrollingElement.scrollTop : -1],
       win: [window.innerWidth, window.innerHeight],
       doc: [document.documentElement.clientWidth,
             document.documentElement.clientHeight],
@@ -181,8 +202,23 @@
     } else if (rotations) {
       lines.push("viewport looks consistent after " + rotations + " rotation(s)");
     }
-    lines.push("TAPDEBUG  rot=" + m.rot + "  dpr=" + m.dpr +
+    lines.push("TAPDEBUG v" + appVersion + "  rot=" + m.rot + "  dpr=" + m.dpr +
                "  standalone=" + (standalone() ? "YES" : "no"));
+    /*
+     * WHAT THE FIX ITSELF DID. The app pins the window scroll to zero; this
+     * reports whether that code is present, how often it has run, and — the
+     * reading that decides everything — whether the number MOVED when it did.
+     */
+    const ps = window.__pinStats;
+    if (!ps) {
+      lines.push("pin  NOT IN THIS BUILD");
+    } else {
+      lines.push("pin  fired=" + ps.fired +
+                 (ps.fired ? "  " + ps.before + "->" + ps.after +
+                             (ps.moved ? "  (moved)" : "  <-- DID NOT MOVE") : ""));
+    }
+    lines.push("overflow de=" + m.over[0] + " body=" + m.over[1] +
+               "   scrollTop de/body/se " + m.sTop.join("/"));
     lines.push("win " + m.win.join("x") + "   doc " + m.doc.join("x") +
                (m.win[0] !== m.doc[0] || m.win[1] !== m.doc[1] ? "  <-- DIFFER" : ""));
     if (m.vv) {
@@ -325,6 +361,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ua: navigator.userAgent, at: Date.now(),
+                               version: appVersion, pin: window.__pinStats || null,
                                standalone: standalone(), verdict,
                                rotations, turns, events }),
       });

@@ -7055,6 +7055,11 @@ app.use(express.static(path.join(__dirname, "public"), {
 
 app.get("/api/status", (req, res) => {
   res.json({
+    // Which build is actually running. Added in v1.8.46 because a screenshot
+    // of the diagnostic panel could not say whether it came from a build that
+    // had the fix in it, and "did it ship?" is the first question any reading
+    // has to answer before the numbers on it mean anything.
+    version:   pkg.version,
     paired:    !!core,
     core_id:   core ? core.core_id      : null,
     core_name: core ? core.display_name : null,
