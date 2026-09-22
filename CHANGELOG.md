@@ -2,6 +2,51 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.38] — 2026-09-22
+
+### Fixed — the cover sat on the track list at desktop widths
+
+Reported with a screenshot: the artwork covered the track NUMBERS of every row
+level with it, and the start of the TRACKS heading — which rendered as "ACKS".
+Chrome, Edge and Firefox alike, which is the shape of a specificity bug rather
+than an engine quirk.
+
+**A media query adds no specificity, and that is the whole fault.** v1.7.84's
+full-bleed hero is written as `.modal:not(.np-mode) .modal-art` — three classes
+— and cancels the body's 18px side padding with `margin: 0 -18px` so the cover
+can run edge to edge. The two-column layout for 720px and up was written years
+earlier as plain `.modal-art`, one class, inside `@media (min-width: 720px)`.
+Being later in the file bought it nothing: `margin: 0 -18px` beat its
+`margin: 0` at every width, so the art kept an 18px negative right margin and
+pulled the track column underneath itself. The hero's `gap: 0` beat the same
+block's `gap: 28px` for the same reason, so there was nothing to absorb it.
+
+Measured in the harness before anything was changed: art right edge 551, track
+column left edge 533. Eighteen pixels, at every desktop width — the panel is
+`width: min(960px, 100%)`, so a 1920 window and a 1400 one had the identical
+overlap. **Only the rows inside the art's own 320px height lost their numbers**,
+which is exactly the asymmetry the report described (1–3 gone, 4 and 5 fine)
+and the thing that identifies the cover as what is covering them.
+
+The two-column block now cancels the hero at the hero's own specificity, and
+cancels all of it rather than half:
+
+- the bleed margins and the squared corners, because an inset 320px column is
+  not a full-bleed anything;
+- the top padding, without which the art and the title both start at the
+  panel's own edge and the pinned Back/Share buttons straddle the artwork;
+- **the bottom fade.** It exists so the cover dissolves into the page with the
+  title sitting in the tail of it. In two columns the title is BESIDE the art,
+  not under it, so the fade had nothing to dissolve into — it just made the
+  cover look like an image that had failed to load.
+
+Class of error: a later rule assumed to win. `test/dom/album-desktop-columns.js`
+pins the RESULT — the columns do not touch, no row level with the art starts
+inside it, the heading is whole — rather than any declaration, because the same
+overlap could return from any new rule that out-specifies this one. It runs at
+1400 and at 1920, and each of the three cancellations above fails it when put
+back.
+
 ## [1.8.37] — 2026-09-21
 
 ### Added — Discover: new records by the acts you play
