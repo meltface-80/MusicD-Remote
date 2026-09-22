@@ -12856,6 +12856,36 @@ function discoverAttemptedToday(day) {
   return !!smartCacheGet(discoverAttemptKey(day), 24 * 60 * 60 * 1000);
 }
 
+/*
+ * THE RULES THAT PRODUCED A DAY'S LIST, stamped beside it.
+ *
+ * A day is persisted, and "have we built today" was the only question asked
+ * before reusing it — so shipping a change to WHAT COUNTS as a release had no
+ * effect until the following day, and nobody could tell whether a screen they
+ * were looking at had been built by the new rules or the old ones. v1.8.40
+ * added a track-count floor and then could not be evaluated for exactly this
+ * reason: the rows in front of the user predated it, and pressing Refresh was
+ * a step only someone who had read the changelog would know to take.
+ *
+ * Same answer as the waveform's analysis stamp in v1.8.24: record the rules
+ * next to the data, and treat a day built under different ones as not built.
+ * A version that changes any of these refreshes itself within one timer tick.
+ * `gen` is the manual escape hatch for a change the numbers below do not
+ * capture — a new source, a changed matcher — and is bumped by hand.
+ */
+function discoverRulesStamp() {
+  return [
+    "gen2",
+    discoverWindowDays(), discoverSeedCount(), discoverMaxRows(),
+    newRel.WANTED_PER_ARTIST, newRel.MIN_ALBUM_TRACKS,
+  ].join(":");
+}
+function discoverStampKey(day) { return "nr-rules:" + day; }
+function discoverStampCurrent(day) {
+  const got = smartCacheGet(discoverStampKey(day), 24 * 60 * 60 * 1000);
+  return !!got && got.stamp === discoverRulesStamp();
+}
+
 // Build today's list. Called from the timer only — never from a request
 // handler, so nothing a user does waits on eighty network calls.
 async function buildNewReleases(day) {
@@ -12909,6 +12939,10 @@ async function buildNewReleases(day) {
   const rows = found.slice(0, discoverMaxRows());
   persistNewReleases(day, rows);
   smartCacheSet(discoverAttemptKey(day), { at: Date.now(), rows: rows.length });
+  // Written LAST, and only after the rows are down: a stamp ahead of the data
+  // it describes would mark a failed build as current and freeze the old list
+  // in place until tomorrow.
+  smartCacheSet(discoverStampKey(day), { at: Date.now(), stamp: discoverRulesStamp() });
   console.log("[discover] " + seeds.length + " seeds (" + asked + " asked, " +
               failed + " failed) -> " + found.length + " releases, kept " +
               rows.length + " in " + Math.round((Date.now() - t0) / 1000) + "s");
@@ -12934,8 +12968,11 @@ function kickDiscover(why, force) {
   const day = smartDayKey();
   if (_discoverBuilding) return true;
   if (!force) {
-    if (readNewReleases(day).length) return false;
-    if (discoverAttemptedToday(day)) return false;
+    // A day already built under THESE rules is done. One built under older
+    // ones is not — see discoverRulesStamp.
+    const current = discoverStampCurrent(day);
+    if (current && readNewReleases(day).length) return false;
+    if (current && discoverAttemptedToday(day)) return false;
     if (!discoverDue()) return false;
   }
   _discoverBuilding = bgRun("discover (" + why + ")", () => buildNewReleases(day))
@@ -13027,6 +13064,12 @@ app.get("/api/discover", async (req, res) => {
       enabled: discoverEnabled, day, releases: out,
       window_days: discoverWindowDays(),
       building: !!_discoverBuilding,
+      // Which rules produced these rows, and whether they are the rules this
+      // build runs. Without it, "is this list stale?" is unanswerable from
+      // the outside — which is what made v1.8.40's filter change impossible
+      // to evaluate from a pasted response.
+      rules: discoverRulesStamp(),
+      rules_current: discoverStampCurrent(day),
     });
   } catch (e) {
     res.status(500).json({ error: e.message });

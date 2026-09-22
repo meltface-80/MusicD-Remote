@@ -43,7 +43,10 @@ test("with no named cover, one is built from md5_image", () => {
   // image fails to load and the row keeps the empty tile it would have had
   // with no cover at all. It can only turn "no cover" into "no cover".
   const url = NR.coverOf({ md5_image: "abc123" });
-  assert.match(url, /^https:\/\/e-cdns-images\.dzcdn\.net\/images\/cover\/abc123\//);
+  // The host is the one Deezer actually serves, taken from a real
+  // /api/discover response rather than from memory — v1.8.39 guessed
+  // "e-cdns-images" and had the path shape right and the host wrong.
+  assert.match(url, /^https:\/\/cdn-images\.dzcdn\.net\/images\/cover\/abc123\//);
   assert.equal(NR.coverOf({}), null);
 });
 

@@ -2,6 +2,52 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.41] — 2026-09-22
+
+### Fixed — a day's list is stamped with the rules that built it
+
+This is the one that mattered, and it was found by a user pasting their own
+`/api/discover` response rather than by anything in the code.
+
+A day's releases are persisted, and "have we built today" was the ONLY question
+asked before reusing them. So shipping a change to **what counts as a release**
+had no effect until the following day — and, worse, nobody could tell from the
+outside whether the screen in front of them had been built by the new rules or
+the old ones. v1.8.40 added a track-count floor for exactly the singles-and-EPs
+complaint and then could not be evaluated, because the rows on screen predated
+it. Pressing Refresh was the fix, and it was a step only someone who had read
+the changelog would know to take.
+
+The same answer the waveform reached in v1.8.24: **record the rules next to the
+data.** The window, the seed count, the row cap, the per-artist cap and the
+track floor are stamped beside each day, and a day built under different ones
+counts as not built — so a version that changes any of them refreshes itself
+within one timer tick instead of waiting for midnight. `/api/discover` now
+reports `rules` and `rules_current`, so "is this list stale?" is answerable
+from a pasted response, which is exactly how this was missed.
+
+The stamp is written LAST, after the rows are down: a stamp ahead of the data
+it describes would mark a failed build as current and freeze the old list in
+place until tomorrow.
+
+### Fixed — the Deezer cover host, corrected against real data
+
+v1.8.39 built a fallback cover URL from `md5_image` and said plainly that the
+pattern was a guess, because Deezer is blocked from the machine this is written
+on. The pasted response settles it: every cover reads
+
+    https://cdn-images.dzcdn.net/images/cover/<md5>/250x250-000000-80-0-0.jpg
+
+so the path shape was right and the **host was wrong** — the guess had said
+`e-cdns-images.dzcdn.net`. Corrected.
+
+Two things worth recording with it. Those covers came from a NAMED field, which
+answers the other open question: `cover_medium` and friends are populated, so
+this fallback has probably never been reached. And the guess being wrong cost
+nothing, which was the point of putting it last — a fallback that can only turn
+"no cover" into "no cover" is safe to ship unverified, and one that could break
+a working cover would not have been.
+
 ## [1.8.40] — 2026-09-22
 
 ### Changed — a phone in landscape is no longer blocked
