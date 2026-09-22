@@ -61,6 +61,20 @@
   let rotations = 0;
   let lastDown = null;         // the most recent pointer/touch start
   let sinceDownClicks = 0;
+  const turns = [];            // what each rotation did to the viewport
+  let verdict = "";            // the headline, when something is measurably wrong
+
+  /*
+   * IS THE APP RUNNING AS A HOME-SCREEN APP? The bug is reported only there —
+   * Safari and Chrome on the same phone are fine — so this is the first thing
+   * any reading has to state, or two runs are not comparable.
+   */
+  function standalone() {
+    const legacy = navigator.standalone === true;
+    let dm = false;
+    try { dm = window.matchMedia("(display-mode: standalone)").matches; } catch (e) {}
+    return legacy || dm;
+  }
 
   // ---- the panel ---------------------------------------------------------
   const panel = document.createElement("div");
@@ -114,10 +128,61 @@
     };
   }
 
+  /*
+   * WHAT IS MEASURABLY WRONG, in one line.
+   *
+   * The panel exists to be read by somebody holding a phone that will not
+   * respond, and six numbers that need interpreting are no use in that
+   * position. Each test below is a different fault with a different fix, and
+   * every one of them is a plain comparison rather than a judgement:
+   *
+   *   win != doc            the layout viewport is not the window: the page is
+   *                         laid out for a size the screen no longer is
+   *   orientation vs size   the device says portrait and the page is landscape
+   *   scale != 1            the page came back zoomed
+   *   vv offsets            the visual viewport is shifted inside the layout one
+   *   scrolled              the window scrolled despite overflow: hidden
+   *
+   * An empty verdict with dead buttons is itself a finding: it says the
+   * viewport is intact and the fault is somewhere else entirely, which rules
+   * out every mechanism this file was built to catch.
+   */
+  function computeVerdict(m) {
+    const bad = [];
+    if (m.win[0] !== m.doc[0] || m.win[1] !== m.doc[1]) {
+      bad.push("LAYOUT VIEWPORT STALE (win " + m.win.join("x") +
+               " vs doc " + m.doc.join("x") + ")");
+    }
+    const portrait = Math.abs(Number(window.orientation) || 0) !== 90;
+    const wide = m.win[0] > m.win[1];
+    if (typeof window.orientation === "number" && portrait === wide) {
+      bad.push("ORIENTATION AND SIZE DISAGREE (orientation=" +
+               window.orientation + ", win " + m.win.join("x") + ")");
+    }
+    if (m.vv) {
+      if (m.vv[2] !== 1) bad.push("PAGE IS SCALED (" + m.vv[2] + ")");
+      if (m.vv[3] || m.vv[4]) bad.push("VISUAL VIEWPORT OFFSET (" + m.vv[3] + "," + m.vv[4] + ")");
+      if (m.vv[0] !== m.win[0]) {
+        bad.push("VISUAL != WINDOW WIDTH (" + m.vv[0] + " vs " + m.win[0] + ")");
+      }
+    }
+    if (m.scroll[0] || m.scroll[1]) bad.push("WINDOW SCROLLED (" + m.scroll.join(",") + ")");
+    return bad.join(" | ");
+  }
+
   function render() {
     const m = metrics();
+    verdict = computeVerdict(m);
+    panel.style.background = verdict ? "rgba(90,0,0,.92)" : "rgba(0,0,0,.82)";
+    panel.style.color = verdict ? "#ffb4b4" : "#8f8";
     const lines = [];
-    lines.push("TAPDEBUG  rot=" + m.rot + "  dpr=" + m.dpr);
+    if (verdict) {
+      lines.push("*** " + verdict + " ***");
+    } else if (rotations) {
+      lines.push("viewport looks consistent after " + rotations + " rotation(s)");
+    }
+    lines.push("TAPDEBUG  rot=" + m.rot + "  dpr=" + m.dpr +
+               "  standalone=" + (standalone() ? "YES" : "no"));
     lines.push("win " + m.win.join("x") + "   doc " + m.doc.join("x") +
                (m.win[0] !== m.doc[0] || m.win[1] !== m.doc[1] ? "  <-- DIFFER" : ""));
     if (m.vv) {
@@ -126,7 +191,24 @@
                  (m.vv[2] !== 1 ? "  <-- SCALED" : ""));
     }
     lines.push("scrollXY " + m.scroll.join(","));
+    if (turns.length) {
+      lines.push("--- rotations (newest first) ---");
+      for (let i = turns.length - 1; i >= 0 && i > turns.length - 4; i--) {
+        const t = turns[i];
+        lines.push("#" + t.n + " +" + t.after + "ms  win " + t.m.win.join("x") +
+                   "  doc " + t.m.doc.join("x") +
+                   (t.m.vv ? "  vv " + t.m.vv[0] + "x" + t.m.vv[1] + " s=" + t.m.vv[2] : "") +
+                   (t.verdict ? "\n   " + t.verdict : ""));
+      }
+    }
     lines.push("--- last taps (newest first) ---");
+    if (!events.length) {
+      // THE READING THAT MATTERS MOST when the screen is dead: no rows here
+      // after tapping means the presses never reached the page at all, which
+      // is a different fault from any of the viewport ones above.
+      lines.push("(nothing recorded yet — if you have tapped, the taps are");
+      lines.push(" not reaching the page)");
+    }
     for (let i = events.length - 1; i >= 0 && lines.length < 22; i--) {
       const e = events[i];
       lines.push(e.type.padEnd(11) + " @" + e.x + "," + e.y +
@@ -159,6 +241,7 @@
   document.addEventListener("pointerdown", (e) => {
     lastDown = record("pointerdown", e.clientX, e.clientY, e.target);
     sinceDownClicks = 0;
+    armNoClickCheck(lastDown);
     render();
   }, opts);
 
@@ -180,17 +263,43 @@
    * A pointerdown with no click after it is the single most useful reading
    * here, so it is marked explicitly rather than left to be inferred from two
    * rows. 400ms is well past the synthesised click on every platform.
+   *
+   * Scheduled FROM the press rather than swept by a permanent timer: a poll
+   * that runs for the life of the page costs something on a phone and nothing
+   * on a page nobody is pressing, and under the test harness's virtual clock a
+   * quarter-second interval is fast-forwarded into thousands of callbacks that
+   * starve the driver. One timeout per press has neither problem.
    */
-  setInterval(() => {
-    if (lastDown && lastDown.clicked === null && Date.now() - lastDown.t > 400) {
-      lastDown.clicked = false;
-      lastDown = null;
-      render();
-    }
-  }, 250);
+  function armNoClickCheck(row) {
+    setTimeout(() => {
+      if (row.clicked === null) { row.clicked = false; render(); }
+    }, 400);
+  }
+
+  /*
+   * A ROTATION IS NOT AN INSTANT, so it is sampled three times.
+   *
+   * iOS fires orientationchange before the web view has finished resizing, and
+   * a standalone app settles later than a tabbed one. A single reading taken
+   * on the event catches the middle of the transition and calls a viewport
+   * stale when it is merely mid-flight. The last sample, a second later, is
+   * the one that says whether it ever settled.
+   */
+  function sampleTurn(n, after) {
+    const m = metrics();
+    turns.push({ n, after, m, verdict: computeVerdict(m) });
+    while (turns.length > 12) turns.shift();
+    render();
+  }
 
   const onViewportChange = (what) => () => {
-    if (what === "rot") rotations++;
+    if (what === "rot") {
+      const n = ++rotations;
+      sampleTurn(n, 0);
+      setTimeout(() => sampleTurn(n, 300), 300);
+      setTimeout(() => { sampleTurn(n, 1000); post(); }, 1000);
+      return;
+    }
     render();
     post();
   };
@@ -200,7 +309,7 @@
     window.visualViewport.addEventListener("resize", onViewportChange("vv"), { passive: true });
     window.visualViewport.addEventListener("scroll", onViewportChange("vv"), { passive: true });
   }
-  setInterval(render, 1000);
+  setInterval(render, 2000);
   render();
 
   // ---- reporting ---------------------------------------------------------
@@ -216,7 +325,8 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ua: navigator.userAgent, at: Date.now(),
-                               rotations, events }),
+                               standalone: standalone(), verdict,
+                               rotations, turns, events }),
       });
     } catch (e) {
       // A failed report is not worth a message: the panel already has it all.

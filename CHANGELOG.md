@@ -2,6 +2,55 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.44] — 2026-09-22
+
+### Changed — the instrument reads the ROTATION, not just the taps
+
+New and decisive fact from the report: **it happens only in the home-screen
+app.** Safari and Chrome on the same phone are fine. That rules out everything
+about the page's own markup and behaviour that those three share — which is
+almost all of it — and points at how iOS sizes a standalone web view across an
+orientation change.
+
+v1.8.43's instrument was built around taps, and that is the wrong end of it
+here: **if the presses are not arriving, the tap rows stay empty and the panel
+says nothing.** The rotation is now the headline.
+
+- **A rotation is sampled three times** — on the event, at 300ms and at one
+  second. iOS fires `orientationchange` before the web view has finished
+  resizing, and a standalone app settles later than a tabbed one, so a single
+  reading taken on the event catches the middle of the transition and would
+  call a viewport stale when it is only mid-flight. The last sample is the one
+  that says whether it ever settled.
+- **A one-line verdict, in plain words, and the panel turns red for it.** Six
+  numbers that need interpreting are no use to somebody holding a phone that
+  will not respond. Each test is a plain comparison, and each names a different
+  fault: `LAYOUT VIEWPORT STALE` (win ≠ doc), `ORIENTATION AND SIZE DISAGREE`,
+  `PAGE IS SCALED`, `VISUAL VIEWPORT OFFSET`, `VISUAL != WINDOW WIDTH`,
+  `WINDOW SCROLLED`.
+- **The readout states whether it is a home-screen app**, because a reading
+  that does not say which of the three it came from cannot be compared with
+  another one.
+- **"Nothing recorded yet" is now said out loud.** An empty tap list after
+  tapping is the single most useful reading there is — it means the presses are
+  not reaching the page at all — and a blank space does not say it.
+
+**An empty verdict with dead buttons is a finding too**: it would say the
+viewport is intact and rule out every mechanism this file was built to catch.
+
+Also: the per-press no-click check is scheduled from the press instead of swept
+by a permanent 250ms timer. A poll that runs for the life of the page costs
+something on a phone and nothing on a page nobody is pressing — and under the
+harness's virtual clock it was fast-forwarded into thousands of callbacks that
+starved the driver.
+
+**One for the notebook.** The first version of the new assertions used
+`/\*\*\*/` to look for the verdict marker inside a driver template literal. A
+backslash escape collapses before the driver ever sees it, so that arrived as
+`/***/` — which JavaScript reads as the start of a block comment, and it took
+the rest of the driver with it. Every test in the file went red at once, which
+is at least an honest way to find out. Both such regexes are `indexOf` now.
+
 ## [1.8.43] — 2026-09-22
 
 ### Added — tap diagnostics, because two fixes have now been wrong

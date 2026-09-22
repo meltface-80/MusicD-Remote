@@ -13185,7 +13185,13 @@ app.post("/api/debug/taps", (req, res) => {
   _tapReports.push({
     at: Date.now(),
     ua: String(body.ua || "").slice(0, 200),
+    // The bug is reported ONLY from a home-screen app — Safari and Chrome on
+    // the same phone are fine — so a reading that does not say which it came
+    // from cannot be compared with another one.
+    standalone: !!body.standalone,
+    verdict: String(body.verdict || "").slice(0, 300),
     rotations: Number(body.rotations) || 0,
+    turns: Array.isArray(body.turns) ? body.turns.slice(-12) : [],
     // Bounded on the way in: the client keeps 40 and a wedged page could
     // otherwise report for as long as it is open.
     events: Array.isArray(body.events) ? body.events.slice(-60) : [],

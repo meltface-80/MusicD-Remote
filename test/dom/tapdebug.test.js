@@ -97,12 +97,32 @@ const DRIVER = `
 
   // And the recorder noticed it, without changing it.
   if (panel) T("recorded_click", /click/.test(panel.textContent));
+
+  // The headline. In a healthy frame there is no verdict and the panel says
+  // so rather than leaving a reader to decide that silence means well.
+  if (panel) {
+    T("standalone_stated", /standalone=(YES|no)/.test(panel.textContent));
+    // indexOf, not a regex. A backslash escape inside this template literal
+    // collapses before the driver ever sees it — /\*\*\*/ arrives as /***/,
+    // which JS reads as the start of a block comment and takes the rest of the
+    // driver with it. The whole file went red at once, which is at least an
+    // honest way to find out.
+    T("verdict_shown", panel.textContent.indexOf("***") > -1);
+    T("bg", getComputedStyle(panel).backgroundColor);
+  }
+
+  // A rotation cannot be simulated here, but the sampler that records one can
+  // be driven directly — three samples per turn, because iOS fires
+  // orientationchange before the web view has finished resizing.
+  window.dispatchEvent(new Event("orientationchange"));
+  await window.__sleep(1400);
+  if (panel) T("turn_logged", panel.textContent.indexOf("#1 +1000ms") > -1);
 `;
 
 function render(enable) {
   const r = harness.renderPage({ name: "tapdebug-" + (enable ? "on" : "off"),
                                  windowSize: "390x844", stub: stub(enable),
-                                 driver: DRIVER, budgetMs: 30000 });
+                                 driver: DRIVER, budgetMs: 60000 });
   harness.assertNoPageError(assert, r);
   return r;
 }
@@ -136,6 +156,31 @@ test("the tap instrument", { concurrency: 1 }, async (t) => {
     assert.equal(r.menu_click_landed, 1,
       "a press on the menu button did not reach it with the instrument running");
     assert.equal(r.recorded_click, true, "the press was not recorded");
+  });
+
+  await t.test("says whether it is a home-screen app, and gives a verdict", () => {
+    // The bug happens ONLY in a standalone home-screen app — Safari and Chrome
+    // on the same phone are fine — so a reading that does not state which it
+    // came from cannot be compared with another one.
+    const r = render(true);
+    assert.equal(r.standalone_stated, true,
+      "the readout does not say whether this is a home-screen app");
+    // Headless Chromium at a sane size is a healthy frame, so there must be no
+    // verdict — a detector that cries wolf here would cry wolf on a phone.
+    assert.equal(r.verdict_shown, false,
+      "a verdict was raised on a viewport with nothing wrong with it");
+    assert.match(r.bg, /^rgba?\(0, 0, 0/,
+      "the panel went to its alarm colour with no fault to report: " + r.bg);
+  });
+
+  await t.test("a rotation is sampled until it settles, not once on the event", () => {
+    // iOS fires orientationchange before the web view has finished resizing,
+    // and a standalone app settles later than a tabbed one. One reading taken
+    // on the event catches the middle of the transition and calls a viewport
+    // stale when it is only mid-flight.
+    const r = render(true);
+    assert.equal(r.turn_logged, true,
+      "the rotation was not still being sampled a second later");
   });
 
   await t.test("shows the viewport numbers without being asked", () => {
