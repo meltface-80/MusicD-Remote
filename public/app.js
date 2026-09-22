@@ -67,34 +67,16 @@
    * an input clear of the keyboard, and fighting that would park the field
    * under the keys — trading a bug nobody can see for one everybody can.
    * ------------------------------------------------------------------ */
-  /*
-   * IT RECORDS WHAT IT DID, and that is not decoration. v1.8.45 shipped this
-   * reset and the offset came back anyway, and the readout could not say
-   * whether the reset had run and failed or had never run at all — the panel
-   * shows the same thing either way. "Tried, and the number did not move" and
-   * "never tried" need opposite next steps, so the reading that separates
-   * them is taken here, at the only place that knows.
-   */
-  const pinStats = { installed: true, fired: 0, before: null, after: null, moved: null };
-  window.__pinStats = pinStats;
   const pinWindow = () => {
     if (!window.scrollX && !window.scrollY) return;
     const el = document.activeElement;
     const tag = el && el.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || (el && el.isContentEditable)) return;
-    const before = window.scrollY;
     window.scrollTo(0, 0);
-    // Safari has historically moved one of these and not the other, and a
-    // half-reset scroll is the same bug at a smaller offset.
+    // All three, because Safari has historically moved one scroller and not
+    // another, and a half-reset offset is the same bug at a smaller number.
     if (document.scrollingElement) document.scrollingElement.scrollTop = 0;
     if (document.body) document.body.scrollTop = 0;
-    pinStats.fired++;
-    pinStats.before = before;
-    pinStats.after = window.scrollY;
-    // The whole question in one boolean: is this offset a document scroll at
-    // all? If it will not move, no amount of scrolling is going to fix it and
-    // the cause is somewhere else entirely.
-    pinStats.moved = window.scrollY !== before;
   };
   window.addEventListener("scroll", pinWindow, { passive: true });
   window.addEventListener("pageshow", pinWindow, { passive: true });
@@ -11391,31 +11373,6 @@
         discRebuild.disabled = false;
         discRebuild.textContent = orig;
       }
-    });
-  }
-
-  // ----- Tap diagnostics -----
-  // Reads and writes the same localStorage key public/tapdebug.js reads at
-  // load. Deliberately NOT applied live: the instrument installs its listeners
-  // before anything else on the page, which is the whole point of it, and a
-  // half-installed one would measure a different page from the one that broke.
-  const tapDebugEl = document.getElementById("tapdebug-enabled");
-  const TAPDEBUG_KEY = "musicd-tapdebug";
-  if (tapDebugEl) {
-    try { tapDebugEl.checked = localStorage.getItem(TAPDEBUG_KEY) === "1"; }
-    catch (e) { /* private browsing — the switch just reads off */ }
-    tapDebugEl.addEventListener("change", () => {
-      const on = tapDebugEl.checked;
-      try {
-        if (on) localStorage.setItem(TAPDEBUG_KEY, "1");
-        else localStorage.removeItem(TAPDEBUG_KEY);
-      } catch (e) {
-        showToast("Couldn't save that on this device", "error");
-        tapDebugEl.checked = !on;
-        return;
-      }
-      showToast(on ? "Tap diagnostics on — reload the app to start recording"
-                   : "Tap diagnostics off — reload the app to stop");
     });
   }
 

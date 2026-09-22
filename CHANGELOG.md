@@ -2,6 +2,35 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.48] — 2026-09-22
+
+### Removed — the tap diagnostics
+
+It did its job. The iOS home-screen freeze had survived two fixes built on
+mechanisms that could not be observed from here; the instrument answered it on
+the first reading (`scrollXY 0,62`, every tap hit-testing to the album art) and
+v1.8.45 fixed it. With the question settled there is no reason to ship the
+question-asking apparatus to everyone.
+
+Gone completely: `public/tapdebug.js`, its `<script>` tag, the
+Settings → System toggle and its wiring, `POST`/`GET /api/debug/taps` and the
+report buffer behind them, and `test/dom/tapdebug.test.js`. Nothing in the app
+references any of it.
+
+**The fix it found is untouched.** The window pin — reset on `scroll` and
+`pageshow`, re-checked at 0/300/1000ms after a rotation, and a focused text
+field left alone so iOS can still lift an input clear of the keyboard — is
+exactly as it was, and `test/dom/window-pin.test.js` still holds all four of
+its rules. What went with the instrument is the pin's self-reporting
+(`window.__pinStats`), which existed only so a screenshot could say whether
+the reset had run; the reset itself, including clearing all three scrollers,
+stays.
+
+**One line is deliberately kept:** `/api/status` still reports `version`. That
+was added because a screenshot could not say which build it came from, and
+that is true of every report rather than only the one that prompted it. It
+costs a field and settles the first question any bug report has to answer.
+
 ## [1.8.47] — 2026-09-22
 
 ### Fixed — Home opened a safe-area inset too far down after rotating

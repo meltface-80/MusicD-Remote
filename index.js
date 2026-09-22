@@ -7055,10 +7055,12 @@ app.use(express.static(path.join(__dirname, "public"), {
 
 app.get("/api/status", (req, res) => {
   res.json({
-    // Which build is actually running. Added in v1.8.46 because a screenshot
-    // of the diagnostic panel could not say whether it came from a build that
-    // had the fix in it, and "did it ship?" is the first question any reading
-    // has to answer before the numbers on it mean anything.
+    // Which build is actually running. Added while chasing a bug where a
+    // screenshot of the app could not say whether it came from a build that
+    // had the fix in it — "which version is this?" is the first question any
+    // report has to answer before anything else in it means much. Kept after
+    // the diagnostic that prompted it was removed, because that is true of
+    // every report, not just that one.
     version:   pkg.version,
     paired:    !!core,
     core_id:   core ? core.core_id      : null,
@@ -13170,48 +13172,6 @@ app.get("/api/debug/discover", async (req, res) => {
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
-});
-
-/*
- * Tap diagnostics — POST /api/debug/taps, GET /api/debug/taps
- *
- * The server half of public/tapdebug.js. A ring buffer in memory, never on
- * disk: this is a live instrument for one reproduction, not a log, and a
- * diagnostic that quietly fills the data volume would be a worse bug than the
- * one it is chasing.
- *
- * The POST is unauthenticated for the same reason every other route here is —
- * this is a LAN extension — and it stores nothing it is not given.
- */
-const TAP_REPORTS_MAX = 20;
-let _tapReports = [];
-app.post("/api/debug/taps", (req, res) => {
-  const body = req.body || {};
-  _tapReports.push({
-    at: Date.now(),
-    ua: String(body.ua || "").slice(0, 200),
-    // The bug is reported ONLY from a home-screen app — Safari and Chrome on
-    // the same phone are fine — so a reading that does not say which it came
-    // from cannot be compared with another one.
-    standalone: !!body.standalone,
-    verdict: String(body.verdict || "").slice(0, 300),
-    rotations: Number(body.rotations) || 0,
-    turns: Array.isArray(body.turns) ? body.turns.slice(-12) : [],
-    // Bounded on the way in: the client keeps 40 and a wedged page could
-    // otherwise report for as long as it is open.
-    events: Array.isArray(body.events) ? body.events.slice(-60) : [],
-  });
-  while (_tapReports.length > TAP_REPORTS_MAX) _tapReports.shift();
-  res.json({ ok: true, kept: _tapReports.length });
-});
-app.get("/api/debug/taps", (req, res) => {
-  if (req.query.clear !== undefined) { _tapReports = []; return res.json({ cleared: true }); }
-  res.set("Cache-Control", "no-store");
-  res.json({
-    reports: _tapReports,
-    hint: "switch it on in Settings -> System -> Tap diagnostics, or load the " +
-          "app with ?tapdebug=1; add ?clear to empty this.",
-  });
 });
 
 app.get("/api/settings/discover", (req, res) => {
