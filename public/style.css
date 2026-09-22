@@ -1047,6 +1047,22 @@ main { padding-top: calc(var(--topbar-h) + 14px); }
     flex-direction: row; align-items: flex-start;
     gap: 28px;
     padding: 28px;
+    /*
+     * THE SHORTHAND ABOVE WAS THROWING AWAY THE TRANSPORT'S ROOM. The base
+     * rule reserves `106px + inset` at the bottom so the last of the content
+     * can scroll clear of the floating now-playing pill; `padding: 28px` here
+     * reset that to 28 and nothing put it back.
+     *
+     * It shows up in landscape on a phone or tablet, where the panel is
+     * centred with a 24px margin and so ends within a few pixels of the
+     * screen: measured at 844x390, the panel runs to y=374 and the pill's top
+     * edge is at y=308, so its last 66px sit underneath — About this album and
+     * the service link among them, with no way to scroll them out.
+     *
+     * Restored rather than recalculated: it is the same pill, the same
+     * distance off the same bottom edge, so it is the same number.
+     */
+    padding-bottom: calc(106px + env(safe-area-inset-bottom));
   }
   .modal-art {
     flex: 0 0 320px; max-width: 320px; margin: 0;

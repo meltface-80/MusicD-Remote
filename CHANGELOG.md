@@ -2,6 +2,42 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.50] — 2026-09-22
+
+### Fixed — the album view's last content sat under the now-playing pill
+
+Reported from a phone in landscape: About this album and the service link were
+behind the transport bar, with no way to scroll them out.
+
+**A shorthand ate the reserve.** `.modal-body` sets
+`padding-bottom: calc(106px + env(safe-area-inset-bottom))` precisely so the
+end of the content can scroll clear of the floating pill. The two-column rule
+for 720px and up then writes `padding: 28px` — a shorthand, so it resets the
+bottom along with the rest — and nothing put it back.
+
+Measured at 844x390 before changing anything: the panel runs to y=374, the
+pill's top edge is at y=308, so its last 66px were underneath while the body
+reserved 28.
+
+**It is not only landscape.** The mutation test shows the same 37px of content
+stranded at 1400x900 — a centred dialog reaches its `max-height` on any album
+with enough tracks, and its bottom edge then sits in the pill's band at any
+window size. Landscape on a phone is just where it is unavoidable, because the
+panel is short AND centred with a 24px margin, so it always ends within a few
+pixels of the screen.
+
+Restored rather than recalculated: same pill, same distance off the same bottom
+edge, so it is the same number. The cost is that a short album's dialog now
+carries that padding under its last row on a desktop, where it reads as
+padding rather than as a fault — and the alternative, a second number for the
+same gap, is how the two drift apart.
+
+`test/dom/modal-transport-clearance.test.js` scrolls the body to the very end
+and asserts the last track is fully above the pill, at both sizes. It also
+asserts the panel really does overlap the pill's band, so it cannot quietly
+start passing at a size where there was never anything to clear. Removing the
+reserve again fails it at both.
+
 ## [1.8.49] — 2026-09-22
 
 ### Removed — the version field on `/api/status`
