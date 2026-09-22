@@ -7055,13 +7055,6 @@ app.use(express.static(path.join(__dirname, "public"), {
 
 app.get("/api/status", (req, res) => {
   res.json({
-    // Which build is actually running. Added while chasing a bug where a
-    // screenshot of the app could not say whether it came from a build that
-    // had the fix in it — "which version is this?" is the first question any
-    // report has to answer before anything else in it means much. Kept after
-    // the diagnostic that prompted it was removed, because that is true of
-    // every report, not just that one.
-    version:   pkg.version,
     paired:    !!core,
     core_id:   core ? core.core_id      : null,
     core_name: core ? core.display_name : null,

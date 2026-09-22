@@ -2,6 +2,19 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.49] — 2026-09-22
+
+### Removed — the version field on `/api/status`
+
+The last of the diagnostic scaffolding. v1.8.48 kept it on the argument that
+knowing which build a report came from is always useful; the call was the
+user's and the answer was no. Nothing read it — both callers of `/api/status`
+use `paired`, the index counts and the sync flags — so it goes cleanly and the
+route is back to exactly the fields it had before the freeze was chased.
+
+Nothing else from that work remains in the app. What stays is the fix itself:
+the window pin from v1.8.45 and the `--topbar-h` measurement from v1.8.47.
+
 ## [1.8.48] — 2026-09-22
 
 ### Removed — the tap diagnostics
