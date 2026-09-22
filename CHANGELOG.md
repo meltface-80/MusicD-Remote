@@ -2,6 +2,63 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.54] — 2026-09-22
+
+**An apostrophe.** Found in a user's probe output, which named it outright:
+
+```
+"track":   { "track": "Don't Panic", "album": "Parachutes" }
+"album_dir": "/music/Coldplay - Parachutes (2016) [FLAC 24-192]"
+"files":   [ { "file": "01 - Don't Panic.flac", "title": "Don’t Panic" }, ... ]
+"matched_file": null
+```
+
+Roon reports `Don't Panic` with a typewriter apostrophe (U+0027). The file's tag
+carries `Don’t Panic` with a typographic one (U+2019) — which is what nearly
+every tagger writes. The album resolved, the folder was found, all ten files
+were listed, and the track matched none of them.
+
+### Fixed — the local file matcher had its own, weaker idea of "the same title"
+
+`wfCanon` lowercased and collapsed whitespace and did nothing else, so those two
+strings are not equal — and neither contains the other, so the containment
+fallback missed as well. The track resolved to no file, no waveform was drawn,
+and nothing was logged.
+
+The streaming path never had this. `TM.canon` reduces every run of
+non-alphanumerics to one space, so Qobuz and TIDAL have matched these titles
+since the day they were written. **Two spellings of one question, and they had
+already drifted** — the same shape as v1.8.51's Qobuz gates and v1.8.53's key
+space. `wfCanon` is `TM.canon` now. One definition of "same title".
+
+This is not a rare edge: every track whose tag carries a typographic apostrophe,
+in any library, silently had no local waveform. Accents and other punctuation
+were missing for the same reason.
+
+### Fixed — two files with the same title were a coin flip presented as an answer
+
+`files.find(...)` took the first match and said nothing. An album really can
+list a title twice, and `TM.matchTrack` refuses exactly this on the streaming
+side because a waveform of the wrong track looks authoritative and is simply a
+different song. The local path now refuses too, and logs why. A deliberate
+trade: it removes a waveform that was previously drawn, and it was right half
+the time.
+
+### A note on where the last three versions went
+
+v1.8.51 fixed why NO Qobuz album had a waveform. v1.8.52 and v1.8.53 built the
+instrument to answer the harder report — that SOME still failed — rather than
+guessing at it. This release is what the instrument found, on its second run,
+and it was not in the Qobuz path at all: the probe reported the album's folder,
+its files and their exact tag titles, and the answer was visible in the output
+with no further investigation. That is the whole case for spending two versions
+on a diagnostic instead of a third guess.
+
+*Zebra IV* is still unexplained — a different album, a different stop in the
+chain, and v1.8.53's near-miss report is what will name it.
+
+1153 unit / 605 DOM / 107 static.
+
 ## [1.8.53] — 2026-09-22
 
 From a real probe run: Qobuz signed in, **11,006 favourites loaded**, playing

@@ -13596,13 +13596,52 @@ async function wfAlbumFiles(albumKey) {
   return out;
 }
 
-const wfCanon = (t) => String(t || "").toLowerCase().replace(/\s+/g, " ").trim();
+/*
+ * Is this the same track title?
+ *
+ * TM.canon, THE SAME ONE THE STREAMING MATCHER USES. This was its own weaker
+ * rule — lowercase and collapse whitespace, nothing else — and it made the two
+ * halves of one question disagree about punctuation:
+ *
+ *     Roon says   Don't Panic      (U+0027 apostrophe)
+ *     the tag says Don’t Panic      (U+2019, what nearly every tagger writes)
+ *
+ * Those are not equal, and they are not CONTAINED in one another either, so the
+ * fallback missed too and the track resolved to no file at all. Every track
+ * whose tag carries a typographic apostrophe — a huge share of any real library
+ * — silently had no local waveform, while the Qobuz and TIDAL paths handled it
+ * from the day they were written because they canonicalise properly.
+ *
+ * Found from a user's probe output: Parachutes resolved to its folder, all ten
+ * files listed, and matched_file null with "Don't Panic" sitting one line above
+ * "Don’t Panic". (v1.8.54.)
+ *
+ * ONE definition of "same title", not two. The same reason the Qobuz gates had
+ * to stop being spelled out three ways in v1.8.51: a second spelling of one
+ * question is a bug waiting for the day the two drift, and this one had already
+ * drifted.
+ */
+// A declaration, not a const arrow: the test suite extracts this by name, and a
+// helper that decides which track you are looking at should be reachable by the
+// tests that pin what "the same title" means.
+function wfCanon(t) { return TM.canon(t); }
 
 async function wfResolveFile(albumKey, trackTitle) {
   const want = wfCanon(trackTitle);
   if (!want) return null;
   const files = await wfAlbumFiles(albumKey);
-  let hit = files.find(f => wfCanon(f.title) === want);
+  // Every file that canonicalises the same, not the FIRST one. An album really
+  // can list a title twice (a reprise, a hidden duplicate), and picking one is
+  // a guess — the same guess TM.matchTrack refuses on the streaming side, for
+  // the same reason: a waveform of the wrong track looks authoritative and is
+  // simply a different song. `find` took the first and said nothing.
+  const exact = files.filter(f => wfCanon(f.title) === want);
+  if (exact.length > 1) {
+    console.log("[waveform] " + exact.length + " files in that folder are called \"" +
+                trackTitle + "\" — ambiguous, so no waveform rather than a guess");
+    return null;
+  }
+  let hit = exact[0];
   // Roon's track title can carry a suffix the tag does not (or the reverse),
   // so containment is the fallback — but only when it is UNAMBIGUOUS. Two
   // candidates means we do not know, and a waveform of the wrong track is
