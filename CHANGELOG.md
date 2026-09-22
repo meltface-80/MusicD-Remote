@@ -2,6 +2,103 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.51] — 2026-09-22
+
+### Fixed — Qobuz waveforms: the favourites read had been switched off since v1.8.20
+
+Reported as "waveforms for Qobuz and I guess Tidal are not working, I do not
+know when this happened".
+
+**One gate that tested a login the app stopped offering.** A streamed track has
+no audio this extension can see, so the only way to draw its shape is to fetch
+it from the service — and that needs the service's own ALBUM ID, which can only
+be harvested from the user's favourites. `refreshStreamAlbumKeys()` is what
+harvests them, and its Qobuz half was gated on:
+
+```js
+if (qobuzToken || (qobuzUsername && qobuzPasswordMd5)) {
+```
+
+Those are the credentials of the PASSWORD login, which v1.8.20 removed —
+the browser sign-in replaced it and sets `qobuzWaveToken` instead. So on any
+install connected the only way the app still offers, that condition was false
+forever: the favourites were never read, `qobuzAlbumIds` stayed empty, and
+`wfQobuzAlbumId()` had nothing to answer with. Every Qobuz track declined with
+`no Qobuz album id — 0 ids known (favourites not read yet)`.
+
+Reconnecting could not clear it, because the sign-in handler's own
+`refreshStreamAlbumKeys('qobuz sign-in')` ran into the same gate and did
+nothing.
+
+**The same gate was spelled out in two other places**, and both were equally
+dead:
+
+- `claimingServices()` — so Qobuz never counted as a service that could be
+  claiming an album. That is the authority behind `unclaimedIsLocal()`, so on a
+  Qobuz-only install every album with no local file was taken to be local.
+- `fetchServiceArtistBio()` — so the Qobuz branch of the artist biography was
+  skipped outright and only the Tidal/Wikipedia paths ever ran.
+
+All three now call `qobuzReady()`, which has been the single correct definition
+since v1.7.x and which accepts the browser sign-in on its own.
+
+**Class of error: a partial migration, named and then left.** `qobuzReady()`
+was written with a comment saying the pre-existing gates had drifted — and the
+gates were left drifted. Nothing failed when they stayed that way, so nothing
+said so for thirty versions. `test/static/qobuz-gates.test.js` is the thing
+that fails now: the "is Qobuz connected" question may be spelled out exactly
+once in code, and that once must mention the browser sign-in token.
+
+### Fixed — the repaired read now arrives on the first boot, not the next sync
+
+The startup favourites refresh asked three questions about the stored index and
+none about the account. A user with Qobuz broken and TIDAL working therefore
+answered "TIDAL has keys and ids, nothing to do" and would have waited for a
+library sync — up to twelve hours — to pick the fix up. It now also fires when
+a service is connected and the index holds nothing for it.
+
+### Added — `GET /api/debug/waveform` reports the streaming chain
+
+The endpoint was built in v1.8.30 because "it is switched on and nothing is
+drawn" was one silence covering five local causes. It stopped at the local
+chain: for a Qobuz or TIDAL track it said "no local directory — it is a
+streamed track" and nothing further, leaving the streaming path with exactly
+the problem the endpoint existed to cure, one path along.
+
+It now reports, for both services, whether the credentials are there, how many
+favourite albums are known, the album id resolved for what is playing, and
+whether a waveform is already stored — plus one sentence naming the first stop
+in the chain. The sentence is `lib/waveform-verdict.js`, which is pure and
+whose branch ORDER is pinned by test, because naming the second cause while
+the first is also true sends somebody to the wrong screen.
+
+One of its branches exists because of this bug: "connected and knows nothing"
+used to fall into the same sentence as "not connected", which told a signed-in
+user to sign in. That was the state every install was in, so the one report
+this endpoint most needed to make was the one it could not.
+
+### Fixed — the same drift one service over, found while fixing this one
+
+`claimingServices()` asked TIDAL for a refresh token and nothing else, while
+`tidalReady()` — and `tidalWithToken()`, which cannot make a call without it —
+also require the user id. A half-connected TIDAL account therefore claimed
+albums it could never have read. Nothing had gone wrong with it yet, which is
+precisely the state the Qobuz gates were in for thirty versions, so it is
+fixed and pinned rather than noted. `refreshStreamAlbumKeys()` and the TIDAL
+artist-bio branch join it: one spelling each, and the static suite fails if a
+second appears.
+
+### Note on TIDAL waveforms
+
+TIDAL's waveform gate is `tidalReady()` and was never wrong, so TIDAL
+waveforms have no equivalent defect.
+One secondary effect did reach them: the title-only fallback in
+`wfTidalAlbumId()` weighs TIDAL against Qobuz to decide whether a title lands
+in exactly one place, and with the Qobuz set empty that judgement was made
+against half the evidence.
+
+1110 unit / 605 DOM / 106 static.
+
 ## [1.8.50] — 2026-09-22
 
 ### Fixed — the album view's last content sat under the now-playing pill

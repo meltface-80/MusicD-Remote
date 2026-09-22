@@ -30,6 +30,12 @@ function fixture() {
     ["normalize", "canonText", "canonArtist", "albumKey", "albumKeys", "albumTitleVariants",
      "addFavouriteKeys", "withSource", "albumSource", "sourceBadgesDistinguish",
      "claimingServices", "unclaimedIsLocal",
+     // v1.8.51: claimingServices() asks qobuzReady() rather than spelling the
+     // credential test out itself, so the real predicate is extracted too. It
+     // is the ONE definition of "is Qobuz connected" and these tests must see
+     // the same one the server does — a stub here is how the gate it replaced
+     // stayed wrong for thirty versions without a single failure.
+     "qobuzReady", "tidalReady",
      // v1.8.4: the rung albumSource falls to when Roon supplies no artist and
      // nothing can key. Extracted rather than stubbed, so these tests see the
      // real rule about when it is allowed to speak.
@@ -48,7 +54,10 @@ function fixture() {
       // connected, an unclaimed album is local by elimination and there is
       // nothing left to get wrong. sourcederive.test.js covers that half.
       qobuzToken: "connected", qobuzUsername: "", qobuzPasswordMd5: "",
-      tidalRefreshToken: "" }
+      // Read by qobuzReady(). Empty here on purpose: this fixture is the
+      // legacy-login shape, and sourcederive.test.js covers the sign-in one.
+      qobuzWaveToken: "",
+      tidalRefreshToken: "", tidalUserId: "" }
   );
   qobuzAlbumKeys.add("__a_connected_service_has_at_least_one_favourite__");
   return {

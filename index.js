@@ -3337,9 +3337,24 @@ loadStreamAlbumKeys();
 // ...or when we have Qobuz keys but no album ids to go with them. That is what
 // an index written by a build before the ids existed looks like, and without
 // this the streaming waveform waits for a library sync that may be hours away.
+//
+// ...or when a service is CONNECTED and this index holds nothing at all for it.
+// Added with the v1.8.51 gate fix, and it is what makes that fix arrive. The
+// three tests above all ask about the index and none about the account, so a
+// user with Qobuz broken and TIDAL working answered "TIDAL has keys and ids,
+// nothing to do" and waited for a library sync to pick the fix up — hours, on
+// the 12h snapshot. Asking the account instead makes the first boot after the
+// upgrade the moment it heals.
+//
+// qobuzReady()/tidalReady() are function DECLARATIONS, so they are callable
+// from here; every `let` they read is declared around line 2040, hundreds of
+// lines above this. (The declaration-before-use rule — this is the check, not
+// an assumption.)
 if ((!qobuzAlbumKeys.size && !tidalAlbumKeys.size) ||
     (qobuzAlbumKeys.size && !qobuzAlbumIds.size) ||
-    (tidalAlbumKeys.size && !tidalAlbumIds.size)) {
+    (tidalAlbumKeys.size && !tidalAlbumIds.size) ||
+    (qobuzReady() && !qobuzAlbumIds.size) ||
+    (tidalReady() && !tidalAlbumIds.size)) {
   const t = setTimeout(() => {
     refreshStreamAlbumKeys("startup").catch(e => {
       if (DEBUG) console.error("[stream] startup refresh:", e.message);
@@ -3495,7 +3510,16 @@ async function refreshStreamAlbumKeys(reason) {
   }
   _streamRefreshInFlight = true;
   try {
-    if (qobuzToken || (qobuzUsername && qobuzPasswordMd5)) {
+    // qobuzReady(), NOT the password credentials. This gate read
+    // `qobuzToken || (qobuzUsername && qobuzPasswordMd5)` — the LEGACY login —
+    // and since v1.8.20 removed that login nothing sets any of the three. So on
+    // an install connected the only way it can be connected (the browser
+    // sign-in, which sets qobuzWaveToken) this block never ran: no favourites,
+    // therefore no album ids, therefore wfQobuzAlbumId could never answer and
+    // every Qobuz track declined with "no Qobuz album id — 0 ids known". The
+    // sign-in handler's own refreshStreamAlbumKeys('qobuz sign-in') was a
+    // no-op for the same reason, so reconnecting could not clear it either.
+    if (qobuzReady()) {
       try {
         // Page until the service runs out: a one-page read silently badged only
         // the first 500 favourites and left the rest looking unmatched.
@@ -3548,7 +3572,7 @@ async function refreshStreamAlbumKeys(reason) {
         console.error("[stream] Qobuz favourites failed (keys kept):", e.message);
       }
     }
-    if (tidalRefreshToken && tidalUserId) {
+    if (tidalReady()) {
       try {
         // Through tidalWithToken so a revoked/expired access token is refreshed
         // and retried, like every other Tidal call.
@@ -3631,8 +3655,8 @@ function clearStreamAlbumKeys(which) {
 // its silence as "claims nothing" would call its albums local.
 function claimingServices() {
   const out = [];
-  if ((qobuzToken || (qobuzUsername && qobuzPasswordMd5)) && qobuzAlbumKeys.size) out.push("qobuz");
-  if (tidalRefreshToken && tidalAlbumKeys.size) out.push("tidal");
+  if (qobuzReady() && qobuzAlbumKeys.size) out.push("qobuz");
+  if (tidalReady() && tidalAlbumKeys.size) out.push("tidal");
   return out;
 }
 
@@ -11808,8 +11832,16 @@ async function smartSimilarRows(seedMbids) {
 // Smart Picks: turning a chosen artist into an album the user can actually add.
 // ---------------------------------------------------------------------------
 
-// Is each service usable? One definition each, so the three places that ask
-// cannot drift apart the way the pre-existing gates already have.
+// Is each service usable? ONE definition each, and every site that asks calls
+// it — there is no second spelling of this question anywhere in the file, and
+// the static suite fails if one appears.
+//
+// This comment used to say the three PRE-EXISTING gates had already drifted,
+// and left them drifted. They had: each tested the legacy password login on its
+// own, so after v1.8.20 removed that login they were all permanently false, and
+// the Qobuz favourites read, the source badges and the Qobuz artist bio went
+// with them. Naming a drift is not fixing it. (v1.8.51.)
+//
 // The browser sign-in counts as connected on its own — it is a full Qobuz
 // session, not an add-on to the password login.
 function qobuzReady() {
@@ -13288,6 +13320,7 @@ app.post("/api/settings/home-rows", (req, res) => {
  * library, most of which would never be asked about.
  */
 const WF = require("./lib/waveform");
+const WFV = require("./lib/waveform-verdict");
 const WFD = require("./lib/waveform-decode");
 // Field listing for /api/debug/zone-dump. Pure, no I/O — see lib/objshape.js.
 const SHAPE = require("./lib/objshape");
@@ -14254,12 +14287,53 @@ app.get("/api/debug/waveform", async (req, res) => {
     return res.json(out);
   }
 
+  /*
+   * 3b. THE STREAMING CHAIN, reported for every track and not only when the
+   * local one fails.
+   *
+   * This endpoint used to stop at step 4 with "it is a streamed track" and say
+   * nothing else, which left the Qobuz and TIDAL path with exactly the problem
+   * the local one was given this endpoint to cure: several ways to fail and one
+   * silence between them. It is the same five-versions lesson one path along.
+   *
+   * Reported in the order wfQobuzTrack and wfTidalTrack actually check, so the
+   * first `false` in each row is the thing to fix. Read-only: no audio is
+   * fetched, nothing is decoded, no service is called — every value below is
+   * already in memory.
+   */
+  const qId = wfQobuzAlbumId(album, artist);
+  const tId = wfTidalAlbumId(album, artist);
+  out.streaming = {
+    qobuz: {
+      // Either credential is enough: the browser token signs, and a pasted
+      // secret is the older route that still works.
+      signed_in_for_waveforms: !!qobuzWaveToken,
+      signed_in_as: qobuzWaveName || qobuzWaveUser || null,
+      has_pasted_secret: !!String(qobuzAppSecret || "").trim(),
+      account_connected: qobuzReady(),
+      favourite_albums_known: qobuzAlbumIds.size,
+      album_id: qId || null,
+      stored: qId ? !!wfGet(WF.trackKey("qobuz:" + qId, track)) : false,
+    },
+    tidal: {
+      account_connected: tidalReady(),
+      favourite_albums_known: tidalAlbumIds.size,
+      album_id: tId || null,
+      stored: tId ? !!wfGet(WF.trackKey("tidal:" + tId, track)) : false,
+    },
+  };
+
+  // The first thing standing in the way, named. The order matters and is the
+  // code's own — see lib/waveform-verdict.js.
+  out.streaming.verdict = WFV.streamingVerdict(out.streaming.qobuz, out.streaming.tidal);
+
   // 4. Does the walk know a directory for this album?
   const akey = wfAlbumKey(album, artist);
   out.album_key = akey || null;
   if (!akey) {
     out.verdict = localAlbumDirs.size
-      ? "no local directory for this album — it is a streamed track, or the /music walk never saw it"
+      ? "no local directory for this album — it is a streamed track, so read " +
+        "streaming.verdict above rather than this line"
       : "the /music walk has recorded no directories at all (see music.local_album_dirs)";
     return res.json(out);
   }
@@ -15458,7 +15532,7 @@ function albumTitleMatches(candidate, wanted) {
 async function fetchServiceArtistBio(name, albumTitle) {
   const nameN = normalize(name || "");
   if (!nameN || !albumTitle) return null;
-  if (qobuzToken || (qobuzUsername && qobuzPasswordMd5)) {
+  if (qobuzReady()) {
     try {
       const r = await qobuzWithToken(t => qobuz.searchCatalog(t, name + " " + albumTitle, 8, 0));
       const items = (r && r.albums && r.albums.items) || [];
@@ -15484,7 +15558,7 @@ async function fetchServiceArtistBio(name, albumTitle) {
       }
     } catch (e) { if (DEBUG) console.error("[display:bio:qobuz]", e.message); }
   }
-  if (tidalRefreshToken) {
+  if (tidalReady()) {
     try {
       const r = await tidalWithToken((t, cc) => tidal.searchAlbums(t, cc, name + " " + albumTitle, 8, 0));
       const items = (r && r.items) || [];
