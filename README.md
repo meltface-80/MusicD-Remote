@@ -14,7 +14,7 @@ MusicD Remote is for Roon and is a feature-rich music discovery companion for Ro
 
 ## Features
 
-🧭 Discover — *new in v1.8.37*
+🧭 Discover — *new in v1.8.50*
 
 New records by the artists you actually listen to. It is the one question the app could not answer: Smart Picks finds acts next to your library that you do not own, and the Pitchfork and streaming screens show what somebody else rates this week — neither can tell you whether anyone you play has put something out.
 
