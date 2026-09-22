@@ -98,6 +98,8 @@
   let playlistSeq = 0;              // orphans in-flight playlist fetches
   let smartPicksActive = false;     // viewing the Smart Picks screen?
   let smartPicksSeq = 0;            // orphans in-flight Smart Picks fetches
+  let discoverActive = false;       // viewing the Discover screen?
+  let discoverSeq = 0;              // orphans in-flight Discover fetches
   // How long a report about a long-running queue fill stays up (vs showToast's
   // 2.4s default). Declared here rather than beside showToast() for the same
   // reason as the flags above — a `const` further down the file is a TDZ
@@ -1099,6 +1101,126 @@
     grid.appendChild(wrap);
   }
 
+  /*
+   * DISCOVER — new records by the acts you play.
+   *
+   * The screen this app did not have. Smart Picks is LATERAL (acts next to
+   * your library that you do not own) and the Pitchfork and service screens
+   * are EDITORIAL (what somebody else rates this week); neither can answer
+   * "has anyone I actually listen to put something out", because that question
+   * needs your listening history and nobody outside this box has it.
+   *
+   * The rows are the same KIND of answer the share card's suggestions give —
+   * a record that is either in your library or on a service — so they are
+   * built by the same goRow() and go to the same places. What differs is the
+   * emphasis: here the RECORD is the headline and the act is the quiet line,
+   * because you already know the act. That is the whole point of the screen.
+   */
+  async function showDiscover() {
+    enterFullWall("Discover");
+    discoverActive = true;
+    const mySeq = ++discoverSeq;
+    let j = null;
+    try {
+      const r = await fetch("/api/discover");
+      j = await r.json();
+      // A 503 while pairing carries a real explanation. Dropping it for the
+      // generic message throws away the one thing that says what to do.
+      if (!r.ok && !(j && j.error)) j = { error: "HTTP " + r.status };
+    } catch (e) {
+      j = null;
+    }
+    if (!discoverActive || mySeq !== discoverSeq) return;   // the user moved on
+    grid.innerHTML = "";
+    if (!j || j.error) {
+      setBanner(j && j.error
+        ? ("Couldn't load Discover — " + j.error)
+        : "Couldn't load Discover — the extension didn't answer. Try again.", true);
+      return;
+    }
+    if (!j.enabled) {
+      setBanner("Discover is switched off. Turn it on in Settings \u2192 Discover and " +
+                "it will look for new records by the artists you play.", false);
+      return;
+    }
+    const releases = j.releases || [];
+    if (!releases.length) {
+      // "Building" and "found nothing" are different answers and the screen
+      // says which: the first is worth coming back to in a minute, the second
+      // is not.
+      setBanner(j.building
+        ? "Looking for new records by the artists you play \u2014 come back shortly."
+        : "Nothing new from the artists you play in the last " +
+          (j.window_days || 60) + " days. This rebuilds every day.", false);
+      return;
+    }
+    setBanner(null, false);
+
+    if (!window.__goRow) {
+      // The share overlay's closure owns the row builder and publishes it at
+      // load. Nothing can reach this screen before that has run, so this is a
+      // guard against a future reordering rather than a live case — and a
+      // silent empty screen would be a worse way to find out.
+      setBanner("Couldn't draw the list — reload the app.", true);
+      return;
+    }
+    const wrap = document.createElement("div");
+    wrap.className = "discover-list";
+    for (const rel of releases) {
+      if (!rel || !rel.album) continue;
+      wrap.appendChild(window.__goRow(rel, rel.album, discoverSubLine(rel)));
+    }
+    grid.appendChild(wrap);
+
+    // The Qobuz links upgraded AFTER the rows are on screen and never before
+    // them — a page read per row, and a failure leaves the search link that is
+    // already there. Not awaited, for the same reason.
+    if (window.__upgradeQobuzLinks) {
+      window.__upgradeQobuzLinks(releases, {
+        container: wrap, current: () => discoverActive && mySeq === discoverSeq,
+        album: r => r.album, artist: r => r.artist,
+      });
+    }
+  }
+  window.__showDiscover = showDiscover;
+
+  /*
+   * The quiet line under a release: who made it, and when it came out.
+   *
+   * The DATE and not the year. A screen whose whole subject is what is new has
+   * to distinguish last week from ten months ago, and "2026" cannot — every
+   * row would read the same for the first eleven months of a year.
+   */
+  function discoverSubLine(rel) {
+    const when = discoverWhen(rel.release_date);
+    return when ? (rel.artist + " \u00b7 " + when) : rel.artist;
+  }
+
+  /*
+   * A release date as a human distance: "today", "3 days ago", "2 weeks ago",
+   * then the date itself.
+   *
+   * Compared in whole DAYS, from the local midnight of each — not by
+   * subtracting timestamps. A release dated yesterday afternoon is one day
+   * old at any hour of today, and an hours-based rule calls it "today" all
+   * morning and "yesterday" all evening for the same record.
+   */
+  function discoverWhen(dateStr) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(dateStr || ""));
+    if (!m) return "";
+    const then = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    const now = new Date();
+    const midnight = d => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const days = Math.round((midnight(now) - midnight(then)) / 86400000);
+    if (!Number.isFinite(days) || days < 0) return "";
+    if (days === 0) return "today";
+    if (days === 1) return "yesterday";
+    if (days < 7) return days + " days ago";
+    if (days < 14) return "last week";
+    if (days < 60) return Math.floor(days / 7) + " weeks ago";
+    return then.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+  }
+
   // Label of the week — one label featured for the whole ISO week (backend
   // picks deterministically). Retried each Home visit until it populates (the
   // labels scan runs in the background), then left alone. Tapping the header
@@ -1851,10 +1973,15 @@
     // next. enterFullWall and showHome both call this, so adding it here covers
     // every route out of the screen at once.
     smartPicksActive = false;
+    // Discover joins the same ritual, and for the same reason: its fetch is
+    // slower than most (the server resolves every row against the library), so
+    // it is the likeliest of all of them to land after the user has moved on.
+    discoverActive = false;
     playlistSeq++;
     smartSeq++;
     userPlSeq++;
     smartPicksSeq++;
+    discoverSeq++;
   }
   window.__leavePlaylistScreens = leavePlaylistScreens;
 
@@ -7610,6 +7737,10 @@
     if (picksItem && typeof state.picks === "boolean") {
       picksItem.classList.toggle("hidden", !state.picks);
     }
+    const discoverItem = document.getElementById("menu-item-discover");
+    if (discoverItem && typeof state.discover === "boolean") {
+      discoverItem.classList.toggle("hidden", !state.discover);
+    }
   };
 
   // Ask at boot. Two independent calls, so an older server or a transient
@@ -7624,6 +7755,14 @@
       const r = await fetch("/api/settings/smart-picks");
       if (r.ok) state.picks = !!(await r.json()).enabled;
     } catch (e) { /* leave the Smart Picks entry as the markup has it */ }
+    try {
+      const r = await fetch("/api/settings/discover");
+      if (r.ok) state.discover = !!(await r.json()).enabled;
+    } catch (e) {
+      // Left as the markup has it, which for Discover is HIDDEN — unlike the
+      // two above it is off for everyone until asked for, so a failed lookup
+      // must not offer a menu entry that leads to an empty screen.
+    }
     window.__applyFeatureMenu(state);
   }
 
@@ -9297,6 +9436,18 @@
     }
   }
   window.__openShareCard = open;
+  /*
+   * The row builder and the Qobuz upgrade, published for the Discover screen.
+   *
+   * They live in THIS closure because everything they depend on does — the
+   * default-service preference, the chips that set it, the share sequence that
+   * orphans a superseded open. Discover is in the main closure (it needs the
+   * wall, the banner and the grid), so the two halves reach each other the way
+   * every other pair in this file does: one named window.__ export rather than
+   * a second copy of the rules about where a tap goes.
+   */
+  window.__goRow = goRow;
+  window.__upgradeQobuzLinks = upgradeQobuzLinks;
 
   /*
    * The services and review sites under the card.
@@ -9353,7 +9504,11 @@
     // Switching TO Qobuz means the rows now point at search links that have
     // never been upgraded, so they get the same treatment they would have had
     // if Qobuz had been the default when they were drawn.
-    upgradeQobuzLinks(lastActs, shareSeq);
+    const seq = shareSeq;
+    upgradeQobuzLinks(lastActs, {
+      container: similarLs, current: () => seq === shareSeq,
+      album: a => a.album, artist: a => a.name,
+    });
     if (window.__showToast) {
       const svc = (lastLinks && lastLinks.services || []).find(x => x.id === id);
       window.__showToast((svc ? svc.name : id) + " is now the default", "ok");
@@ -9429,7 +9584,10 @@
     if (seq !== shareSeq) return;   // the sheet moved on, or closed
     lastActs = acts;
     renderSimilar(acts);
-    upgradeQobuzLinks(acts, seq);
+    upgradeQobuzLinks(acts, {
+      container: similarLs, current: () => seq === shareSeq,
+      album: a => a.album, artist: a => a.name,
+    });
   }
 
   /*
@@ -9446,28 +9604,34 @@
    * may have been rebuilt while a lookup was in flight (a change of default
    * repaints it), and a reference to a discarded node would upgrade nothing.
    */
-  async function upgradeQobuzLinks(acts, seq) {
-    if (!similarLs) return;
-    for (const act of (acts || [])) {
-      if (seq !== shareSeq) return;                 // the sheet moved on
-      if (!act || !act.album || act.in_library) continue;
-      const svc = (act.services || []).find(x => x.id === "qobuz");
+  async function upgradeQobuzLinks(items, opts) {
+    opts = opts || {};
+    const box     = opts.container;
+    const current = typeof opts.current === "function" ? opts.current : () => true;
+    const albumOf = opts.album  || (x => x.album);
+    const artistOf = opts.artist || (x => x.name);
+    if (!box) return;
+    for (const item of (items || [])) {
+      if (!current()) return;                       // the screen moved on
+      const album = item && albumOf(item);
+      if (!item || !album || item.in_library) continue;
+      const svc = (item.services || []).find(x => x.id === "qobuz");
       if (!svc || !svc.url) continue;
-      const ids = (act.services || []).map(x => x.id);
+      const ids = (item.services || []).map(x => x.id);
       if (preferredService(ids) !== "qobuz") continue;
       if (svc.url.indexOf("open.qobuz.com") === 0) continue;   // already upgraded
       try {
-        const params = new URLSearchParams({ album: act.album, artist: act.name || "" });
+        const params = new URLSearchParams({ album, artist: artistOf(item) || "" });
         const r = await fetch("/api/qobuz-link?" + params);
         if (!r.ok) continue;
         const j = await r.json();
         if (!j || !j.url) continue;
-        if (seq !== shareSeq) return;
+        if (!current()) return;
         const before = svc.url;
-        // Remember it on the act, so a repaint (a change of default and back)
+        // Remember it on the item, so a repaint (a change of default and back)
         // keeps the good link instead of asking again.
         svc.url = j.url;
-        const row = similarLs.querySelector('a[href="' + cssEscapeUrl(before) + '"]');
+        const row = box.querySelector('a[href="' + cssEscapeUrl(before) + '"]');
         if (row) row.href = j.url;
       } catch (e) { /* the search link is still there, which is not nothing */ }
     }
@@ -9513,52 +9677,72 @@
    * The two are visibly different before they are tapped, because "this adds
    * to your queue" and "this leaves the app" should not look the same.
    */
+  /*
+   * ONE ROW BUILDER, used by the suggestions under the card and by the
+   * Discover screen. They ask different questions — "acts like this one" and
+   * "new records by acts you play" — but the answer is the same KIND of thing
+   * in both: a record that is either in the library or on a service, and the
+   * rules about which (send the library's own identity with a queue, leave via
+   * the default service otherwise) must not have two implementations that can
+   * drift apart. The caller supplies the two lines; everything about where the
+   * row GOES lives here.
+   *
+   * @param {object} item     { in_library, offset, library_title,
+   *                            library_subtitle, services[] }
+   * @param {string} primary  the bold line
+   * @param {string} sub      the quiet line, or ""
+   */
+  function goRow(item, primary, sub) {
+    const label = document.createElement("span");
+    label.className = "share-similar-name";
+    label.textContent = primary;
+    const rec = document.createElement("span");
+    rec.className = "share-similar-rec";
+    if (sub) rec.textContent = sub;
+
+    let row;
+    if (item.in_library && typeof item.offset === "number") {
+      row = document.createElement("button");
+      row.type = "button";
+      row.className = "share-similar-act is-library";
+      row.appendChild(label);
+      if (sub) row.appendChild(rec);
+      row.appendChild(tagEl("Queue"));
+      row.addEventListener("click", () => queueSuggestion(item, row));
+    } else {
+      const ids = (item.services || []).map(x => x.id);
+      const svc = (item.services || []).find(x => x.id === preferredService(ids));
+      if (svc) {
+        row = document.createElement("a");
+        row.className = "share-similar-act is-service";
+        row.href = svc.url;
+        row.target = "_blank";
+        row.rel = "noopener noreferrer";
+        row.appendChild(label);
+        if (sub) row.appendChild(rec);
+        row.appendChild(tagEl(svc.name));
+      } else {
+        // Nothing to link to — every service switched off, or no record was
+        // named. Still shown, because the name itself is the answer.
+        row = document.createElement("div");
+        row.className = "share-similar-act";
+        row.appendChild(label);
+        if (sub) row.appendChild(rec);
+      }
+    }
+    return row;
+  }
+
   function renderSimilar(acts) {
     if (!similarEl || !similarLs) return;
     similarLs.innerHTML = "";
     for (const act of (acts || [])) {
       if (!act || !act.name) continue;
-
-      const label = document.createElement("span");
-      label.className = "share-similar-name";
-      label.textContent = act.name;
-      const rec = document.createElement("span");
-      rec.className = "share-similar-rec";
       // An act whose records could not be named is still worth showing, so the
       // record line is optional rather than the row being dropped.
-      if (act.album) rec.textContent = act.year ? act.album + " \u00b7 " + act.year : act.album;
-
-      let row;
-      if (act.in_library && typeof act.offset === "number") {
-        row = document.createElement("button");
-        row.type = "button";
-        row.className = "share-similar-act is-library";
-        row.appendChild(label);
-        if (act.album) row.appendChild(rec);
-        row.appendChild(tagEl("Queue"));
-        row.addEventListener("click", () => queueSuggestion(act, row));
-      } else {
-        const ids = (act.services || []).map(x => x.id);
-        const svc = (act.services || []).find(x => x.id === preferredService(ids));
-        if (svc) {
-          row = document.createElement("a");
-          row.className = "share-similar-act is-service";
-          row.href = svc.url;
-          row.target = "_blank";
-          row.rel = "noopener noreferrer";
-          row.appendChild(label);
-          if (act.album) row.appendChild(rec);
-          row.appendChild(tagEl(svc.name));
-        } else {
-          // Nothing to link to — every service switched off, or no record was
-          // named. Still shown, because the act itself is the suggestion.
-          row = document.createElement("div");
-          row.className = "share-similar-act";
-          row.appendChild(label);
-          if (act.album) row.appendChild(rec);
-        }
-      }
-      similarLs.appendChild(row);
+      const sub = act.album
+        ? (act.year ? act.album + " \u00b7 " + act.year : act.album) : "";
+      similarLs.appendChild(goRow(act, act.name, sub));
     }
     similarEl.classList.toggle("hidden", !similarLs.children.length);
   }
@@ -10913,6 +11097,106 @@
     });
   }
 
+  // ----- Discover --------------------------------------------------------
+  // Up to eighty Deezer reads in a row, once a day. The hour matters for the
+  // same reason Smart Picks' does — not because it competes with Roon (nothing
+  // here touches the Core) but because a burst of outbound calls belongs at an
+  // hour nobody is listening.
+  const discEnabled = document.getElementById("discover-enabled");
+  const discHour    = document.getElementById("discover-hour");
+  const discRebuild = document.getElementById("discover-rebuild");
+  const discNote    = document.getElementById("discover-note");
+
+  if (discHour && !discHour.options.length) {
+    for (let h = 0; h < 24; h++) {
+      const o = document.createElement("option");
+      o.value = String(h);
+      o.textContent = (h < 10 ? "0" + h : String(h)) + ":00";
+      discHour.appendChild(o);
+    }
+  }
+
+  async function saveDiscoverSettings(patch) {
+    try {
+      const r = await fetch("/api/settings/discover", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch)
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) { showToast(j.error || "Couldn't save", "error"); return false; }
+      return true;
+    } catch (e) {
+      showToast("Couldn't save: " + e.message, "error");
+      return false;
+    }
+  }
+
+  async function loadDiscoverSettings() {
+    if (!discEnabled && !discHour) return;
+    try {
+      const r = await fetch("/api/settings/discover");
+      if (!r.ok) return;
+      const j = await r.json();
+      if (discEnabled) discEnabled.checked = !!j.enabled;
+      // A device that was not the one that flipped the switch catches up here.
+      if (window.__applyFeatureMenu) window.__applyFeatureMenu({ discover: !!j.enabled });
+      if (discHour && Number.isFinite(j.hour)) discHour.value = String(j.hour);
+      if (discNote) {
+        // The numbers come from the SERVER rather than being written into the
+        // copy, so the sentence cannot end up describing a window or a seed
+        // count that the build no longer uses.
+        discNote.textContent = "Reads your play history for the " +
+          (j.seed_count || 40) + " artists you return to most, and looks for " +
+          "records they have released in the last " + (j.window_days || 60) +
+          " days. Nothing here touches your Roon Core.";
+      }
+    } catch (e) {
+      // Settings show their last values; the pane is not the place to report a
+      // transient fetch failure.
+    }
+  }
+
+  if (discEnabled) {
+    discEnabled.addEventListener("change", async () => {
+      const on = discEnabled.checked;
+      if (await saveDiscoverSettings({ enabled: on })) {
+        showToast(on ? "Discover on — the first list builds at the scheduled hour"
+                     : "Discover off — nothing runs in the background");
+        if (window.__applyFeatureMenu) window.__applyFeatureMenu({ discover: on });
+      } else {
+        discEnabled.checked = !on;   // the server refused — do not lie about it
+      }
+    });
+  }
+
+  if (discHour) {
+    discHour.addEventListener("change", async () => {
+      const h = parseInt(discHour.value, 10);
+      if (await saveDiscoverSettings({ hour: h })) {
+        showToast("Discover will look at " + (h < 10 ? "0" + h : h) + ":00");
+      }
+    });
+  }
+
+  if (discRebuild) {
+    discRebuild.addEventListener("click", async () => {
+      discRebuild.disabled = true;
+      const orig = discRebuild.textContent;
+      discRebuild.textContent = "\u2026";
+      try {
+        const r = await fetch("/api/discover/rebuild", { method: "POST" });
+        const j = await r.json().catch(() => ({}));
+        showToast(r.ok ? "Looking for new records — check back in a minute"
+                       : (j.error || "Couldn't refresh"), r.ok ? "ok" : "error");
+      } catch (e) {
+        showToast("Couldn't refresh: " + e.message, "error");
+      } finally {
+        discRebuild.disabled = false;
+        discRebuild.textContent = orig;
+      }
+    });
+  }
+
   // ----- Waveform on/off -----
   const waveEnabledEl = document.getElementById("waveform-enabled");
   const waveEnabledNote = document.getElementById("waveform-enabled-note");
@@ -11169,7 +11453,7 @@
     renderHomeRowsList();
   }
 
-  const open = () => { showView("home"); pendingThemeId = null; renderThemeList(); loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); loadDisplaySettings(); loadLabelFolderDepth(); loadQobuzStatus(); loadTidalStatus(); loadSmartPicksSettings(); loadLabelsEnabled(); loadWaveformEnabled(); loadHomeRowsSettings(); overlay.classList.remove("hidden"); };
+  const open = () => { showView("home"); pendingThemeId = null; renderThemeList(); loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); loadDisplaySettings(); loadLabelFolderDepth(); loadQobuzStatus(); loadTidalStatus(); loadSmartPicksSettings(); loadDiscoverSettings(); loadLabelsEnabled(); loadWaveformEnabled(); loadHomeRowsSettings(); overlay.classList.remove("hidden"); };
   const close = () => {
     overlay.classList.add("hidden");
     // Closing Settings ends the client side of any pending Tidal device flow
@@ -12862,6 +13146,10 @@ initServiceBrowser({
       }
       if (action === "smart-picks") {
         if (window.__showSmartPicks) window.__showSmartPicks();
+        return;
+      }
+      if (action === "discover") {
+        if (window.__showDiscover) window.__showDiscover();
         return;
       }
       if (action === "smart-playlists") {

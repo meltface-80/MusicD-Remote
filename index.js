@@ -21,6 +21,7 @@ const { createUpdater } = require("./lib/updater");
 const shareLinks = require("./lib/share-links");
 const wikiMatch  = require("./lib/wiki-match");
 const similar    = require("./lib/similar");
+const newRel     = require("./lib/newreleases");
 const qobuzDeep  = require("./lib/qobuz-deeplink");
 // Title-only album matching, for the albums Roon supplies no artist for. Pure —
 // see lib/albumkeys.js. Required up here rather than beside the waveform code
@@ -361,6 +362,9 @@ const roon = new RoonApi({
     // Smart Picks rebuild once a day, on their own timer. Nothing user-facing
     // ever waits on that build — see kickSmartPicks.
     startSmartPicksMaintenance();
+    // Discover's daily list, likewise on its own timer and likewise gated on
+    // being switched on — see kickDiscover.
+    startDiscoverMaintenance();
   },
   core_unpaired: function () {
     core = null; zones = {}; outputs = {}; outputsFeedLive = false;
@@ -1990,6 +1994,16 @@ let smartPicksEnabled = _persisted.smartPicksEnabled === true;
 // auto-enable heuristic like the two above, because this one spends CPU
 // decoding audio and nobody should discover that by surprise.
 let waveformEnabled   = _persisted.waveformEnabled === true;
+// Discover — new records by the acts you play. Off until asked for, like the
+// two above: it reaches Deezer once a day for up to forty artists. No
+// auto-enable heuristic, because unlike Smart Picks and the label pipeline
+// there is no state on the data volume that could only exist if it had been
+// running, so there is nothing to read consent from.
+let discoverEnabled   = _persisted.discoverEnabled === true;
+// The hour the daily build runs, local. An hour after Smart Picks' default so
+// two feature builds do not start in the same minute on a fresh install.
+let discoverHour      = Number.isFinite(_persisted.discoverHour)
+  ? Math.min(23, Math.max(0, Math.trunc(_persisted.discoverHour))) : 5;
 // The Qobuz app_secret for signed stream requests. Empty by default and never
 // shipped with a value — see the streaming-waveform block below for why. With
 // it blank, streaming tracks keep the plain progress bar exactly as before.
@@ -2356,6 +2370,20 @@ function openLabelsDb() {
         total     INTEGER,
         ts        INTEGER NOT NULL,
         v         INTEGER NOT NULL
+      );
+      -- Discover: the records the daily build found for a given day. Stored
+      -- rather than recomputed because the build is eighty network calls, and
+      -- because a screen that changes under you as you scroll is not a list.
+      CREATE TABLE IF NOT EXISTS new_releases (
+        day          TEXT    NOT NULL,
+        rank         INTEGER NOT NULL,
+        artist       TEXT    NOT NULL,
+        album        TEXT    NOT NULL,
+        album_id     TEXT,
+        cover        TEXT,
+        release_date TEXT,
+        ts           INTEGER NOT NULL,
+        PRIMARY KEY (day, rank)
       );
       -- Smart Picks: the six albums surfaced on a given day. Stored rather than
       -- recomputed so the set is stable for everyone looking at it, and so a
@@ -12596,6 +12624,443 @@ app.post("/api/settings/smart-picks", (req, res) => {
   savePersistedSettings({ smartPicksEnabled, smartPicksHour, smartPicksAutoAdd });
   res.json({ ok: true, enabled: smartPicksEnabled, hour: smartPicksHour,
              auto_add: smartPicksAutoAdd });
+});
+
+// ---------------------------------------------------------------------------
+// Discover — new records by the acts you play.
+//
+// The one thing this app could not answer. Smart Picks is LATERAL discovery
+// (acts adjacent to your library that you do not own), the Pitchfork and
+// service screens are EDITORIAL (what somebody else thinks is good this week),
+// and none of them answers "has anyone I actually listen to put something out".
+// That question needs your listening history, which is the one input no
+// outside service has.
+//
+// THE COST MODEL, because it decides the shape. Two Deezer calls per act — a
+// name search and their album listing — for the forty acts you play most. That
+// is ~80 calls once a day, each artist's answer cached for a week, so an
+// ordinary day costs a fraction of that. Nothing here touches the Roon Core,
+// and nothing here writes to a streaming library: a new record is somewhere to
+// go, and Smart Picks already owns "add it for me".
+// ---------------------------------------------------------------------------
+
+// How far back a release counts as new. Two months rather than one: this runs
+// daily but is not looked at daily, and a fortnight away should not mean a
+// fortnight of records never seen.
+function discoverWindowDays()  { return 60; }
+// How far back the plays table is read for seeds. Six months — long enough
+// that an act you played all spring still counts in autumn, short enough that
+// it is this year's listening rather than the archive.
+function discoverSeedDays()    { return 180; }
+function discoverSeedCount()   { return newRel.SEED_ARTISTS; }
+/*
+ * The screen's ceiling — and it is a NETWORK budget, not a taste in list
+ * lengths.
+ *
+ * With Qobuz as the default every row on screen is looked up so its link opens
+ * the app rather than the download store, and each lookup is a rate-paced read
+ * of a Qobuz search page. At thirty rows that is most of a minute of scraping
+ * on a cold cache, every time somebody opens the screen — sized for the share
+ * card's three suggestions and quietly ten times that here. Twelve keeps the
+ * worst case under ten seconds and is already a lot of records to be handed
+ * out of a sixty-day window; the server caches each answer for a week, so the
+ * cost is paid once per record rather than once per visit.
+ *
+ * The alternative — capping the UPGRADE below the row count — was rejected:
+ * it would make the thirteenth row behave differently from the twelfth for no
+ * reason the person tapping it could see.
+ */
+function discoverMaxRows()     { return 12; }
+// One act's Deezer answer, cached. A week: an artist's back catalogue does not
+// move, and a new record appearing a few days late is the correct trade for
+// not asking about forty acts every single day.
+function discoverArtistTtlMs() { return 7 * 24 * 60 * 60 * 1000; }
+// Deezer publishes no rate limit and this is the only place that makes tens of
+// calls in a row, so the build paces itself rather than finding out.
+function discoverGapMs()       { return 250; }
+
+const _discoverSleep = ms => new Promise(r => setTimeout(r, ms));
+
+/*
+ * The library, reduced to what the owned check needs: one row per album
+ * holding its title key and the normalised names it is credited to.
+ *
+ * Built ONCE per build and scanned per seed, rather than normalising inside
+ * the comparison — forty seeds against a large library is the one place in
+ * this feature where the cost of a string operation is visible.
+ */
+function discoverOwnedIndex() {
+  const rows = [];
+  for (const al of albumIndex.albums) {
+    const key = newRel.titleKey(al.title || "");
+    if (!key) continue;
+    const names = [];
+    const push = n => { const v = newRel.normalize(n || ""); if (v) names.push(v); };
+    push(al.subtitle);
+    for (const n of (al.artistNames || [])) push(n);
+    rows.push({ key, names });
+  }
+  return rows;
+}
+
+/*
+ * The titles THIS act already has in the library.
+ *
+ * THE ARTIST IS PART OF THE QUESTION, and leaving it out is a silent bug: a
+ * title-only check means owning any record called "Greatest Hits" — or any
+ * "Untitled" — suppresses every other act's, for ever, with nothing on screen
+ * to say why. A review caught it; nobody using the app would have.
+ *
+ * Matched permissively, the same way resolveLibraryAlbum matches an artist:
+ * whole-name containment either way, so "Eno" finds "Brian Eno" and a record
+ * credited to the band rather than the frontman still counts as owned. Being
+ * too permissive here hides a row; being too strict shows one you already own.
+ * Hiding is the better failure, which is why this is the loose rule and the
+ * SEED name match is the strict one.
+ */
+function discoverOwnedFor(seedName, ownedRows) {
+  const want = newRel.normalize(seedName);
+  const set = new Set();
+  if (!want) return set;
+  const pad = v => " " + v + " ";
+  const wantPad = pad(want);
+  for (const row of ownedRows) {
+    for (const n of row.names) {
+      if (pad(n).includes(wantPad) || wantPad.includes(pad(n))) { set.add(row.key); break; }
+    }
+  }
+  return set;
+}
+
+// The acts to ask about, from the plays table.
+//
+// Reads the TRACK artist deliberately — see the note at the top of
+// lib/newreleases.js. The credit splitter is share-links' primaryArtist, so
+// the rule that knows "Hall & Oates" is one act lives in exactly one place.
+function discoverSeeds() {
+  if (!labelsDb) return [];
+  let rows = [];
+  try {
+    const cutoff = Date.now() - discoverSeedDays() * 24 * 60 * 60 * 1000;
+    rows = labelsDb.prepare(
+      "SELECT artist, ts FROM plays WHERE ts >= ? AND artist != ''").all(cutoff);
+  } catch (e) {
+    // No plays table yet, or it could not be read. An empty seed list is a
+    // build that produces nothing, which is the honest answer — not an error.
+    if (DEBUG) console.error("[discover] seeds: " + e.message);
+    return [];
+  }
+  return newRel.playedArtists(rows, {
+    split: shareLinks.primaryArtist, limit: discoverSeedCount(),
+  });
+}
+
+/*
+ * One act's recent records, or [].
+ *
+ * THE NAME MATCH IS EXACT HERE, which is stricter than anywhere else in this
+ * codebase, and deliberately so. similar.readDeezerArtists applies the shared
+ * whole-word guard and then sorts exact matches ahead of partial ones —
+ * which is right for "acts like this one", where a near name is a near miss.
+ * It is wrong here: the seed name comes from YOUR OWN plays, so it is already
+ * the act's real name as Roon files it, and a partial match at this point is a
+ * tribute band or a covers act. Their record would then be presented as a new
+ * release by somebody you love, under a heading that says so. A wrong row here
+ * is worse than a short screen.
+ */
+async function discoverArtistReleases(seedName, ownedKeys, now) {
+  const key = "nr:" + newRel.normalize(seedName);
+  let albums = smartCacheGet(key, discoverArtistTtlMs());
+  if (!albums) {
+    const search = await httpJson("https://api.deezer.com/search/artist?limit=" +
+      similar.SEARCH_ROWS + "&q=" + encodeURIComponent(seedName));
+    const exact = similar.readDeezerArtists(search, seedName)
+      .filter(c => c.exact);
+    if (!exact.length) {
+      // Cached as an empty listing: an act Deezer does not know under this
+      // exact name is a stable fact for a week, and re-asking every night is
+      // forty calls for the same "no".
+      smartCacheSet(key, []);
+      return [];
+    }
+    await _discoverSleep(discoverGapMs());
+    const listing = await httpJson("https://api.deezer.com/artist/" +
+      encodeURIComponent(exact[0].id) + "/albums?limit=50");
+    albums = newRel.readArtistAlbums(listing);
+    smartCacheSet(key, albums);
+  }
+  // The window and the owned check are applied on the way OUT, never before
+  // the cache: both move while a cached listing stays valid — tomorrow is a
+  // different window, and an album imported today is newly owned.
+  return newRel.pickNewReleases(albums, {
+    now, sinceMs: now - discoverWindowDays() * 24 * 60 * 60 * 1000,
+    ownedKeys, wanted: newRel.WANTED_PER_ARTIST,
+  });
+}
+
+function readNewReleases(day) {
+  if (!labelsDb) return [];
+  try {
+    return labelsDb.prepare(
+      "SELECT * FROM new_releases WHERE day = ? ORDER BY rank ASC").all(day);
+  } catch (e) {
+    if (DEBUG) console.error("[discover] read " + day + ": " + e.message);
+    return [];
+  }
+}
+
+function persistNewReleases(day, rows) {
+  if (!labelsDb) return;
+  try {
+    const del = labelsDb.prepare("DELETE FROM new_releases WHERE day = ?");
+    const ins = labelsDb.prepare(
+      "INSERT OR REPLACE INTO new_releases " +
+      "(day, rank, artist, album, album_id, cover, release_date, ts) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    // One transaction: a half-written day read back mid-build would show a
+    // partial screen and then mark the day built.
+    labelsDb.transaction(() => {
+      del.run(day);
+      rows.forEach((r, i) => ins.run(day, i, r.artist, r.album,
+        r.album_id || null, r.cover || null, r.release_date || null, r.ts));
+    })();
+    // Yesterday's sets are never read again. Kept for a week so a build that
+    // produces nothing can still show something rather than an empty screen.
+    labelsDb.prepare("DELETE FROM new_releases WHERE day < ?").run(discoverDayFloor());
+  } catch (e) {
+    console.error("[discover] persist " + day + ": " + e.message);
+  }
+}
+
+// The oldest day kept. Seven days back, as a YYYY-MM-DD string — the column is
+// text and its format sorts lexicographically, so a string comparison is a
+// date comparison.
+function discoverDayFloor() {
+  return smartDayKey(new Date(Date.now() - 7 * 24 * 60 * 60 * 1000));
+}
+
+// Marks a day as attempted, so a build that legitimately finds nothing is not
+// re-run on every request. Same reasoning, and the same cache, as Smart Picks'.
+function discoverAttemptKey(day) { return "nr-built:" + day; }
+function discoverAttemptedToday(day) {
+  return !!smartCacheGet(discoverAttemptKey(day), 24 * 60 * 60 * 1000);
+}
+
+// Build today's list. Called from the timer only — never from a request
+// handler, so nothing a user does waits on eighty network calls.
+async function buildNewReleases(day) {
+  const t0 = Date.now();
+  const seeds = discoverSeeds();
+  if (!seeds.length) {
+    // Deliberately NOT marked attempted: a box with no listening history yet
+    // should start producing the day it has one, not tomorrow.
+    console.log("[discover] no play history yet — nothing to build from");
+    return;
+  }
+  const ownedRows = discoverOwnedIndex();
+  const now   = Date.now();
+  const found = [];
+  const seen  = new Set();
+  let asked = 0, failed = 0;
+  for (const seed of seeds) {
+    let rows = [];
+    try {
+      rows = await discoverArtistReleases(seed.name, discoverOwnedFor(seed.name, ownedRows), now);
+      asked++;
+    } catch (e) {
+      // One act's failure is one act's worth of rows, not the build. A run of
+      // them is worth saying out loud, which the count below does.
+      failed++;
+      if (DEBUG) console.error("[discover] " + seed.name + ": " + e.message);
+      continue;
+    }
+    for (const r of rows) {
+      /*
+       * Two seeded acts on the same record — a split release, a collaboration,
+       * a credit filed both ways — is ONE row.
+       *
+       * Keyed on DEEZER'S ALBUM ID, because that is the only thing that means
+       * "the same release" here. The first version keyed on the title plus the
+       * seed's own name, which can never collide across seeds by construction:
+       * the guard was dead, and its comment described something it did not do.
+       * The title alone would collide two acts' "Greatest Hits" and drop a
+       * real record; the id cannot.
+       */
+      const dedupe = r.id ? ("id:" + r.id)
+                          : (newRel.titleKey(r.title) + "|" + newRel.normalize(seed.name));
+      if (seen.has(dedupe)) continue;
+      seen.add(dedupe);
+      found.push({ artist: seed.name, album: r.title, album_id: r.id,
+                   cover: r.cover, release_date: r.date, ts: r.ts });
+    }
+    await _discoverSleep(discoverGapMs());
+  }
+  found.sort((a, b) => b.ts - a.ts);
+  const rows = found.slice(0, discoverMaxRows());
+  persistNewReleases(day, rows);
+  smartCacheSet(discoverAttemptKey(day), { at: Date.now(), rows: rows.length });
+  console.log("[discover] " + seeds.length + " seeds (" + asked + " asked, " +
+              failed + " failed) -> " + found.length + " releases, kept " +
+              rows.length + " in " + Math.round((Date.now() - t0) / 1000) + "s");
+}
+
+// The single gate — every caller comes through here, so one check covers all
+// of them and none can drift. Off means no Deezer at all.
+let _discoverBuilding = null;
+function kickDiscover(why, force) {
+  if (!discoverEnabled) return false;
+  /*
+   * THE PRECONDITIONS ARE NOT SCHEDULE RULES AND `force` MUST NOT SKIP THEM.
+   *
+   * A build with no album index has an EMPTY owned set, so every record the
+   * user already has reads as new and the day is persisted full of them — and
+   * the day is then marked built, so nothing corrects it until tomorrow. The
+   * first version put this check in the timer callback only, which meant the
+   * manual Refresh button reached it straight after a restart. What `force`
+   * overrides is "already built today" and "not yet the hour"; it cannot
+   * override "there is nothing to build against".
+   */
+  if (!core || !albumIndex.count) return false;
+  const day = smartDayKey();
+  if (_discoverBuilding) return true;
+  if (!force) {
+    if (readNewReleases(day).length) return false;
+    if (discoverAttemptedToday(day)) return false;
+    if (!discoverDue()) return false;
+  }
+  _discoverBuilding = bgRun("discover (" + why + ")", () => buildNewReleases(day))
+    .finally(() => { _discoverBuilding = null; });
+  return true;
+}
+
+// At or after the hour, not equal to it — a box switched off at 05:00 still
+// gets its list when it comes back rather than skipping the day.
+function discoverDue(now) {
+  return (now || new Date()).getHours() >= discoverHour;
+}
+
+let discoverTimer = null;
+function stopDiscoverMaintenance() {
+  if (!discoverTimer) return;
+  clearInterval(discoverTimer);
+  discoverTimer = null;
+}
+function startDiscoverMaintenance() {
+  if (discoverTimer) return;
+  if (!discoverEnabled) return;   // not even a timer while the feature is off
+  discoverTimer = setInterval(() => {
+    // Every precondition lives in kickDiscover — it is the single gate, and a
+    // second copy here is how the two came to disagree in the first place.
+    kickDiscover("scheduled " + discoverHour + ":00");
+  }, 10 * 60 * 1000);
+  if (discoverTimer.unref) discoverTimer.unref();
+}
+
+/*
+ * GET /api/discover
+ *
+ * Today's list, or the most recent day that has one. Each row is a PLACE TO GO
+ * and carries the same contract /api/similar's rows do: in the library it is
+ * an offset plus the identity to send with the queue, and otherwise a url per
+ * enabled service with the client choosing which. Resolution happens per
+ * request rather than at build time, because whether Roon has a record changes
+ * with the library and the build is a day old.
+ */
+app.get("/api/discover", async (req, res) => {
+  if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  try {
+    await ensureAlbumIndex();
+    const today = smartDayKey();
+    let rows = readNewReleases(today);
+    let day  = today;
+    if (!rows.length && labelsDb) {
+      // The most recent day that produced something. A build that found
+      // nothing today should show last week's records rather than an empty
+      // screen — they are still new, and still unheard.
+      try {
+        const last = labelsDb.prepare(
+          "SELECT day FROM new_releases ORDER BY day DESC LIMIT 1").get();
+        if (last && last.day) { day = last.day; rows = readNewReleases(day); }
+      } catch (e) {
+        if (DEBUG) console.error("[discover] latest day: " + e.message);
+      }
+    }
+
+    const st = loadPersistedSettings();
+    const enabled = st.shareServices === undefined
+      ? shareLinks.defaultServiceIds()
+      : shareLinks.sanitiseIds(st.shareServices, shareLinks.knownServiceIds());
+    const locale = shareLinks.localeFromAcceptLanguage(req.headers["accept-language"]);
+
+    const out = rows.map(r => {
+      const inLib = resolveLibraryAlbum(r.album, r.artist);
+      return {
+        artist: r.artist,
+        album:  r.album,
+        cover:  r.cover || null,
+        release_date: r.release_date || null,
+        year:   newRel.yearOf(r.release_date),
+        in_library: !!inLib,
+        offset:     inLib ? inLib.offset : null,
+        // Roon's OWN strings, because the play routes check identity against
+        // the snapshot and Deezer's punctuation differs.
+        library_title:    inLib ? inLib.title : null,
+        library_subtitle: inLib ? (inLib.subtitle || "") : null,
+        image_key:        inLib ? (inLib.image_key || null) : null,
+        services: inLib ? [] : shareLinks.serviceLinks(r.artist, r.album, {
+          locale, enabled,
+        }),
+      };
+    });
+    res.set("Cache-Control", "no-store");
+    res.json({
+      enabled: discoverEnabled, day, releases: out,
+      window_days: discoverWindowDays(),
+      building: !!_discoverBuilding,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/discover/rebuild", (req, res) => {
+  if (!discoverEnabled) {
+    return res.status(400).json({ error: "Discover is switched off" });
+  }
+  if (_discoverBuilding) return res.json({ ok: true, building: true });
+  // A refusal is reported rather than swallowed: "Refreshing…" for a build
+  // that never started is the worst of both answers.
+  if (!kickDiscover("manual rebuild", true)) {
+    return res.status(503).json({
+      error: core ? "Still reading your library — try again in a minute"
+                  : "Not paired with Roon Core yet" });
+  }
+  res.json({ ok: true, building: true });
+});
+
+app.get("/api/settings/discover", (req, res) => {
+  res.json({ enabled: discoverEnabled, hour: discoverHour,
+             window_days: discoverWindowDays(),
+             seed_count: discoverSeedCount() });
+});
+app.post("/api/settings/discover", (req, res) => {
+  const body = req.body || {};
+  if (body.hour !== undefined) {
+    const h = Number(body.hour);
+    if (!Number.isFinite(h) || h < 0 || h > 23) {
+      return res.status(400).json({ error: "hour must be 0-23" });
+    }
+    discoverHour = Math.trunc(h);
+  }
+  if (body.enabled !== undefined) {
+    discoverEnabled = !!body.enabled;
+    // Start or stop the clock here, so switching the feature on takes effect
+    // now rather than after a container restart.
+    if (discoverEnabled) startDiscoverMaintenance();
+    else stopDiscoverMaintenance();
+  }
+  savePersistedSettings({ discoverEnabled, discoverHour });
+  res.json({ ok: true, enabled: discoverEnabled, hour: discoverHour });
 });
 
 // ---------------------------------------------------------------------------
