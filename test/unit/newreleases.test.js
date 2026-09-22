@@ -59,6 +59,33 @@ test("singles and EPs are not new records", () => {
   assert.deepEqual(out.map(a => a.title), ["Real Album"]);
 });
 
+test("an EP-length release is not an album, when Deezer says how long it is", () => {
+  // Singles and EPs were reported on a screen that already filtered for
+  // record_type === "album". The track count is the belt to that braces, and
+  // it is only consulted when Deezer actually sends one.
+  const out = listing(
+    album("Proper Record", "2026-09-01", { nb_tracks: 11 }),
+    album("Four Tracker",  "2026-09-02", { nb_tracks: 4 }),
+    album("Unstated",      "2026-09-03"));
+  assert.deepEqual(out.map(a => a.title).sort(), ["Proper Record", "Unstated"],
+    "a row with no track count must not be rejected for a field it does not have");
+});
+
+test("classify names the rule that rejected a row", () => {
+  // The build and the debug endpoint both call this, so the probe can never
+  // describe a decision the screen did not make.
+  assert.equal(NR.classify({ record_type: "single", title: "x", release_date: "2026-01-01" }).reason,
+    "record_type is single");
+  assert.equal(NR.classify({ title: "x", release_date: "2026-01-01" }).reason,
+    "record_type is missing");
+  assert.match(NR.classify({ record_type: "album", nb_tracks: 2, title: "x",
+                             release_date: "2026-01-01" }).reason, /2 tracks/);
+  assert.match(NR.classify({ record_type: "album", title: "x",
+                             release_date: "0000-00-00" }).reason, /release_date/);
+  assert.equal(NR.classify({ record_type: "album", title: "x",
+                             release_date: "2026-01-01" }).ok, true);
+});
+
 test("a row with no usable date is dropped, not dated today", () => {
   // Deezer writes 0000-00-00 for "we do not know". Treating that as now would
   // put the act's entire unknown-date back catalogue on a screen headed "new".

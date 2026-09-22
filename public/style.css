@@ -3266,27 +3266,28 @@ input.vol-range::-moz-range-thumb {
 .np-vol-fixed svg { width: 16px; height: 16px; flex: 0 0 auto; }
 
 /* ------------------------------------------------------------------ */
-/*  Phone landscape block overlay                                      */
-/*  Phones in landscape have height ≤ ~500px; tablets/desktop do not. */
+/*  Phone landscape — no longer blocked (v1.8.40)                      */
+/*                                                                     */
+/*  There used to be a full-viewport `position: fixed` layer here that  */
+/*  appeared at (orientation: landscape) and (max-height: 500px) and    */
+/*  said "please rotate your device to portrait mode". It is gone, and  */
+/*  the app lays out in landscape like anything else.                   */
+/*                                                                     */
+/*  IT WAS BLOCKING A LAYOUT THAT WORKS. Measured at 844x390 before     */
+/*  removing it: the shell, the top bar, the wall and the transport all */
+/*  lay out and scroll, and the Now playing screen is the two-column    */
+/*  Roon layout v1.6.14 built for exactly this shape — art on the left, */
+/*  title, seek and transport on the right, all of it inside 390px.     */
+/*                                                                     */
+/*  AND IT WAS THE ONLY THING IN THE APP THAT ADDED OR REMOVED A        */
+/*  FULL-VIEWPORT FIXED LAYER ON ROTATION, which is what a report of    */
+/*  "coming back to portrait leaves the screen unresponsive" points at. */
+/*  That mechanism is NOT proven — it is an iOS-only symptom and this   */
+/*  project's harness is headless Chromium, which cannot observe iOS    */
+/*  window behaviour at all (see CLAUDE.md). So this removes the only   */
+/*  candidate rather than claiming the cause; if the freeze outlives it */
+/*  the next step is a different one, not a second guess at this one.   */
 /* ------------------------------------------------------------------ */
-.landscape-block {
-  display: none;
-  position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 1000; /* inset longhands: old Safari */
-  background: var(--bg);
-  flex-direction: column; align-items: center; justify-content: center;
-  gap: 20px;
-  color: var(--text-dim);
-  font-size: 15px; line-height: 1.5;
-  text-align: center;
-  padding: 32px;
-  -webkit-user-select: none; user-select: none;
-}
-.landscape-block p { margin: 0; }
-.landscape-block svg { opacity: .55; }
-/* Show only when phone is in landscape (max-height catches phones, not tablets) */
-@media (orientation: landscape) and (max-height: 500px) {
-  .landscape-block { display: flex; }
-}
 
 /* ------------------------------------------------------------------ */
 /*  Compass / play-unheard spin animation                              */

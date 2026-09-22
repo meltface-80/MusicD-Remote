@@ -2,6 +2,76 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.40] — 2026-09-22
+
+### Changed — a phone in landscape is no longer blocked
+
+Reported: the screen does not rotate, a message says so, and **coming back to
+portrait leaves the app unresponsive — force-quitting is the only way out.**
+
+There was a full-viewport `position: fixed` layer that appeared at
+`(orientation: landscape) and (max-height: 500px)` and said "please rotate your
+device to portrait mode". It is gone.
+
+**It was blocking a layout that works.** Measured at 844x390 before removing
+anything: the shell, the top bar, the wall and the transport all lay out and
+scroll, and the Now playing screen is the two-column Roon layout v1.6.14 built
+for exactly this shape — artwork on the left, title, seek bar and transport on
+the right, all of it inside 390px of height. The block was hiding a working
+screen behind a message.
+
+**What is NOT claimed here is a root cause for the freeze.** That is iOS window
+behaviour, and this project's harness is headless Chromium, which cannot
+observe it — CLAUDE.md says so in as many words, and the cost of ignoring that
+rule is written into v1.7.60-65 and v1.7.88-89. What can be said is narrower
+and checkable: **this was the only thing in the app that added or removed a
+full-viewport fixed layer on rotation**, which is what "returning to portrait
+kills it" points at. Removing it removes the only candidate. If the freeze
+outlives it, that is information, and the next step is a different one rather
+than a second guess at this one.
+
+`test/dom/phone-landscape.test.js` pins what is checkable, at two phone
+landscape shapes: nothing covers the viewport (found by sweeping for a fixed,
+viewport-sized, hit-testable element that is NOT an ancestor of `<main>`, so it
+fails for the next such layer too — not by naming the element that was
+removed), the shell lays out and scrolls, and Now playing's seek bar and
+transport are on screen. The artwork is deliberately not asserted: in np-mode
+it is sized from leftover height and the harness cannot serve `/api/image/`, so
+that assertion would measure the fixture's missing picture rather than the
+layout.
+
+### Fixed — Discover is albums only
+
+Reported: singles and EPs on a screen that already filtered for
+`record_type === "album"`.
+
+- **A track count is now the belt to that braces**, applied only when Deezer
+  sends one, so it can never reject a row for a field that is absent. Five
+  tracks is the floor. When the line is in the wrong place it hides a row
+  rather than showing the wrong kind of one, which is the direction this
+  feature errs in everywhere else.
+- **One classifier decides**, and both the build and the new probe call it, so
+  "what the screen would do" and "what the probe says the screen would do" can
+  never be two different answers.
+
+### Added — `GET /api/debug/discover?artist=<name>`
+
+Because **two rounds of this feature have now turned on a field nobody had
+looked at**: the cover was read from `cover_medium` for five versions with
+nothing ever drawing it, and singles arrived on a screen that filters them out.
+Both are questions one look at the payload answers and no amount of reading the
+code does.
+
+It prints, for every row Deezer returns for an act: the title, `record_type`,
+`nb_tracks`, `release_date`, which cover fields are present, the cover this app
+would use, and **which rule rejected the row** where one did. With no artist it
+lists the acts the build would actually ask about. The cache is bypassed on
+purpose — a cached listing answers what Deezer said a week ago, which is not
+what anyone opening this is asking.
+
+Same lesson as the waveform probe in v1.8.30: shipping a build to test a
+hypothesis is the most expensive way to ask a question.
+
 ## [1.8.39] — 2026-09-22
 
 ### Fixed — Discover shows album art
