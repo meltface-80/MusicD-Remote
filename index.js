@@ -13818,16 +13818,26 @@ function wfQobuzAlbumId(album, artist) {
 }
 
 /**
- * The waveform for a Qobuz track, or null with a logged reason.
+ * Everything up to the audio: which credentials work, which track this is, and
+ * the time-limited url for it. Returns { url, stop, detail, tried }.
  *
- * `reason` is always logged rather than swallowed: "no waveform" with no
- * explanation is what makes this class of feature impossible to diagnose from a
- * user's report, and there are five separate ways to decline here.
+ * SPLIT OUT OF wfQobuzCompute IN v1.8.52 so /api/debug/waveform can report the
+ * chain by RUNNING it rather than by re-implementing it. A probe that walks its
+ * own copy of this ladder answers about itself, and the first time the two drift
+ * the probe starts lying with total confidence — which is worse than no probe,
+ * because it is believed. One body, two callers.
+ *
+ * `stop` names where it got to: "no-credentials" | "album" | "track" | "audio"
+ * | "ok". `detail` is the sentence for a human; `tried` is what each credential
+ * set said, which is the difference between a diagnosis and a shrug.
  */
-async function wfQobuzCompute(albumId, track, seconds, signal) {
+async function wfQobuzResolveAudio(albumId, track, seconds) {
   const secret = String(qobuzAppSecret || "").trim();
   // Off entirely only when there is neither a sign-in nor a legacy pasted secret.
-  if (!secret && !qobuzWaveToken) return null;
+  if (!secret && !qobuzWaveToken) {
+    return { url: null, stop: "no-credentials", tried: [],
+             detail: "no Qobuz sign-in and no pasted app secret" };
+  }
 
   // ONE TOKEN, SEVERAL PAIRS — the shape a working Qobuz client actually uses.
   // v1.8.11 swapped the TOKEN along with the app_id and broke the album read,
@@ -13886,7 +13896,11 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
   // Declared here, not with `var` inside the loop: the loop assigns it and the
   // check below reads it, and a hoisted declaration inside a block is the exact
   // shape this project has been bitten by (see the declaration-before-use rule).
-  let url = null;
+  //
+  // What the album read produced, if any set got that far. It is how "no
+  // credential could read the album" is told apart from "the album read fine
+  // and the audio was refused" once the loop has ended.
+  let matched = null;
   for (const a of attempts) {
     // Resolved here, not above: reaching this entry is what makes its cost worth
     // paying, and the common case never reaches past the first.
@@ -13915,23 +13929,63 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
     // The track match does not depend on the credentials, so a failure here is
     // final — retrying with another login would ask the same question twice.
     const m = TM.matchTrack(got.album.tracks, track, seconds);
-    if (!m.track) { console.log("[waveform] qobuz: " + m.reason); return null; }
+    if (!m.track) {
+      // Final, not a reason to try the next credential set: the track list is
+      // the same whoever asks, so retrying would put the identical question a
+      // second time. The album's track COUNT rides along because "no track
+      // called X" and "no track called X in the 50 of 137 we were sent" are
+      // different findings — see the paging fix in lib/qobuz.js.
+      return { url: null, stop: "track", tried: reasons, detail: m.reason,
+               album_title: got.album.title || "",
+               album_tracks: got.album.tracks.length };
+    }
 
     const f = await withTok((t) => qobuz.getFileUrlResult(t, m.track.id, useSecret, { appId: useSignAs }))
       .catch((e) => ({ url: null, reason: qobuz.describeFileUrlError(e) }));
-    if (f && f.url) { url = f.url; break; }
+    if (f && f.url) {
+      return { url: f.url, stop: "ok", tried: reasons, detail: m.reason,
+               album_title: got.album.title || "",
+               album_tracks: got.album.tracks.length,
+               track_id: m.track.id, track_duration: m.track.duration,
+               credentials: a.label };
+    }
     reasons.push(a.label + ": " + ((f && f.reason) || "unknown"));
+    matched = { title: got.album.title || "", n: got.album.tracks.length,
+                reason: m.reason, duration: m.track.duration };
     // A minted token that stops working has expired. Forget it so the next play
     // mints a fresh one rather than replaying a dead credential forever.
     if (tok && _qobuzSignTok && tok === _qobuzSignTok.token) _qobuzSignTok = null;
   }
 
-  if (!url) {
+  // Nothing yielded audio. Whether the track was ever even identified decides
+  // which stop this is: an album that could not be READ and a track that could
+  // not be STREAMED need different things from the user.
+  return { url: null, stop: matched ? "audio" : "album", tried: reasons,
+           detail: matched ? matched.reason : "no credential set could read the album",
+           album_title: matched ? matched.title : "",
+           album_tracks: matched ? matched.n : 0,
+           track_duration: matched ? matched.duration : null };
+}
+
+/**
+ * The waveform for a Qobuz track, or null with a logged reason.
+ *
+ * `reason` is always logged rather than swallowed: "no waveform" with no
+ * explanation is what makes this class of feature impossible to diagnose from a
+ * user's report, and there are five separate ways to decline here.
+ */
+async function wfQobuzCompute(albumId, track, seconds, signal) {
+  const got = await wfQobuzResolveAudio(albumId, track, seconds);
+  if (!got.url) {
+    if (got.stop === "no-credentials") return null;   // already said at the gate
+    if (got.stop === "track") { console.log("[waveform] qobuz: " + got.detail); return null; }
     // Every set that was tried, and what Qobuz said to each. One line, because
     // a cause per attempt is the difference between a diagnosis and a shrug.
-    console.log("[waveform] qobuz: no audio for \"" + track + "\" — " + reasons.join(" | "));
+    console.log("[waveform] qobuz: no audio for \"" + track + "\" — " +
+                (got.tried.length ? got.tried.join(" | ") : got.detail));
     return null;
   }
+  const url = got.url;
 
   const t0 = Date.now();
   let peaks = null;
@@ -13959,7 +14013,17 @@ async function wfQobuzCompute(albumId, track, seconds, signal) {
     console.log("[waveform] qobuz: stream failed for \"" + track + "\": " + e.message);
     return null;
   }
-  if (!peaks) { console.log("[waveform] qobuz: could not decode \"" + track + "\""); return null; }
+  if (!peaks) {
+    // WITH the reason. The local path has said why since v1.8.30 and this one
+    // did not, so the single most common streaming failure after a successful
+    // fetch — a truncated download refused by MIN_COVERAGE, which is
+    // indistinguishable from a short track and must be refused — arrived as
+    // four words with no cause in them.
+    const why = WFD.lastDecodeError();
+    console.log("[waveform] qobuz: could not decode \"" + track + "\"" +
+                (why ? " (" + why + ")" : ""));
+    return null;
+  }
   console.log("[waveform] qobuz: " + track + " in " + (Date.now() - t0) + "ms");
   return peaks;
 }
@@ -14029,7 +14093,12 @@ async function wfTidalCompute(albumId, track, seconds, signal) {
     console.log("[waveform] tidal: stream failed for \"" + track + "\": " + e.message);
     return null;
   }
-  if (!peaks) { console.log("[waveform] tidal: could not decode \"" + track + "\""); return null; }
+  if (!peaks) {
+    const why = WFD.lastDecodeError();
+    console.log("[waveform] tidal: could not decode \"" + track + "\"" +
+                (why ? " (" + why + ")" : ""));
+    return null;
+  }
   console.log("[waveform] tidal: " + track + " in " + (Date.now() - t0) + "ms");
   return peaks;
 }
@@ -14269,6 +14338,12 @@ app.get("/api/debug/waveform", async (req, res) => {
   let track  = String(req.query.track  || "").trim();
   let album  = String(req.query.album  || "").trim();
   let artist = String(req.query.artist || "").trim();
+  // The LENGTH, taken here with the rest of it. The duration gate is what tells
+  // this recording from another edition of the same album, so a probe run with
+  // no length has the one check that matters switched off — and the zone is
+  // holding the number. (?length= still wins, for asking about an album that is
+  // not playing.)
+  let seconds = Number(req.query.length) || 0;
   if (!track) {
     const zone = req.query.zone ? zones[String(req.query.zone)]
                                 : Object.values(zones).find(z => z && z.state === "playing");
@@ -14278,10 +14353,11 @@ app.get("/api/debug/waveform", async (req, res) => {
       track  = tl.line1 || np.line1 || "";
       artist = tl.line2 || np.line2 || "";
       album  = tl.line3 || np.line3 || "";
+      if (!seconds && Number.isFinite(np.length)) seconds = np.length;
       out.from_zone = zone.display_name || zone.zone_id;
     }
   }
-  out.track = { track, album, artist };
+  out.track = { track, album, artist, seconds: seconds || null };
   if (!track) {
     out.verdict = "nothing playing and no track given — pass ?track=&album=&artist=";
     return res.json(out);
@@ -14326,6 +14402,55 @@ app.get("/api/debug/waveform", async (req, res) => {
   // The first thing standing in the way, named. The order matters and is the
   // code's own — see lib/waveform-verdict.js.
   out.streaming.verdict = WFV.streamingVerdict(out.streaming.qobuz, out.streaming.tidal);
+
+  /*
+   * 3c. WALK IT (?deep=1). Opt-in, because unlike everything above it CALLS
+   * Qobuz — the album read and the signed file-url request, exactly the two the
+   * real path makes, through wfQobuzResolveAudio itself rather than a copy. It
+   * stops before the audio: no bytes are pulled and nothing is decoded or
+   * stored, so it is safe to run repeatedly.
+   *
+   * WHY IT EXISTS: v1.8.51 fixed the reason NO album had a waveform, and left
+   * the harder report — SOME albums do not. Everything static is already above
+   * and it is not enough, because the remaining stops (the track list, the
+   * duration gate, whether this account may stream this record) can only be
+   * seen by asking Qobuz about THAT album. Without this the only instrument is
+   * "play it and read the log", which cannot be pointed at an album on request.
+   *
+   * The url itself is deliberately NOT reported: it is a time-limited signed
+   * link to audio, and a diagnostic endpoint is not the place to hand one out.
+   * Whether one came back is the whole finding.
+   */
+  if (String(req.query.deep || "") === "1") {
+    if (!qId) {
+      out.streaming.deep = { ran: false,
+        why: "no Qobuz album id for this album — the chain stops before anything " +
+             "can be asked of Qobuz, so there is nothing for deep to walk" };
+    } else {
+      const secs = seconds || 0;
+      const got = await wfQobuzResolveAudio(qId, track, secs);
+      out.streaming.deep = {
+        ran: true,
+        stop: got.stop,
+        detail: got.detail,
+        // What each credential set said. Empty on a clean first-try success.
+        tried: got.tried,
+        album_title_on_qobuz: got.album_title || null,
+        album_tracks_on_qobuz: got.album_tracks || 0,
+        roon_says_seconds: secs || null,
+        qobuz_says_seconds: got.track_duration != null ? got.track_duration : null,
+        got_audio_url: !!got.url,
+        credentials_used: got.credentials || null,
+      };
+      if (!secs) {
+        out.streaming.deep.note =
+          "no track length was supplied, and the duration gate is what separates " +
+          "this recording from another edition of it — pass &length=<seconds> " +
+          "(or run this while the track is playing)";
+      }
+      out.streaming.verdict = WFV.deepVerdict(out.streaming.deep);
+    }
+  }
 
   // 4. Does the walk know a directory for this album?
   const akey = wfAlbumKey(album, artist);

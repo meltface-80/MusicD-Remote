@@ -2,6 +2,74 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.52] — 2026-09-22
+
+Follow-up to v1.8.51: "mostly fixed — a number of albums still fail to produce
+a waveform using Qobuz." Two established defects fixed, and an instrument for
+the rest, because the remaining stops cannot be told apart from outside and
+guessing at them is how v1.7.60–65 cost six versions.
+
+### Fixed — only the first page of an album's tracks was ever fetched
+
+`album/get` named no limit, so the track list arrived at whatever Qobuz's
+default page size is and everything past it was simply absent. A track beyond
+that point came back from the matcher as `no track called "X" on the album` —
+which reads as a title mismatch and is not one. Box sets, long compilations and
+multi-disc reissues drew their first tracks perfectly and lost their entire
+tail.
+
+The asymmetry is what identifies it: the same album works at track 12 and fails
+at track 60, every time. `lib/qobuz.js` now asks for an explicit limit and pages
+on `tracks.total`, which is correct whatever the default is — the default is
+Qobuz's to change and nothing here would have noticed it changing. A failed
+later page keeps the tracks already in hand rather than losing the album.
+
+### Fixed — the streaming decode failure said nothing about why
+
+The local path has reported `WFD.lastDecodeError()` since v1.8.30; the Qobuz
+and TIDAL paths threw it away and logged four words. So the commonest failure
+*after* a successful fetch — a truncated download refused by `MIN_COVERAGE`,
+which is indistinguishable from a short track and must be refused — arrived
+with no cause in it. Both now carry the reason.
+
+### Added — `GET /api/debug/waveform?deep=1` walks the chain instead of describing it
+
+Everything v1.8.51 added reports state already in memory, and its best possible
+answer is "the credentials are present, so any failure is later in the chain" —
+true, and the least useful true thing to be told. The stops that are left (the
+track list, the duration gate, whether this account may stream this record) can
+only be seen by asking Qobuz about that album.
+
+`deep=1` does exactly that: resolves the album id, reads the album, runs the
+track match and requests the file url — then stops, before any audio. Nothing is
+fetched, decoded or stored, so it is safe to run repeatedly. The url itself is
+deliberately not reported: it is a time-limited signed link to audio, and
+whether one came back is the whole finding.
+
+**It runs the real code, not a copy of it.** `wfQobuzResolveAudio()` was split
+out of `wfQobuzCompute()` so the probe and the playback path share one body. A
+probe walking its own ladder answers about itself, and the first time the two
+drift it starts lying with total confidence — which is worse than no probe,
+because it is believed.
+
+`deepVerdict()` names the stop. The branch worth having: when Roon and Qobuz
+disagree about a track's LENGTH, that is not a strict matcher — Roon streams the
+album it is streaming, so its duration comes from Qobuz's own metadata for that
+release. A disagreement means the id resolved to a **different edition**, and
+every track on that album will fail identically. It says so, with both numbers
+and what to do about it, instead of reporting a title mismatch that would send
+somebody hunting a spelling problem that is not there.
+
+### Not fixed, deliberately
+
+The album id for an identity is stored first-writer-wins, so favouriting two
+editions of one record picks between them by page order. That is a candidate
+for the remaining failures and it is **not** being changed on a guess — the
+deep probe says in one request whether it is what is happening here, and a fix
+shipped before that would attach an explanation to a change nobody can check.
+
+1123 unit / 605 DOM / 106 static.
+
 ## [1.8.51] — 2026-09-22
 
 ### Fixed — Qobuz waveforms: the favourites read had been switched off since v1.8.20

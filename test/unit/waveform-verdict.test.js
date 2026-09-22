@@ -139,3 +139,80 @@ test("it survives being handed nothing", () => {
   assert.equal(typeof streamingVerdict(), "string");
   assert.equal(typeof streamingVerdict(null, null), "string");
 });
+
+// ---------------------------------------------------------------------------
+// v1.8.52 — the verdict once the chain has been WALKED.
+//
+// streamingVerdict reports from memory and bottoms out at "the credentials are
+// present, so any failure is later in the chain" — true, and the least useful
+// true thing to be told. deepVerdict names the stop, because ?deep=1 made the
+// calls. Same discipline: the branches are pinned, not the prose.
+// ---------------------------------------------------------------------------
+
+const { deepVerdict } = require("../../lib/waveform-verdict");
+
+test("a duration disagreement is called a DIFFERENT EDITION, not a bad matcher", () => {
+  // THE one worth having. Roon streams the album it is streaming, so its track
+  // length comes from Qobuz's own metadata for that release — a disagreement
+  // means the id we resolved is a different pressing, and then EVERY track on
+  // that album fails identically. "No track called X" would send the user
+  // hunting a spelling problem that is not there.
+  const v = deepVerdict({ stop: "track", roon_says_seconds: 251, qobuz_says_seconds: 243,
+                          album_tracks_on_qobuz: 11, detail: "…different recording…" });
+  assert.match(v, /different edition/i, v);
+  assert.match(v, /every track on it will fail the same way/i, v);
+  assert.match(v, /243/, v);
+  assert.match(v, /251/, v);
+  assert.match(v, /favourit/i, v, "it does not say what to actually do about it");
+});
+
+test("a small rounding difference is NOT called a different edition", () => {
+  // Within the gate's own tolerance the two numbers agree; blaming the edition
+  // here would be a confident wrong answer about a track that matched.
+  const v = deepVerdict({ stop: "track", roon_says_seconds: 250, qobuz_says_seconds: 251,
+                          album_tracks_on_qobuz: 11, detail: "no track called \"X\"" });
+  assert.doesNotMatch(v, /different edition/i, v);
+  assert.match(v, /not matched/i, v);
+});
+
+test("a track stop with no length says so instead of blaming the title", () => {
+  // Without a duration the gate refuses on purpose. Reporting that as a title
+  // mismatch sends the user to compare spellings that are probably fine.
+  const v = deepVerdict({ stop: "track", roon_says_seconds: 0, qobuz_says_seconds: 0,
+                          detail: "no duration from Roon to check against" });
+  assert.match(v, /length/i, v);
+  assert.match(v, /&length=/, v, "it does not say how to supply one");
+  assert.doesNotMatch(v, /different edition/i, v);
+});
+
+test("an unreadable album quotes what each credential set said", () => {
+  const v = deepVerdict({ stop: "album", tried: ["the Qobuz sign-in: HTTP 401"] });
+  assert.match(v, /no credential set could read the album/i, v);
+  assert.match(v, /HTTP 401/, v, "the per-attempt reasons were dropped");
+});
+
+test("a refused stream is reported as entitlement, not as a match failure", () => {
+  const v = deepVerdict({ stop: "audio",
+                          tried: ["the Qobuz sign-in: Qobuz returned the 30-second preview"] });
+  assert.match(v, /identified/i, v);
+  assert.match(v, /30-second preview/, v);
+  assert.doesNotMatch(v, /different edition/i, v);
+});
+
+test("a chain that completes points at the DECODE, not back at the chain", () => {
+  // The failure has to have somewhere left to be. Saying "it all works" and
+  // stopping is how a probe becomes something people stop running.
+  const v = deepVerdict({ stop: "ok", got_audio_url: true });
+  assert.match(v, /decode/i, v);
+  assert.match(v, /\[waveform\] qobuz/, v);
+});
+
+test("no credentials is still the first thing said", () => {
+  const v = deepVerdict({ stop: "no-credentials" });
+  assert.match(v, /Connect/, v);
+});
+
+test("deepVerdict survives being handed nothing", () => {
+  assert.equal(typeof deepVerdict(), "string");
+  assert.equal(typeof deepVerdict(null), "string");
+});

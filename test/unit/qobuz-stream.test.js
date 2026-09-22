@@ -473,6 +473,120 @@ test("a 200 with no album is a reason, not a silent null", async () => {
   } finally { global.fetch = realFetch; }
 });
 
+// ---------------------------------------------------------------------------
+// v1.8.52 — the album's WHOLE track list.
+//
+// `album/get` named no limit, so the tracks arrived at whatever Qobuz's default
+// page size is and everything past it was simply absent. A track beyond that
+// point came back as `no track called "X" on the album` — which reads as a
+// title mismatch and is not one — so box sets, long compilations and multi-disc
+// reissues lost their entire tail while their first tracks drew perfectly.
+//
+// The asymmetry is the tell: the same album works at track 12 and fails at
+// track 60, every time, on every service call.
+// ---------------------------------------------------------------------------
+
+// A fake Qobuz that pages `album/get` the way the real one does.
+function albumPager(total, pageSize) {
+  const calls = [];
+  const fake = async (url) => {
+    const u = new URL(url);
+    calls.push({ limit: u.searchParams.get("limit"), offset: u.searchParams.get("offset") });
+    const offset = Number(u.searchParams.get("offset") || 0);
+    const asked  = Number(u.searchParams.get("limit") || pageSize);
+    // The server's own cap wins over what was asked for — that is exactly the
+    // behaviour that made naming a limit insufficient on its own.
+    const n = Math.min(pageSize, asked, Math.max(0, total - offset));
+    const items = Array.from({ length: n }, (_, i) => ({
+      id: offset + i + 1, title: "Track " + (offset + i + 1),
+      duration: 100 + offset + i, track_number: offset + i + 1,
+    }));
+    return { ok: true, status: 200,
+             json: async () => ({ id: "box", title: "The Box", tracks: { total, items } }) };
+  };
+  return { fake, calls };
+}
+
+test("an album longer than one page comes back whole", async () => {
+  const realFetch = global.fetch;
+  const { fake, calls } = albumPager(137, 50);
+  global.fetch = fake;
+  try {
+    const r = await QB.getAlbumResult("tok", "box");
+    assert.equal(r.album.tracks.length, 137,
+      `only ${r.album.tracks.length} of 137 tracks came back — the tail of every ` +
+      `long album is invisible to the track matcher`);
+    // The last track is the one that used to be missing, so assert on IT and
+    // not just the count.
+    assert.equal(r.album.tracks[136].title, "Track 137");
+    assert.equal(r.album.tracks[136].id, 137);
+  } finally { global.fetch = realFetch; }
+  assert.ok(calls.length > 1, "nothing was paged");
+  assert.equal(calls[0].offset, "0");
+  assert.equal(calls[1].offset, "50", "the second page did not start where the first ended");
+});
+
+test("an album that fits in one page still costs exactly one call", async () => {
+  // The common case. Paging that always makes a second request would put a
+  // Qobuz round trip on the front of every track change.
+  const realFetch = global.fetch;
+  const { fake, calls } = albumPager(11, 500);
+  global.fetch = fake;
+  try {
+    const r = await QB.getAlbumResult("tok", "lp");
+    assert.equal(r.album.tracks.length, 11);
+  } finally { global.fetch = realFetch; }
+  assert.equal(calls.length, 1, `${calls.length} calls for an 11-track album`);
+});
+
+test("the request names a limit at all", async () => {
+  // Without one the page size is Qobuz's to choose and to change, and nothing
+  // here would notice it changing.
+  const realFetch = global.fetch;
+  const { fake, calls } = albumPager(3, 500);
+  global.fetch = fake;
+  try { await QB.getAlbumResult("tok", "lp"); } finally { global.fetch = realFetch; }
+  assert.ok(Number(calls[0].limit) > 1, "album/get asked for no track limit");
+});
+
+test("a page that fails keeps the tracks already in hand", async () => {
+  // A partial list still matches most tracks, and the duration gate is what
+  // stops a wrong one being drawn either way — losing the album entirely
+  // because page three timed out would be the worse answer.
+  const realFetch = global.fetch;
+  let n = 0;
+  global.fetch = async (url) => {
+    n++;
+    if (n > 1) return { ok: false, status: 503, text: async () => "" };
+    const items = Array.from({ length: 50 }, (_, i) => ({
+      id: i + 1, title: "Track " + (i + 1), duration: 100 + i, track_number: i + 1 }));
+    return { ok: true, status: 200,
+             json: async () => ({ id: "box", title: "The Box", tracks: { total: 137, items } }) };
+  };
+  try {
+    const r = await QB.getAlbumResult("tok", "box");
+    assert.ok(r.album, "a failed later page threw the whole album away");
+    assert.equal(r.album.tracks.length, 50);
+  } finally { global.fetch = realFetch; }
+});
+
+test("a server that stops advancing does not spin", async () => {
+  // `total` is the server's number. One that overstates it, or a page that
+  // comes back empty, must end the loop rather than run it to its guard.
+  const realFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls++;
+    return { ok: true, status: 200,
+             json: async () => ({ id: "x", title: "X", tracks: { total: 9999, items: [] } }) };
+  };
+  try {
+    const r = await QB.getAlbumResult("tok", "x");
+    assert.equal(r.album.tracks.length, 0);
+  } finally { global.fetch = realFetch; }
+  assert.ok(calls <= 2, `${calls} calls against a server returning nothing`);
+});
+
 test("no album id is refused before any network call", async () => {
   const realFetch = global.fetch;
   let called = false;
