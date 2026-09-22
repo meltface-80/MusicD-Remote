@@ -1168,7 +1168,8 @@
     wrap.className = "discover-list";
     for (const rel of releases) {
       if (!rel || !rel.album) continue;
-      wrap.appendChild(window.__goRow(rel, rel.album, discoverSubLine(rel)));
+      wrap.appendChild(window.__goRow(rel, rel.album, discoverSubLine(rel),
+                                      discoverArt(rel)));
     }
     grid.appendChild(wrap);
 
@@ -1183,6 +1184,27 @@
     }
   }
   window.__showDiscover = showDiscover;
+
+  /*
+   * Where a release's cover comes from, or "" for none.
+   *
+   * ROON'S OWN ART WINS WHENEVER THERE IS ANY. A record the library already
+   * holds has an image_key, and that art is served from this box, is already
+   * cached, and is the same picture the album shows everywhere else in the
+   * app — using Deezer's copy for it would put two different covers on the
+   * same record on two different screens.
+   *
+   * Everything else falls back to the cover Deezer named during the build,
+   * loaded straight from their CDN. That is what the Smart Picks cards and the
+   * Pitchfork grid already do with their services' images, so it introduces no
+   * new kind of request; rowArt() handles the ones that never arrive.
+   */
+  function discoverArt(rel) {
+    if (rel.image_key) {
+      return "/api/image/" + encodeURIComponent(rel.image_key) + "?size=160";
+    }
+    return rel.cover || "";
+  }
 
   /*
    * The quiet line under a release: who made it, and when it came out.
@@ -9692,7 +9714,7 @@
    * @param {string} primary  the bold line
    * @param {string} sub      the quiet line, or ""
    */
-  function goRow(item, primary, sub) {
+  function goRow(item, primary, sub, art) {
     const label = document.createElement("span");
     label.className = "share-similar-name";
     label.textContent = primary;
@@ -9700,13 +9722,34 @@
     rec.className = "share-similar-rec";
     if (sub) rec.textContent = sub;
 
+    /*
+     * WITH ARTWORK, the two lines become a column beside the cover; without it
+     * they stay direct children of the row exactly as before.
+     *
+     * Two shapes rather than one, deliberately. The suggestions under the share
+     * card are a compact list inside a sheet and carry no artwork — that is
+     * the older decision and this must not quietly change it — while Discover
+     * is a full screen of RECORDS, where a wall of text is the odd one out.
+     * Callers that pass no art get byte-identical markup to before.
+     */
+    let holder = null;
+    if (art) {
+      holder = document.createElement("span");
+      holder.className = "row-text";
+      holder.appendChild(label);
+      if (sub) holder.appendChild(rec);
+    }
+    const fill = (row) => {
+      if (art) { row.appendChild(rowArt(art)); row.appendChild(holder); }
+      else { row.appendChild(label); if (sub) row.appendChild(rec); }
+    };
+
     let row;
     if (item.in_library && typeof item.offset === "number") {
       row = document.createElement("button");
       row.type = "button";
       row.className = "share-similar-act is-library";
-      row.appendChild(label);
-      if (sub) row.appendChild(rec);
+      fill(row);
       row.appendChild(tagEl("Queue"));
       row.addEventListener("click", () => queueSuggestion(item, row));
     } else {
@@ -9718,19 +9761,51 @@
         row.href = svc.url;
         row.target = "_blank";
         row.rel = "noopener noreferrer";
-        row.appendChild(label);
-        if (sub) row.appendChild(rec);
+        fill(row);
         row.appendChild(tagEl(svc.name));
       } else {
         // Nothing to link to — every service switched off, or no record was
         // named. Still shown, because the name itself is the answer.
         row = document.createElement("div");
         row.className = "share-similar-act";
-        row.appendChild(label);
-        if (sub) row.appendChild(rec);
+        fill(row);
       }
     }
+    if (art) row.classList.add("has-art");
     return row;
+  }
+
+  /*
+   * A row's cover, in a box that holds its place whether or not the image ever
+   * arrives.
+   *
+   * THE TILE IS ALWAYS THERE AND THE IMAGE IS WHAT IS OPTIONAL. These covers
+   * come from a third party (Deezer, for a record the library does not have),
+   * so some fraction of them will 404, be blocked, or simply not exist — and
+   * an <img> with a dead src draws the browser's broken-image glyph, which
+   * reads as "this app is broken" rather than "this record has no cover". On
+   * error the img removes itself and the empty tile stands, so every row keeps
+   * the same shape either way.
+   */
+  function rowArt(url) {
+    const box = document.createElement("span");
+    box.className = "row-art";
+    // What this tile was ASKED for, kept on the box rather than only on the
+    // img: the img removes itself when the cover does not load, and without
+    // this there is then nothing left to say which URL was tried — neither for
+    // a person looking at the row nor for a test asserting that an in-library
+    // record used Roon's art rather than a streaming service's.
+    box.dataset.artSrc = url;
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = "";
+    img.addEventListener("error", () => {
+      box.dataset.artFailed = "1";
+      if (img.parentNode) img.parentNode.removeChild(img);
+    });
+    img.src = url;
+    box.appendChild(img);
+    return box;
   }
 
   function renderSimilar(acts) {

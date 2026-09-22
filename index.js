@@ -12769,7 +12769,17 @@ function discoverSeeds() {
  * is worse than a short screen.
  */
 async function discoverArtistReleases(seedName, ownedKeys, now) {
-  const key = "nr:" + newRel.normalize(seedName);
+  /*
+   * THE VERSION IN THE KEY IS LOAD-BEARING. A cached listing is a row SHAPE as
+   * much as it is data, and v1.8.39 widened the cover lookup — a row stored by
+   * v1.8.37 has whatever `cover` the narrow rule found, which for these rows
+   * was nothing at all. Reusing it would mean the fix did not show for another
+   * seven days, and "the fix is in but you cannot see it yet" is the worst
+   * thing to hand somebody who has just reported a bug. Bumping the key
+   * retires the old generation instead of trying to migrate it; the stale rows
+   * age out on smartCachePrune's own schedule.
+   */
+  const key = "nr2:" + newRel.normalize(seedName);
   let albums = smartCacheGet(key, discoverArtistTtlMs());
   if (!albums) {
     const search = await httpJson("https://api.deezer.com/search/artist?limit=" +

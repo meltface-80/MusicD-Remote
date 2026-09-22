@@ -29,6 +29,28 @@ function listing(...rows) { return NR.readArtistAlbums({ data: rows }); }
 // Reading the listing
 // ---------------------------------------------------------------------------
 
+test("the cover is taken from whichever field Deezer filled in", () => {
+  // Nothing in this codebase had ever DRAWN a Deezer cover before v1.8.39, so
+  // an always-null field would have gone unnoticed since v1.8.34. The list is
+  // wide rather than clever.
+  assert.equal(NR.coverOf({ cover_medium: "m", cover: "c" }), "m");
+  assert.equal(NR.coverOf({ cover_big: "b", cover: "c" }), "b");
+  assert.equal(NR.coverOf({ cover: "c" }), "c");
+});
+
+test("with no named cover, one is built from md5_image", () => {
+  // Last resort, and safe BECAUSE it is last: if the pattern is wrong the
+  // image fails to load and the row keeps the empty tile it would have had
+  // with no cover at all. It can only turn "no cover" into "no cover".
+  const url = NR.coverOf({ md5_image: "abc123" });
+  assert.match(url, /^https:\/\/e-cdns-images\.dzcdn\.net\/images\/cover\/abc123\//);
+  assert.equal(NR.coverOf({}), null);
+});
+
+test("a cover field never overrides a real one with the built URL", () => {
+  assert.equal(NR.coverOf({ cover_medium: "m", md5_image: "abc" }), "m");
+});
+
 test("singles and EPs are not new records", () => {
   const out = listing(
     album("Real Album", "2026-09-01"),

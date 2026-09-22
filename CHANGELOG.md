@@ -2,6 +2,54 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.39] — 2026-09-22
+
+### Fixed — Discover shows album art
+
+Reported: the screen works, the rows are right, and every one of them is text.
+That was an omission of mine rather than a regression — Discover reuses the
+share card's row builder, and those rows carry no artwork by an older and
+deliberate decision (a compact list inside a sheet). A full screen of RECORDS
+is the opposite case: a wall of text is the odd one out.
+
+- **The row builder takes an optional cover**, and a caller that passes none
+  gets byte-identical markup to before. The suggestions under the share card
+  still have none, and a test in THEIR file now says so — the first version of
+  that assertion lived in the Discover test, where the share card is never
+  opened, so it passed against a mutation that gave those rows artwork. It was
+  moved rather than kept.
+- **Roon's own art wins wherever there is any.** A record the library already
+  holds has an image_key, and that art is served from this box, is already
+  cached, and is the same picture the album wears on every other screen. Using
+  the streaming copy for it would put two different covers on one record.
+- **The tile is always there and the image is what is optional.** These covers
+  come from a third party, so some will 404 or be blocked, and an `<img>` with
+  a dead src draws the browser's broken-image glyph — which reads as "this app
+  is broken" rather than "this record has no cover". On error the image removes
+  itself and the empty tile stands, so the row keeps its shape either way. The
+  URL it asked for stays on the tile, because otherwise a failed cover leaves
+  nothing to say what was tried.
+
+**Two things about the cover URL, said plainly.** Deezer is blocked from the
+machine this was written on, so which of their cover fields is actually
+populated could not be checked there. `lib/similar.js` has read
+`cover_medium || cover` since v1.8.34 and nothing has ever DRAWN the result, so
+an always-null field would have gone unnoticed all along. Therefore:
+
+- the lookup now tries four named fields and, only if all are absent, builds
+  the CDN path from `md5_image`. That last one is an unverified pattern and it
+  sits last on purpose: if it is wrong the image fails to load and the row
+  keeps the empty tile it would have had anyway. A guess that can only turn
+  "no cover" into "no cover" is safe;
+- **the per-artist cache key is bumped to `nr2:`.** A cached listing is a row
+  shape as much as it is data, and a row stored by v1.8.37 carries whatever the
+  narrow rule found. Reusing it would mean this fix did not show for another
+  seven days.
+
+If art is still missing after a rebuild, `GET /api/discover` answers it in one
+request: a `cover` of null for every row means the field name is wrong and the
+client half is fine.
+
 ## [1.8.38] — 2026-09-22
 
 ### Fixed — the cover sat on the track list at desktop widths
