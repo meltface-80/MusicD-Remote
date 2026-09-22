@@ -9339,12 +9339,39 @@
   publish();
 
   if (typeof ResizeObserver === "function") {
-    new ResizeObserver(publish).observe(bar);
-  } else {
-    // Safari < 13.1. Rotation and the search row are the changes that matter,
-    // and both fire one of these.
-    window.addEventListener("resize", publish, { passive: true });
-    window.addEventListener("orientationchange", publish, { passive: true });
+    /*
+     * BORDER BOX, NOT THE DEFAULT CONTENT BOX — and the difference is the
+     * whole bug this line fixes.
+     *
+     * What is published is `getBoundingClientRect().height`, which INCLUDES
+     * padding. The bar's padding is `calc(12px + env(safe-area-inset-top))`,
+     * so the inset is inside it. A ResizeObserver with default options
+     * watches the CONTENT box, which the inset is not part of — so a change
+     * to the safe area could move the bar's real height without the observer
+     * ever firing, and `--topbar-h` would keep a value from the orientation
+     * before. `main` reserves that number as padding, so the Home screen
+     * opened one whole inset too far down, with an empty band above the first
+     * row. Reported after rotating, which is the one thing that changes an
+     * inset.
+     */
+    new ResizeObserver(publish).observe(bar, { box: "border-box" });
+  }
+  /*
+   * AND the viewport events as well, not as a fallback.
+   *
+   * The observer is the right primary — it catches the search row opening,
+   * which fires nothing else — but an inset can change with no box change at
+   * all, and a rotation is not an instant: iOS fires orientationchange before
+   * the web view has finished resizing, so a value read on the event can be
+   * from mid-transition. Sampled again as it settles, the same way the window
+   * pin and the diagnostic panel sample a turn, and `h !== last` means the
+   * extra reads cost a comparison and nothing else.
+   */
+  const republish = () => { publish(); setTimeout(publish, 300); setTimeout(publish, 1000); };
+  window.addEventListener("resize", republish, { passive: true });
+  window.addEventListener("orientationchange", republish, { passive: true });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", republish, { passive: true });
   }
 })();
 

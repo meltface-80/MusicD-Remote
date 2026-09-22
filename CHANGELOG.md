@@ -2,6 +2,48 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.47] — 2026-09-22
+
+### Fixed — Home opened a safe-area inset too far down after rotating
+
+Reported with two screenshots a minute apart: the same rows in the same order,
+the whole lot pushed down by an empty band. The band is ~62px — this device's
+top safe-area inset, the same number as the scroll offset in v1.8.45, and for
+a related reason.
+
+**A one-word bug.** `--topbar-h` is published from
+`getBoundingClientRect().height`, which INCLUDES padding, and the bar's padding
+is `calc(12px + env(safe-area-inset-top))` — so the inset is inside it. The
+`ResizeObserver` watching the bar used default options, and those watch the
+**content box**, which the inset is not part of. A change to the safe area
+could therefore move the bar's real height without the observer firing at all,
+leaving `--topbar-h` holding a value from the orientation before — and `main`
+reserves that number as its top padding, so Home opened with a band of nothing
+above the first row.
+
+**And a second gap behind it, which is the one a test can see.** The `resize`
+and `orientationchange` listeners existed only in the `else` branch taken when
+`ResizeObserver` is missing. On every modern browser that branch is dead — so a
+rotation notified nothing at all, and the only thing that could have corrected
+`--topbar-h` was the observer that cannot see padding. Both are fixed: the
+observer takes `{ box: "border-box" }`, and the viewport events are listened to
+**always**, sampling again at 300ms and 1s because a rotation is not an instant
+(the same reason the window pin and the diagnostic panel sample a turn three
+times).
+
+Yes, this was almost certainly introduced by the rotation work: before v1.8.40
+the app refused to run in landscape, so nothing ever changed an inset while it
+was open.
+
+`test/dom/topbar-height.test.js` simulates the inset the only way this harness
+can — by changing the bar's padding, which is exactly where the inset lives and
+exactly what was invisible — and then fires the events a rotation fires. Worth
+recording: **ResizeObserver never fires in this headless harness at all**, which
+was measured rather than assumed (an observer installed here does not even get
+the single callback `observe()` is supposed to deliver). So the observer half
+of the fix is not testable here and the file says so, rather than implying
+coverage it does not have.
+
 ## [1.8.46] — 2026-09-22
 
 ### Changed — the instrument now measures the FIX, not just the fault
