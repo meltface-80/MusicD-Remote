@@ -1,5 +1,5 @@
 /*
- * Random Albums — frontend
+ * MusicD Remote (for Roon) — frontend
  *
  * Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
  * Released under the MIT License. See the LICENSE file for details.

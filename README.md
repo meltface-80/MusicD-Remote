@@ -538,8 +538,6 @@ No keys required for basic operation. The extension pulls in external metadata f
 └── README.md
 ```
 
-## License
+## Licence
 
-Roon Random Albums is released under the **MIT License**. The full text is in the [`LICENSE`](./LICENSE) file. In short: do what you like with it, just keep the copyright and license notice. It comes with no warranty.
-
-Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD).
+MusicD Remote (for Roon) is copyright (c) 2026 Lewis Menzies (Music Duck / MusicD) and is released under the **MIT License**. The full text is in the [`LICENSE`](./LICENSE) file. In short: do what you like with it, as long as the copyright notice and the licence travel with it. It comes with no warranty.

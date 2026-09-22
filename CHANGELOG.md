@@ -2,6 +2,29 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.37] — 2026-09-22
+
+### Changed — the licence notices say the right name, the right brand and the right year
+
+A docs-and-notices pass across all six MusicD repositories, landing here as the
+copyright headers the tarball actually ships.
+
+- The page, the stylesheet, the wall display and `index.js` each led with a
+  header naming **Roon Random Albums** or **Random Albums** — the project's name
+  before v1.6.31 renamed it. A copyright notice carrying a brand that no longer
+  exists is the one comment that has to be right, because it is the notice the
+  MIT licence asks be kept with the software. All four now read **MusicD Remote
+  (for Roon)**; the holder line and the year were already correct.
+- `lib/tidal.js`, `lib/qobuz.js` and `lib/discovery.js` said only "Released
+  under the MIT License" where every other file points at the LICENSE file.
+  Same sentence everywhere now.
+- The README's licence section named the old project too, and stated the holder
+  in a trailing line of its own; it names **MusicD Remote (for Roon)**,
+  copyright (c) 2026 Lewis Menzies (Music Duck / MusicD), in one sentence.
+
+No behaviour changes: every edit is inside a comment or in the README. Class of
+error: a rename that reached the product and not its notices.
+
 ## [1.8.36] — 2026-09-21
 
 ### Fixed — the Qobuz link opens the Qobuz app, not their download store

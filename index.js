@@ -1,4 +1,4 @@
-// roon-random-albums  —  random-album wall extension for Roon
+// musicd-remote  —  MusicD Remote (for Roon), the random-album wall extension
 // Runs alongside Roon Server, exposes a web UI on http://<host>:3399
 //
 // Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
