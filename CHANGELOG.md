@@ -2,6 +2,73 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.56] — 2026-09-22
+
+### Fixed — the Qobuz favourites read stopped at TEN THOUSAND albums
+
+The user's argument, not any number, found this:
+
+> "As this is a Roon extension then the only way the album would show via
+> browse is if it is a favourite within my Qobuz account and this Roon."
+
+Exactly right, and it is the argument that matters. Roon was playing the record,
+so it WAS a favourite, so a read that could not see it was the thing at fault —
+and v1.8.55's conclusion that the album had been "genuinely never favourited"
+was wrong.
+
+```js
+const PAGE = 500, MAX_PAGES = 20;     // 500 x 20 = 10,000. Then it stops.
+```
+
+Past that the loop simply ended. No error, no log line, and a message reading
+`Qobuz favourites: N albums` that looked like a complete read. Everything
+sorting after the ten-thousandth favourite was invisible to the entire
+extension — no source badge, no album id, therefore no waveform —
+deterministically and for ever. It is the exact shape of "a number of albums
+still fail": a fixed subset, every time, with everything else working.
+
+It pages until Qobuz runs out now, driven by the `total` Qobuz states in the
+same response and which nothing had ever read. The remaining page guard is a
+stop against a server that never advances, not a library-size limit, and
+reaching it logs an error instead of quietly returning a short list.
+
+### Fixed — TIDAL's favourites were never paged at all
+
+One call, `limit: 5000`, no loop. Same defect one service over and worse, since
+there was no page count to raise. TIDAL states `totalNumberOfItems` in the same
+response and nothing read that either. Nobody had reported it — which is the
+point: a truncated read has no symptom that points at the read.
+
+### Fixed — the probe's own number could never have shown this
+
+It reported `favourite_albums_known: 11455`, and that was the size of the KEY
+map. One album is filed under several identities, so the figure is always larger
+than the library and a 10,000-album ceiling can hide behind it indefinitely. It
+now reports `favourite_albums_read`, `favourite_albums_total` (what the service
+says) and `favourites_complete`, with the key count under its real name,
+`identity_keys`. The counts persist with the key sets, so a restored index does
+not report "0 albums read".
+
+An incomplete read is now the FIRST thing `streamingVerdict` says, ahead of
+everything including a successfully resolved album id: every other branch
+reasons from "what the index holds", so if the list is short then "not a
+favourite" and "nothing resembles it" are statements about a partial list made
+with total confidence. Which is what v1.8.53 and v1.8.55 did.
+
+### Changed — the stream key cache invalidates again (version 4)
+
+Any key set written before this was read under the ceiling, so it is not merely
+stale, it is SHORT — and short in a way nothing downstream can detect.
+
+### On v1.8.55
+
+The catalogue-search fallback stays. It is sound and it covers the genuine case
+of an album played from a search without being added. But its stated premise —
+that *Zebra IV* had never been favourited — was an inference from a truncated
+list, and this entry is the correction.
+
+1177 unit / 605 DOM / 108 static.
+
 ## [1.8.55] — 2026-09-22
 
 The near-miss report answered *Zebra IV*, and the answer was not a bug:

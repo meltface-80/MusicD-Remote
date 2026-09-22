@@ -847,3 +847,70 @@ test("exact matching is still preferred when it is available", () => {
   assert.equal(m.track.id, 1, "an exact match must win over a containing one");
   assert.match(m.reason, /matched on title and duration/);
 });
+
+// ---------------------------------------------------------------------------
+// v1.8.56 — the favourites read had a ceiling of TEN THOUSAND albums.
+//
+// `PAGE = 500, MAX_PAGES = 20`. Past it the loop stopped: no error, no log
+// line, and a message that looked like a complete read. Everything sorting
+// after the ten-thousandth favourite was invisible to the whole extension —
+// no badge, no album id, no waveform — deterministically and for ever.
+//
+// It surfaced from a user's argument rather than from any number: "as this is
+// a Roon extension then the only way the album would show via browse is if it
+// is a favourite within my Qobuz account". Exactly right — Roon was playing
+// the record, so it WAS a favourite, so a read that could not see it was the
+// thing at fault. The probe had said "genuinely never favourited" from a count
+// of 11,455 KEYS, which is not a count of albums and could never have shown it.
+//
+// Qobuz states the total in the same response. Nothing read it.
+// ---------------------------------------------------------------------------
+
+test("a favourites page carries the total, so a caller can know it finished", async () => {
+  const realFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, status: 200, json: async () => ({
+    albums: { total: 11842, items: [{ id: 1, title: "A" }, { id: 2, title: "B" }] } }) });
+  try {
+    const p = await QB.getFavoriteAlbumsPage("tok", 500, 0);
+    assert.equal(p.total, 11842,
+      "the total Qobuz states was discarded — the caller cannot tell a complete " +
+      "read from a truncated one, which is how a 10,000 ceiling went unnoticed");
+    assert.equal(p.items.length, 2);
+  } finally { global.fetch = realFetch; }
+});
+
+test("a response with no total does not invent one", async () => {
+  const realFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, status: 200,
+    json: async () => ({ albums: { items: [{ id: 1, title: "A" }] } }) });
+  try {
+    const p = await QB.getFavoriteAlbumsPage("tok", 500, 0);
+    assert.equal(p.total, 0);
+    assert.equal(p.items.length, 1);
+  } finally { global.fetch = realFetch; }
+});
+
+test("the old array-shaped accessor still returns items", async () => {
+  // Kept for the callers that only ever wanted the list.
+  const realFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, status: 200,
+    json: async () => ({ albums: { total: 2, items: [{ id: 1 }, { id: 2 }] } }) });
+  try {
+    const items = await QB.getFavoriteAlbums("tok", 500, 0);
+    assert.ok(Array.isArray(items));
+    assert.equal(items.length, 2);
+  } finally { global.fetch = realFetch; }
+});
+
+test("the page request actually sends the offset it was given", async () => {
+  // Paging that always asked for offset 0 would read the first page N times and
+  // report a complete library.
+  const realFetch = global.fetch;
+  let seen = null;
+  global.fetch = async (url) => {
+    seen = new URL(url).searchParams.get("offset");
+    return { ok: true, status: 200, json: async () => ({ albums: { total: 0, items: [] } }) };
+  };
+  try { await QB.getFavoriteAlbumsPage("tok", 500, 3500); } finally { global.fetch = realFetch; }
+  assert.equal(seen, "3500");
+});

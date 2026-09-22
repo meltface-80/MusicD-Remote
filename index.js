@@ -3297,6 +3297,16 @@ let qobuzAlbumIds = new Map();
 let tidalAlbumIds = new Map();
 let qobuzAlbumKeys = new Set();
 let tidalAlbumKeys = new Set();
+// How many favourite ALBUMS the last read actually got, and how many the
+// service says there are. Declared here beside the sets they describe.
+//
+// The probe reported `favourite_albums_known: 11455` and that was the size of
+// the KEY map — one album is filed under several identities, so the number was
+// always larger than the library and could never show a truncated read. The two
+// numbers below are albums, and they are reported separately so "we read
+// everything" is a statement with evidence rather than an assumption.
+let qobuzFavouritesRead = 0, qobuzFavouritesTotal = 0;
+let tidalFavouritesRead = 0, tidalFavouritesTotal = 0;
 // Release years harvested from those same payloads — see harvestAlbumYears
 // below for what they are and why they are keyed this way. Declared HERE, beside
 // the key sets they are filled alongside, rather than next to the harvest code:
@@ -3321,8 +3331,12 @@ let tidalAlbumYears = new Map();   // albumKey → "YYYY", from TIDAL favourites
  * forms. Loading it would keep the bug alive behind a fix — which is how
  * v1.8.51's gate fix would have waited twelve hours for a library sync had the
  * startup refresh not been taught to ask about the account.
+ *
+ * 4 (v1.8.56): every set written before this was read under a ceiling of ten
+ * thousand favourite albums, so a bigger library's file is not merely stale, it
+ * is SHORT — and short in a way nothing downstream can detect. It has to go.
  */
-const STREAM_KEY_VERSION = 3;
+const STREAM_KEY_VERSION = 4;
 
 function loadStreamAlbumKeys() {
   try {
@@ -3334,6 +3348,14 @@ function loadStreamAlbumKeys() {
     if (Array.isArray(raw.tidal)) tidalAlbumKeys = new Set(raw.tidal);
     if (Array.isArray(raw.qobuzIds)) qobuzAlbumIds = new Map(raw.qobuzIds);
     if (Array.isArray(raw.tidalIds)) tidalAlbumIds = new Map(raw.tidalIds);
+    // The album COUNTS ride with the keys. Without them the probe reports
+    // "0 albums read" for the whole life of a process that restored a perfectly
+    // good index from disk — a false alarm, which is the fastest way to teach
+    // somebody to ignore the field that matters.
+    qobuzFavouritesRead  = Number(raw.qobuzRead)  || 0;
+    qobuzFavouritesTotal = Number(raw.qobuzTotal) || 0;
+    tidalFavouritesRead  = Number(raw.tidalRead)  || 0;
+    tidalFavouritesTotal = Number(raw.tidalTotal) || 0;
     if (DEBUG) console.log("[stream] loaded", qobuzAlbumKeys.size, "Qobuz +",
                            tidalAlbumKeys.size, "Tidal album keys");
   } catch (e) { /* absent on first run — rebuilt by the next favourites refresh */ }
@@ -3345,7 +3367,9 @@ function saveStreamAlbumKeys() {
       // useless apart. v1.8.6 persisted the keys and not these, so after any
       // restart the streaming waveform had no album to fetch and declined
       // silently — the feature simply never fired.
-      qobuzIds: [...qobuzAlbumIds], tidalIds: [...tidalAlbumIds] }, "[stream]");
+      qobuzIds: [...qobuzAlbumIds], tidalIds: [...tidalAlbumIds],
+      qobuzRead: qobuzFavouritesRead, qobuzTotal: qobuzFavouritesTotal,
+      tidalRead: tidalFavouritesRead, tidalTotal: tidalFavouritesTotal }, "[stream]");
 }
 loadStreamAlbumKeys();
 // First run (or a version upgrade) has no persisted keys: fetch them shortly
@@ -3578,7 +3602,29 @@ async function refreshStreamAlbumKeys(reason) {
       try {
         // Page until the service runs out: a one-page read silently badged only
         // the first 500 favourites and left the rest looking unmatched.
-        const PAGE = 500, MAX_PAGES = 20;
+        /*
+         * PAGE UNTIL QOBUZ RUNS OUT, not until a page counter does.
+         *
+         * This was `PAGE = 500, MAX_PAGES = 20` — a silent ceiling of TEN
+         * THOUSAND favourite albums. Past it the loop simply stopped: no error,
+         * no log line, and a `favourites: N albums` message that looked like a
+         * complete read. Everything sorting after the ten-thousandth favourite
+         * was invisible to the whole extension — no badge, no album id, and
+         * therefore no waveform, deterministically and for ever.
+         *
+         * The report that found it: "as this is a Roon extension then the only
+         * way the album would show via browse is if it is a favourite within my
+         * Qobuz account". Exactly right, and it is the argument that matters —
+         * Roon was playing the record, so it WAS a favourite, so a read that
+         * could not see it was the thing at fault. The probe said "genuinely
+         * never favourited" and the number it said it from, 11,455, was a count
+         * of KEYS rather than albums, so the ceiling was invisible there too.
+         *
+         * The guard below is a stop against a server that never advances, not a
+         * library-size limit — reaching it means something is wrong, and it now
+         * SAYS so instead of quietly returning a short list.
+         */
+        const PAGE = 500, MAX_PAGES = 400;   // 200,000 albums before the guard
         const keys = new Set();
         // Harvested alongside the keys from the SAME response — Qobuz's album
         // objects carry their release date, so the Decade filter gets it for
@@ -3587,9 +3633,13 @@ async function refreshStreamAlbumKeys(reason) {
         // And the album ids, for the streaming waveform: a key says the album
         // is a favourite, an id is what fetches its track list.
         const ids = new Map();
-        let fetched = 0, skipped = 0, qualities = 0;
-        for (let page = 0; page < MAX_PAGES; page++) {
-          const items = await qobuzWithToken((t) => qobuz.getFavoriteAlbums(t, PAGE, page * PAGE));
+        let fetched = 0, skipped = 0, qualities = 0, stated = 0, page = 0;
+        for (; page < MAX_PAGES; page++) {
+          const got = await qobuzWithToken((t) => qobuz.getFavoriteAlbumsPage(t, PAGE, page * PAGE));
+          const items = got.items;
+          // What Qobuz says the total is. Read so the loop can know it finished
+          // rather than assume it, and so the log can state both numbers.
+          if (got.total) stated = got.total;
           if (!items.length) break;
           fetched += items.length;
           for (const a of items) {
@@ -3607,6 +3657,15 @@ async function refreshStreamAlbumKeys(reason) {
             if (keys.size === before) skipped++;
           }
           if (items.length < PAGE) break;
+          if (stated && fetched >= stated) break;
+        }
+        if (page >= MAX_PAGES) {
+          // Never silent. A truncated favourites read makes albums vanish from
+          // badges and waveforms with no symptom that points here, which is
+          // precisely how the old ceiling survived.
+          console.error("[stream] Qobuz favourites TRUNCATED at " + fetched +
+                        " albums (guard of " + MAX_PAGES + " pages) — some albums " +
+                        "will have no badge and no waveform. Please report this.");
         }
         if (qualities) {
           // The Format/Sample rate/Bit depth facets just gained values, and the
@@ -3619,9 +3678,20 @@ async function refreshStreamAlbumKeys(reason) {
         qobuzAlbumKeys = keys;
         qobuzAlbumYears = years;
         qobuzAlbumIds  = ids;
-        console.log("[stream] Qobuz favourites: " + keys.size + " albums from " + fetched +
-                    " favourites (" + reason + ")" + (skipped ? ", " + skipped + " unkeyable" : "") +
-                    ", " + years.size + " dated, " + ids.size + " with an album id");
+        // ALBUMS read and albums Qobuz says there are, both, and in that order.
+        // The old line led with keys.size and called it "albums", which is what
+        // made a half-read library look like a whole one.
+        qobuzFavouritesRead = fetched;
+        qobuzFavouritesTotal = stated;
+        console.log("[stream] Qobuz favourites: read " + fetched + " albums" +
+                    (stated ? " of " + stated + " Qobuz states" : "") +
+                    " (" + reason + ") -> " + keys.size + " identity keys, " +
+                    ids.size + " with an album id" +
+                    (skipped ? ", " + skipped + " unkeyable" : "") +
+                    ", " + years.size + " dated" +
+                    (stated && fetched < stated
+                      ? " — INCOMPLETE, " + (stated - fetched) + " favourites were not read"
+                      : ""));
       } catch (e) {
         // Left untouched on failure: a network blip must not wipe working badges.
         console.error("[stream] Qobuz favourites failed (keys kept):", e.message);
@@ -3631,8 +3701,20 @@ async function refreshStreamAlbumKeys(reason) {
       try {
         // Through tidalWithToken so a revoked/expired access token is refreshed
         // and retried, like every other Tidal call.
-        const rows = await tidalWithToken((token, cc) =>
-          tidal.getFavoriteAlbums(token, cc, tidalUserId));
+        // getFavoriteAlbumsAll, not getFavoriteAlbums: the old call asked for
+        // `limit: 5000` once and never paged, so a library past it came back
+        // truncated with no error and no way for this code to tell. TIDAL
+        // states totalNumberOfItems in the same response and nothing read it.
+        const all = await tidalWithToken((token, cc) =>
+          tidal.getFavoriteAlbumsAll(token, cc, tidalUserId));
+        const rows = all.items;
+        tidalFavouritesRead = rows.length;
+        tidalFavouritesTotal = all.total || rows.length;
+        if (all.truncated) {
+          console.error("[stream] Tidal favourites TRUNCATED at " + rows.length +
+                        " albums — some albums will have no badge and no waveform. " +
+                        "Please report this.");
+        }
         const keys = new Set();
         const ids  = new Map();    // identity -> TIDAL album id, for waveforms
         const years = new Map();   // free release dates — see the Qobuz note above
@@ -3657,9 +3739,15 @@ async function refreshStreamAlbumKeys(reason) {
         tidalAlbumKeys = keys;   // empty is a valid answer — see the Qobuz note
         tidalAlbumIds  = ids;
         tidalAlbumYears = years;
-        console.log("[stream] Tidal favourites: " + keys.size + " albums from " + rows.length +
-                    " favourites (" + reason + ")" + (skipped ? ", " + skipped + " unkeyable" : "") +
-                    ", " + years.size + " dated");
+        console.log("[stream] Tidal favourites: read " + rows.length + " albums" +
+                    (all.total ? " of " + all.total + " TIDAL states" : "") +
+                    " (" + reason + ") -> " + keys.size + " identity keys, " +
+                    ids.size + " with an album id" +
+                    (skipped ? ", " + skipped + " unkeyable" : "") +
+                    ", " + years.size + " dated" +
+                    (all.total && rows.length < all.total
+                      ? " — INCOMPLETE, " + (all.total - rows.length) + " favourites were not read"
+                      : ""));
       } catch (e) {
         console.error("[stream] Tidal favourites failed (keys kept):", e.message);
       }
@@ -14573,7 +14661,15 @@ app.get("/api/debug/waveform", async (req, res) => {
       signed_in_as: qobuzWaveName || qobuzWaveUser || null,
       has_pasted_secret: !!String(qobuzAppSecret || "").trim(),
       account_connected: qobuzReady(),
-      favourite_albums_known: qobuzAlbumIds.size,
+      // ALBUMS read vs albums Qobuz states. `identity_keys` is the old
+      // `favourite_albums_known` under its real name: it counts KEYS, one album
+      // is filed under several, and reporting it as an album count is what hid
+      // a ten-thousand-album ceiling behind the number 11455.
+      favourite_albums_read: qobuzFavouritesRead,
+      favourite_albums_total: qobuzFavouritesTotal || null,
+      favourites_complete: !qobuzFavouritesTotal || qobuzFavouritesRead >= qobuzFavouritesTotal,
+      identity_keys: qobuzAlbumIds.size,
+      favourite_albums_known: qobuzAlbumIds.size,   // kept: older probes quote it
       album_id: qId || null,
       stored: qId ? !!wfGet(WF.trackKey("qobuz:" + qId, track)) : false,
       keys_tried: qId ? undefined : wantKeys,
@@ -14581,6 +14677,10 @@ app.get("/api/debug/waveform", async (req, res) => {
     },
     tidal: {
       account_connected: tidalReady(),
+      favourite_albums_read: tidalFavouritesRead,
+      favourite_albums_total: tidalFavouritesTotal || null,
+      favourites_complete: !tidalFavouritesTotal || tidalFavouritesRead >= tidalFavouritesTotal,
+      identity_keys: tidalAlbumIds.size,
       favourite_albums_known: tidalAlbumIds.size,
       album_id: tId || null,
       stored: tId ? !!wfGet(WF.trackKey("tidal:" + tId, track)) : false,

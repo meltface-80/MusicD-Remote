@@ -24,6 +24,64 @@ const { streamingVerdict } = require("../../lib/waveform-verdict");
 const qobuzFav = { album_id: "123", favourite_albums_known: 40 };
 const noIds    = { album_id: null, favourite_albums_known: 0 };
 
+test("an INCOMPLETE favourites read outranks every other verdict", () => {
+  // THE v1.8.56 one. Every branch below reasons from "what the index holds",
+  // so if the read was short then "not a favourite" and "nothing resembles it"
+  // are both statements about a partial list — stated with total confidence.
+  // Qobuz was read under a ceiling of 10,000 albums, and the probe reported the
+  // KEY count (always larger than the library), so no number on screen could
+  // have revealed it.
+  const v = streamingVerdict(
+    { album_id: null, favourite_albums_read: 10000, favourite_albums_total: 11842,
+      favourites_complete: false, signed_in_for_waveforms: true, near: [] },
+    { album_id: null, favourites_complete: true, favourite_albums_read: 0 });
+  assert.match(v, /INCOMPLETE/, v);
+  assert.match(v, /10000/, v);
+  assert.match(v, /11842/, v);
+  assert.doesNotMatch(v, /genuinely never favourited/, v,
+    "it still claimed the album was never favourited, from a list it knows is short");
+});
+
+test("a short read outranks even a RESOLVED album id", () => {
+  // Not just the miss branches. A short list can still contain this album by
+  // luck, and reporting "the credentials are present, look later in the chain"
+  // would bury the finding that matters for every other album.
+  const v = streamingVerdict(
+    { album_id: "123", favourites_complete: false,
+      favourite_albums_read: 10000, favourite_albums_total: 11842,
+      signed_in_for_waveforms: true },
+    { album_id: null, favourites_complete: true });
+  assert.match(v, /INCOMPLETE/, v);
+});
+
+test("a TIDAL short read is named as TIDAL", () => {
+  const v = streamingVerdict(
+    { album_id: null, favourites_complete: true, favourite_albums_read: 10, near: [] },
+    { album_id: null, favourites_complete: false,
+      favourite_albums_read: 5000, favourite_albums_total: 7301 });
+  assert.match(v, /TIDAL favourites read is INCOMPLETE/, v);
+});
+
+test("a complete read says nothing about completeness", () => {
+  // The branch must not fire on the ordinary case, or it becomes the only
+  // sentence this endpoint ever produces.
+  const v = streamingVerdict(
+    { album_id: null, favourites_complete: true, favourite_albums_read: 11842,
+      favourite_albums_total: 11842, favourite_albums_known: 15000,
+      signed_in_for_waveforms: true, near: [] },
+    { album_id: null, favourites_complete: true, favourite_albums_known: 0 });
+  assert.doesNotMatch(v, /INCOMPLETE/, v);
+});
+
+test("an older probe payload with no completeness field is not called incomplete", () => {
+  // `favourites_complete` is undefined for anything that predates it. Treating
+  // absent as false would make every old payload report a truncated read.
+  const v = streamingVerdict(
+    { album_id: null, favourite_albums_known: 11006, signed_in_for_waveforms: true, near: [] },
+    { album_id: null, favourite_albums_known: 0 });
+  assert.doesNotMatch(v, /INCOMPLETE/, v);
+});
+
 test("a reachable album with no credential names the sign-in, and only that", () => {
   // The default state — nothing is signed in until somebody signs it in — so
   // it comes first or it never gets said.
