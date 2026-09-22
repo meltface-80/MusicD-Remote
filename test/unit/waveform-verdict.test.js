@@ -88,7 +88,7 @@ test("a miss with near misses is NOT reported as absent", () => {
     { album_id: null, favourite_albums_known: 0, account_connected: false });
   assert.match(v, /NOT absent/, v);
   assert.match(v, /zebra iv remastered\|\|zebra/, v);
-  assert.doesNotMatch(v, /genuinely absent/, v);
+  assert.doesNotMatch(v, /genuinely never favourited/, v);
 });
 
 test("a miss with nothing nearby IS reported as absent, and says why it can say so", () => {
@@ -97,9 +97,15 @@ test("a miss with nothing nearby IS reported as absent, and says why it can say 
   const v = streamingVerdict(
     { album_id: null, favourite_albums_known: 11006, signed_in_for_waveforms: true, near: [] },
     { album_id: null, favourite_albums_known: 4, account_connected: true, near: [] });
-  assert.match(v, /genuinely absent/, v);
+  assert.match(v, /genuinely never favourited/, v);
   assert.match(v, /nothing in either resembles it/, v);
   assert.match(v, /11006 Qobuz/, v);
+  // v1.8.55: and it must NOT say that is the end of the road. The catalogue
+  // search is a second route, and telling somebody to go and favourite the
+  // album would be advice for a limit that no longer exists.
+  assert.match(v, /CATALOGUE/, v);
+  assert.doesNotMatch(v, /only signal there is/, v);
+  assert.doesNotMatch(v, /playing from a search is not enough/, v);
 });
 
 test("a TIDAL near miss is attributed to TIDAL", () => {

@@ -2,6 +2,69 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.55] — 2026-09-22
+
+The near-miss report answered *Zebra IV*, and the answer was not a bug:
+
+```
+"favourite_albums_known": 11455,
+"keys_tried": ["zebra iv||zebra"],
+"near": [],
+"local_near": []
+```
+
+Nothing in 11,455 Qobuz favourites resembles it. Nothing in 8,887 local albums
+resembles it. Not spelled differently, not absent by accident — **simply never
+favourited**, and played from a search or from Roon's own browser.
+
+### Added — the Qobuz CATALOGUE is searched when an album is not a favourite
+
+Until now the favourites were the only place a streaming album id could come
+from, and that was stated as a hard limit. It meant an album played from a
+search had no waveform and never would, however long you waited. The catalogue
+is searchable with the same token that reads the favourites, so the id was
+always obtainable; nothing had gone looking for it.
+
+Three things make using it safe:
+
+- **The match is an exact identity**, keyed by `favouriteTitleForms` — the same
+  builder the favourites index uses, so a search hit and a favourite cannot be
+  keyed differently.
+- **Ambiguity declines** (`lib/albumsearch.js`). Qobuz answers a query it cannot
+  place with its *nearest guess* rather than with nothing — v1.8.36 learned that
+  the expensive way on the share-card links — so "the first result" is never an
+  answer here. Two different albums matching one identity is not a tie to break.
+- **Being wrong is survivable anyway.** `TM.matchTrack` gates on title AND
+  duration, so a search hit that is a different pressing draws nothing rather
+  than putting a confident picture of another recording under the seek bar.
+
+Misses are memoised too, so an album genuinely not on Qobuz costs one search for
+the life of the process rather than one per poll. A search that *fails* — a rate
+limit, a network blip — is deliberately not cached, or one bad moment would
+switch the fallback off for that album until the container restarted.
+
+### Changed — the verdict no longer states a limit that has been removed
+
+`streamingVerdict` ended with "favourite membership is the only signal there is
+— playing from a search is not enough". That was true when it was written and is
+now false, and leaving it would send somebody to go and favourite a record to
+fix a problem the next poll may already have solved.
+
+The probe's `deep=1` walk runs the same fallback, for the same reason it shares
+`wfQobuzResolveAudio` with the playback path: a probe that reports a dead end
+the real code walks straight past is worse than no probe. It reports
+`album_id_from_search` and `album_id_came_from` so it is visible which route
+answered.
+
+### Not done
+
+TIDAL has the same limitation and the same available fix, and is left alone
+deliberately: this user has no TIDAL connected, so a TIDAL search path would
+ship untested against a live service on the strength of symmetry alone. It is a
+small addition when there is something to verify it against.
+
+1162 unit / 605 DOM / 108 static.
+
 ## [1.8.54] — 2026-09-22
 
 **An apostrophe.** Found in a user's probe output, which named it outright:

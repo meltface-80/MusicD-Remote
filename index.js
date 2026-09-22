@@ -13379,6 +13379,9 @@ const WFV = require("./lib/waveform-verdict");
 // What the index holds NEAR a key that missed. The difference between "this
 // album is not in your favourites" and "it is, spelled differently".
 const KM = require("./lib/keymatch");
+// Which catalogue search result (if any) is the album that is playing. Pure —
+// the decision only; the keying stays here, where the key space lives.
+const ABS = require("./lib/albumsearch");
 const WFD = require("./lib/waveform-decode");
 // Field listing for /api/debug/zone-dump. Pure, no I/O — see lib/objshape.js.
 const SHAPE = require("./lib/objshape");
@@ -13860,16 +13863,20 @@ async function wfQobuzTrack(album, artist, track, seconds) {
       "Qobuz waveforms → Connect. Local files are unaffected.");
     return null;
   }
-  const albumId = wfQobuzAlbumId(album, artist);
+  // The favourites first — free, already in memory, and the only source that
+  // needs no call. Then the catalogue, which is what makes an album played from
+  // a search reachable at all. See wfQobuzSearchAlbumId.
+  let albumId = wfQobuzAlbumId(album, artist);
+  if (!albumId) albumId = await wfQobuzSearchAlbumId(album, artist);
   if (!albumId) {
     // Keyed by ALBUM: the clients re-ask every poll, and one line per album is
     // the useful amount — enough to see which records are unreachable, not
     // enough to drown the log.
     wfQobuzSayOnce("noid:" + album,
       "[waveform] qobuz: no Qobuz album id for \"" + album + "\" by \"" +
-      (artist || "(none)") + "\" — " + qobuzAlbumIds.size + " ids known" +
-      (qobuzAlbumIds.size ? " (is it in your Qobuz FAVOURITES? playing from search is not enough)"
-                          : " (favourites not read yet)"));
+      (artist || "(none)") + "\" — not among the " + qobuzAlbumIds.size +
+      " favourites and the catalogue search did not identify it either" +
+      (qobuzAlbumIds.size ? "" : " (favourites not read yet)"));
     return null;
   }
 
@@ -13912,6 +13919,82 @@ function wfQobuzAlbumId(album, artist) {
   });
   if (!found.confident || found.source !== "qobuz") return null;
   return qobuzAlbumIds.get(found.qobuz[0]) || null;
+}
+
+/*
+ * The Qobuz album id for something that is NOT in the favourites.
+ *
+ * Until v1.8.55 the favourites were the only place an album id could come from,
+ * and that was stated as a hard limit — an album played from a search, an
+ * editorial list or Roon's own browser had no waveform and never would. A probe
+ * against 11,455 loaded favourites answered `near: []` for the album playing at
+ * the time: not spelled differently, not absent by accident, simply never
+ * favourited. It could have waited for ever.
+ *
+ * The catalogue is searchable with the token that already reads the favourites,
+ * so the id IS obtainable. Three things make using it safe:
+ *
+ *   the MATCH is an exact identity, built by favouriteTitleForms — the same
+ *     builder the favourites index uses, so a search hit and a favourite are
+ *     keyed the same way and cannot disagree;
+ *   AMBIGUITY DECLINES (lib/albumsearch.js). Qobuz answers a query it cannot
+ *     place with its nearest guess rather than with nothing, so "the first
+ *     result" is never an answer here;
+ *   and being wrong is survivable anyway: TM.matchTrack gates on title AND
+ *     duration, so a different pressing draws nothing rather than putting a
+ *     confident picture of another recording under the seek bar.
+ *
+ * Memoised per identity INCLUDING the misses, so an album that is not on Qobuz
+ * costs one search for the life of the process rather than one per poll.
+ */
+const _wfQobuzSearched = new Map();    // wanted key -> album id or null
+const _wfQobuzSearching = new Map();   // wanted key -> in-flight promise
+async function wfQobuzSearchAlbumId(album, artist) {
+  if (!qobuzReady()) return null;
+  const wanted = albumKeys(album || "", artist || "");
+  if (!wanted.length) return null;
+  // Keyed on the FIRST identity, which is the whole-credit one: it is the same
+  // for every call about this album, while the list itself is order-stable but
+  // longer than a cache key wants to be.
+  const ck = wanted[0];
+  if (_wfQobuzSearched.has(ck)) return _wfQobuzSearched.get(ck);
+  const already = _wfQobuzSearching.get(ck);
+  if (already) return already;
+
+  const job = (async () => {
+    let items = [];
+    try {
+      const r = await qobuzWithToken((t) =>
+        qobuz.searchCatalog(t, (album || "") + " " + (artist || ""), 20, 0));
+      items = (r && r.albums && r.albums.items) || [];
+    } catch (e) {
+      // A failed search is NOT cached as "not on Qobuz": a rate limit or a
+      // network blip would otherwise switch the fallback off for this album
+      // until the container restarts.
+      console.log("[waveform] qobuz: catalogue search failed for \"" + album +
+                  "\": " + ((e && e.message) || "unknown"));
+      return undefined;
+    }
+    const candidates = items.map((a) => ({
+      id: a && a.id,
+      keys: favouriteTitleForms(a && a.title, a && a.version)
+        .flatMap((t) => [(a.artist && a.artist.name), (a.performer && a.performer.name)]
+          .filter(Boolean)
+          .map((who) => albumKey(t, who)))
+        .filter(Boolean),
+    }));
+    const picked = ABS.pickAlbumId(wanted, candidates);
+    console.log("[waveform] qobuz: \"" + album + "\" is not a favourite; catalogue " +
+                "search " + (picked.id ? "found album " + picked.id + " — " + picked.reason
+                                       : "declined — " + picked.reason));
+    return picked.id || null;
+  })().finally(() => { _wfQobuzSearching.delete(ck); });
+
+  _wfQobuzSearching.set(ck, job);
+  const got = await job;
+  // undefined means the search itself failed — try again next time.
+  if (got !== undefined) _wfQobuzSearched.set(ck, got);
+  return got || null;
 }
 
 /**
@@ -14529,13 +14612,25 @@ app.get("/api/debug/waveform", async (req, res) => {
    * Whether one came back is the whole finding.
    */
   if (String(req.query.deep || "") === "1") {
-    if (!qId) {
+    // The favourites id if there is one, otherwise the CATALOGUE — which is
+    // what the playback path now does, so the probe has to do it too or it
+    // reports a dead end the real code walks straight past. (The static section
+    // above stays call-free and reports the favourites answer alone; this is
+    // the opt-in that is allowed to spend a request.)
+    let useId = qId;
+    if (!useId) {
+      useId = await wfQobuzSearchAlbumId(album, artist);
+      out.streaming.qobuz.album_id_from_search = useId || null;
+    }
+    if (!useId) {
       out.streaming.deep = { ran: false,
-        why: "no Qobuz album id for this album — the chain stops before anything " +
-             "can be asked of Qobuz, so there is nothing for deep to walk" };
+        why: "this album is not in your Qobuz favourites AND the catalogue search " +
+             "did not identify it either, so there is no id to ask Qobuz about. " +
+             "Check the log for '[waveform] qobuz: ... catalogue search' — it says " +
+             "whether the search missed or declined for ambiguity" };
     } else {
       const secs = seconds || 0;
-      const got = await wfQobuzResolveAudio(qId, track, secs);
+      const got = await wfQobuzResolveAudio(useId, track, secs);
       out.streaming.deep = {
         ran: true,
         stop: got.stop,
@@ -14544,6 +14639,8 @@ app.get("/api/debug/waveform", async (req, res) => {
         tried: got.tried,
         album_title_on_qobuz: got.album_title || null,
         album_tracks_on_qobuz: got.album_tracks || 0,
+        album_id_used: useId,
+        album_id_came_from: qId ? "favourites" : "catalogue search",
         roon_says_seconds: secs || null,
         qobuz_says_seconds: got.track_duration != null ? got.track_duration : null,
         got_audio_url: !!got.url,
