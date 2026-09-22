@@ -8530,9 +8530,14 @@
   // and the fill could only ever move in whole-second jumps.
   /* ---------------- Waveform ---------------- */
   /*
-   * The shape of the track, drawn under the seek bar. LOCAL FILES ONLY — Roon
-   * streams Qobuz and TIDAL to the endpoint and never to an extension, so those
-   * tracks have no audio the server can read and simply keep the plain bar.
+   * The shape of the track, drawn under the seek bar.
+   *
+   * Local files and streamed ones alike: Roon sends audio to the endpoint and
+   * never to an extension, so the server reads a local file directly and
+   * fetches a streamed track from Qobuz or TIDAL with the user's own account to
+   * measure it. Either way this end is the same — it asks /api/waveform for a
+   * few thousand levels and draws them; a track the server cannot identify
+   * answers with none and keeps the plain bar.
    *
    * The canvas is decoration UNDER the range input, never a replacement for it:
    * the input keeps the drag, the keyboard, the thumb and the disabled state,
