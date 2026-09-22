@@ -2,6 +2,62 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.42] — 2026-09-22
+
+### Fixed — rotate to landscape and back, and every button is dead
+
+Reported twice. **v1.8.40 was wrong about the cause** and said so at the time:
+it removed the landscape block because that was the only thing in the app that
+added or removed a full-viewport layer on rotation, and it stated plainly that
+this removed a candidate rather than a proven cause. The freeze survived it.
+That is what the candidate was for, and eliminating it is what left the real
+one visible.
+
+**Three lines, all doing the same job, and the third is why force-quitting was
+the only way out.**
+
+- **`maximum-scale=1` in the viewport meta.** Pinning the page scale is the
+  documented cause of iOS leaving a page at the WRONG scale after an
+  orientation change: the layout viewport keeps one orientation's width while
+  the visual viewport has the other. The page re-flows and LOOKS correct, which
+  is why this reads as "the buttons stopped working" rather than as "the page
+  is scaled wrong" — every tap lands somewhere else.
+- **`user-scalable=no`** beside it, which iOS Safari has ignored since iOS 10
+  on accessibility grounds. It never did anything on the device this was
+  reported from.
+- **`preventDefault()` on `gesturestart` / `gesturechange` / `gestureend`**,
+  which re-imposed the pinch block iOS refuses to honour from the meta. **This
+  one worked, and that was the problem.** Pinching is the only way a person
+  gets a mis-scaled page back, so the app had removed its own escape hatch —
+  which is exactly the "force closing is the only way to restore function" half
+  of the report, and the detail that identifies this line rather than another.
+
+And one amplifier, removed with them: a `touchend` handler that
+`preventDefault()`ed any tap within 320ms of the last, to suppress double-tap
+zoom. **preventDefault on touchend cancels the CLICK.** Somebody whose first
+tap does nothing taps again immediately — and every one of those impatient
+repeats was being cancelled here. It could only ever make a dead-feeling screen
+deader.
+
+**Nothing was lost by removing any of it.** Double-tap-to-zoom is already off,
+the correct way: `touch-action: manipulation` on html/body, which suppresses
+the double-tap gesture and leaves pinch alone. All four were belt-and-braces
+over a CSS rule that was already doing the job properly — and between them they
+cost the user every way out of a bad frame. `public/display.html` has shipped
+with exactly the new viewport content, scale limits and all absent, for as long
+as it has existed.
+
+`viewport-fit=cover`, `width=device-width` and `initial-scale=1` are untouched,
+and a test asserts that too: removing the scale LIMITS must not become removing
+the viewport line's actual job, which is the whole iOS full-screen contract.
+
+Class of error: a workaround that outlived the problem it was for, and took the
+user's escape route with it. `test/static/viewport-scale.test.js` keeps all
+four from coming back — none of them can be observed from a headless harness,
+so what the suite can do is the same thing the head allowlist does: hold a
+known-good state so it is not changed back silently. Each of the six ways to
+undo this fails it.
+
 ## [1.8.41] — 2026-09-22
 
 ### Fixed — a day's list is stamped with the rules that built it

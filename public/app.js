@@ -6,17 +6,34 @@
  */
 
 (() => {
-  // Disable pinch-zoom on iOS Safari (which ignores user-scalable=no since iOS 10)
-  ["gesturestart", "gesturechange", "gestureend"].forEach((evt) => {
-    document.addEventListener(evt, (e) => e.preventDefault(), { passive: false });
-  });
-  // Belt-and-braces: cancel any quick second tap (the iOS double-tap-to-zoom heuristic)
-  let lastTouchEnd = 0;
-  document.addEventListener("touchend", (e) => {
-    const now = Date.now();
-    if (now - lastTouchEnd < 320) e.preventDefault();
-    lastTouchEnd = now;
-  }, { passive: false });
+  /*
+   * TWO ZOOM HACKS USED TO LIVE HERE. Both are gone (v1.8.42), with the
+   * viewport meta's `maximum-scale=1,user-scalable=no`, and the reasons are
+   * worth keeping because each of them made a real bug.
+   *
+   * 1. `gesturestart/gesturechange/gestureend` were preventDefault()ed to
+   *    re-impose the pinch-zoom block that iOS Safari refuses to honour from
+   *    the viewport meta. IT WORKED, AND THAT WAS THE PROBLEM: pinching is the
+   *    only way a person can get a mis-scaled page back, so with this in place
+   *    a page that came back from a rotation at the wrong scale could not be
+   *    recovered at all. That is exactly the reported symptom — "force closing
+   *    is the only way to restore function". The app took away the escape.
+   *
+   * 2. A `touchend` that preventDefault()ed any tap within 320ms of the last
+   *    one, to suppress double-tap zoom. preventDefault on touchend CANCELS
+   *    THE CLICK, so this also turned "that tap did nothing" into "nothing
+   *    works": somebody whose first tap misses taps again straight away, and
+   *    every impatient repeat was cancelled by this. It could only ever make a
+   *    dead-feeling screen deader.
+   *
+   * Neither was buying anything. Double-tap-to-zoom is already off the correct
+   * way — `touch-action: manipulation` on html/body in style.css — which
+   * suppresses the double-tap gesture WITHOUT disabling pinch. The two hacks
+   * were belt-and-braces over a rule that was already doing the job properly,
+   * and between them they cost the user every way out of a bad frame.
+   *
+   * test/static/viewport-scale.test.js keeps them from coming back.
+   */
 
   const grid       = document.getElementById("album-grid");
   const refreshBtn = document.getElementById("refresh-btn");
