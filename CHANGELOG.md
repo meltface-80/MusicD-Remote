@@ -2,6 +2,70 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.43] — 2026-09-22
+
+### Added — tap diagnostics, because two fixes have now been wrong
+
+"Rotate to landscape, rotate back, and no button works; force-quitting is the
+only way out" has survived v1.8.40 (the landscape block) and v1.8.42 (the
+viewport scale pins and the pinch blocker), and a fresh install with cleared
+history rules out a stale PWA. Both of those were shipped on mechanisms that
+**cannot be observed from here** — the harness is headless Chromium, with no
+rotation, no iOS and no visual viewport of its own — and reading the code has
+now produced two plausible stories and two wrong ones.
+
+So this stops guessing. `public/tapdebug.js` is an instrument, off by default,
+switched on in **Settings → System → Tap diagnostics** or by loading the app
+with `?tapdebug=1` (which persists, because an address bar still works when the
+app's own buttons do not).
+
+It draws a readout at the top of the screen — **no interaction needed, because
+when the bug is present there is none to be had** — showing `window.inner*`,
+`documentElement.client*`, the visual viewport's size, **scale** and offsets, a
+rotation counter, and for every tap: where it landed, what
+`document.elementFromPoint` says was actually on top there, whether the event
+target and the topmost element disagree, and **whether a click ever followed
+the pointerdown**. Each reading names a different culprit:
+
+| what the readout shows | what it means |
+|---|---|
+| events stop appearing | the touches are not reaching the page at all |
+| pointerdown, then `NO-CLICK` | something is cancelling the click |
+| `top=` names a layer | that layer is on top, and it is the fault |
+| `tgt=` differs from `top=` | hit-testing is offset from what is painted |
+| `scale=` is not 1, or offsets are not 0 | the page came back at the wrong scale |
+| `win`/`doc`/`vv` disagree | the viewports disagree after rotating |
+
+The same records are posted to `/api/debug/taps` (a ring buffer in memory, never
+on disk), so they can be read from a desktop rather than photographed off a
+phone.
+
+**The instrument is `pointer-events: none`, and a test fails if that changes.**
+It is a fixed, full-width element at the top of the screen — the exact shape of
+the thing under suspicion — and one that could eat a press would be
+indistinguishable from the fault it is looking for. The suite also pins that it
+adds nothing at all until switched on, and that a press on a real control still
+reaches that control while it is running.
+
+Same move as the waveform probe in v1.8.30 and the Deezer probe in v1.8.40:
+five ways to fail with one symptom between them is a question for an
+instrument, not for another build.
+
+### Fixed — an invisible toast was eating taps at the bottom of the screen
+
+Found while looking for layers that could do exactly that, and **not claimed as
+the cause of the freeze** — it is the wrong shape for "all buttons", being a
+band across the bottom rather than the whole screen.
+
+`.toast` is `position: fixed` at `z-index: 100` — above the transport pill —
+and is hidden with `opacity: 0`. Opacity hides a box; it does not stop it
+receiving touches. So for the life of the page there was an invisible,
+tappable rectangle sitting over the bottom of the screen, and its width comes
+from `max-width: min(560px, calc(100vw - 28px))` — `100vw` resolves against the
+layout viewport, so a stale one makes that invisible box wider than the screen
+it is sitting on. Nothing about a toast is meant to be pressed. The sibling
+settings-info toast already carried `pointer-events: none`; this one did not.
+
 ## [1.8.42] — 2026-09-22
 
 ### Fixed — rotate to landscape and back, and every button is dead

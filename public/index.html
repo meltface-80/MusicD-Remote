@@ -1495,6 +1495,17 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
 
         <div class="settings-block">
           <div class="settings-row">
+            <span class="settings-label">Tap diagnostics <button class="settings-info-btn" data-info="For chasing a screen that stops responding. Draws a small readout at the top showing the viewport numbers and, for every tap, where it landed and which element was actually on top there. The readout cannot be tapped and never changes what a tap does. Off by default; leave it off unless you are looking at something." aria-label="Info">&#9432;</button></span>
+            <label class="switch">
+              <input type="checkbox" id="tapdebug-enabled" aria-label="Tap diagnostics">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+          <div class="settings-note">Takes effect on the next reload. Per device. The same readings are posted to <code>/api/debug/taps</code>, so they can be read from another machine when the screen itself cannot be used.</div>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
             <span class="settings-label">Updates</span>
             <button id="check-update-btn" class="settings-update-btn" type="button">Check for updates</button>
           </div>
@@ -1575,6 +1586,9 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700&display=swap">
 
+  <!-- Inert unless switched on (Settings -> System, or ?tapdebug=1). Loaded
+       first so it is recording before anything else can go wrong. -->
+  <script src="/tapdebug.js"></script>
   <script src="/sharecard.js"></script>
   <script src="/app.js"></script>
 </body>

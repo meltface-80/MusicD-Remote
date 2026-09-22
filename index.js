@@ -13167,6 +13167,42 @@ app.get("/api/debug/discover", async (req, res) => {
   }
 });
 
+/*
+ * Tap diagnostics — POST /api/debug/taps, GET /api/debug/taps
+ *
+ * The server half of public/tapdebug.js. A ring buffer in memory, never on
+ * disk: this is a live instrument for one reproduction, not a log, and a
+ * diagnostic that quietly fills the data volume would be a worse bug than the
+ * one it is chasing.
+ *
+ * The POST is unauthenticated for the same reason every other route here is —
+ * this is a LAN extension — and it stores nothing it is not given.
+ */
+const TAP_REPORTS_MAX = 20;
+let _tapReports = [];
+app.post("/api/debug/taps", (req, res) => {
+  const body = req.body || {};
+  _tapReports.push({
+    at: Date.now(),
+    ua: String(body.ua || "").slice(0, 200),
+    rotations: Number(body.rotations) || 0,
+    // Bounded on the way in: the client keeps 40 and a wedged page could
+    // otherwise report for as long as it is open.
+    events: Array.isArray(body.events) ? body.events.slice(-60) : [],
+  });
+  while (_tapReports.length > TAP_REPORTS_MAX) _tapReports.shift();
+  res.json({ ok: true, kept: _tapReports.length });
+});
+app.get("/api/debug/taps", (req, res) => {
+  if (req.query.clear !== undefined) { _tapReports = []; return res.json({ cleared: true }); }
+  res.set("Cache-Control", "no-store");
+  res.json({
+    reports: _tapReports,
+    hint: "switch it on in Settings -> System -> Tap diagnostics, or load the " +
+          "app with ?tapdebug=1; add ?clear to empty this.",
+  });
+});
+
 app.get("/api/settings/discover", (req, res) => {
   res.json({ enabled: discoverEnabled, hour: discoverHour,
              window_days: discoverWindowDays(),

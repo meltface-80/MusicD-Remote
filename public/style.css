@@ -1208,6 +1208,15 @@ main { padding-top: calc(var(--topbar-h) + 14px); }
   font-size: 14px; opacity: 0;
   transition: opacity .18s ease, transform .18s ease;
   z-index: 100;
+  /* NEVER TAPPABLE, SHOWN OR NOT. `opacity: 0` hides a box; it does not stop
+     it receiving touches, and this one is fixed over the bottom of the screen
+     at z-index 100 — above the transport pill — for the whole life of the
+     page. Its width comes from `max-width: min(560px, calc(100vw - 28px))`,
+     and `100vw` is resolved against the layout viewport, so a stale one makes
+     the invisible box wider than the screen it is sitting on. Nothing about a
+     toast is meant to be pressed; the sibling settings-info toast already
+     carries this and this one did not. */
+  pointer-events: none;
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast.error { border-color: var(--danger); }

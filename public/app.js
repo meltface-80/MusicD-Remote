@@ -11289,6 +11289,31 @@
     });
   }
 
+  // ----- Tap diagnostics -----
+  // Reads and writes the same localStorage key public/tapdebug.js reads at
+  // load. Deliberately NOT applied live: the instrument installs its listeners
+  // before anything else on the page, which is the whole point of it, and a
+  // half-installed one would measure a different page from the one that broke.
+  const tapDebugEl = document.getElementById("tapdebug-enabled");
+  const TAPDEBUG_KEY = "musicd-tapdebug";
+  if (tapDebugEl) {
+    try { tapDebugEl.checked = localStorage.getItem(TAPDEBUG_KEY) === "1"; }
+    catch (e) { /* private browsing — the switch just reads off */ }
+    tapDebugEl.addEventListener("change", () => {
+      const on = tapDebugEl.checked;
+      try {
+        if (on) localStorage.setItem(TAPDEBUG_KEY, "1");
+        else localStorage.removeItem(TAPDEBUG_KEY);
+      } catch (e) {
+        showToast("Couldn't save that on this device", "error");
+        tapDebugEl.checked = !on;
+        return;
+      }
+      showToast(on ? "Tap diagnostics on — reload the app to start recording"
+                   : "Tap diagnostics off — reload the app to stop");
+    });
+  }
+
   // ----- Waveform on/off -----
   const waveEnabledEl = document.getElementById("waveform-enabled");
   const waveEnabledNote = document.getElementById("waveform-enabled-note");
