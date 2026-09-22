@@ -1,7 +1,5 @@
 # How MusicD Remote draws waveforms for Qobuz and TIDAL
 
-A note on how this actually works, because it surprises people that it works at all.
-
 ## The constraint
 
 A Roon extension is given metadata and control. It is never given audio. There is no
