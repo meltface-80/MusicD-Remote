@@ -35,6 +35,65 @@
    * test/static/viewport-scale.test.js keeps them from coming back.
    */
 
+  /* ------------------------------------------------------------------
+   * THE WINDOW MUST NEVER BE SCROLLED. Keep it pinned.
+   *
+   * This is the iOS home-screen-app freeze, found with the instrument rather
+   * than guessed at — v1.8.40 and v1.8.42 each shipped a theory and each was
+   * wrong. What the readout actually said, from a phone with dead buttons:
+   *
+   *     win 440x894   doc 440x894          the layout viewport is NOT stale
+   *     vv  440x894 scale=1                the page is NOT scaled
+   *     vv off=0,62   page=0,62
+   *     scrollXY 0,62                <---- THE WINDOW IS SCROLLED 62px
+   *     every tap: top=img#modal-img
+   *
+   * The buttons were never dead. The window had scrolled down 62 pixels, so
+   * hit-testing ran 62px below the paint: a press on the Back button at
+   * (35, 31) was tested at (35, 93) and landed on the album artwork, which
+   * does nothing. Every control on every screen behaves that way at once,
+   * which is why it reads as "nothing works" rather than as a misplaced tap.
+   * 62px is this device's top safe-area inset, and the app is only standalone
+   * — `viewport-fit=cover` with live insets — in a home-screen app, which is
+   * why Safari and Chrome on the same phone were fine.
+   *
+   * SO THIS IS NOT A WORKAROUND FOR A SCROLL: it enforces an invariant the app
+   * already declares. `html, body { overflow: hidden }` and the shell is
+   * `position: fixed`; only <main> scrolls, and it scrolls itself. A non-zero
+   * window scroll is therefore not a state this app has, at any size, on any
+   * screen — so snapping it back cannot discard a position anybody wanted.
+   *
+   * THE ONE EXCEPTION IS A FOCUSED TEXT FIELD. iOS scrolls the window to lift
+   * an input clear of the keyboard, and fighting that would park the field
+   * under the keys — trading a bug nobody can see for one everybody can.
+   * ------------------------------------------------------------------ */
+  const pinWindow = () => {
+    if (!window.scrollX && !window.scrollY) return;
+    const el = document.activeElement;
+    const tag = el && el.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || (el && el.isContentEditable)) return;
+    window.scrollTo(0, 0);
+    // Safari has historically moved one of these and not the other, and a
+    // half-reset scroll is the same bug at a smaller offset.
+    if (document.scrollingElement) document.scrollingElement.scrollTop = 0;
+  };
+  window.addEventListener("scroll", pinWindow, { passive: true });
+  window.addEventListener("pageshow", pinWindow, { passive: true });
+  /*
+   * A rotation is not an instant: iOS fires orientationchange before the web
+   * view has finished resizing, and the offset appears as it settles — the
+   * instrument had to sample a turn three times for the same reason. One
+   * check on the event would run before the thing it is checking for exists.
+   */
+  const pinAfterSettle = () => { pinWindow(); setTimeout(pinWindow, 300); setTimeout(pinWindow, 1000); };
+  window.addEventListener("orientationchange", pinAfterSettle, { passive: true });
+  window.addEventListener("resize", pinAfterSettle, { passive: true });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", pinAfterSettle, { passive: true });
+    window.visualViewport.addEventListener("scroll", pinWindow, { passive: true });
+  }
+  window.__pinWindow = pinWindow;
+
   const grid       = document.getElementById("album-grid");
   const refreshBtn = document.getElementById("refresh-btn");
   const zoneSel    = document.getElementById("zone-select");

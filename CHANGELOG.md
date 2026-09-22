@@ -2,6 +2,60 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.45] — 2026-09-22
+
+### Fixed — the iOS home-screen freeze: the window was scrolled, not the buttons dead
+
+Found with the instrument, after two versions shipped a theory and both were
+wrong. From a phone with unresponsive buttons:
+
+    TAPDEBUG  rot=2  dpr=3
+    win 440x894   doc 440x894        the layout viewport is NOT stale
+    vv  440x894 scale=1              the page is NOT scaled
+    vv  off=0,62  page=0,62
+    scrollXY 0,62              <---- THE WINDOW IS SCROLLED 62px
+    click @35,31  top=img#modal-img
+
+**The buttons were never dead.** The window had scrolled down 62 pixels, so
+hit-testing ran 62px below the paint: a press on the Back button at (35, 31)
+was tested at (35, 93) and landed on the album artwork, which does nothing.
+Every control on every screen misses by the same amount at the same moment,
+which is why it reads as "nothing works" rather than as a tap landing slightly
+low. It also explains the two symptoms no previous theory covered — **why
+force-quitting was the only cure** (a relaunch resets the scroll) and **why
+Safari and Chrome were fine** (62px is the device's top safe-area inset, and
+only a standalone home-screen app has live insets under `viewport-fit=cover`).
+
+Both earlier theories are now positively disproved rather than merely
+unhelpful: `win` equals `doc`, so the layout viewport was never stale, and
+`scale=1`, so the page was never mis-scaled.
+
+**The fix enforces an invariant the app already declares.** `html, body` are
+`overflow: hidden`, the shell is `position: fixed`, and only `<main>` scrolls —
+it scrolls itself. A non-zero window scroll is therefore not a state this app
+has, on any screen at any size, so snapping it back to zero cannot discard a
+position anyone wanted. It is checked on `scroll`, on `pageshow`, and after a
+rotation **at 0, 300 and 1000ms** — iOS fires `orientationchange` before the
+web view has finished resizing and the offset appears as it settles, which is
+the same reason the instrument samples a turn three times.
+
+**One exception, and it matters:** a focused text field is left alone. iOS
+scrolls the window on purpose there, to lift an input clear of the keyboard,
+and fighting it would park the field under the keys — trading a bug nobody can
+see for one everybody can.
+
+`test/dom/window-pin.test.js` pins the rule rather than the freeze, which no
+headless harness can observe: the scroll offset is faked to the value the phone
+actually reported, and what is measured is whether the app puts it back. All
+four behaviours are mutation-checked — no pin, a pin that only fires on the
+event, one that fights a focused input, and one that resets when there is
+nothing to reset (which on a scroll listener is how a loop starts).
+
+Class of error: a symptom that looked like input handling and was arithmetic.
+Three versions were spent on mechanisms that could not be observed from here
+before an instrument was built; the instrument answered it on the first
+reading.
+
 ## [1.8.44] — 2026-09-22
 
 ### Changed — the instrument reads the ROTATION, not just the taps
