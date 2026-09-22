@@ -29,12 +29,64 @@ function listing(...rows) { return NR.readArtistAlbums({ data: rows }); }
 // Reading the listing
 // ---------------------------------------------------------------------------
 
+test("the cover is taken from whichever field Deezer filled in", () => {
+  // Nothing in this codebase had ever DRAWN a Deezer cover before v1.8.39, so
+  // an always-null field would have gone unnoticed since v1.8.34. The list is
+  // wide rather than clever.
+  assert.equal(NR.coverOf({ cover_medium: "m", cover: "c" }), "m");
+  assert.equal(NR.coverOf({ cover_big: "b", cover: "c" }), "b");
+  assert.equal(NR.coverOf({ cover: "c" }), "c");
+});
+
+test("with no named cover, one is built from md5_image", () => {
+  // Last resort, and safe BECAUSE it is last: if the pattern is wrong the
+  // image fails to load and the row keeps the empty tile it would have had
+  // with no cover at all. It can only turn "no cover" into "no cover".
+  const url = NR.coverOf({ md5_image: "abc123" });
+  // The host is the one Deezer actually serves, taken from a real
+  // /api/discover response rather than from memory — v1.8.39 guessed
+  // "e-cdns-images" and had the path shape right and the host wrong.
+  assert.match(url, /^https:\/\/cdn-images\.dzcdn\.net\/images\/cover\/abc123\//);
+  assert.equal(NR.coverOf({}), null);
+});
+
+test("a cover field never overrides a real one with the built URL", () => {
+  assert.equal(NR.coverOf({ cover_medium: "m", md5_image: "abc" }), "m");
+});
+
 test("singles and EPs are not new records", () => {
   const out = listing(
     album("Real Album", "2026-09-01"),
     album("A Single",   "2026-09-05", { record_type: "single" }),
     album("An EP",      "2026-09-06", { record_type: "ep" }));
   assert.deepEqual(out.map(a => a.title), ["Real Album"]);
+});
+
+test("an EP-length release is not an album, when Deezer says how long it is", () => {
+  // Singles and EPs were reported on a screen that already filtered for
+  // record_type === "album". The track count is the belt to that braces, and
+  // it is only consulted when Deezer actually sends one.
+  const out = listing(
+    album("Proper Record", "2026-09-01", { nb_tracks: 11 }),
+    album("Four Tracker",  "2026-09-02", { nb_tracks: 4 }),
+    album("Unstated",      "2026-09-03"));
+  assert.deepEqual(out.map(a => a.title).sort(), ["Proper Record", "Unstated"],
+    "a row with no track count must not be rejected for a field it does not have");
+});
+
+test("classify names the rule that rejected a row", () => {
+  // The build and the debug endpoint both call this, so the probe can never
+  // describe a decision the screen did not make.
+  assert.equal(NR.classify({ record_type: "single", title: "x", release_date: "2026-01-01" }).reason,
+    "record_type is single");
+  assert.equal(NR.classify({ title: "x", release_date: "2026-01-01" }).reason,
+    "record_type is missing");
+  assert.match(NR.classify({ record_type: "album", nb_tracks: 2, title: "x",
+                             release_date: "2026-01-01" }).reason, /2 tracks/);
+  assert.match(NR.classify({ record_type: "album", title: "x",
+                             release_date: "0000-00-00" }).reason, /release_date/);
+  assert.equal(NR.classify({ record_type: "album", title: "x",
+                             release_date: "2026-01-01" }).ok, true);
 });
 
 test("a row with no usable date is dropped, not dated today", () => {

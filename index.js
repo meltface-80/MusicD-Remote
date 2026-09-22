@@ -12769,7 +12769,17 @@ function discoverSeeds() {
  * is worse than a short screen.
  */
 async function discoverArtistReleases(seedName, ownedKeys, now) {
-  const key = "nr:" + newRel.normalize(seedName);
+  /*
+   * THE VERSION IN THE KEY IS LOAD-BEARING. A cached listing is a row SHAPE as
+   * much as it is data, and v1.8.39 widened the cover lookup — a row stored by
+   * v1.8.37 has whatever `cover` the narrow rule found, which for these rows
+   * was nothing at all. Reusing it would mean the fix did not show for another
+   * seven days, and "the fix is in but you cannot see it yet" is the worst
+   * thing to hand somebody who has just reported a bug. Bumping the key
+   * retires the old generation instead of trying to migrate it; the stale rows
+   * age out on smartCachePrune's own schedule.
+   */
+  const key = "nr2:" + newRel.normalize(seedName);
   let albums = smartCacheGet(key, discoverArtistTtlMs());
   if (!albums) {
     const search = await httpJson("https://api.deezer.com/search/artist?limit=" +
@@ -12846,6 +12856,36 @@ function discoverAttemptedToday(day) {
   return !!smartCacheGet(discoverAttemptKey(day), 24 * 60 * 60 * 1000);
 }
 
+/*
+ * THE RULES THAT PRODUCED A DAY'S LIST, stamped beside it.
+ *
+ * A day is persisted, and "have we built today" was the only question asked
+ * before reusing it — so shipping a change to WHAT COUNTS as a release had no
+ * effect until the following day, and nobody could tell whether a screen they
+ * were looking at had been built by the new rules or the old ones. v1.8.40
+ * added a track-count floor and then could not be evaluated for exactly this
+ * reason: the rows in front of the user predated it, and pressing Refresh was
+ * a step only someone who had read the changelog would know to take.
+ *
+ * Same answer as the waveform's analysis stamp in v1.8.24: record the rules
+ * next to the data, and treat a day built under different ones as not built.
+ * A version that changes any of these refreshes itself within one timer tick.
+ * `gen` is the manual escape hatch for a change the numbers below do not
+ * capture — a new source, a changed matcher — and is bumped by hand.
+ */
+function discoverRulesStamp() {
+  return [
+    "gen2",
+    discoverWindowDays(), discoverSeedCount(), discoverMaxRows(),
+    newRel.WANTED_PER_ARTIST, newRel.MIN_ALBUM_TRACKS,
+  ].join(":");
+}
+function discoverStampKey(day) { return "nr-rules:" + day; }
+function discoverStampCurrent(day) {
+  const got = smartCacheGet(discoverStampKey(day), 24 * 60 * 60 * 1000);
+  return !!got && got.stamp === discoverRulesStamp();
+}
+
 // Build today's list. Called from the timer only — never from a request
 // handler, so nothing a user does waits on eighty network calls.
 async function buildNewReleases(day) {
@@ -12899,6 +12939,10 @@ async function buildNewReleases(day) {
   const rows = found.slice(0, discoverMaxRows());
   persistNewReleases(day, rows);
   smartCacheSet(discoverAttemptKey(day), { at: Date.now(), rows: rows.length });
+  // Written LAST, and only after the rows are down: a stamp ahead of the data
+  // it describes would mark a failed build as current and freeze the old list
+  // in place until tomorrow.
+  smartCacheSet(discoverStampKey(day), { at: Date.now(), stamp: discoverRulesStamp() });
   console.log("[discover] " + seeds.length + " seeds (" + asked + " asked, " +
               failed + " failed) -> " + found.length + " releases, kept " +
               rows.length + " in " + Math.round((Date.now() - t0) / 1000) + "s");
@@ -12924,8 +12968,11 @@ function kickDiscover(why, force) {
   const day = smartDayKey();
   if (_discoverBuilding) return true;
   if (!force) {
-    if (readNewReleases(day).length) return false;
-    if (discoverAttemptedToday(day)) return false;
+    // A day already built under THESE rules is done. One built under older
+    // ones is not — see discoverRulesStamp.
+    const current = discoverStampCurrent(day);
+    if (current && readNewReleases(day).length) return false;
+    if (current && discoverAttemptedToday(day)) return false;
     if (!discoverDue()) return false;
   }
   _discoverBuilding = bgRun("discover (" + why + ")", () => buildNewReleases(day))
@@ -13017,6 +13064,12 @@ app.get("/api/discover", async (req, res) => {
       enabled: discoverEnabled, day, releases: out,
       window_days: discoverWindowDays(),
       building: !!_discoverBuilding,
+      // Which rules produced these rows, and whether they are the rules this
+      // build runs. Without it, "is this list stale?" is unanswerable from
+      // the outside — which is what made v1.8.40's filter change impossible
+      // to evaluate from a pasted response.
+      rules: discoverRulesStamp(),
+      rules_current: discoverStampCurrent(day),
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -13036,6 +13089,82 @@ app.post("/api/discover/rebuild", (req, res) => {
                   : "Not paired with Roon Core yet" });
   }
   res.json({ ok: true, building: true });
+});
+
+/*
+ * GET /api/debug/discover?artist=<name>
+ *
+ * What Deezer actually said, and what each rule made of it.
+ *
+ * THIS EXISTS BECAUSE TWO ROUNDS OF THIS FEATURE HAVE NOW TURNED ON A FIELD
+ * NOBODY HAD LOOKED AT. The cover was read from `cover_medium` for five
+ * versions without anything ever drawing it, and singles were reported on a
+ * screen that filters `record_type === "album"` — both are questions a single
+ * look at the payload answers and no amount of reading the code does. It is
+ * the same lesson as the waveform probe in v1.8.30: shipping a build to test a
+ * hypothesis is the most expensive way to ask a question.
+ *
+ * Bypasses the cache on purpose — a cached listing is the answer to what
+ * Deezer said A WEEK AGO, which is not what anyone is asking when they open
+ * this.
+ */
+app.get("/api/debug/discover", async (req, res) => {
+  const artist = String(req.query.artist || "").trim();
+  if (!artist) {
+    // With no artist, name the ones the build would actually ask about — that
+    // is usually the real question ("why is nothing from X on here?").
+    return res.json({
+      seeds: discoverSeeds().map(s => ({ name: s.name, days_played: s.days })),
+      hint: "add ?artist=<name> to see Deezer's rows for one of these",
+    });
+  }
+  try {
+    const search = await httpJson("https://api.deezer.com/search/artist?limit=" +
+      similar.SEARCH_ROWS + "&q=" + encodeURIComponent(artist));
+    const candidates = similar.readDeezerArtists(search, artist);
+    const exact = candidates.filter(c => c.exact);
+    const out = {
+      artist,
+      matched: candidates.map(c => ({ name: c.name, id: c.id, exact: c.exact })),
+      // The seed match is EXACT here, unlike everywhere else — see
+      // discoverArtistReleases for why.
+      used: exact.length ? exact[0] : null,
+      rows: [],
+    };
+    if (!exact.length) {
+      out.note = "no exact name match on Deezer — this act is skipped";
+      return res.json(out);
+    }
+    const listing = await httpJson("https://api.deezer.com/artist/" +
+      encodeURIComponent(exact[0].id) + "/albums?limit=50");
+    const rows = (listing && Array.isArray(listing.data)) ? listing.data : [];
+    out.row_count = rows.length;
+    // Every field the rules read, raw, plus this row's verdict from the SAME
+    // classifier the build uses.
+    out.rows = rows.map(a => {
+      const v = newRel.classify(a);
+      return {
+        title:        a && a.title,
+        record_type:  a && a.record_type,
+        nb_tracks:    a && a.nb_tracks,
+        release_date: a && a.release_date,
+        cover_fields: a ? {
+          cover_medium: !!a.cover_medium, cover_big: !!a.cover_big,
+          cover_small: !!a.cover_small, cover_xl: !!a.cover_xl,
+          cover: !!a.cover, md5_image: !!a.md5_image,
+        } : null,
+        cover_used:   a ? newRel.coverOf(a) : null,
+        kept:         v.ok,
+        rejected_because: v.ok ? null : v.reason,
+      };
+    });
+    const kept = out.rows.filter(r => r.kept).length;
+    out.summary = kept + " of " + rows.length + " rows are albums this screen " +
+                  "would consider; the window and the library check are applied after.";
+    res.json(out);
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
 });
 
 app.get("/api/settings/discover", (req, res) => {

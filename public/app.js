@@ -6,17 +6,94 @@
  */
 
 (() => {
-  // Disable pinch-zoom on iOS Safari (which ignores user-scalable=no since iOS 10)
-  ["gesturestart", "gesturechange", "gestureend"].forEach((evt) => {
-    document.addEventListener(evt, (e) => e.preventDefault(), { passive: false });
-  });
-  // Belt-and-braces: cancel any quick second tap (the iOS double-tap-to-zoom heuristic)
-  let lastTouchEnd = 0;
-  document.addEventListener("touchend", (e) => {
-    const now = Date.now();
-    if (now - lastTouchEnd < 320) e.preventDefault();
-    lastTouchEnd = now;
-  }, { passive: false });
+  /*
+   * TWO ZOOM HACKS USED TO LIVE HERE. Both are gone (v1.8.42), with the
+   * viewport meta's `maximum-scale=1,user-scalable=no`, and the reasons are
+   * worth keeping because each of them made a real bug.
+   *
+   * 1. `gesturestart/gesturechange/gestureend` were preventDefault()ed to
+   *    re-impose the pinch-zoom block that iOS Safari refuses to honour from
+   *    the viewport meta. IT WORKED, AND THAT WAS THE PROBLEM: pinching is the
+   *    only way a person can get a mis-scaled page back, so with this in place
+   *    a page that came back from a rotation at the wrong scale could not be
+   *    recovered at all. That is exactly the reported symptom — "force closing
+   *    is the only way to restore function". The app took away the escape.
+   *
+   * 2. A `touchend` that preventDefault()ed any tap within 320ms of the last
+   *    one, to suppress double-tap zoom. preventDefault on touchend CANCELS
+   *    THE CLICK, so this also turned "that tap did nothing" into "nothing
+   *    works": somebody whose first tap misses taps again straight away, and
+   *    every impatient repeat was cancelled by this. It could only ever make a
+   *    dead-feeling screen deader.
+   *
+   * Neither was buying anything. Double-tap-to-zoom is already off the correct
+   * way — `touch-action: manipulation` on html/body in style.css — which
+   * suppresses the double-tap gesture WITHOUT disabling pinch. The two hacks
+   * were belt-and-braces over a rule that was already doing the job properly,
+   * and between them they cost the user every way out of a bad frame.
+   *
+   * test/static/viewport-scale.test.js keeps them from coming back.
+   */
+
+  /* ------------------------------------------------------------------
+   * THE WINDOW MUST NEVER BE SCROLLED. Keep it pinned.
+   *
+   * This is the iOS home-screen-app freeze, found with the instrument rather
+   * than guessed at — v1.8.40 and v1.8.42 each shipped a theory and each was
+   * wrong. What the readout actually said, from a phone with dead buttons:
+   *
+   *     win 440x894   doc 440x894          the layout viewport is NOT stale
+   *     vv  440x894 scale=1                the page is NOT scaled
+   *     vv off=0,62   page=0,62
+   *     scrollXY 0,62                <---- THE WINDOW IS SCROLLED 62px
+   *     every tap: top=img#modal-img
+   *
+   * The buttons were never dead. The window had scrolled down 62 pixels, so
+   * hit-testing ran 62px below the paint: a press on the Back button at
+   * (35, 31) was tested at (35, 93) and landed on the album artwork, which
+   * does nothing. Every control on every screen behaves that way at once,
+   * which is why it reads as "nothing works" rather than as a misplaced tap.
+   * 62px is this device's top safe-area inset, and the app is only standalone
+   * — `viewport-fit=cover` with live insets — in a home-screen app, which is
+   * why Safari and Chrome on the same phone were fine.
+   *
+   * SO THIS IS NOT A WORKAROUND FOR A SCROLL: it enforces an invariant the app
+   * already declares. `html, body { overflow: hidden }` and the shell is
+   * `position: fixed`; only <main> scrolls, and it scrolls itself. A non-zero
+   * window scroll is therefore not a state this app has, at any size, on any
+   * screen — so snapping it back cannot discard a position anybody wanted.
+   *
+   * THE ONE EXCEPTION IS A FOCUSED TEXT FIELD. iOS scrolls the window to lift
+   * an input clear of the keyboard, and fighting that would park the field
+   * under the keys — trading a bug nobody can see for one everybody can.
+   * ------------------------------------------------------------------ */
+  const pinWindow = () => {
+    if (!window.scrollX && !window.scrollY) return;
+    const el = document.activeElement;
+    const tag = el && el.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || (el && el.isContentEditable)) return;
+    window.scrollTo(0, 0);
+    // All three, because Safari has historically moved one scroller and not
+    // another, and a half-reset offset is the same bug at a smaller number.
+    if (document.scrollingElement) document.scrollingElement.scrollTop = 0;
+    if (document.body) document.body.scrollTop = 0;
+  };
+  window.addEventListener("scroll", pinWindow, { passive: true });
+  window.addEventListener("pageshow", pinWindow, { passive: true });
+  /*
+   * A rotation is not an instant: iOS fires orientationchange before the web
+   * view has finished resizing, and the offset appears as it settles — the
+   * instrument had to sample a turn three times for the same reason. One
+   * check on the event would run before the thing it is checking for exists.
+   */
+  const pinAfterSettle = () => { pinWindow(); setTimeout(pinWindow, 300); setTimeout(pinWindow, 1000); };
+  window.addEventListener("orientationchange", pinAfterSettle, { passive: true });
+  window.addEventListener("resize", pinAfterSettle, { passive: true });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", pinAfterSettle, { passive: true });
+    window.visualViewport.addEventListener("scroll", pinWindow, { passive: true });
+  }
+  window.__pinWindow = pinWindow;
 
   const grid       = document.getElementById("album-grid");
   const refreshBtn = document.getElementById("refresh-btn");
@@ -1168,7 +1245,8 @@
     wrap.className = "discover-list";
     for (const rel of releases) {
       if (!rel || !rel.album) continue;
-      wrap.appendChild(window.__goRow(rel, rel.album, discoverSubLine(rel)));
+      wrap.appendChild(window.__goRow(rel, rel.album, discoverSubLine(rel),
+                                      discoverArt(rel)));
     }
     grid.appendChild(wrap);
 
@@ -1183,6 +1261,27 @@
     }
   }
   window.__showDiscover = showDiscover;
+
+  /*
+   * Where a release's cover comes from, or "" for none.
+   *
+   * ROON'S OWN ART WINS WHENEVER THERE IS ANY. A record the library already
+   * holds has an image_key, and that art is served from this box, is already
+   * cached, and is the same picture the album shows everywhere else in the
+   * app — using Deezer's copy for it would put two different covers on the
+   * same record on two different screens.
+   *
+   * Everything else falls back to the cover Deezer named during the build,
+   * loaded straight from their CDN. That is what the Smart Picks cards and the
+   * Pitchfork grid already do with their services' images, so it introduces no
+   * new kind of request; rowArt() handles the ones that never arrive.
+   */
+  function discoverArt(rel) {
+    if (rel.image_key) {
+      return "/api/image/" + encodeURIComponent(rel.image_key) + "?size=160";
+    }
+    return rel.cover || "";
+  }
 
   /*
    * The quiet line under a release: who made it, and when it came out.
@@ -9222,12 +9321,39 @@
   publish();
 
   if (typeof ResizeObserver === "function") {
-    new ResizeObserver(publish).observe(bar);
-  } else {
-    // Safari < 13.1. Rotation and the search row are the changes that matter,
-    // and both fire one of these.
-    window.addEventListener("resize", publish, { passive: true });
-    window.addEventListener("orientationchange", publish, { passive: true });
+    /*
+     * BORDER BOX, NOT THE DEFAULT CONTENT BOX — and the difference is the
+     * whole bug this line fixes.
+     *
+     * What is published is `getBoundingClientRect().height`, which INCLUDES
+     * padding. The bar's padding is `calc(12px + env(safe-area-inset-top))`,
+     * so the inset is inside it. A ResizeObserver with default options
+     * watches the CONTENT box, which the inset is not part of — so a change
+     * to the safe area could move the bar's real height without the observer
+     * ever firing, and `--topbar-h` would keep a value from the orientation
+     * before. `main` reserves that number as padding, so the Home screen
+     * opened one whole inset too far down, with an empty band above the first
+     * row. Reported after rotating, which is the one thing that changes an
+     * inset.
+     */
+    new ResizeObserver(publish).observe(bar, { box: "border-box" });
+  }
+  /*
+   * AND the viewport events as well, not as a fallback.
+   *
+   * The observer is the right primary — it catches the search row opening,
+   * which fires nothing else — but an inset can change with no box change at
+   * all, and a rotation is not an instant: iOS fires orientationchange before
+   * the web view has finished resizing, so a value read on the event can be
+   * from mid-transition. Sampled again as it settles, the same way the window
+   * pin and the diagnostic panel sample a turn, and `h !== last` means the
+   * extra reads cost a comparison and nothing else.
+   */
+  const republish = () => { publish(); setTimeout(publish, 300); setTimeout(publish, 1000); };
+  window.addEventListener("resize", republish, { passive: true });
+  window.addEventListener("orientationchange", republish, { passive: true });
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", republish, { passive: true });
   }
 })();
 
@@ -9692,7 +9818,7 @@
    * @param {string} primary  the bold line
    * @param {string} sub      the quiet line, or ""
    */
-  function goRow(item, primary, sub) {
+  function goRow(item, primary, sub, art) {
     const label = document.createElement("span");
     label.className = "share-similar-name";
     label.textContent = primary;
@@ -9700,13 +9826,34 @@
     rec.className = "share-similar-rec";
     if (sub) rec.textContent = sub;
 
+    /*
+     * WITH ARTWORK, the two lines become a column beside the cover; without it
+     * they stay direct children of the row exactly as before.
+     *
+     * Two shapes rather than one, deliberately. The suggestions under the share
+     * card are a compact list inside a sheet and carry no artwork — that is
+     * the older decision and this must not quietly change it — while Discover
+     * is a full screen of RECORDS, where a wall of text is the odd one out.
+     * Callers that pass no art get byte-identical markup to before.
+     */
+    let holder = null;
+    if (art) {
+      holder = document.createElement("span");
+      holder.className = "row-text";
+      holder.appendChild(label);
+      if (sub) holder.appendChild(rec);
+    }
+    const fill = (row) => {
+      if (art) { row.appendChild(rowArt(art)); row.appendChild(holder); }
+      else { row.appendChild(label); if (sub) row.appendChild(rec); }
+    };
+
     let row;
     if (item.in_library && typeof item.offset === "number") {
       row = document.createElement("button");
       row.type = "button";
       row.className = "share-similar-act is-library";
-      row.appendChild(label);
-      if (sub) row.appendChild(rec);
+      fill(row);
       row.appendChild(tagEl("Queue"));
       row.addEventListener("click", () => queueSuggestion(item, row));
     } else {
@@ -9718,19 +9865,51 @@
         row.href = svc.url;
         row.target = "_blank";
         row.rel = "noopener noreferrer";
-        row.appendChild(label);
-        if (sub) row.appendChild(rec);
+        fill(row);
         row.appendChild(tagEl(svc.name));
       } else {
         // Nothing to link to — every service switched off, or no record was
         // named. Still shown, because the name itself is the answer.
         row = document.createElement("div");
         row.className = "share-similar-act";
-        row.appendChild(label);
-        if (sub) row.appendChild(rec);
+        fill(row);
       }
     }
+    if (art) row.classList.add("has-art");
     return row;
+  }
+
+  /*
+   * A row's cover, in a box that holds its place whether or not the image ever
+   * arrives.
+   *
+   * THE TILE IS ALWAYS THERE AND THE IMAGE IS WHAT IS OPTIONAL. These covers
+   * come from a third party (Deezer, for a record the library does not have),
+   * so some fraction of them will 404, be blocked, or simply not exist — and
+   * an <img> with a dead src draws the browser's broken-image glyph, which
+   * reads as "this app is broken" rather than "this record has no cover". On
+   * error the img removes itself and the empty tile stands, so every row keeps
+   * the same shape either way.
+   */
+  function rowArt(url) {
+    const box = document.createElement("span");
+    box.className = "row-art";
+    // What this tile was ASKED for, kept on the box rather than only on the
+    // img: the img removes itself when the cover does not load, and without
+    // this there is then nothing left to say which URL was tried — neither for
+    // a person looking at the row nor for a test asserting that an in-library
+    // record used Roon's art rather than a streaming service's.
+    box.dataset.artSrc = url;
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = "";
+    img.addEventListener("error", () => {
+      box.dataset.artFailed = "1";
+      if (img.parentNode) img.parentNode.removeChild(img);
+    });
+    img.src = url;
+    box.appendChild(img);
+    return box;
   }
 
   function renderSimilar(acts) {

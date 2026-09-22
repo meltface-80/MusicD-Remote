@@ -2,6 +2,550 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.50] — 2026-09-22
+
+### Fixed — the album view's last content sat under the now-playing pill
+
+Reported from a phone in landscape: About this album and the service link were
+behind the transport bar, with no way to scroll them out.
+
+**A shorthand ate the reserve.** `.modal-body` sets
+`padding-bottom: calc(106px + env(safe-area-inset-bottom))` precisely so the
+end of the content can scroll clear of the floating pill. The two-column rule
+for 720px and up then writes `padding: 28px` — a shorthand, so it resets the
+bottom along with the rest — and nothing put it back.
+
+Measured at 844x390 before changing anything: the panel runs to y=374, the
+pill's top edge is at y=308, so its last 66px were underneath while the body
+reserved 28.
+
+**It is not only landscape.** The mutation test shows the same 37px of content
+stranded at 1400x900 — a centred dialog reaches its `max-height` on any album
+with enough tracks, and its bottom edge then sits in the pill's band at any
+window size. Landscape on a phone is just where it is unavoidable, because the
+panel is short AND centred with a 24px margin, so it always ends within a few
+pixels of the screen.
+
+Restored rather than recalculated: same pill, same distance off the same bottom
+edge, so it is the same number. The cost is that a short album's dialog now
+carries that padding under its last row on a desktop, where it reads as
+padding rather than as a fault — and the alternative, a second number for the
+same gap, is how the two drift apart.
+
+`test/dom/modal-transport-clearance.test.js` scrolls the body to the very end
+and asserts the last track is fully above the pill, at both sizes. It also
+asserts the panel really does overlap the pill's band, so it cannot quietly
+start passing at a size where there was never anything to clear. Removing the
+reserve again fails it at both.
+
+## [1.8.49] — 2026-09-22
+
+### Removed — the version field on `/api/status`
+
+The last of the diagnostic scaffolding. v1.8.48 kept it on the argument that
+knowing which build a report came from is always useful; the call was the
+user's and the answer was no. Nothing read it — both callers of `/api/status`
+use `paired`, the index counts and the sync flags — so it goes cleanly and the
+route is back to exactly the fields it had before the freeze was chased.
+
+Nothing else from that work remains in the app. What stays is the fix itself:
+the window pin from v1.8.45 and the `--topbar-h` measurement from v1.8.47.
+
+## [1.8.48] — 2026-09-22
+
+### Removed — the tap diagnostics
+
+It did its job. The iOS home-screen freeze had survived two fixes built on
+mechanisms that could not be observed from here; the instrument answered it on
+the first reading (`scrollXY 0,62`, every tap hit-testing to the album art) and
+v1.8.45 fixed it. With the question settled there is no reason to ship the
+question-asking apparatus to everyone.
+
+Gone completely: `public/tapdebug.js`, its `<script>` tag, the
+Settings → System toggle and its wiring, `POST`/`GET /api/debug/taps` and the
+report buffer behind them, and `test/dom/tapdebug.test.js`. Nothing in the app
+references any of it.
+
+**The fix it found is untouched.** The window pin — reset on `scroll` and
+`pageshow`, re-checked at 0/300/1000ms after a rotation, and a focused text
+field left alone so iOS can still lift an input clear of the keyboard — is
+exactly as it was, and `test/dom/window-pin.test.js` still holds all four of
+its rules. What went with the instrument is the pin's self-reporting
+(`window.__pinStats`), which existed only so a screenshot could say whether
+the reset had run; the reset itself, including clearing all three scrollers,
+stays.
+
+**One line is deliberately kept:** `/api/status` still reports `version`. That
+was added because a screenshot could not say which build it came from, and
+that is true of every report rather than only the one that prompted it. It
+costs a field and settles the first question any bug report has to answer.
+
+## [1.8.47] — 2026-09-22
+
+### Fixed — Home opened a safe-area inset too far down after rotating
+
+Reported with two screenshots a minute apart: the same rows in the same order,
+the whole lot pushed down by an empty band. The band is ~62px — this device's
+top safe-area inset, the same number as the scroll offset in v1.8.45, and for
+a related reason.
+
+**A one-word bug.** `--topbar-h` is published from
+`getBoundingClientRect().height`, which INCLUDES padding, and the bar's padding
+is `calc(12px + env(safe-area-inset-top))` — so the inset is inside it. The
+`ResizeObserver` watching the bar used default options, and those watch the
+**content box**, which the inset is not part of. A change to the safe area
+could therefore move the bar's real height without the observer firing at all,
+leaving `--topbar-h` holding a value from the orientation before — and `main`
+reserves that number as its top padding, so Home opened with a band of nothing
+above the first row.
+
+**And a second gap behind it, which is the one a test can see.** The `resize`
+and `orientationchange` listeners existed only in the `else` branch taken when
+`ResizeObserver` is missing. On every modern browser that branch is dead — so a
+rotation notified nothing at all, and the only thing that could have corrected
+`--topbar-h` was the observer that cannot see padding. Both are fixed: the
+observer takes `{ box: "border-box" }`, and the viewport events are listened to
+**always**, sampling again at 300ms and 1s because a rotation is not an instant
+(the same reason the window pin and the diagnostic panel sample a turn three
+times).
+
+Yes, this was almost certainly introduced by the rotation work: before v1.8.40
+the app refused to run in landscape, so nothing ever changed an inset while it
+was open.
+
+`test/dom/topbar-height.test.js` simulates the inset the only way this harness
+can — by changing the bar's padding, which is exactly where the inset lives and
+exactly what was invisible — and then fires the events a rotation fires. Worth
+recording: **ResizeObserver never fires in this headless harness at all**, which
+was measured rather than assumed (an observer installed here does not even get
+the single callback `observe()` is supposed to deliver). So the observer half
+of the fix is not testable here and the file says so, rather than implying
+coverage it does not have.
+
+## [1.8.46] — 2026-09-22
+
+### Changed — the instrument now measures the FIX, not just the fault
+
+v1.8.45 reset the window scroll and the 62px offset came back anyway. The next
+reading showed the offset still there — and could not say **whether the reset
+had run and failed, or had never run at all.** The panel looks identical either
+way, and those two need opposite next steps. That gap is closed here.
+
+Three things the readout now states, each of which decides something:
+
+- **Which build it is.** `TAPDEBUG v1.8.46`. A screenshot of the panel could
+  not previously say whether it came from a build with the fix in it, and "did
+  it ship?" has to be answered before any other number on the panel means
+  anything.
+- **What the pin did.** `pin fired=3  62->62  <-- DID NOT MOVE`, or `(moved)`,
+  or `pin NOT IN THIS BUILD`. The reset records its own before and after at the
+  only place that knows, so the question becomes a boolean: **is this offset a
+  document scroll at all?** If the number will not move when it is set to
+  zero, no amount of scrolling will ever fix it and the cause is elsewhere.
+- **Whether anything overflows.** `overflow de=62 body=0` versus
+  `overflow de=0 body=0`. 62px is the device's top safe-area inset, so either
+  the document is exactly that much taller than the box showing it — something
+  overflows, and the fix is to stop it — or it is not, and the offset is not a
+  scroll in the ordinary sense at all.
+
+One detail from the last reading worth recording, because it shapes what to
+look for: at `+0ms` the rotation sample carried **no verdict**, and by `+300ms`
+it did. The offset is not present at the moment `orientationchange` fires; it
+appears while the web view settles. That is why the pin samples late as well as
+early, and it rules out anything that would have to be true before the
+rotation.
+
+The pin itself is unchanged apart from the recording, and it also clears
+`document.body.scrollTop` now — Safari has historically moved one scroller and
+not another, and a half-reset offset is the same bug at a smaller number.
+
+## [1.8.45] — 2026-09-22
+
+### Fixed — the iOS home-screen freeze: the window was scrolled, not the buttons dead
+
+Found with the instrument, after two versions shipped a theory and both were
+wrong. From a phone with unresponsive buttons:
+
+    TAPDEBUG  rot=2  dpr=3
+    win 440x894   doc 440x894        the layout viewport is NOT stale
+    vv  440x894 scale=1              the page is NOT scaled
+    vv  off=0,62  page=0,62
+    scrollXY 0,62              <---- THE WINDOW IS SCROLLED 62px
+    click @35,31  top=img#modal-img
+
+**The buttons were never dead.** The window had scrolled down 62 pixels, so
+hit-testing ran 62px below the paint: a press on the Back button at (35, 31)
+was tested at (35, 93) and landed on the album artwork, which does nothing.
+Every control on every screen misses by the same amount at the same moment,
+which is why it reads as "nothing works" rather than as a tap landing slightly
+low. It also explains the two symptoms no previous theory covered — **why
+force-quitting was the only cure** (a relaunch resets the scroll) and **why
+Safari and Chrome were fine** (62px is the device's top safe-area inset, and
+only a standalone home-screen app has live insets under `viewport-fit=cover`).
+
+Both earlier theories are now positively disproved rather than merely
+unhelpful: `win` equals `doc`, so the layout viewport was never stale, and
+`scale=1`, so the page was never mis-scaled.
+
+**The fix enforces an invariant the app already declares.** `html, body` are
+`overflow: hidden`, the shell is `position: fixed`, and only `<main>` scrolls —
+it scrolls itself. A non-zero window scroll is therefore not a state this app
+has, on any screen at any size, so snapping it back to zero cannot discard a
+position anyone wanted. It is checked on `scroll`, on `pageshow`, and after a
+rotation **at 0, 300 and 1000ms** — iOS fires `orientationchange` before the
+web view has finished resizing and the offset appears as it settles, which is
+the same reason the instrument samples a turn three times.
+
+**One exception, and it matters:** a focused text field is left alone. iOS
+scrolls the window on purpose there, to lift an input clear of the keyboard,
+and fighting it would park the field under the keys — trading a bug nobody can
+see for one everybody can.
+
+`test/dom/window-pin.test.js` pins the rule rather than the freeze, which no
+headless harness can observe: the scroll offset is faked to the value the phone
+actually reported, and what is measured is whether the app puts it back. All
+four behaviours are mutation-checked — no pin, a pin that only fires on the
+event, one that fights a focused input, and one that resets when there is
+nothing to reset (which on a scroll listener is how a loop starts).
+
+Class of error: a symptom that looked like input handling and was arithmetic.
+Three versions were spent on mechanisms that could not be observed from here
+before an instrument was built; the instrument answered it on the first
+reading.
+
+## [1.8.44] — 2026-09-22
+
+### Changed — the instrument reads the ROTATION, not just the taps
+
+New and decisive fact from the report: **it happens only in the home-screen
+app.** Safari and Chrome on the same phone are fine. That rules out everything
+about the page's own markup and behaviour that those three share — which is
+almost all of it — and points at how iOS sizes a standalone web view across an
+orientation change.
+
+v1.8.43's instrument was built around taps, and that is the wrong end of it
+here: **if the presses are not arriving, the tap rows stay empty and the panel
+says nothing.** The rotation is now the headline.
+
+- **A rotation is sampled three times** — on the event, at 300ms and at one
+  second. iOS fires `orientationchange` before the web view has finished
+  resizing, and a standalone app settles later than a tabbed one, so a single
+  reading taken on the event catches the middle of the transition and would
+  call a viewport stale when it is only mid-flight. The last sample is the one
+  that says whether it ever settled.
+- **A one-line verdict, in plain words, and the panel turns red for it.** Six
+  numbers that need interpreting are no use to somebody holding a phone that
+  will not respond. Each test is a plain comparison, and each names a different
+  fault: `LAYOUT VIEWPORT STALE` (win ≠ doc), `ORIENTATION AND SIZE DISAGREE`,
+  `PAGE IS SCALED`, `VISUAL VIEWPORT OFFSET`, `VISUAL != WINDOW WIDTH`,
+  `WINDOW SCROLLED`.
+- **The readout states whether it is a home-screen app**, because a reading
+  that does not say which of the three it came from cannot be compared with
+  another one.
+- **"Nothing recorded yet" is now said out loud.** An empty tap list after
+  tapping is the single most useful reading there is — it means the presses are
+  not reaching the page at all — and a blank space does not say it.
+
+**An empty verdict with dead buttons is a finding too**: it would say the
+viewport is intact and rule out every mechanism this file was built to catch.
+
+Also: the per-press no-click check is scheduled from the press instead of swept
+by a permanent 250ms timer. A poll that runs for the life of the page costs
+something on a phone and nothing on a page nobody is pressing — and under the
+harness's virtual clock it was fast-forwarded into thousands of callbacks that
+starved the driver.
+
+**One for the notebook.** The first version of the new assertions used
+`/\*\*\*/` to look for the verdict marker inside a driver template literal. A
+backslash escape collapses before the driver ever sees it, so that arrived as
+`/***/` — which JavaScript reads as the start of a block comment, and it took
+the rest of the driver with it. Every test in the file went red at once, which
+is at least an honest way to find out. Both such regexes are `indexOf` now.
+
+## [1.8.43] — 2026-09-22
+
+### Added — tap diagnostics, because two fixes have now been wrong
+
+"Rotate to landscape, rotate back, and no button works; force-quitting is the
+only way out" has survived v1.8.40 (the landscape block) and v1.8.42 (the
+viewport scale pins and the pinch blocker), and a fresh install with cleared
+history rules out a stale PWA. Both of those were shipped on mechanisms that
+**cannot be observed from here** — the harness is headless Chromium, with no
+rotation, no iOS and no visual viewport of its own — and reading the code has
+now produced two plausible stories and two wrong ones.
+
+So this stops guessing. `public/tapdebug.js` is an instrument, off by default,
+switched on in **Settings → System → Tap diagnostics** or by loading the app
+with `?tapdebug=1` (which persists, because an address bar still works when the
+app's own buttons do not).
+
+It draws a readout at the top of the screen — **no interaction needed, because
+when the bug is present there is none to be had** — showing `window.inner*`,
+`documentElement.client*`, the visual viewport's size, **scale** and offsets, a
+rotation counter, and for every tap: where it landed, what
+`document.elementFromPoint` says was actually on top there, whether the event
+target and the topmost element disagree, and **whether a click ever followed
+the pointerdown**. Each reading names a different culprit:
+
+| what the readout shows | what it means |
+|---|---|
+| events stop appearing | the touches are not reaching the page at all |
+| pointerdown, then `NO-CLICK` | something is cancelling the click |
+| `top=` names a layer | that layer is on top, and it is the fault |
+| `tgt=` differs from `top=` | hit-testing is offset from what is painted |
+| `scale=` is not 1, or offsets are not 0 | the page came back at the wrong scale |
+| `win`/`doc`/`vv` disagree | the viewports disagree after rotating |
+
+The same records are posted to `/api/debug/taps` (a ring buffer in memory, never
+on disk), so they can be read from a desktop rather than photographed off a
+phone.
+
+**The instrument is `pointer-events: none`, and a test fails if that changes.**
+It is a fixed, full-width element at the top of the screen — the exact shape of
+the thing under suspicion — and one that could eat a press would be
+indistinguishable from the fault it is looking for. The suite also pins that it
+adds nothing at all until switched on, and that a press on a real control still
+reaches that control while it is running.
+
+Same move as the waveform probe in v1.8.30 and the Deezer probe in v1.8.40:
+five ways to fail with one symptom between them is a question for an
+instrument, not for another build.
+
+### Fixed — an invisible toast was eating taps at the bottom of the screen
+
+Found while looking for layers that could do exactly that, and **not claimed as
+the cause of the freeze** — it is the wrong shape for "all buttons", being a
+band across the bottom rather than the whole screen.
+
+`.toast` is `position: fixed` at `z-index: 100` — above the transport pill —
+and is hidden with `opacity: 0`. Opacity hides a box; it does not stop it
+receiving touches. So for the life of the page there was an invisible,
+tappable rectangle sitting over the bottom of the screen, and its width comes
+from `max-width: min(560px, calc(100vw - 28px))` — `100vw` resolves against the
+layout viewport, so a stale one makes that invisible box wider than the screen
+it is sitting on. Nothing about a toast is meant to be pressed. The sibling
+settings-info toast already carried `pointer-events: none`; this one did not.
+
+## [1.8.42] — 2026-09-22
+
+### Fixed — rotate to landscape and back, and every button is dead
+
+Reported twice. **v1.8.40 was wrong about the cause** and said so at the time:
+it removed the landscape block because that was the only thing in the app that
+added or removed a full-viewport layer on rotation, and it stated plainly that
+this removed a candidate rather than a proven cause. The freeze survived it.
+That is what the candidate was for, and eliminating it is what left the real
+one visible.
+
+**Three lines, all doing the same job, and the third is why force-quitting was
+the only way out.**
+
+- **`maximum-scale=1` in the viewport meta.** Pinning the page scale is the
+  documented cause of iOS leaving a page at the WRONG scale after an
+  orientation change: the layout viewport keeps one orientation's width while
+  the visual viewport has the other. The page re-flows and LOOKS correct, which
+  is why this reads as "the buttons stopped working" rather than as "the page
+  is scaled wrong" — every tap lands somewhere else.
+- **`user-scalable=no`** beside it, which iOS Safari has ignored since iOS 10
+  on accessibility grounds. It never did anything on the device this was
+  reported from.
+- **`preventDefault()` on `gesturestart` / `gesturechange` / `gestureend`**,
+  which re-imposed the pinch block iOS refuses to honour from the meta. **This
+  one worked, and that was the problem.** Pinching is the only way a person
+  gets a mis-scaled page back, so the app had removed its own escape hatch —
+  which is exactly the "force closing is the only way to restore function" half
+  of the report, and the detail that identifies this line rather than another.
+
+And one amplifier, removed with them: a `touchend` handler that
+`preventDefault()`ed any tap within 320ms of the last, to suppress double-tap
+zoom. **preventDefault on touchend cancels the CLICK.** Somebody whose first
+tap does nothing taps again immediately — and every one of those impatient
+repeats was being cancelled here. It could only ever make a dead-feeling screen
+deader.
+
+**Nothing was lost by removing any of it.** Double-tap-to-zoom is already off,
+the correct way: `touch-action: manipulation` on html/body, which suppresses
+the double-tap gesture and leaves pinch alone. All four were belt-and-braces
+over a CSS rule that was already doing the job properly — and between them they
+cost the user every way out of a bad frame. `public/display.html` has shipped
+with exactly the new viewport content, scale limits and all absent, for as long
+as it has existed.
+
+`viewport-fit=cover`, `width=device-width` and `initial-scale=1` are untouched,
+and a test asserts that too: removing the scale LIMITS must not become removing
+the viewport line's actual job, which is the whole iOS full-screen contract.
+
+Class of error: a workaround that outlived the problem it was for, and took the
+user's escape route with it. `test/static/viewport-scale.test.js` keeps all
+four from coming back — none of them can be observed from a headless harness,
+so what the suite can do is the same thing the head allowlist does: hold a
+known-good state so it is not changed back silently. Each of the six ways to
+undo this fails it.
+
+## [1.8.41] — 2026-09-22
+
+### Fixed — a day's list is stamped with the rules that built it
+
+This is the one that mattered, and it was found by a user pasting their own
+`/api/discover` response rather than by anything in the code.
+
+A day's releases are persisted, and "have we built today" was the ONLY question
+asked before reusing them. So shipping a change to **what counts as a release**
+had no effect until the following day — and, worse, nobody could tell from the
+outside whether the screen in front of them had been built by the new rules or
+the old ones. v1.8.40 added a track-count floor for exactly the singles-and-EPs
+complaint and then could not be evaluated, because the rows on screen predated
+it. Pressing Refresh was the fix, and it was a step only someone who had read
+the changelog would know to take.
+
+The same answer the waveform reached in v1.8.24: **record the rules next to the
+data.** The window, the seed count, the row cap, the per-artist cap and the
+track floor are stamped beside each day, and a day built under different ones
+counts as not built — so a version that changes any of them refreshes itself
+within one timer tick instead of waiting for midnight. `/api/discover` now
+reports `rules` and `rules_current`, so "is this list stale?" is answerable
+from a pasted response, which is exactly how this was missed.
+
+The stamp is written LAST, after the rows are down: a stamp ahead of the data
+it describes would mark a failed build as current and freeze the old list in
+place until tomorrow.
+
+### Fixed — the Deezer cover host, corrected against real data
+
+v1.8.39 built a fallback cover URL from `md5_image` and said plainly that the
+pattern was a guess, because Deezer is blocked from the machine this is written
+on. The pasted response settles it: every cover reads
+
+    https://cdn-images.dzcdn.net/images/cover/<md5>/250x250-000000-80-0-0.jpg
+
+so the path shape was right and the **host was wrong** — the guess had said
+`e-cdns-images.dzcdn.net`. Corrected.
+
+Two things worth recording with it. Those covers came from a NAMED field, which
+answers the other open question: `cover_medium` and friends are populated, so
+this fallback has probably never been reached. And the guess being wrong cost
+nothing, which was the point of putting it last — a fallback that can only turn
+"no cover" into "no cover" is safe to ship unverified, and one that could break
+a working cover would not have been.
+
+## [1.8.40] — 2026-09-22
+
+### Changed — a phone in landscape is no longer blocked
+
+Reported: the screen does not rotate, a message says so, and **coming back to
+portrait leaves the app unresponsive — force-quitting is the only way out.**
+
+There was a full-viewport `position: fixed` layer that appeared at
+`(orientation: landscape) and (max-height: 500px)` and said "please rotate your
+device to portrait mode". It is gone.
+
+**It was blocking a layout that works.** Measured at 844x390 before removing
+anything: the shell, the top bar, the wall and the transport all lay out and
+scroll, and the Now playing screen is the two-column Roon layout v1.6.14 built
+for exactly this shape — artwork on the left, title, seek bar and transport on
+the right, all of it inside 390px of height. The block was hiding a working
+screen behind a message.
+
+**What is NOT claimed here is a root cause for the freeze.** That is iOS window
+behaviour, and this project's harness is headless Chromium, which cannot
+observe it — CLAUDE.md says so in as many words, and the cost of ignoring that
+rule is written into v1.7.60-65 and v1.7.88-89. What can be said is narrower
+and checkable: **this was the only thing in the app that added or removed a
+full-viewport fixed layer on rotation**, which is what "returning to portrait
+kills it" points at. Removing it removes the only candidate. If the freeze
+outlives it, that is information, and the next step is a different one rather
+than a second guess at this one.
+
+`test/dom/phone-landscape.test.js` pins what is checkable, at two phone
+landscape shapes: nothing covers the viewport (found by sweeping for a fixed,
+viewport-sized, hit-testable element that is NOT an ancestor of `<main>`, so it
+fails for the next such layer too — not by naming the element that was
+removed), the shell lays out and scrolls, and Now playing's seek bar and
+transport are on screen. The artwork is deliberately not asserted: in np-mode
+it is sized from leftover height and the harness cannot serve `/api/image/`, so
+that assertion would measure the fixture's missing picture rather than the
+layout.
+
+### Fixed — Discover is albums only
+
+Reported: singles and EPs on a screen that already filtered for
+`record_type === "album"`.
+
+- **A track count is now the belt to that braces**, applied only when Deezer
+  sends one, so it can never reject a row for a field that is absent. Five
+  tracks is the floor. When the line is in the wrong place it hides a row
+  rather than showing the wrong kind of one, which is the direction this
+  feature errs in everywhere else.
+- **One classifier decides**, and both the build and the new probe call it, so
+  "what the screen would do" and "what the probe says the screen would do" can
+  never be two different answers.
+
+### Added — `GET /api/debug/discover?artist=<name>`
+
+Because **two rounds of this feature have now turned on a field nobody had
+looked at**: the cover was read from `cover_medium` for five versions with
+nothing ever drawing it, and singles arrived on a screen that filters them out.
+Both are questions one look at the payload answers and no amount of reading the
+code does.
+
+It prints, for every row Deezer returns for an act: the title, `record_type`,
+`nb_tracks`, `release_date`, which cover fields are present, the cover this app
+would use, and **which rule rejected the row** where one did. With no artist it
+lists the acts the build would actually ask about. The cache is bypassed on
+purpose — a cached listing answers what Deezer said a week ago, which is not
+what anyone opening this is asking.
+
+Same lesson as the waveform probe in v1.8.30: shipping a build to test a
+hypothesis is the most expensive way to ask a question.
+
+## [1.8.39] — 2026-09-22
+
+### Fixed — Discover shows album art
+
+Reported: the screen works, the rows are right, and every one of them is text.
+That was an omission of mine rather than a regression — Discover reuses the
+share card's row builder, and those rows carry no artwork by an older and
+deliberate decision (a compact list inside a sheet). A full screen of RECORDS
+is the opposite case: a wall of text is the odd one out.
+
+- **The row builder takes an optional cover**, and a caller that passes none
+  gets byte-identical markup to before. The suggestions under the share card
+  still have none, and a test in THEIR file now says so — the first version of
+  that assertion lived in the Discover test, where the share card is never
+  opened, so it passed against a mutation that gave those rows artwork. It was
+  moved rather than kept.
+- **Roon's own art wins wherever there is any.** A record the library already
+  holds has an image_key, and that art is served from this box, is already
+  cached, and is the same picture the album wears on every other screen. Using
+  the streaming copy for it would put two different covers on one record.
+- **The tile is always there and the image is what is optional.** These covers
+  come from a third party, so some will 404 or be blocked, and an `<img>` with
+  a dead src draws the browser's broken-image glyph — which reads as "this app
+  is broken" rather than "this record has no cover". On error the image removes
+  itself and the empty tile stands, so the row keeps its shape either way. The
+  URL it asked for stays on the tile, because otherwise a failed cover leaves
+  nothing to say what was tried.
+
+**Two things about the cover URL, said plainly.** Deezer is blocked from the
+machine this was written on, so which of their cover fields is actually
+populated could not be checked there. `lib/similar.js` has read
+`cover_medium || cover` since v1.8.34 and nothing has ever DRAWN the result, so
+an always-null field would have gone unnoticed all along. Therefore:
+
+- the lookup now tries four named fields and, only if all are absent, builds
+  the CDN path from `md5_image`. That last one is an unverified pattern and it
+  sits last on purpose: if it is wrong the image fails to load and the row
+  keeps the empty tile it would have had anyway. A guess that can only turn
+  "no cover" into "no cover" is safe;
+- **the per-artist cache key is bumped to `nr2:`.** A cached listing is a row
+  shape as much as it is data, and a row stored by v1.8.37 carries whatever the
+  narrow rule found. Reusing it would mean this fix did not show for another
+  seven days.
+
+If art is still missing after a rebuild, `GET /api/discover` answers it in one
+request: a `cover` of null for every row means the field name is wrong and the
+client half is fine.
+
 ## [1.8.38] — 2026-09-22
 
 ### Fixed — the cover sat on the track list at desktop widths

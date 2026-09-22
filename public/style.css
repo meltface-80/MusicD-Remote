@@ -1047,6 +1047,22 @@ main { padding-top: calc(var(--topbar-h) + 14px); }
     flex-direction: row; align-items: flex-start;
     gap: 28px;
     padding: 28px;
+    /*
+     * THE SHORTHAND ABOVE WAS THROWING AWAY THE TRANSPORT'S ROOM. The base
+     * rule reserves `106px + inset` at the bottom so the last of the content
+     * can scroll clear of the floating now-playing pill; `padding: 28px` here
+     * reset that to 28 and nothing put it back.
+     *
+     * It shows up in landscape on a phone or tablet, where the panel is
+     * centred with a 24px margin and so ends within a few pixels of the
+     * screen: measured at 844x390, the panel runs to y=374 and the pill's top
+     * edge is at y=308, so its last 66px sit underneath — About this album and
+     * the service link among them, with no way to scroll them out.
+     *
+     * Restored rather than recalculated: it is the same pill, the same
+     * distance off the same bottom edge, so it is the same number.
+     */
+    padding-bottom: calc(106px + env(safe-area-inset-bottom));
   }
   .modal-art {
     flex: 0 0 320px; max-width: 320px; margin: 0;
@@ -1208,6 +1224,15 @@ main { padding-top: calc(var(--topbar-h) + 14px); }
   font-size: 14px; opacity: 0;
   transition: opacity .18s ease, transform .18s ease;
   z-index: 100;
+  /* NEVER TAPPABLE, SHOWN OR NOT. `opacity: 0` hides a box; it does not stop
+     it receiving touches, and this one is fixed over the bottom of the screen
+     at z-index 100 — above the transport pill — for the whole life of the
+     page. Its width comes from `max-width: min(560px, calc(100vw - 28px))`,
+     and `100vw` is resolved against the layout viewport, so a stale one makes
+     the invisible box wider than the screen it is sitting on. Nothing about a
+     toast is meant to be pressed; the sibling settings-info toast already
+     carries this and this one did not. */
+  pointer-events: none;
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast.error { border-color: var(--danger); }
@@ -3266,27 +3291,28 @@ input.vol-range::-moz-range-thumb {
 .np-vol-fixed svg { width: 16px; height: 16px; flex: 0 0 auto; }
 
 /* ------------------------------------------------------------------ */
-/*  Phone landscape block overlay                                      */
-/*  Phones in landscape have height ≤ ~500px; tablets/desktop do not. */
+/*  Phone landscape — no longer blocked (v1.8.40)                      */
+/*                                                                     */
+/*  There used to be a full-viewport `position: fixed` layer here that  */
+/*  appeared at (orientation: landscape) and (max-height: 500px) and    */
+/*  said "please rotate your device to portrait mode". It is gone, and  */
+/*  the app lays out in landscape like anything else.                   */
+/*                                                                     */
+/*  IT WAS BLOCKING A LAYOUT THAT WORKS. Measured at 844x390 before     */
+/*  removing it: the shell, the top bar, the wall and the transport all */
+/*  lay out and scroll, and the Now playing screen is the two-column    */
+/*  Roon layout v1.6.14 built for exactly this shape — art on the left, */
+/*  title, seek and transport on the right, all of it inside 390px.     */
+/*                                                                     */
+/*  AND IT WAS THE ONLY THING IN THE APP THAT ADDED OR REMOVED A        */
+/*  FULL-VIEWPORT FIXED LAYER ON ROTATION, which is what a report of    */
+/*  "coming back to portrait leaves the screen unresponsive" points at. */
+/*  That mechanism is NOT proven — it is an iOS-only symptom and this   */
+/*  project's harness is headless Chromium, which cannot observe iOS    */
+/*  window behaviour at all (see CLAUDE.md). So this removes the only   */
+/*  candidate rather than claiming the cause; if the freeze outlives it */
+/*  the next step is a different one, not a second guess at this one.   */
 /* ------------------------------------------------------------------ */
-.landscape-block {
-  display: none;
-  position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 1000; /* inset longhands: old Safari */
-  background: var(--bg);
-  flex-direction: column; align-items: center; justify-content: center;
-  gap: 20px;
-  color: var(--text-dim);
-  font-size: 15px; line-height: 1.5;
-  text-align: center;
-  padding: 32px;
-  -webkit-user-select: none; user-select: none;
-}
-.landscape-block p { margin: 0; }
-.landscape-block svg { opacity: .55; }
-/* Show only when phone is in landscape (max-height catches phones, not tablets) */
-@media (orientation: landscape) and (max-height: 500px) {
-  .landscape-block { display: flex; }
-}
 
 /* ------------------------------------------------------------------ */
 /*  Compass / play-unheard spin animation                              */
@@ -4706,9 +4732,39 @@ body.show-quality .album-quality { display: block; }
   padding: 10px 12px; border-radius: 12px;
 }
 /* flex-basis 100% is what puts the record on its own line — the artist and the
-   date then share the second line with the tag pushed to its end. */
-.discover-list .share-similar-name {
+   date then share the second line with the tag pushed to its end. Only for a
+   row WITHOUT artwork; with a cover the two lines are a column beside it. */
+.discover-list .share-similar-act:not(.has-art) .share-similar-name {
   flex: 1 1 100%; min-width: 0;
   white-space: normal; font-size: 15px; line-height: 1.3;
 }
 .discover-list .share-similar-rec { font-size: 12.5px; }
+
+/* ── A row with a cover ────────────────────────────────────────────────
+   [ art ][ record / artist · when ][ tag ]
+
+   The art is a fixed square, the text column takes what is left, and the tag
+   keeps its place at the end. nowrap is CANCELLED on both lines here: the
+   record is the headline and it is the thing people are reading, and a title
+   like "Destroys Anaheim '76 (Live At Anaheim Stadium, Anaheim, California -
+   August 20, 1976)" is not rare enough to truncate on a phone. */
+.share-similar-act.has-art { flex-wrap: nowrap; gap: 12px; }
+.row-art {
+  flex: 0 0 56px; width: 56px; height: 56px;
+  border-radius: 4px; overflow: hidden;
+  /* The tile is what holds the row's shape when an image never arrives, so it
+     has a surface of its own rather than being a transparent gap. */
+  background: var(--bg-elev);
+  align-self: center;
+}
+.row-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.row-text {
+  display: flex; flex-direction: column; gap: 2px;
+  flex: 1 1 auto; min-width: 0;
+}
+.has-art .share-similar-name {
+  flex: 0 1 auto; white-space: normal;
+  font-size: 15px; line-height: 1.3;
+}
+.has-art .share-similar-rec { white-space: normal; }
+.discover-list .share-similar-act.has-art { align-items: center; padding: 10px; }

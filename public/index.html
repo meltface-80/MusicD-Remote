@@ -6,7 +6,19 @@
 <html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <!-- THE SCALE LIMITS ARE GONE (v1.8.42), and viewport-fit=cover is untouched.
+       `user-scalable=no` has been ignored by iOS Safari since iOS 10 on
+       accessibility grounds, so it never did anything here. `maximum-scale=1`
+       is the one that did: pinning the scale is the documented cause of iOS
+       leaving a page at the WRONG scale after an orientation change — the
+       layout viewport keeps one orientation's width while the visual viewport
+       has the other, so the page re-flows and looks right while every tap
+       lands somewhere else. Reported as "rotate to landscape and back and no
+       button works".
+       Nothing is lost by removing them: double-tap-to-zoom is already off the
+       correct way, with `touch-action: manipulation` on html/body. These were
+       belt-and-braces over a rule that was already doing the job. -->
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#0e1012">
   <title>MusicD</title>
 
@@ -57,18 +69,6 @@
 </head>
 <body>
   <!-- Phone landscape blocker: hidden on portrait / tablet / desktop via CSS -->
-  <div id="landscape-block" class="landscape-block" aria-hidden="true">
-    <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-         stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <!-- Phone rotated to portrait -->
-      <rect x="7" y="2" width="10" height="20" rx="2" ry="2"/>
-      <line x1="12" y1="18" x2="12" y2="18.01"/>
-      <!-- Rotation arrow -->
-      <path d="M3 12a9 9 0 0 1 9-9" opacity=".5"/>
-      <polyline points="1 12 3 10 5 12" opacity=".5"/>
-    </svg>
-    <p>Please rotate your device<br>to portrait mode</p>
-  </div>
   <div class="app">
   <header class="topbar">
     <div class="topbar-row">

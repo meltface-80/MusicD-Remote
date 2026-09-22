@@ -94,6 +94,10 @@ const DRIVER = `
   await until("the suggestions", function () { return document.querySelectorAll(rowsSel).length; });
 
   var rows = Array.prototype.slice.call(document.querySelectorAll(rowsSel));
+  // These rows share their builder with the Discover screen, which DOES carry
+  // artwork. Carrying none here is an older and separate decision about a
+  // compact list inside a sheet.
+  T("any_art", !!document.querySelector("#share-similar-list .row-art"));
   T("rows", rows.map(function (r) {
     return { tag: r.tagName, cls: r.className,
              href: r.getAttribute("href"), target: r.getAttribute("target"),
@@ -157,6 +161,15 @@ test("a suggestion is somewhere to go", { concurrency: 1 }, async (t) => {
     // Nothing to link to: not a control at all.
     assert.equal(r.rows[2].tag, "DIV", "a row with nowhere to go must not look tappable");
     assert.equal(r.rows[2].badge, null);
+  });
+
+  await t.test("the suggestions carry no artwork", () => {
+    // v1.8.39 gave the shared row builder an optional cover for the Discover
+    // screen. These rows must not have picked one up with it: they are a
+    // compact list inside a sheet, which is why they never had one.
+    const r = render(null);
+    assert.equal(r.any_art, false,
+      "a suggestion row grew an album cover");
   });
 
   await t.test("the library row queues, with the LIBRARY's identity", () => {

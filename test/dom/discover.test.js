@@ -75,6 +75,11 @@ window.__installFetch(function (u, opts) {
 
 const ROWS_SEL = ".discover-list .share-similar-act";
 
+// A real (tiny) image the page can load, since Deezer is not reachable from a
+// test machine, and one that can never resolve.
+const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+const DEAD = "https://example.invalid/missing.jpg";
+
 const DRIVER = `
   await window.__sleep(500);
   async function until(what, fn) {
@@ -90,11 +95,20 @@ const DRIVER = `
   });
   var rows = Array.prototype.slice.call(document.querySelectorAll("${ROWS_SEL}"));
   T("rows", rows.map(function (r) {
+    var box = r.querySelector(".row-art");
+    var img = box ? box.querySelector("img") : null;
     return { tag: r.tagName, cls: r.className, href: r.getAttribute("href"),
              head: (r.querySelector(".share-similar-name") || {}).textContent || "",
              sub:  (r.querySelector(".share-similar-rec")  || {}).textContent || "",
-             badge:(r.querySelector(".share-similar-tag")  || {}).textContent || null };
+             badge:(r.querySelector(".share-similar-tag")  || {}).textContent || null,
+             art:  box ? { w: Math.round(box.getBoundingClientRect().width),
+                           h: Math.round(box.getBoundingClientRect().height),
+                           asked: String(box.dataset.artSrc || "").slice(0, 24),
+                           failed: box.dataset.artFailed === "1",
+                           src: img ? String(img.getAttribute("src")).slice(0, 24) : null }
+                       : null };
   }));
+
   var b = document.getElementById("status-banner");
   T("banner", b && !b.classList.contains("hidden") ? b.textContent : null);
   T("title", (document.getElementById("album-count") || {}).textContent || "");
@@ -146,16 +160,17 @@ function payload(body) { return body; }
 const THREE_ROWS = payload(`{
   enabled: true, day: "today", window_days: 60, building: false,
   releases: [
-    { artist: "Boards of Canada", album: "New One", cover: null,
+    { artist: "Boards of Canada", album: "New One", cover: ${JSON.stringify(PNG)},
       release_date: ago(3), year: null, in_library: false, offset: null,
-      library_title: null, library_subtitle: null,
+      image_key: null, library_title: null, library_subtitle: null,
       services: ${JSON.stringify(SERVICES)} },
-    { artist: "Low", album: "Owned Record", cover: null,
+    { artist: "Low", album: "Owned Record", cover: ${JSON.stringify(PNG)},
       release_date: ago(20), year: null, in_library: true, offset: 7,
+      image_key: "libkey",
       library_title: "Owned Record (Deluxe)", library_subtitle: "Low", services: [] },
-    { artist: "Autechre", album: "Nowhere To Go", cover: null,
+    { artist: "Autechre", album: "Nowhere To Go", cover: ${JSON.stringify(DEAD)},
       release_date: ago(0), year: null, in_library: false, offset: null,
-      library_title: null, library_subtitle: null, services: [] }
+      image_key: null, library_title: null, library_subtitle: null, services: [] }
   ]
 }`);
 
@@ -252,6 +267,38 @@ test("Discover", { concurrency: 1 }, async (t) => {
     // The generic message would throw away the one thing that says what to do.
     const r = render(payload(`{ error: "Not paired with Roon Core yet" }`));
     assert.match(r.banner || "", /Not paired with Roon Core yet/, r.banner);
+  });
+
+  await t.test("every row carries its cover", () => {
+    const r = render(THREE_ROWS);
+    for (const row of r.rows) {
+      assert.ok(row.art, "a row was drawn with no art tile at all: " + row.head);
+      assert.ok(row.art.w >= 40 && row.art.h >= 40,
+        "the art tile collapsed: " + JSON.stringify(row.art));
+      assert.ok(Math.abs(row.art.w - row.art.h) <= 1, "the cover is not square");
+    }
+    assert.match(r.rows[0].cls, /has-art/);
+  });
+
+  await t.test("a record the library has uses ROON's art, not Deezer's", () => {
+    // Otherwise the same album wears two different covers on two screens.
+    const r = render(THREE_ROWS);
+    const lib = r.rows.find(x => /is-library/.test(x.cls));
+    assert.ok(lib, "the fixture lost its in-library row");
+    assert.match(lib.art.asked || "", /^\/api\/image\//,
+      "an in-library row used the streaming cover: " + lib.art.asked);
+  });
+
+  await t.test("a cover that never arrives leaves a tile, not a broken image", () => {
+    // An <img> with a dead src draws the browser's broken-image glyph, which
+    // reads as "this app is broken" rather than "this record has no cover".
+    const r = render(THREE_ROWS);
+    const dead = r.rows[2];
+    assert.equal(dead.art.failed, true, "the dead cover never reported an error");
+    assert.equal(dead.art.src, null,
+      "the failed image is still in the row: " + dead.art.src);
+    assert.ok(dead.art.w >= 40,
+      "the tile collapsed once its image went, so the row changed shape");
   });
 
   await t.test("the screen is titled, so Back has something to go back from", () => {

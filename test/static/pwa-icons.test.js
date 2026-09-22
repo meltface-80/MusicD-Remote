@@ -206,9 +206,27 @@ test("the iOS safe area is claimed and painted", async (t) => {
   await t.test("the pre-v1.7.60 head is preserved exactly", () => {
     // Everything the icons needed is additive. If a future change edits the
     // viewport or theme-color line, that is the line that was working.
+    //
+    // ONE DELIBERATE DEPARTURE, v1.8.42: the SCALE LIMITS
+    // (`maximum-scale=1,user-scalable=no`) are gone. They were part of
+    // v1.6.50's string and this assertion pinned all of it, so it caught the
+    // change — which is what it is for. The decision it is being updated to
+    // record: those two govern ZOOM, not how the window is sized or whether
+    // the app fills the display, so the full-screen contract does not rest on
+    // them. What it does rest on — width=device-width, initial-scale=1 and
+    // viewport-fit=cover — is still pinned below, exactly.
+    //
+    // They went because `maximum-scale=1` pins the page scale, which is the
+    // documented cause of iOS coming back from a rotation at the wrong one:
+    // the page re-flows and looks right while every tap lands somewhere else.
+    // See test/static/viewport-scale.test.js for the whole story, including
+    // why the pinch-blocking script went with them.
     assert.match(indexHtml,
-      /<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">/,
-      "the viewport meta was altered — this exact string is the known-good one");
+      /<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">/,
+      "the viewport meta was altered. width=device-width, initial-scale=1 and " +
+      "viewport-fit=cover are the known-good set and the full-screen contract " +
+      "rests on them; the scale limits were removed deliberately in v1.8.42 " +
+      "and must not come back (see viewport-scale.test.js)");
     assert.match(indexHtml, /<meta name="theme-color" content="#0e1012">/);
   });
 
@@ -465,9 +483,14 @@ test("the iOS full-screen contract cannot be broken silently", async (t) => {
   });
 
   await t.test("viewport-fit=cover survives, spelled exactly as the working build spells it", () => {
+    // v1.6.50's string minus the two scale limits — see the note on "the
+    // pre-v1.7.60 head is preserved exactly". The three parts below are the
+    // ones that decide whether the app fills an iPhone screen, and they are
+    // spelled here exactly as the build that was confirmed to do it spells
+    // them.
     assert.match(indexHtml,
-      /content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"/,
-      "the viewport string differs from v1.6.50's. That exact string is the one " +
-      "confirmed to fill an iPhone screen.");
+      /content="width=device-width,initial-scale=1,viewport-fit=cover"/,
+      "the viewport string differs from the known-good one. width=device-width, " +
+      "initial-scale=1 and viewport-fit=cover are what fill an iPhone screen.");
   });
 });
