@@ -13451,16 +13451,29 @@ app.post("/api/settings/home-rows", (req, res) => {
 /*  Waveforms                                                          */
 /* ------------------------------------------------------------------ */
 /*
- * LOCAL FILES ONLY, and that is a hard limit rather than an unfinished corner.
- * Roon's extension API exposes no audio at all — the Core decodes and streams
- * to the endpoint, never to an extension — so a Qobuz or TIDAL track has no
- * samples this process can reach. Those fall back to the plain progress bar.
+ * Roon's extension API exposes no audio at all — the Core decodes and streams to
+ * the endpoint, never to an extension — so nothing here can read what you are
+ * listening to. There are two ways round that and the whole section is built on
+ * the difference between them:
  *
- * The resolution is LAZY on purpose. The /music walk records one directory per
- * album (localAlbumDirs); when a track starts, we read the tags of the files in
- * just that folder and match the title. That is a dozen reads for the album you
- * are listening to, against ~70,000 for a track-level index of the whole
- * library, most of which would never be asked about.
+ *   LOCAL FILES are on disk, so the file is opened directly. The resolution is
+ *     LAZY on purpose: the /music walk records one directory per album
+ *     (localAlbumDirs), and when a track starts the tags of the files in just
+ *     that folder are read and the title matched. A dozen reads for the album
+ *     you are listening to, against ~70,000 for a track-level index of the
+ *     whole library, most of which would never be asked about.
+ *
+ *   QOBUZ AND TIDAL have no file, so a copy of the audio is fetched from the
+ *     service with the user's own account, independently of Roon, purely to
+ *     measure it — see wfQobuzTrack and wfTidalTrack. The album is identified
+ *     by identity key against the favourites (or, for Qobuz, the catalogue),
+ *     the track by title AND duration, and the bytes are piped through ffmpeg
+ *     and discarded. Nothing is written to disk and Roon still does all the
+ *     playback.
+ *
+ * Anything that cannot be identified confidently, or that a service delivers in
+ * a protected container, falls back to the plain progress bar. That is always an
+ * acceptable answer here; a waveform of the wrong recording never is.
  */
 const WF = require("./lib/waveform");
 const WFV = require("./lib/waveform-verdict");
