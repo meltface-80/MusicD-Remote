@@ -1021,6 +1021,27 @@ main { padding-top: calc(var(--topbar-h) + 14px); }
   color: var(--text-dim); font-size: 15px;
 }
 
+/* ── Two columns, from 720px up ───────────────────────────────────────
+   The art is a 320px column on the left and the title, buttons and track list
+   are a column on the right.
+
+   EVERY CANCELLATION BELOW IS WRITTEN AT THE HERO BLOCK'S OWN SPECIFICITY, and
+   that is the whole point of this comment. The hero rules above are
+   `.modal:not(.np-mode) .modal-art` — three classes — while this block was
+   written as plain `.modal-art`, one class. A MEDIA QUERY ADDS NO SPECIFICITY,
+   so being later in the file bought nothing: `margin: 0 -18px` beat `margin: 0`
+   at every width, and the art hung 18px into the column beside it. With the
+   hero's `gap: 0` also winning over this block's 28px there was nothing to
+   absorb it, so the cover sat ON the track list — over the numbers of every row
+   inside its own height, and over the start of the TRACKS heading. Reported
+   from a desktop browser in v1.8.37 and reproduced in the harness: art right
+   edge 551, track column left 533.
+
+   The full-bleed hero is a rule about a SINGLE-COLUMN layout: the cover is
+   edge to edge and the title sits in the tail of its fade. Neither is true
+   here — the art is an inset column and the title is beside it, not under it —
+   so the bleed, the squared corners and the fade are all cancelled rather than
+   inherited. */
 @media (min-width: 720px) {
   .modal-body {
     flex-direction: row; align-items: flex-start;
@@ -1029,6 +1050,23 @@ main { padding-top: calc(var(--topbar-h) + 14px); }
   }
   .modal-art {
     flex: 0 0 320px; max-width: 320px; margin: 0;
+  }
+  .modal:not(.np-mode) .modal-body {
+    /* Both restored from the hero block: the gap IS the separation between the
+       two columns, and without the top padding the art and the title start at
+       the panel's own edge with the pinned buttons straddling the artwork. */
+    padding-top: 28px;
+    gap: 28px;
+  }
+  .modal:not(.np-mode) .modal-art {
+    width: 320px; max-width: 320px; margin: 0;
+    border-radius: 3px;          /* square and flat, as everywhere else */
+  }
+  /* No fade: there is nothing below the art for it to dissolve into here, and
+     a cover that stops halfway down its own box reads as a broken image. */
+  .modal:not(.np-mode) .modal-art img {
+    -webkit-mask-image: none;
+            mask-image: none;
   }
   .modal-info { flex: 1 1 auto; min-width: 0; }
   .modal-info h2 { font-size: 26px; }
