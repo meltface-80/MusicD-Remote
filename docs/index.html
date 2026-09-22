@@ -332,7 +332,7 @@
      <a href="https://roon.app">Roon</a> — random-album browsing, instant whole-library
      search, rich label &amp; artist pages, and seamless playback with Roon Server at the heart.</p>
   <div class="badges">
-    <span class="badge" id="ver-badge">v1.8.36</span>
+    <span class="badge" id="ver-badge">v1.8.50</span>
     <span class="badge plain">Docker</span>
     <span class="badge plain">MIT licence</span>
     <span class="badge plain">Pairs with your Roon Core over the network</span>
@@ -346,7 +346,18 @@
        API — the app never touches your library files (except an optional read-only mount for
        label-tag scanning).</p>
     <div class="grid">
-      <div class="card is-new"><h3><span class="em">📤</span>Share card<span class="new">New</span></h3>
+      <div class="card is-new"><h3><span class="em">🧭</span>Discover<span class="new">New</span></h3>
+        <p>New records by the artists you actually listen to — the one question the app could not
+           answer. Read from your <b>play history</b> rather than your library (what you own is not
+           what you come back to), and ranked by how many separate days you played an act rather than
+           by play count: forty plays in one night is an evening, eight plays on eight days is a habit.
+           Albums only, from the last two months, never a record you already have — and a remaster is
+           refused only when the title says so <i>and</i> the act has an older release under the same
+           name, because either signal alone throws away real albums. Every row goes somewhere: in your
+           Roon library it queues, otherwise it opens in your default streaming service. Off by default;
+           switch it on in Settings → Discover and it looks once a day at an hour you choose, without
+           touching your Roon Core.</p></div>
+      <div class="card"><h3><span class="em">📤</span>Share card</h3>
         <p>Tap Share on any album or on Now playing and the record gets a card of its own — artwork,
            artist, title, release year and label, a short description, and the Pitchfork score with its
            Best New Music flag where there is one. Underneath it, somewhere to go: <b>where to hear it</b>
@@ -500,9 +511,9 @@
             <button class="copy-btn" id="copy" type="button">Copy</button>
             <pre id="cmd">sudo mkdir -p /opt/musicd-remote
 cd /opt/musicd-remote
-sudo wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.36/MusicD-Remote-v1.8.36.tar.gz
-sudo tar -xzf MusicD-Remote-v1.8.36.tar.gz
-docker build -t musicd-remote:1.8.36 .
+sudo wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.50/MusicD-Remote-v1.8.50.tar.gz
+sudo tar -xzf MusicD-Remote-v1.8.50.tar.gz
+docker build -t musicd-remote:1.8.50 .
 
 # Run it
 docker run -d \
@@ -512,13 +523,13 @@ docker run -d \
   -e TZ=Etc/UTC \
   -v musicd-remote-data:/app/data \
   -v "/your/path/to/Music:/music:ro" \
-  musicd-remote:1.8.36</pre>
+  musicd-remote:1.8.50</pre>
           </div>
           <noscript><p class="after-note">JavaScript is off, so the configurator can't rebuild this
              command — what's shown is the standard Linux install. The macOS and streaming-only
              variants are in the <a href="https://github.com/meltface-80/MusicD-Remote#install-docker">README</a>.</p></noscript>
           <p class="after-note" id="after-note"></p>
-          <p class="after-note">Installing <b id="ver-line">v1.8.36</b> <span id="ver-note">(checking for the latest release…)</span>.
+          <p class="after-note">Installing <b id="ver-line">v1.8.50</b> <span id="ver-note">(checking for the latest release…)</span>.
              If your user isn't in the <code>docker</code> group, prefix the <code>docker</code>
              commands with <code>sudo</code>.</p>
           <div class="note"><b>One volume to rule them all.</b> The <code>musicd-remote-data</code>
@@ -617,7 +628,7 @@ docker run -d \
 
   var IMAGE = "musicd-remote";
   var REPO  = "meltface-80/MusicD-Remote";
-  var FALLBACK_VERSION = "1.8.36";   // latest published release when this page was built
+  var FALLBACK_VERSION = "1.8.50";   // latest published release when this page was built
 
   var els = {
     modes:      document.getElementById("modes"),
