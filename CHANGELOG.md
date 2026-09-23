@@ -25,8 +25,33 @@ A comment that confidently denies the code beneath it is worse than no comment,
 because it is read as the authority on what the section is for. Both now state
 the constraint and then both ways round it.
 
-Comment-only: no behaviour changes, and the suite is unchanged at 1177 unit /
-605 DOM / 108 static.
+Comment-only: no behaviour changes.
+
+### Changed — the share card's description sits BELOW the cover
+
+Matching the MusicD Share Card app: art and title across the top, a hairline,
+then the description across the **full pane width**, with the attribution under
+it.
+
+It had been living in the column beside a 424px cover — about 600px to wrap in,
+and whatever vertical room the title and artist had not already taken, which on
+a four-line title was none. The server fetched a description on every open and
+the card routinely dropped it, and a card with no description looks exactly
+like a card for a record that has none.
+
+**The card's height is a result now, not a constant.** Everything is measured,
+then the canvas is sized, then it is drawn. A card with nothing but art, title
+and artist still comes out at exactly the 600px it always was; anything with
+prose grows to hold it, to a 1500px ceiling. A tall header pushes the card down
+instead of evicting the text, which is the failure the old layout had built in.
+
+The attribution (`description_source` — whose words these are, which is not the
+same question as where the link goes) is drawn at 20px against the body's 26px.
+**Size carries that hierarchy, not opacity**: `#c2cad3` measures 4.52:1 on the
+worst pane this card can present — a white sleeve, softened, scrimmed, under the
+glass — so there is no headroom to fade anything. At 0.72 alpha it drops to
+3.16. The contrast tier added here is what caught that, in this change, before
+it shipped.
 
 ### Changed — `STREAMING-WAVEFORMS.md` regenerated against the corrected source
 
@@ -35,7 +60,7 @@ stale comments — the document explained the streaming path and then quoted cod
 denying it two sections later. Re-extracted from the tree and machine-checked
 against the files in this commit.
 
-1177 unit / 605 DOM / 108 static.
+1186 unit / 611 DOM / 109 static.
 
 ## [1.8.56] — 2026-09-22
 

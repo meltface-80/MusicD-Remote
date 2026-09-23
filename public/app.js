@@ -9495,6 +9495,11 @@
       let releaseRaw = "";
       let labelText  = "";
       let reviewText = "";
+      // Whose prose the card ends up showing. NOT `source`, which says where
+      // the link goes — index.js keeps them apart on purpose, or Wikipedia's
+      // writing under a "read it at Pitchfork" link would be a misattribution
+      // pointing the other way.
+      let reviewSource = "";
       let links      = null;
       let score      = null;
       let bestNew    = false;
@@ -9524,6 +9529,7 @@
             }
             if (t.length > 1400) t = t.slice(0, 1398).replace(/\s+\S*$/, "") + "…";
             reviewText = t;
+            if (j.album.description_source) reviewSource = String(j.album.description_source);
           }
         }
       } catch { /* keep blank */ }
@@ -9540,6 +9546,7 @@
         releaseRaw,
         label: labelText,
         review: reviewText,
+        reviewSource,
         score,
         bestNewMusic: bestNew
       });

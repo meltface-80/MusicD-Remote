@@ -48,8 +48,13 @@ function scrimAlpha() {
   assert.ok(m, "could not find the flat scrim over the softened cover");
   return { c: [+m[1], +m[2], +m[3]], a: +m[4] };
 }
+// The FIRST fill colour set after a marker. The window is generous because the
+// distance between a marker and its fillStyle is prose, not structure — a
+// comment explaining why a colour is what it is should not be able to hide that
+// colour from the check that defends it. Non-greedy, so a wider window never
+// reaches past the fill it is looking for and into the next one.
 function fill(after) {
-  const m = new RegExp(after + "[\\s\\S]{0,400}?ctx\\.fillStyle = '(#[0-9a-f]{6})'").exec(SRC);
+  const m = new RegExp(after + "[\\s\\S]{0,900}?ctx\\.fillStyle = '(#[0-9a-f]{6})'").exec(SRC);
   assert.ok(m, `could not find the fill colour after ${after}`);
   return hex(m[1]);
 }
@@ -69,15 +74,31 @@ test("the card's text survives a white sleeve", async (t) => {
     ["the artist", fill("--- Artist ---"), 4.5],
     ["the release line", fill("if \\(metaText\\) \\{"), 4.5],
     // v1.8.31. Sits on the same solved pane as everything above it, so it is
-    // held to the same floor — 22px is not large text.
+    // held to the same floor — 26px is not large text.
     ["the description", fill("--- Description ---"), 4.5],
+    // The attribution under it. Drawn at 0.72 alpha, which the tier below
+    // accounts for — a colour that passes at full opacity can fail once it is
+    // faded, and fading it is exactly what makes it read as a caption.
+    ["the source line", fill("--- Source ---"), 4.5],
   ];
+
+  // The source line is the one element drawn with globalAlpha < 1, so what
+  // lands on the pane is the colour composited over it, not the literal.
+  const srcAlpha = (() => {
+    // Same generous window as fill(), and for the same reason: the comment
+    // explaining WHY this line is not faded is longer than the code, and a
+    // window that stopped short of it would let the fade be reinstated without
+    // this tier noticing — which is the whole thing it is here to prevent.
+    const m = /--- Source ---[\s\S]{0,1200}?ctx\.globalAlpha = ([\d.]+)/.exec(SRC);
+    return m ? +m[1] : 1;
+  })();
 
   for (const [what, colour, floor] of TIERS) {
     await t.test(`${what} clears ${floor}:1 on it`, () => {
-      const c = contrast(colour, worst);
+      const shown = what === "the source line" ? over(colour, srcAlpha, worst) : colour;
+      const c = contrast(shown, worst);
       assert.ok(c >= floor,
-        `${what} is rgb(${colour.join(",")}) on a worst-case pane of ` +
+        `${what} is rgb(${shown.map(Math.round).join(",")}) on a worst-case pane of ` +
         `rgb(${worst.map(Math.round).join(",")}) — ${c.toFixed(2)}:1, need ${floor}. ` +
         `A white album cover is the surface this has to survive, and it is the ` +
         `one nobody tests against by eye.`);
