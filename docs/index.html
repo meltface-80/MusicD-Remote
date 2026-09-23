@@ -118,6 +118,21 @@
   }
   .card.is-new { border-color: var(--copper-dim); }
   .card p { font-size: 13.5px; color: var(--muted); }
+  /* The waveform demo clip. `preload="none"` on the element is the important
+     half — without it every visitor to this page downloads the video whether
+     or not they ever press play. The poster is what makes that acceptable:
+     a still frame instead of a black rectangle. */
+  .card video {
+    width: 100%; height: auto; display: block;
+    margin-top: 12px; border-radius: 10px;
+    border: 1px solid var(--line, rgba(255,255,255,.12));
+    background: #000;
+  }
+  .card figcaption {
+    font-size: 12px; color: var(--muted);
+    margin-top: 8px; line-height: 1.45;
+  }
+  .card figure { margin: 0; }
 
   /* ---------- configurator ---------- */
   .cfg {
@@ -378,10 +393,22 @@
            at every point in the track, not only halfway through. Each track is analysed
            once and stored, and the next one in the queue is prepared while the current one plays, so
            it's there the moment the track changes. Works for local files and for Qobuz and TIDAL
-           tracks in your favourites — Roon streams those straight to your endpoint and never to an
-           extension, so the track is fetched from the service with your own account, turned into a few
-           thousand loudness values and discarded. No audio is written to disk and Roon still handles
-           all playback. Anything it can't read keeps the plain bar.</p></div>
+           streams — Roon sends those straight to your endpoint and never to an extension, so the
+           track is fetched from the service with your own account, turned into a few thousand
+           loudness values and discarded. <b>The audio you are listening to is never touched</b>:
+           the measurement is taken from a separate copy, so nothing about it can affect playback.
+           No audio is written to disk and Roon still handles all of it. Anything the app can't
+           identify keeps the plain bar.</p>
+        <figure>
+          <video controls muted loop playsinline preload="none"
+                 poster="waveform-poster.jpg" width="1248" height="576">
+            <source src="waveform.mp4" type="video/mp4">
+            Your browser can't play this clip.
+          </video>
+          <figcaption>Waveforms drawn for several 24-bit/192&nbsp;kHz Qobuz albums, in real time.
+            Each track is fetched, measured and discarded before it is needed; the stream Roon is
+            playing is never read.</figcaption>
+        </figure></div>
       <div class="card"><h3><span class="em">🎵</span>Album discovery</h3>
         <p>Random album selection with filtering, Album of the day, Label of the week, Play Unheard, and recently-unplayed recommendations. The database learns what you've heard and resurfaces forgotten albums.</p></div>
       <div class="card"><h3><span class="em">📚</span>Rich library browsing</h3>
