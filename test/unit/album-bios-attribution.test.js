@@ -40,14 +40,44 @@ test("the Pitchfork branch no longer emits a null description", () => {
   const branch = /if \(pitchfork && pitchfork\.description\) \{[\s\S]*?album = \{([\s\S]*?)\};/.exec(SRC);
   assert.ok(branch, "could not find the Pitchfork branch of fetchAlbumBios");
   const body = branch[1];
-  assert.match(body, /description:\s*wikiText/,
-    "the Pitchfork branch is not supplying Wikipedia's text — a reviewed album " +
-    "will show a score and no words at all, which is what was reported");
-  assert.match(body, /description_source:\s*wikiText \? "Wikipedia"/,
+  assert.match(body, /description:\s*pfText/,
+    "the Pitchfork branch is not supplying any text — a reviewed album will show " +
+    "a score and no words at all, which is what was reported");
+  assert.match(body, /description_source:\s*pfSource/,
     "the text has no attribution, so the album view cannot tell it apart from " +
     "the Pitchfork review it links to");
   assert.match(body, /source:\s*"Pitchfork"/,
     "the LINK should still be the Pitchfork review — only the text changed");
+});
+
+test("a Pitchfork-reviewed album falls back to Qobuz when Wikipedia has nothing", () => {
+  // THE second half of the same defect. v1.8.32 wired Wikipedia into this
+  // branch and stopped, which left Qobuz's paragraph sitting unused in exactly
+  // the way Wikipedia's had been — so a reviewed album whose encyclopaedia
+  // lookup came back empty still showed a score and no words. Reported against
+  // Bruce Springsteen's *Western Stars*, which shares its title with a 2019
+  // documentary film.
+  //
+  // Asserted on the SELECTION, which is where the precedence lives, rather
+  // than on the branch body that consumes it.
+  const sel = /const pfText\s*=([^;]*);/.exec(SRC);
+  assert.ok(sel, "could not find the Pitchfork branch's prose selection (pfText)");
+  assert.match(sel[1], /wikiText/, "Wikipedia is no longer a candidate");
+  assert.match(sel[1], /qobuzText/,
+    "Qobuz's description is not a fallback, so a missed Wikipedia lookup still " +
+    "leaves a Pitchfork-reviewed album with no words at all");
+  // Order matters: an album showing an article today must not start showing a
+  // different paragraph tomorrow because both exist.
+  assert.ok(sel[1].indexOf("wikiText") < sel[1].indexOf("qobuzText"),
+    "Qobuz is taking precedence over Wikipedia in the Pitchfork branch — it is " +
+    "meant to be the fallback, not a competitor");
+
+  const src = /const pfSource\s*=([^;]*);/.exec(SRC);
+  assert.ok(src, "could not find pfSource");
+  assert.match(src[1], /wikiText \? "Wikipedia"/, "Wikipedia text is misattributed");
+  assert.match(src[1], /"Qobuz"/,
+    "text that fell back to Qobuz is not attributed to Qobuz, which is the " +
+    "misattribution description_source exists to prevent");
 });
 
 test("Pitchfork's own prose still never leaves the server", () => {

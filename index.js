@@ -5711,6 +5711,30 @@ async function fetchAlbumBios(title, artist) {
   // that says Pitchfork.
   const wikiText = (wiki && wiki.album && wiki.album.description) || null;
   const wikiUrl  = (wiki && wiki.album && wiki.album.url) || null;
+  const qobuzText = (qobuz && qobuz.description) || null;
+
+  /*
+   * The prose to show when Pitchfork is the review being LINKED to.
+   *
+   * Pitchfork's own writing is never a candidate — see the compliance note in
+   * that branch — so the words on screen come from one of the other two, and
+   * both were fetched in the Promise.all above whatever happens next.
+   *
+   * v1.8.32 wired Wikipedia in here and stopped there, which left Qobuz's
+   * description sitting unused in exactly the same way Wikipedia's had been:
+   * a Pitchfork-reviewed album whose Wikipedia lookup came back empty showed
+   * no words at all, even with a Qobuz editorial paragraph in hand. Reported
+   * against Bruce Springsteen's *Western Stars* — whose title it shares with a
+   * 2019 documentary film, which is the kind of thing that makes an
+   * encyclopaedia lookup miss.
+   *
+   * Wikipedia keeps precedence, so nothing that shows an article today starts
+   * showing a different paragraph tomorrow; Qobuz is the fallback rather than
+   * a competitor.
+   */
+  const pfText   = wikiText || qobuzText;
+  const pfSource = wikiText ? "Wikipedia" : (qobuzText ? "Qobuz" : null);
+  const pfUrl    = wikiText ? wikiUrl : (qobuzText ? (qobuz.url || null) : null);
 
   let album = null;
   if (pitchfork && pitchfork.description) {
@@ -5719,17 +5743,16 @@ async function fetchAlbumBios(title, artist) {
     // on pitchfork.com. Their text stays internal (this branch's gate and
     // fetchPitchfork's artist-verification guard read it) and never leaves.
     //
-    // That rule is about THEIR prose, not about the album having none. Until
-    // now this branch emitted description: null, which meant any record
-    // Pitchfork had reviewed showed no text at all — on the album view and on
-    // the share card — while the Wikipedia article fetched in the same
-    // Promise.all sat here unused. Reported: "the wiki reviews, if available,
-    // weren't added to the share card". Wikipedia's text is shown, and
-    // description_source says so, so the two are never confused.
+    // That rule is about THEIR prose, not about the album having none. This
+    // branch once emitted description: null, which meant any record Pitchfork
+    // had reviewed showed no text at all — on the album view and on the share
+    // card — while the other two fetches sat here unused. Whichever of them
+    // answers is shown, and description_source says which, so the two are
+    // never confused. See pfText above for the precedence.
     album = {
-      description:        wikiText,
-      description_source: wikiText ? "Wikipedia" : null,
-      description_url:    wikiText ? wikiUrl : null,
+      description:        pfText,
+      description_source: pfSource,
+      description_url:    pfUrl,
       year:           (qobuz && qobuz.year) || null,
       label:          (qobuz && qobuz.label) || null,
       url:            pitchfork.url,

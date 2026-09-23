@@ -1553,6 +1553,14 @@ main {
   border-radius: 20px;
   box-shadow: var(--shadow-modal);
   padding: 24px 18px 18px;
+  /* THE RESERVE, and it is a longhand AFTER the shorthand on purpose.
+     The now-playing pill floats over this overlay (it is z-index 70 against
+     the overlay's 60), so without room reserved here the last rows of the
+     suggestions sit underneath it with no way to scroll them clear — the panel
+     has already reached the end of its own scroll. Same reserve .modal-body
+     carries, and the same trap: writing it into the shorthand above means the
+     next person to touch that line silently deletes it. */
+  padding-bottom: calc(106px + env(safe-area-inset-bottom));
   animation: modal-in .18s ease-out;
 }
 .share-close { position: absolute; top: 12px; right: 12px; }

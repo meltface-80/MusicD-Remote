@@ -67,6 +67,45 @@ glass — so there is no headroom to fade anything. At 0.72 alpha it drops to
 3.16. The contrast tier added here is what caught that, in this change, before
 it shipped.
 
+### Fixed — a Pitchfork-reviewed album could still show no words at all
+
+Reported against Bruce Springsteen's *Western Stars*: score badge, title,
+artist, and nothing else, while other albums showed their review.
+
+`fetchAlbumBios` fetches Pitchfork, Qobuz and Wikipedia together and picks one
+winner. Pitchfork's own prose may never be displayed (UK law — only the score,
+the Best New Music flag and a link), and v1.8.32 fixed that branch emitting
+`description: null` by wiring **Wikipedia** into it. It stopped there: Qobuz's
+editorial paragraph sat unused in exactly the way Wikipedia's had, so a
+reviewed album whose encyclopaedia lookup came back empty still showed nothing.
+*Western Stars* shares its title with a 2019 documentary film, which is the kind
+of thing that makes that lookup miss.
+
+Qobuz is now the fallback. Wikipedia keeps precedence, so nothing that shows an
+article today starts showing a different paragraph tomorrow, and
+`description_source` still names whoever actually wrote what is on screen.
+
+### Fixed — the share sheet's last rows were unreachable under the transport
+
+The now-playing pill floats over the share overlay (z-index 70 against 60) and
+the sheet is its own scroller, so once it had scrolled to its end anything in
+the last ~106px simply could not be brought into view. Same class as v1.8.50's
+album view, same fix: the scroller reserves the pill's height — as a **longhand
+after the shorthand**, because folding it into `padding:` is precisely how
+v1.8.50's reserve got deleted in the first place.
+
+### Changed — no Download button in an installed iOS app
+
+`<a download>` is not implemented in WebKit on iOS: the attribute is ignored, so
+the control either navigates to a `blob:` URL or does nothing — and a standalone
+app has no browser chrome to come back from. Long-pressing the card is the real
+Save Image, and the hint says so.
+
+Narrowed to **standalone**, not to iOS: in a Safari tab there is still a tab to
+return from, and on every other platform the button works. The test asserts all
+three cases, because removing it from ordinary iOS Safari would be the obvious
+wrong fix.
+
 ### Changed — `STREAMING-WAVEFORMS.md` regenerated against the corrected source
 
 The write-up carries the implementation verbatim, so the appendix reproduced both
@@ -74,7 +113,7 @@ stale comments — the document explained the streaming path and then quoted cod
 denying it two sections later. Re-extracted from the tree and machine-checked
 against the files in this commit.
 
-1188 unit / 611 DOM / 109 static.
+1189 unit / 618 DOM / 109 static.
 
 ## [1.8.56] — 2026-09-22
 
