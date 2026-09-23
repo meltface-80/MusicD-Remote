@@ -54,11 +54,17 @@ const ShareCard = (() => {
   // comes out at exactly this — what the card was before the description moved
   // below the cover — and anything with prose grows past it.
   const MIN_CARD_H = 600;
-  // And the ceiling. app.js already trims the source text to ~10 sentences, so
-  // this is the backstop for a description that is long even after that: past
-  // here the text is fitted into the room left rather than the card growing to
-  // a picture nothing will display at a sensible size.
-  const MAX_CARD_H = 1500;
+  /*
+   * And the ceiling.
+   *
+   * It is not the thing that decides how much review fits — DESC_MAX is — so
+   * it is set high enough to be out of the way of the WORST case rather than
+   * tuned: a four-line title and a four-line artist make the header 536px
+   * instead of the cover's 424, and a full-length description under that comes
+   * to about 1660. This is the backstop for an input nothing else bounded, not
+   * a budget the layout is expected to spend up to.
+   */
+  const MAX_CARD_H = 1800;
   const INSET     = 48;    // gap from the card edge to the glass pane
   const PANE_X    = INSET;
   const PANE_Y    = INSET;
@@ -94,7 +100,22 @@ const ShareCard = (() => {
   // 56px title — at full pane width 22px read as small print.
   const DESC_SIZE   = 26;
   const DESC_LH     = 38;
-  const DESC_MAX    = 14;   // lines, when there is room for them
+  /*
+   * How many lines of review the card will carry, and the number that actually
+   * decides it — MAX_CARD_H is only a backstop.
+   *
+   * IT IS SET FROM WHAT app.js CAN SEND. That end trims the description to ten
+   * sentences and hard-caps it at 1400 characters, so 1400 is the longest text
+   * that can ever reach here. At 26px Manrope in a 1024px column that is close
+   * to 20 lines once wrapping raggedness is counted, and 22 leaves room for a
+   * wider-than-average run of words.
+   *
+   * The two numbers are a pair: raise the trim at the app.js end without
+   * raising this and long reviews go back to being ellipsized, which is why
+   * test/unit/sharecard-layout.test.js asserts the longest text app.js can
+   * produce comes through whole.
+   */
+  const DESC_MAX    = 22;
   const RULE_GAP    = 30;   // above and below the hairline
   const RULE_COLOUR = 'rgba(255,255,255,.16)';
   // Whose words these are. `source` says where the LINK goes and this says who

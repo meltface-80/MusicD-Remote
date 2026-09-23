@@ -45,6 +45,20 @@ and artist still comes out at exactly the 600px it always was; anything with
 prose grows to hold it, to a 1500px ceiling. A tall header pushes the card down
 instead of evicting the text, which is the failure the old layout had built in.
 
+**And the card carries the whole review.** The line cap was 14, which a 26px
+column of 1024px reaches at about a thousand characters — while `app.js` trims
+to ten sentences and 1400 characters before sending. Everything between those
+two numbers was being ellipsized, which is most of a Wikipedia opening. The cap
+is 22 lines now, set from what `app.js` can actually send rather than picked,
+and the ceiling is 1800px so the worst case (a four-line title and a four-line
+artist over a full-length review, ~1660px) clears it without the header eating
+the text.
+
+The two numbers are a pair, and nothing connected them before:
+`test/unit/sharecard-layout.test.js` reads the trim out of `app.js` and asserts
+the longest text it can produce arrives whole, so raising either one without the
+other fails there rather than on a card.
+
 The attribution (`description_source` — whose words these are, which is not the
 same question as where the link goes) is drawn at 20px against the body's 26px.
 **Size carries that hierarchy, not opacity**: `#c2cad3` measures 4.52:1 on the
@@ -60,7 +74,7 @@ stale comments — the document explained the streaming path and then quoted cod
 denying it two sections later. Re-extracted from the tree and machine-checked
 against the files in this commit.
 
-1186 unit / 611 DOM / 109 static.
+1188 unit / 611 DOM / 109 static.
 
 ## [1.8.56] — 2026-09-22
 

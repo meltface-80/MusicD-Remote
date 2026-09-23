@@ -68,6 +68,67 @@ test("the description wraps to the PANE width, not the column beside the art", (
     `would need about ${ifNarrow} — the description is still being wrapped narrow`);
 });
 
+// ---------------------------------------------------------------------------
+// THE COUPLING. app.js decides how much review can be sent; sharecard.js
+// decides how much it will draw. They are two numbers in two files and nothing
+// connected them, so the card silently ellipsized anything app.js was willing
+// to send past about a thousand characters — which is most Wikipedia openings.
+//
+// This reads the cap out of app.js rather than repeating it, so raising the
+// trim without raising DESC_MAX fails here instead of on a user's card.
+// ---------------------------------------------------------------------------
+const APP_JS = require("node:fs")
+  .readFileSync(require("node:path").join(__dirname, "..", "..", "public", "app.js"), "utf8");
+
+function appJsReviewCap() {
+  // The line that hard-caps the description before it is handed to the card.
+  // Anchored through to `reviewText = t` so it is this cap and not some other
+  // length check that happens to be in the file.
+  const m = /if \(t\.length > (\d+)\) t = t\.slice\(0, \d+\)[\s\S]{0,120}?reviewText = t;/
+    .exec(APP_JS);
+  assert.ok(m, "could not find the description length cap in public/app.js");
+  return +m[1];
+}
+
+test("the longest review app.js can send is not cut off", () => {
+  const cap = appJsReviewCap();
+  // Real prose, repeated to the cap: short words wrap more generously than
+  // long ones, so this is measured with an ordinary word length rather than a
+  // best case.
+  const word = "album ";
+  const text = word.repeat(Math.ceil(cap / word.length)).slice(0, cap).trim();
+  assert.ok(text.length >= cap - word.length, "the fixture is not actually at the cap");
+
+  // ~13.5px a character is Manrope at 26px. The stub cannot load the real font,
+  // so this is the metric the cap was chosen against.
+  const m = ShareCard.measure(stubCtx(13.5), { ...BASE, review: text, reviewSource: "Wikipedia" });
+  assert.ok(m.desc, "the longest review app.js can send was dropped entirely");
+  const last = m.desc.lines[m.desc.lines.length - 1];
+  assert.ok(!last.endsWith("\u2026"),
+    `a ${cap}-character review — the longest app.js will send — is ellipsized at ` +
+    `${m.desc.lines.length} lines. DESC_MAX and the app.js trim are a pair: raise ` +
+    `one and the other has to follow, or the card quietly cuts most of a ` +
+    `Wikipedia opening.`);
+});
+
+test("even the worst header plus the longest review stays under the ceiling", () => {
+  // The ceiling is a backstop, not a budget — but it has to actually clear the
+  // worst case, or a four-line title on a long review would be cropped.
+  const cap = appJsReviewCap();
+  const text = "album ".repeat(Math.ceil(cap / 6)).slice(0, cap).trim();
+  const m = ShareCard.measure(stubCtx(13.5), {
+    ...BASE,
+    title: "An Extremely Long Album Title That Will Wrap Over Several Lines Indeed Yes Truly",
+    artist: "A Very Long Collaborative Artist Credit Naming Several Different People",
+    review: text, reviewSource: "Wikipedia",
+  });
+  assert.ok(m.cardH <= ShareCard.MAX_CARD_H,
+    `${m.cardH}px against a ${ShareCard.MAX_CARD_H}px ceiling`);
+  assert.ok(m.desc.lines.length >= 15,
+    `only ${m.desc.lines.length} description lines survived a tall header — the ` +
+    `header is eating the review again`);
+});
+
 test("the card never grows past its ceiling", () => {
   // app.js already trims to ~10 sentences; this is the backstop for prose that
   // is long even after that. A card taller than this is not displayed at a
