@@ -2,30 +2,7 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
-## [1.8.57] — 2026-09-22
-
-### Fixed — two section comments still said the feature does not exist
-
-Both headers over the waveform code dated from before there was a streaming path
-and still declared it impossible:
-
-- `index.js` — *"LOCAL FILES ONLY, and that is a hard limit rather than an
-  unfinished corner… a Qobuz or TIDAL track has no samples this process can
-  reach."*
-- `public/app.js` — *"LOCAL FILES ONLY — Roon streams Qobuz and TIDAL to the
-  endpoint and never to an extension, so those tracks have no audio the server
-  can read."*
-
-The premise in both is still true and is the reason the rest of the design looks
-the way it does — Roon never hands an extension audio. The conclusion stopped
-being true when the streaming path landed: there is no file, so a copy is fetched
-from the service with the user's own account purely to measure it.
-
-A comment that confidently denies the code beneath it is worse than no comment,
-because it is read as the authority on what the section is for. Both now state
-the constraint and then both ways round it.
-
-Comment-only: no behaviour changes.
+## [1.8.58] — 2026-09-23
 
 ### Changed — the share card's description sits BELOW the cover
 
@@ -106,6 +83,34 @@ return from, and on every other platform the button works. The test asserts all
 three cases, because removing it from ordinary iOS Safari would be the obvious
 wrong fix.
 
+1189 unit / 618 DOM / 109 static.
+
+## [1.8.57] — 2026-09-22
+
+### Fixed — two section comments still said the feature does not exist
+
+Both headers over the waveform code dated from before there was a streaming path
+and still declared it impossible:
+
+- `index.js` — *"LOCAL FILES ONLY, and that is a hard limit rather than an
+  unfinished corner… a Qobuz or TIDAL track has no samples this process can
+  reach."*
+- `public/app.js` — *"LOCAL FILES ONLY — Roon streams Qobuz and TIDAL to the
+  endpoint and never to an extension, so those tracks have no audio the server
+  can read."*
+
+The premise in both is still true and is the reason the rest of the design looks
+the way it does — Roon never hands an extension audio. The conclusion stopped
+being true when the streaming path landed: there is no file, so a copy is fetched
+from the service with the user's own account purely to measure it.
+
+A comment that confidently denies the code beneath it is worse than no comment,
+because it is read as the authority on what the section is for. Both now state
+the constraint and then both ways round it.
+
+Comment-only: no behaviour changes, and the suite is unchanged at 1177 unit /
+605 DOM / 108 static.
+
 ### Changed — `STREAMING-WAVEFORMS.md` regenerated against the corrected source
 
 The write-up carries the implementation verbatim, so the appendix reproduced both
@@ -113,7 +118,7 @@ stale comments — the document explained the streaming path and then quoted cod
 denying it two sections later. Re-extracted from the tree and machine-checked
 against the files in this commit.
 
-1189 unit / 618 DOM / 109 static.
+1177 unit / 605 DOM / 108 static.
 
 ## [1.8.56] — 2026-09-22
 

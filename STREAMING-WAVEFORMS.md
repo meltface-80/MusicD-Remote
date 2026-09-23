@@ -192,7 +192,7 @@ rather than reimplementing it, so it cannot report a route the player does not t
 
 # The code
 
-Verbatim from the tree at v1.8.57. Presented in the order the chain runs: the pure
+Verbatim from the tree at v1.8.58. Presented in the order the chain runs: the pure
 modules first, then the server, then the client.
 
 ## `lib/waveform.js`
@@ -1449,7 +1449,7 @@ function deepVerdict(d) {
 module.exports = { streamingVerdict, deepVerdict };
 ```
 
-## `index.js` — the waveform section (lines 13450–15146)
+## `index.js` — the waveform section (lines 13473–15169)
 
 The server side end to end: storage, the local-file path, the Qobuz and TIDAL
 stream paths, the Qobuz sign-in routes, and the two endpoints.
