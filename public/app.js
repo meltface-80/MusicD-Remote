@@ -9495,6 +9495,11 @@
       let releaseRaw = "";
       let labelText  = "";
       let reviewText = "";
+      // Whose prose the card ends up showing. NOT `source`, which says where
+      // the link goes — index.js keeps them apart on purpose, or Wikipedia's
+      // writing under a "read it at Pitchfork" link would be a misattribution
+      // pointing the other way.
+      let reviewSource = "";
       let links      = null;
       let score      = null;
       let bestNew    = false;
@@ -9524,6 +9529,7 @@
             }
             if (t.length > 1400) t = t.slice(0, 1398).replace(/\s+\S*$/, "") + "…";
             reviewText = t;
+            if (j.album.description_source) reviewSource = String(j.album.description_source);
           }
         }
       } catch { /* keep blank */ }
@@ -9540,6 +9546,7 @@
         releaseRaw,
         label: labelText,
         review: reviewText,
+        reviewSource,
         score,
         bestNewMusic: bestNew
       });
@@ -10009,6 +10016,32 @@
     markPreferredChip();
   }
 
+  /*
+   * An iOS app added to the home screen, as opposed to iOS in a browser tab.
+   *
+   * Two separate facts, and both are needed. `navigator.standalone` is the
+   * iOS-only flag for a home-screen launch; the display-mode query is the
+   * standard one and covers an installed app elsewhere. The platform test is
+   * what keeps this from firing on an installed desktop PWA, where downloading
+   * works perfectly well — and it checks maxTouchPoints because an iPad reports
+   * its platform as "MacIntel" and is indistinguishable from a Mac without it.
+   */
+  function iosStandalone() {
+    try {
+      const p = (navigator.platform || "") + " " + (navigator.userAgent || "");
+      const isIOS = /iPhone|iPad|iPod/.test(p) ||
+                    (/Mac/.test(p) && (navigator.maxTouchPoints || 0) > 1);
+      if (!isIOS) return false;
+      if (navigator.standalone === true) return true;
+      return !!(window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+    } catch (e) {
+      // A UA sniff that throws must not take the share sheet with it; the
+      // download button is the safe answer because it is what every other
+      // platform gets.
+      return false;
+    }
+  }
+
   function buildActions(blob, title, artist) {
     actions.innerHTML = "";
     const fileName =
@@ -10045,16 +10078,26 @@
       };
       actions.appendChild(b);
     }
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = fileName;
-    a.appendChild(document.createTextNode(""));
-    a.innerHTML = `${icon("download")}<span>Download</span>`;
-    actions.appendChild(a);
+    // NOT on an installed iOS app. `<a download>` is not implemented in WebKit
+    // on iOS — the attribute is ignored, so the button either navigates away
+    // from the app to a blob: URL or does nothing at all, and in a standalone
+    // PWA there is no browser chrome to get back from it. Long-pressing the
+    // image gives the real Save Image, which is what the hint already says.
+    //
+    // Narrowed to STANDALONE rather than to iOS: in Safari proper the tab is
+    // still there to return from, and on every other platform it works.
+    if (!iosStandalone()) {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = fileName;
+      a.appendChild(document.createTextNode(""));
+      a.innerHTML = `${icon("download")}<span>Download</span>`;
+      actions.appendChild(a);
+    }
 
     hintEl.textContent = (canCopy || canShare)
       ? "Tap a button above, or long-press the card to save."
-      : "Long-press the card to save, or tap Download.";
+      : "Long-press the card to save.";
   }
 
   function blobToDataUrl(blob) {

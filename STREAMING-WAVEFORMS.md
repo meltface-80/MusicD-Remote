@@ -192,7 +192,7 @@ rather than reimplementing it, so it cannot report a route the player does not t
 
 # The code
 
-Verbatim from the tree at v1.8.56. Presented in the order the chain runs: the pure
+Verbatim from the tree at v1.8.58. Presented in the order the chain runs: the pure
 modules first, then the server, then the client.
 
 ## `lib/waveform.js`
@@ -1449,7 +1449,7 @@ function deepVerdict(d) {
 module.exports = { streamingVerdict, deepVerdict };
 ```
 
-## `index.js` — the waveform section (lines 13450–15133)
+## `index.js` — the waveform section (lines 13473–15169)
 
 The server side end to end: storage, the local-file path, the Qobuz and TIDAL
 stream paths, the Qobuz sign-in routes, and the two endpoints.
@@ -1459,16 +1459,29 @@ stream paths, the Qobuz sign-in routes, and the two endpoints.
 /*  Waveforms                                                          */
 /* ------------------------------------------------------------------ */
 /*
- * LOCAL FILES ONLY, and that is a hard limit rather than an unfinished corner.
- * Roon's extension API exposes no audio at all — the Core decodes and streams
- * to the endpoint, never to an extension — so a Qobuz or TIDAL track has no
- * samples this process can reach. Those fall back to the plain progress bar.
+ * Roon's extension API exposes no audio at all — the Core decodes and streams to
+ * the endpoint, never to an extension — so nothing here can read what you are
+ * listening to. There are two ways round that and the whole section is built on
+ * the difference between them:
  *
- * The resolution is LAZY on purpose. The /music walk records one directory per
- * album (localAlbumDirs); when a track starts, we read the tags of the files in
- * just that folder and match the title. That is a dozen reads for the album you
- * are listening to, against ~70,000 for a track-level index of the whole
- * library, most of which would never be asked about.
+ *   LOCAL FILES are on disk, so the file is opened directly. The resolution is
+ *     LAZY on purpose: the /music walk records one directory per album
+ *     (localAlbumDirs), and when a track starts the tags of the files in just
+ *     that folder are read and the title matched. A dozen reads for the album
+ *     you are listening to, against ~70,000 for a track-level index of the
+ *     whole library, most of which would never be asked about.
+ *
+ *   QOBUZ AND TIDAL have no file, so a copy of the audio is fetched from the
+ *     service with the user's own account, independently of Roon, purely to
+ *     measure it — see wfQobuzTrack and wfTidalTrack. The album is identified
+ *     by identity key against the favourites (or, for Qobuz, the catalogue),
+ *     the track by title AND duration, and the bytes are piped through ffmpeg
+ *     and discarded. Nothing is written to disk and Roon still does all the
+ *     playback.
+ *
+ * Anything that cannot be identified confidently, or that a service delivers in
+ * a protected container, falls back to the plain progress bar. That is always an
+ * acceptable answer here; a waveform of the wrong recording never is.
  */
 const WF = require("./lib/waveform");
 const WFV = require("./lib/waveform-verdict");
@@ -3141,16 +3154,21 @@ app.post("/api/settings/waveform", (req, res) => {
 // boundary between the /music tag read (which other features are built on) and
 ```
 
-## `public/app.js` — the canvas (lines 8531–8760)
+## `public/app.js` — the canvas (lines 8531–8765)
 
 Fetching, folding and drawing, inset to the range input's own travel.
 
 ```js
   /* ---------------- Waveform ---------------- */
   /*
-   * The shape of the track, drawn under the seek bar. LOCAL FILES ONLY — Roon
-   * streams Qobuz and TIDAL to the endpoint and never to an extension, so those
-   * tracks have no audio the server can read and simply keep the plain bar.
+   * The shape of the track, drawn under the seek bar.
+   *
+   * Local files and streamed ones alike: Roon sends audio to the endpoint and
+   * never to an extension, so the server reads a local file directly and
+   * fetches a streamed track from Qobuz or TIDAL with the user's own account to
+   * measure it. Either way this end is the same — it asks /api/waveform for a
+   * few thousand levels and draws them; a track the server cannot identify
+   * answers with none and keeps the plain bar.
    *
    * The canvas is decoration UNDER the range input, never a replacement for it:
    * the input keeps the drag, the keyboard, the thumb and the disabled state,

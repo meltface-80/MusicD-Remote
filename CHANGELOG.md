@@ -2,6 +2,89 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.58] — 2026-09-23
+
+### Changed — the share card's description sits BELOW the cover
+
+Matching the MusicD Share Card app: art and title across the top, a hairline,
+then the description across the **full pane width**, with the attribution under
+it.
+
+It had been living in the column beside a 424px cover — about 600px to wrap in,
+and whatever vertical room the title and artist had not already taken, which on
+a four-line title was none. The server fetched a description on every open and
+the card routinely dropped it, and a card with no description looks exactly
+like a card for a record that has none.
+
+**The card's height is a result now, not a constant.** Everything is measured,
+then the canvas is sized, then it is drawn. A card with nothing but art, title
+and artist still comes out at exactly the 600px it always was; anything with
+prose grows to hold it, to a 1500px ceiling. A tall header pushes the card down
+instead of evicting the text, which is the failure the old layout had built in.
+
+**And the card carries the whole review.** The line cap was 14, which a 26px
+column of 1024px reaches at about a thousand characters — while `app.js` trims
+to ten sentences and 1400 characters before sending. Everything between those
+two numbers was being ellipsized, which is most of a Wikipedia opening. The cap
+is 22 lines now, set from what `app.js` can actually send rather than picked,
+and the ceiling is 1800px so the worst case (a four-line title and a four-line
+artist over a full-length review, ~1660px) clears it without the header eating
+the text.
+
+The two numbers are a pair, and nothing connected them before:
+`test/unit/sharecard-layout.test.js` reads the trim out of `app.js` and asserts
+the longest text it can produce arrives whole, so raising either one without the
+other fails there rather than on a card.
+
+The attribution (`description_source` — whose words these are, which is not the
+same question as where the link goes) is drawn at 20px against the body's 26px.
+**Size carries that hierarchy, not opacity**: `#c2cad3` measures 4.52:1 on the
+worst pane this card can present — a white sleeve, softened, scrimmed, under the
+glass — so there is no headroom to fade anything. At 0.72 alpha it drops to
+3.16. The contrast tier added here is what caught that, in this change, before
+it shipped.
+
+### Fixed — a Pitchfork-reviewed album could still show no words at all
+
+Reported against Bruce Springsteen's *Western Stars*: score badge, title,
+artist, and nothing else, while other albums showed their review.
+
+`fetchAlbumBios` fetches Pitchfork, Qobuz and Wikipedia together and picks one
+winner. Pitchfork's own prose may never be displayed (UK law — only the score,
+the Best New Music flag and a link), and v1.8.32 fixed that branch emitting
+`description: null` by wiring **Wikipedia** into it. It stopped there: Qobuz's
+editorial paragraph sat unused in exactly the way Wikipedia's had, so a
+reviewed album whose encyclopaedia lookup came back empty still showed nothing.
+*Western Stars* shares its title with a 2019 documentary film, which is the kind
+of thing that makes that lookup miss.
+
+Qobuz is now the fallback. Wikipedia keeps precedence, so nothing that shows an
+article today starts showing a different paragraph tomorrow, and
+`description_source` still names whoever actually wrote what is on screen.
+
+### Fixed — the share sheet's last rows were unreachable under the transport
+
+The now-playing pill floats over the share overlay (z-index 70 against 60) and
+the sheet is its own scroller, so once it had scrolled to its end anything in
+the last ~106px simply could not be brought into view. Same class as v1.8.50's
+album view, same fix: the scroller reserves the pill's height — as a **longhand
+after the shorthand**, because folding it into `padding:` is precisely how
+v1.8.50's reserve got deleted in the first place.
+
+### Changed — no Download button in an installed iOS app
+
+`<a download>` is not implemented in WebKit on iOS: the attribute is ignored, so
+the control either navigates to a `blob:` URL or does nothing — and a standalone
+app has no browser chrome to come back from. Long-pressing the card is the real
+Save Image, and the hint says so.
+
+Narrowed to **standalone**, not to iOS: in a Safari tab there is still a tab to
+return from, and on every other platform the button works. The test asserts all
+three cases, because removing it from ordinary iOS Safari would be the obvious
+wrong fix.
+
+1189 unit / 618 DOM / 109 static.
+
 ## [1.8.57] — 2026-09-22
 
 ### Fixed — two section comments still said the feature does not exist
