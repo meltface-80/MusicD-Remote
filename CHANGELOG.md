@@ -2,6 +2,44 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.59] — 2026-09-26
+
+### Fixed — the side menu opens over the mini transport bar
+
+Reported: with something playing, the floating now-playing pill sat on top of
+the open side menu — over the drawer's lower rows and over the dimmed backdrop
+beside it. The menu is meant to be the one thing that covers the pill.
+
+**It was never the menu's z-index.** `.menu-overlay` is `z-index: 95` and the
+pill is 70, so the numbers were already the right way round. But the overlay
+lived *inside* `.app`, and `.app` is `position: fixed; z-index: 0` — a stacking
+context of its own. A z-index only ranks an element among the other members of
+its context, so the menu's 95 was measured against the top bar and `<main>`,
+while the whole shell, menu included, sat at 0 in the root, under the pill.
+Raising the number could never have helped, and neither could removing the
+shell's `z-index`: `position: fixed` makes the context by itself.
+
+**The fix moves the overlay out of the shell**, next to the other full-screen
+layers (Settings, the confirm dialog), where its 95 is compared with the pill
+directly. The markup is byte-identical, moved and nothing else; the comment
+above it now says why it must stay outside `.app`. Nothing it relied on came
+from the shell — the only value `.app` passes down is the measured
+`--topbar-h`, which no menu rule reads.
+
+Unchanged on purpose: with the menu shut the pill stays on top of the page, and
+the Now playing screen hides the pill anyway.
+
+`test/dom/menu-over-transport.test.js` hit-tests inside the pill's box with the
+menu open — once where the drawer is, once where the backdrop is — and checks
+that a tap on the veil over the pill closes the menu, and that the pill is back
+on top afterwards. Red before the move: `elementFromPoint` returned the pill
+over the open drawer. One harness fact worth recording: this Chromium never
+advances a CSS animation, so the drawer measures at its slide-in's first frame,
+entirely off screen, and the test switches that animation off to see where the
+drawer really rests.
+
+1189 unit / 619 DOM / 109 static.
+
 ## [1.8.58] — 2026-09-23
 
 ### Changed — the share card's description sits BELOW the cover
