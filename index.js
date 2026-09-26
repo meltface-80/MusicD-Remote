@@ -2085,6 +2085,18 @@ const labelMbidCache = new Map();  // group key → MusicBrainz MBID
 const labelLogoCache = new Map();  // group key → logo URL | null (null = tried, not found)
 const labelMerges    = new Map();  // source groupKey → { targetKey, targetDisplay, sourceDisplay }
 const albumYearCache = new Map();  // album key → release year (4-digit string) — powers the Decade filter
+// album key → the same release stated more finely: "YYYY-MM" or "YYYY-MM-DD",
+// always beginning with that key's year in albumYearCache. Absent when only the
+// year is known. Kept BESIDE the year rather than in it because every other
+// reader (the Decade facet, the random-by-decade picks, the album page) wants
+// exactly four digits; only the Release date sort reads this. See setAlbumYear.
+const albumDateCache = new Map();
+// album key → which source stated THAT date (a yearSourceRank name), mirroring
+// album_years.date_src. The day has provenance of its own, separate from the
+// year's: the source that decides the year often states no day, and the day
+// then comes from another — which a better source for the day must still be
+// able to correct, and a worse one never overwrite.
+const albumDateSource = new Map();
 // album key → { ts, src } — powers the "Recently added" sort. Roon's extension
 // API exposes no date-added of any kind, so every value here is this
 // extension's own evidence, ranked: a local file's mtime is a real date; an
@@ -2488,6 +2500,16 @@ function openLabelsDb() {
     // any identified source outranks them.
     try { labelsDb.exec("ALTER TABLE album_years ADD COLUMN src TEXT"); }
     catch (e) { /* already present — SQLite has no ADD COLUMN IF NOT EXISTS */ }
+    // v1.8.60: the release date beside the year (albumDateCache), so Release
+    // date can sort by day rather than by year. Existing rows read back NULL —
+    // year only — and gain a date the next time any source states one for the
+    // same year: the favourites read at startup, or the next /music walk.
+    try { labelsDb.exec("ALTER TABLE album_years ADD COLUMN date TEXT"); }
+    catch (e) { /* already present — SQLite has no ADD COLUMN IF NOT EXISTS */ }
+    // ...and which source stated that date (albumDateSource), so a better
+    // source for the DAY can correct it after a restart as well as before.
+    try { labelsDb.exec("ALTER TABLE album_years ADD COLUMN date_src TEXT"); }
+    catch (e) { /* already present — SQLite has no ADD COLUMN IF NOT EXISTS */ }
     // v1.7.37: formats can now come from a streaming service as well as from a
     // local file, and a local file must win. Rows written by v1.7.35-36 have no
     // src and read back as rank 0, so the first identified source corrects them.
@@ -2500,7 +2522,7 @@ function openLabelsDb() {
     stmtDeleteMerge = labelsDb.prepare("DELETE FROM label_merges WHERE source_key = ?");
     stmtInsertPlay  = labelsDb.prepare("INSERT INTO plays (ts, zone, track, artist, album, image_key, duration) VALUES (?,?,?,?,?,?,?)");
     stmtCompletePlay = labelsDb.prepare("UPDATE plays SET completed=1 WHERE id=?");
-    stmtInsertYear  = labelsDb.prepare("INSERT OR REPLACE INTO album_years (key, year, src) VALUES (?, ?, ?)");
+    stmtInsertYear  = labelsDb.prepare("INSERT OR REPLACE INTO album_years (key, year, src, date, date_src) VALUES (?, ?, ?, ?, ?)");
     stmtInsertSeen  = labelsDb.prepare("INSERT OR REPLACE INTO album_seen (key, ts, src) VALUES (?, ?, ?)");
     stmtInsertGenres = labelsDb.prepare("INSERT OR REPLACE INTO album_genres (key, genres) VALUES (?, ?)");
     stmtInsertGenreScan = labelsDb.prepare(
@@ -2536,10 +2558,17 @@ function openLabelsDb() {
     for (const r of labelsDb.prepare("SELECT source_key, source_display, target_key, target_display FROM label_merges").all()) {
       labelMerges.set(r.source_key, { targetKey: r.target_key, targetDisplay: r.target_display, sourceDisplay: r.source_display });
     }
-    for (const r of labelsDb.prepare("SELECT key, year, src FROM album_years").all()) {
+    for (const r of labelsDb.prepare("SELECT key, year, src, date, date_src FROM album_years").all()) {
       if (r.year) {
         albumYearCache.set(r.key, r.year);
         if (r.src) albumYearSource.set(r.key, r.src);
+        // Only a date that belongs to this row's year: the two are written
+        // together, so a mismatch means a damaged row, and the year is the
+        // half every other reader relies on.
+        if (r.date && r.date.length > 4 && r.date.slice(0, 4) === r.year) {
+          albumDateCache.set(r.key, r.date);
+          if (r.date_src) albumDateSource.set(r.key, r.date_src);
+        }
       }
     }
     for (const r of labelsDb.prepare("SELECT key, ts, src FROM album_seen").all()) {
@@ -2693,28 +2722,84 @@ function yearSourceRank(src) {
 }
 const albumYearSource = new Map();   // album key → source name, mirrors album_years.src
 
-// Persist a release year for an album key (4-digit). Powers the Decade filter.
+// Whether `finer` states the same release as `coarser`, more precisely:
+// "1973-03-01" refines "1973-03" and "1973"; "1973-05-01" refines neither of
+// "1973-03" or "1973-03-01".
+function dateRefines(finer, coarser) {
+  return !!finer && !!coarser && finer.length > coarser.length && finer.startsWith(coarser);
+}
+
+// Persist a release date for an album key: the year (4-digit, what the Decade
+// filter and everything else reads) and, when the source states one, the finer
+// date beside it (albumDateCache — what the Release date sort reads). `year`
+// may be a bare year or any date shape releaseDateOf understands.
 // Returns whether anything actually changed, so bulk callers can bump the
 // library-view cache ONCE instead of once per album.
+//
+// Two decisions, each by its own provenance:
+//
+//   The YEAR follows the source ranking exactly as it always has: a source
+//   only replaces a year when it outranks the one that set it.
+//
+//   The DAY is only ever a day OF the year that stands, and is judged by the
+//   source that stated the day (albumDateSource), not the year's. Any source
+//   may REFINE it — same year, says more, contradicts nothing: file tags that
+//   read only "2024" outrank Qobuz for the year, and Qobuz knows 2024-03-15.
+//   Only a better source for the day may CONTRADICT it. Judging the day by the
+//   year's rank let a worse source's day in under a better source's name, and
+//   then no better source could ever correct it.
+//
+// opts.dayOnly offers a date for its day alone: it can never move the year,
+// and on an album with no year it does nothing. The harvest uses it for every
+// source other than the one it chose for the year.
 //
 // The bump used to happen unconditionally at the top, before the value was even
 // validated — so a rejected year still threw away every memoised ordering, and
 // the bulk harvest below would have done that thousands of times per sync.
 function setAlbumYear(key, year, opts) {
-  const y = String(year || "").slice(0, 4);
-  if (!/^\d{4}$/.test(y)) return false;   // only store a plausible 4-digit year
-  const src     = (opts && opts.src) || null;
-  const newRank = yearSourceRank(src);
-  const oldRank = yearSourceRank(albumYearSource.get(key));
+  const date = releaseDateOf(year);
+  if (!date) return false;                 // only store a plausible 4-digit year
+  const y    = date.slice(0, 4);
+  const fine = date.length > 4 ? date : null;
+  const src  = (opts && opts.src) || null;
+  const rank = yearSourceRank(src);
   const known   = albumYearCache.has(key);
-  // Same value, and no better provenance to record — nothing to do.
-  if (known && albumYearCache.get(key) === y && newRank <= oldRank) return false;
-  // A source no better than the one already on file may not overwrite it.
-  if (known && newRank <= oldRank) return false;
-  albumYearCache.set(key, y);
-  if (src) albumYearSource.set(key, src); else albumYearSource.delete(key);
-  if (labelsDb && stmtInsertYear) stmtInsertYear.run(key, y, src);
-  // ordered library views join on years — drop stale orderings
+  const oldYear = known ? albumYearCache.get(key) : null;
+  const oldSrc  = albumYearSource.get(key) || null;
+  const oldFine = albumDateCache.get(key) || null;
+  // A day written without a source of its own reads as the year's.
+  const oldFineSrc = oldFine ? (albumDateSource.get(key) || oldSrc) : null;
+
+  // The year: exactly the rule it has always had.
+  let newYear = oldYear, newSrc = oldSrc;
+  if (!(opts && opts.dayOnly) && (!known || rank > yearSourceRank(oldSrc))) {
+    newYear = y;
+    newSrc  = src;
+  }
+  // The day: only a day of the year that now stands.
+  let newFine    = newYear === oldYear ? oldFine    : null;
+  let newFineSrc = newYear === oldYear ? oldFineSrc : null;
+  if (fine && y === newYear) {
+    const better = rank > yearSourceRank(newFineSrc);
+    if (!newFine || dateRefines(fine, newFine)) {
+      newFine = fine; newFineSrc = src;          // the first day, or more of it
+    } else if (fine === newFine || dateRefines(newFine, fine)) {
+      if (fine === newFine && better) newFineSrc = src;   // same day, better word for it
+    } else if (better) {
+      newFine = fine; newFineSrc = src;          // a better source corrects the day
+    }
+  }
+  if (newYear === oldYear && newSrc === oldSrc &&
+      newFine === oldFine && newFineSrc === oldFineSrc) return false;
+
+  albumYearCache.set(key, newYear);
+  if (newSrc) albumYearSource.set(key, newSrc); else albumYearSource.delete(key);
+  if (newFine) albumDateCache.set(key, newFine); else albumDateCache.delete(key);
+  if (newFine && newFineSrc) albumDateSource.set(key, newFineSrc); else albumDateSource.delete(key);
+  if (labelsDb && stmtInsertYear) {
+    stmtInsertYear.run(key, newYear, newSrc, newFine, newFine ? newFineSrc : null);
+  }
+  // ordered library views join on years and dates — drop stale orderings
   if (!(opts && opts.deferBump)) bumpLibraryMeta();
   return true;
 }
@@ -2730,10 +2815,12 @@ function setAlbumYear(key, year, opts) {
 // Library page would re-sort the whole library from scratch. bumpLibraryMeta
 // is throttled instead.
 function rememberScanYear(title, artist, date, src) {
-  const y = yearOfDate(date);
-  if (!y || !title) return;
+  // Whole date where the catalogue gives one (iTunes' releaseDate does), so
+  // the Release date sort can use its day.
+  const d = releaseDateOf(date);
+  if (!d || !title) return;
   const key = normalize(title) + "||" + normalize(artist || "");
-  if (setAlbumYear(key, y, { src: src || "catalog", deferBump: true })) scheduleLibraryMetaBump();
+  if (setAlbumYear(key, d, { src: src || "catalog", deferBump: true })) scheduleLibraryMetaBump();
 }
 
 openLabelsDb();
@@ -3313,9 +3400,12 @@ let tidalFavouritesRead = 0, tidalFavouritesTotal = 0;
 // refreshStreamAlbumKeys assigns them, and a `let` sitting hundreds of lines
 // BELOW its assignment is a ReferenceError waiting for the day that call stops
 // being deferred by a setTimeout. (The v1.5.66 startup crash, exactly.)
-let fileAlbumYears  = new Map();   // albumKey → "YYYY", from /music file tags
-let qobuzAlbumYears = new Map();   // albumKey → "YYYY", from Qobuz favourites
-let tidalAlbumYears = new Map();   // albumKey → "YYYY", from TIDAL favourites
+// Values are release DATES since v1.8.60 — "YYYY-MM-DD", "YYYY-MM" or "YYYY",
+// as finely as the source states (releaseDateOf) — still named for the year,
+// which is what the Decade filter takes from them.
+let fileAlbumYears  = new Map();   // albumKey → release date, from /music file tags
+let qobuzAlbumYears = new Map();   // albumKey → release date, from Qobuz favourites
+let tidalAlbumYears = new Map();   // albumKey → release date, from TIDAL favourites
 /*
  * The stream key file's OWN version, separate from SOURCE_KEY_VERSION.
  *
@@ -3980,19 +4070,48 @@ function yearOfDate(v) {
   return /^\d{4}$/.test(y) ? y : null;
 }
 
-// Which of a file's date tags is the album's ORIGINAL release year, given
-// music-metadata's `common` block.
+// As much of a release date as the value really states: "YYYY-MM-DD",
+// "YYYY-MM" or "YYYY" — the Release date sort orders by day, so a date is
+// worth keeping whole ("2015-03-09T08:00:00Z" from iTunes is "2015-03-09").
+// The year is ALWAYS yearOfDate's answer for the same value, and null exactly
+// when that is: this only ever adds precision, never a different year. A month
+// or day that cannot exist ("2024-00-00" is a common "unknown" in tags,
+// "2023-02-29" a typo) is dropped rather than rounded into a real date.
+function releaseDateOf(v) {
+  const y = yearOfDate(v);
+  if (!y) return null;
+  const m = /^\d{4}-(\d{2})(?:-(\d{2}))?/.exec(String(v).trim());
+  if (!m) return y;
+  const month = parseInt(m[1], 10);
+  if (month < 1 || month > 12) return y;
+  if (m[2] === undefined) return y + "-" + m[1];
+  const day  = parseInt(m[2], 10);
+  const days = new Date(Date.UTC(parseInt(y, 10), month, 0)).getUTCDate();
+  if (day < 1 || day > days) return y + "-" + m[1];
+  return y + "-" + m[1] + "-" + m[2];
+}
+
+// Which of a file's date tags is the album's ORIGINAL release date, given
+// music-metadata's `common` block — as a date where the tags state one.
 //
 // ORIGINALDATE first. music-metadata derives `common.year` from DATE, and on a
 // remaster DATE is the REISSUE year — so preferring `year` (as this did) filed
 // every remaster under the decade it was reissued in and only consulted
 // ORIGINALDATE when there was no DATE at all, which is backwards. A tagger that
 // sets ORIGINALDATE is telling us exactly what the Decade filter wants to know.
-function fileTagYear(common) {
+//
+// The YEAR this returns is the one it always returned (it was fileTagYear
+// until v1.8.60). DATE only adds its month and day when it is the same year as
+// `common.year`: a file whose YEAR and DATE tags disagree is not allowed to
+// lend one release's day to another's year.
+function fileTagDate(common) {
   if (!common) return null;
-  return yearOfDate(common.originaldate) ||
-         yearOfDate(common.year) ||
-         yearOfDate(common.date);
+  const original = releaseDateOf(common.originaldate);
+  if (original) return original;
+  const year = yearOfDate(common.year);
+  const date = releaseDateOf(common.date);
+  if (year && date && date.slice(0, 4) === year) return date;
+  return year || date;
 }
 // Record a harvested year under every identity the source can offer, mirroring
 // addFavouriteKeys so the join keys line up with the badge keys exactly.
@@ -4062,7 +4181,9 @@ function tidalQualityOf(a) {
 }
 
 function addHarvestedYear(map, title, version, artists, year) {
-  const y = yearOfDate(year);
+  // The whole date, not just its year: the Release date sort orders by day,
+  // and every source feeding this map (file tags, Qobuz, TIDAL) states one.
+  const y = releaseDateOf(year);
   if (!y || !title) return;
   const titles = version ? [title, title + " " + version] : [title];
   for (const t of titles) {
@@ -4098,7 +4219,7 @@ function harvestAlbumYears(reason) {
   let added = 0;
   const run = () => {
     for (const al of albumIndex.albums) {
-      const ykey = al.nTitle + "||" + al.nArtist;   // the key albumYearOf reads
+      const ykey = albumYearKey(al);   // the key albumYearOf reads
       let found = null, foundSrc = null;
       for (const key of (al.srcKeys || [])) {
         // Same suppression withSource applies: an identity shared by two library
@@ -4113,7 +4234,27 @@ function harvestAlbumYears(reason) {
       // deferBump: one cache invalidation at the end, not one per album.
       // setAlbumYear decides whether this source is allowed to write — it fills
       // a gap, or corrects a year from a source that ranks lower.
-      if (found && setAlbumYear(ykey, found, { src: foundSrc, deferBump: true })) added++;
+      if (!found) continue;
+      let changed = setAlbumYear(ykey, found, { src: foundSrc, deferBump: true });
+      // The DAY may come from any other source that agrees with the year now
+      // on file: file tags often say only "2024" where the Qobuz favourite says
+      // 2024-03-15, and that is no disagreement. Each is offered under ITS OWN
+      // name, dayOnly — so it can never move the year, and setAlbumYear judges
+      // its day by the day's own provenance. (Borrowing the day under the
+      // year's source, as a first cut did, let TIDAL's day in with file-tag
+      // rank, after which no better source could correct it.)
+      for (const s of sources) {
+        if (s.src === foundSrc) continue;
+        let d = null;
+        for (const key of (al.srcKeys || [])) {
+          if (ambiguousAlbumKeys.has(key)) continue;
+          const v = s.map.get(key);
+          if (v) { d = v; break; }
+        }
+        if (d && d.length > 4 &&
+            setAlbumYear(ykey, d, { src: s.src, dayOnly: true, deferBump: true })) changed = true;
+      }
+      if (changed) added++;
     }
   };
   // One transaction for the whole join, matching how the other bulk loads here
@@ -4131,8 +4272,11 @@ function harvestAlbumYears(reason) {
   }
   if (added) {
     bumpLibraryMeta();
-    console.log("[years] harvested " + added + " release years (" + reason + "); " +
-                albumYearCache.size + " known");
+    // "dates", not "years": since v1.8.60 an album whose year was already
+    // known counts here when it gains its day, which the first sync after the
+    // upgrade does for most of the library.
+    console.log("[years] harvested " + added + " release dates (" + reason + "); " +
+                albumYearCache.size + " albums dated, " + albumDateCache.size + " to the month or day");
   }
   return added;
 }
@@ -4350,8 +4494,9 @@ async function buildFileLabelMap(onProgress) {
           const key = normalize(album) + "||" + normalize(albumartist || "");
           if (!map.has(key)) map.set(key, label);
         }
-        // Capture the release year from file tags too (powers the Decade filter).
-        const fyear = fileTagYear(meta.common);
+        // Capture the release date from file tags too (the Decade filter reads
+        // its year, the Release date sort its day).
+        const fyear = fileTagDate(meta.common);
         if (album && fyear) {
           // Direct write under the TAG-derived key. Kept because it costs
           // nothing and lands immediately whenever the tags and Roon agree.
@@ -5311,11 +5456,14 @@ function stripHtml(html) {
     .trim();
 }
 
-// MusicBrainz: release year
+// MusicBrainz: release date (the year of it is what the album page shows)
 function mbQuote(s) {
   return String(s).replace(/[+\-&|!(){}\[\]^"~*?:\\\/]/g, "\\$&");
 }
-async function fetchAlbumYear(title, artist) {
+// The album's first release date as MusicBrainz states it — "YYYY-MM-DD",
+// "YYYY-MM" or "YYYY" (releaseDateOf) — or null. It returned only the year
+// until v1.8.60; the day is kept now for the Release date sort.
+async function fetchAlbumReleaseDate(title, artist) {
   if (!title) return null;
   const key = normalize(title) + "||" + normalize(artist || "");
   if (mbCache.has(key)) return mbCache.get(key);
@@ -5328,10 +5476,9 @@ async function fetchAlbumYear(title, artist) {
     const rgs = json["release-groups"] || [];
     rgs.sort((a, b) =>
       (a["first-release-date"] || "9999").localeCompare(b["first-release-date"] || "9999"));
-    const date = rgs[0] && rgs[0]["first-release-date"] || null;
-    const year = date ? date.slice(0, 4) : null;
-    mbCache.set(key, year);
-    return year;
+    const date = releaseDateOf(rgs[0] && rgs[0]["first-release-date"]);
+    mbCache.set(key, date);
+    return date;
   } catch (e) {
     if (DEBUG) console.error("[mb]", e.message);
     mbCache.set(key, null);
@@ -7756,9 +7903,34 @@ function saveSmartPlaylists(list) {
 }
 
 
+// The year cache's key for a library album — its ONE spelling. The Decade
+// counts, the Decade focus, the random-by-decade picks, the Release date sort
+// and the harvest that writes the key must all agree on it, and a hand-written
+// copy is exactly what drifts without a sound (see pickRandomAlbums).
+function albumYearKey(al) {
+  return al.nTitle + "||" + al.nArtist;
+}
 function albumYearOf(al) {
-  const y = parseInt(albumYearCache.get(al.nTitle + "||" + al.nArtist) || "", 10);
+  const y = parseInt(albumYearCache.get(albumYearKey(al)) || "", 10);
   return Number.isFinite(y) ? y : null;
+}
+// The album's release date as a sortable "YYYY-MM-DD", or null exactly when
+// albumYearOf is null. What the Release date sort orders by — it ordered by
+// the YEAR alone until v1.8.60, so a record out yesterday sat anywhere among
+// this year's albums instead of heading newest-first.
+//
+// A part the sources never stated reads as "00". So within one year an album
+// known only as "2024" sorts BEFORE every dated 2024 album: at the start of
+// the year oldest-first, at its end newest-first — never above a record
+// released yesterday on the strength of a year alone.
+function albumDateOf(al) {
+  // Null by albumYearOf's own test, not a copy of it: an album the Decade
+  // focus calls undated must be the album this sort calls undated.
+  if (albumYearOf(al) === null) return null;
+  const key = albumYearKey(al);
+  const y = albumYearCache.get(key);
+  const d = albumDateCache.get(key);
+  return ((d && d.slice(0, 4) === y ? d : y) + "-00-00").slice(0, 10);
 }
 // When this extension first became aware of the album, or null. Checked across
 // every identity the album is keyed under, because the file scan and the index
@@ -7850,7 +8022,7 @@ function libraryView(q) {
   //
   // Deliberately part of the FILTER chain rather than a sort mode: it runs
   // before the comparator, so it narrows identically under Album name, Artist,
-  // Release year, Recently added, Most played, Last played and Random. That is
+  // Release date, Recently added, Most played, Last played and Random. That is
   // the whole reason it replaced the A-Z scroll rail — a letter index is
   // meaningless the moment the wall is ordered by anything but the alphabet.
   const prefix = libraryPrefix(q.prefix);
@@ -7885,20 +8057,10 @@ function libraryView(q) {
     album:  (a, b) => a.sortTitle.localeCompare(b.sortTitle) || a.nArtist.localeCompare(b.nArtist),
     artist: (a, b) => (a.cFirst || a.nArtist).localeCompare(b.cFirst || b.nArtist) ||
                       a.sortTitle.localeCompare(b.sortTitle),
-    // Unknown years sort last in BOTH directions — an album with no year yet is
-    // "unknown", not "year zero", and must never head the list.
-    year:   (a, b) => {
-      const ya = albumYearOf(a), yb = albumYearOf(b);
-      if (ya === null && yb === null) return a.sortTitle.localeCompare(b.sortTitle);
-      if (ya === null) return 1;
-      if (yb === null) return -1;
-      return ya - yb || a.sortTitle.localeCompare(b.sortTitle);
-    },
+    // "year" and "added" are ordered below, by a date worked out once per album.
     plays:  (a, b) => (stats.count.get(playKey(a)) || 0) - (stats.count.get(playKey(b)) || 0) ||
                       a.sortTitle.localeCompare(b.sortTitle),
     lastplayed: (a, b) => (stats.last.get(playKey(a)) || 0) - (stats.last.get(playKey(b)) || 0) ||
-                      a.sortTitle.localeCompare(b.sortTitle),
-    added: (a, b) => (albumAddedOf(a) || 0) - (albumAddedOf(b) || 0) ||
                       a.sortTitle.localeCompare(b.sortTitle),
     random: (a, b) => seededRank(a.nTitle + a.nArtist, seed) - seededRank(b.nTitle + b.nArtist, seed)
   }[sort];
@@ -7910,13 +8072,24 @@ function libraryView(q) {
     // float them to the top. "Recently added" needs this even more than "year"
     // does — Roon publishes no import date at all, so on an established library
     // the undated set starts out large and only shrinks going forward.
-    const dateOf = sort === "year" ? albumYearOf : albumAddedOf;
+    //
+    // The date is worked out ONCE per album and sorted as a key: the release
+    // date to the day where one is known ("YYYY-MM-DD", albumDateOf), or the
+    // first-seen timestamp — both compare with < and >. Asking for it inside
+    // the comparator cost two lookups and string builds per COMPARISON, about
+    // twice the old year sort on a large library, on a path that runs on every
+    // cache miss — including every keystroke of the text filter, never cached.
+    const dateOf = sort === "year" ? albumDateOf : albumAddedOf;
     const known = [], unknown = [];
-    for (const al of list) (dateOf(al) === null ? unknown : known).push(al);
-    known.sort(cmp);
+    for (const al of list) {
+      const d = dateOf(al);
+      if (d === null) unknown.push(al); else known.push({ al, d });
+    }
+    known.sort((a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : 0) ||
+                         a.al.sortTitle.localeCompare(b.al.sortTitle));
     if (desc) known.reverse();
     unknown.sort((a, b) => a.sortTitle.localeCompare(b.sortTitle));
-    out = known.concat(unknown);
+    out = known.map(k => k.al).concat(unknown);
   } else {
     out = list.slice().sort(cmp);
     // `dir` means the same thing for every sort: asc = the comparator's own
@@ -15850,14 +16023,17 @@ app.get("/api/album/extras", async (req, res) => {
   const artist = String(req.query.artist || "");
   if (!title) return res.status(400).json({ error: "title query parameter required" });
   try {
-    let [year, bios] = await Promise.all([
-      fetchAlbumYear(title, artist),
+    let [releaseDate, bios] = await Promise.all([
+      fetchAlbumReleaseDate(title, artist),
       fetchAlbumBios(title, artist)
     ]);
-    // Opportunistically record the year so it feeds the Decade filter too.
-    if (year) {
+    // The page shows the year; the store keeps the whole date.
+    const year = releaseDate ? releaseDate.slice(0, 4) : null;
+    // Opportunistically record it so it feeds the Decade filter and the
+    // Release date sort too.
+    if (releaseDate) {
       const exKey = normalize(title) + "||" + normalize(artist);
-      setAlbumYear(exKey, year, { src: "release" });
+      setAlbumYear(exKey, releaseDate, { src: "release" });
     }
     // Prefer MusicBrainz's first-release year (the album's original release)
     // over Qobuz's edition date, which can be a later reissue.

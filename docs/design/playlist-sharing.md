@@ -133,7 +133,7 @@ album or track. Worse, we *receive* several and throw them away:
 |---|---|---|
 | Qobuz album id | favourites sync | `index.js:2519` — `a.id` read, never persisted |
 | TIDAL album id | favourites sync | `index.js:2550` — same |
-| MB release-group id | `fetchAlbumYear` | `index.js:3745` — only `first-release-date` kept |
+| MB release-group id | `fetchAlbumReleaseDate` (`fetchAlbumYear` before v1.8.60) | `index.js:3745` — only `first-release-date` kept |
 | Track number | every Roon tracklist | `stripTrackNumber()`, `index.js:1108` |
 
 What is stored is canonical *text* keys only (`canonText(title) + "||" + canonArtist(artist)`).

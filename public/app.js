@@ -103,18 +103,14 @@
 
   const modal       = document.getElementById("album-modal");
   const modalImg    = document.getElementById("modal-img");
-  const modalSource = document.getElementById("modal-source");
-  // Same rule as the tiles: badge only on confirmed local files, and clear it
-  // on every open so a previous album's badge can't linger.
-  function setModalSource(album) {
-    if (!modalSource) return;
-    const kind = album && (album.source || (album.local ? "local" : null));
-    const label = { local: "Local albums", qobuz: "Qobuz", tidal: "TIDAL" }[kind];
-    modalSource.className = "album-source" + (label ? " " + kind : " hidden");
-    if (label) { modalSource.title = label; modalSource.setAttribute("aria-label", label); }
-    // Same badge as the tiles, on the album's own artwork. Cleared on every
-    // open for the same reason: a previous album's rate lingering on a new
-    // cover would be a confident, wrong statement about the file.
+  // The sample-rate badge, on the album's own artwork. Cleared on every open:
+  // a previous album's rate lingering on a new cover would be a confident,
+  // wrong statement about the file.
+  //
+  // The local / Qobuz / TIDAL SOURCE badge is not drawn here any more (v1.8.60)
+  // — that corner of this artwork is under the Share button, on the album view
+  // and Now playing alike. Grid tiles keep theirs (sourceBadge).
+  function setModalQuality(album) {
     const mq = document.getElementById("modal-quality");
     if (!mq) return;
     const q = album && album.quality;
@@ -1403,13 +1399,14 @@
       "its own. If it hasn't, open the side menu and tap Rescan library.";
   }
 
+  // The three dots only. The circle round them is the BUTTON's border
+  // (.overflow-btn in style.css) since v1.8.60: drawn here, it was a ring about
+  // half the height of the Play now / Queue pills it sits beside.
   const OVERFLOW_SVG =
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" ' +
-    'aria-hidden="true">' +
-    '<circle cx="12" cy="12" r="9"/>' +
-    '<circle cx="7.6" cy="12" r="1.15" fill="currentColor" stroke="none"/>' +
-    '<circle cx="12" cy="12" r="1.15" fill="currentColor" stroke="none"/>' +
-    '<circle cx="16.4" cy="12" r="1.15" fill="currentColor" stroke="none"/>' +
+    '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
+    '<circle cx="6" cy="12" r="1.9"/>' +
+    '<circle cx="12" cy="12" r="1.9"/>' +
+    '<circle cx="18" cy="12" r="1.9"/>' +
     "</svg>";
 
   // Bumped every time iOS backgrounds the app.
@@ -1588,9 +1585,13 @@
       asc: "A → Z", desc: "Z → A" },
     { id: "artist",     label: "Artist",       dir: "asc",
       asc: "A → Z", desc: "Z → A" },
-    { id: "year",       label: "Release year", dir: "desc",
+    // "Release date", not "year", since v1.8.60: the server orders by the day
+    // wherever a source states one (the id stays "year" — saved views and
+    // smart playlists store it). An album known only by its year sorts after
+    // that year's dated albums newest-first, and before them oldest-first.
+    { id: "year",       label: "Release date", dir: "desc",
       asc: "Oldest first", desc: "Newest first",
-      note: "from years collected during scanning" },
+      note: "from dates collected during scanning" },
     { id: "added",      label: "Recently added", dir: "desc",
       asc: "Oldest first", desc: "Newest first",
       // Deliberately not "when you added it": Roon publishes no import date,
@@ -1629,7 +1630,7 @@
   const LIB_VIEW_KEY = "rra-library-view";
   // v2 changed what `dir` MEANS for Most played / Last played, and ONLY those
   // two: the server used to invert them, so "asc" produced most-played-first.
-  // Now "desc" means descending for every sort. Album/Artist/Release year meant
+  // Now "desc" means descending for every sort. Album/Artist/Release date meant
   // the same thing in v1, so a v1 blob keeps its direction for those — dropping
   // it wholesale would silently reset someone's Z→A wall to A→Z and, because
   // the migrated blob is written straight back, lose the preference for good.
@@ -5577,7 +5578,7 @@
     document.getElementById("album-bio-toggle").classList.add("hidden");
     document.getElementById("album-bio-source").classList.add("hidden");
     document.getElementById("album-bio-text").dataset.clipped = "true";
-    setModalSource(album);   // tile data may already carry it; refreshed below from the detail response
+    setModalQuality(album);   // tile data may already carry it
     if (album.image_key) {
       modalImg.src = `/api/image/${encodeURIComponent(album.image_key)}?size=800`;
       modalImg.style.display = "";
@@ -5668,7 +5669,7 @@
     }
     const j = await r.json();
     if (j.album) {
-      setModalSource(j.album);   // authoritative: the server resolved this album
+      setModalQuality(j.album);   // authoritative: the server resolved this album
       if (j.album.title)    modalTitle.textContent = j.album.title;
       if (j.album.subtitle) setModalArtist(j.album.subtitle);
       if (j.album.image_key) {
@@ -6939,9 +6940,15 @@
       if (e.key === "Escape") closeSearch();
     });
 
-    // The X clears the text and keeps the field open, so a retype needs no
-    // second tap on the glass. Closing is the tap-away gesture.
+    // The X does one of two things, decided by what is in the field. Holding
+    // text, it clears the text and keeps the field open, so a retype needs no
+    // second tap on the glass. Already empty, it CLOSES the bar: clearing an
+    // empty field changes nothing on screen, so an X that only ever cleared was
+    // a button that visibly did nothing — which is how it was reported. Empty
+    // means what onInput means by it (trimmed), so a stray space is not a query
+    // the X has to clear first. Tapping away still closes too.
     clear.addEventListener("click", () => {
+      if (!input.value.trim()) { closeSearch(); return; }
       input.value = "";
       stopSearch();
       input.focus();

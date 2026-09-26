@@ -2,6 +2,116 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.60] — 2026-09-26
+
+### Fixed — the Library's date sort orders by the day, not the year
+
+Reported: sorting by date only sorted by year, so an album released yesterday
+was not at the top newest-first, and not at the bottom oldest-first — it sat
+wherever its title happened to put it among this year's albums.
+
+**Every source already had the day, and every one of them was cut to four
+digits on the way in.** File tags (`DATE` / `ORIGINALDATE`), the Qobuz
+favourites' `release_date_original`, TIDAL's `releaseDate`, MusicBrainz's
+`first-release-date` and iTunes' `releaseDate` all state a full date; the year
+store kept `slice(0, 4)` of each, so there was nothing finer to sort by.
+
+**The day is now kept beside the year, not instead of it.** `album_years` gains
+`date` and `date_src` columns (`albumDateCache`, `albumDateSource`), while the
+4-digit year every other reader relies on — the Decade focus, the
+random-by-decade picks, the year on the album page — is exactly what it was. The sort reads the date through
+`albumDateOf()`, which pads what a source never stated with `00`: within one
+year an album known only as "2026" sorts after every dated 2026 album
+newest-first and before them oldest-first, so a year alone can never place a
+record above one released yesterday. Undated albums still sit at the end in
+both directions. The option is labelled **Release date** now; its id is still
+`year`, so saved views and smart playlists keep working.
+
+**The year's precedence is unchanged; the day has a provenance of its own.**
+Sources are still ranked (file tags › original-release dates › edition dates ›
+catalogue matches) and a lower one still may not change the year. The day is
+judged separately, by the source that stated *the day*: any source that agrees
+on the year may supply a day nobody better has stated — file tags that say only
+"2024" keep the 2024-03-15 the Qobuz favourite knows, in the same pass or a
+later one — and only a better source for the day may replace it. A day is only
+ever a day *of* the year that stands, so a 2011 remaster's date is never
+attached to the 1973 original. A day that cannot exist (`2024-00-00`,
+`2023-02-29`) is dropped rather than rounded.
+
+The separate provenance is the review's catch. The first cut filed a borrowed
+day under the name of the source that set the *year*, so TIDAL's edition date
+could arrive with file-tag rank, overwrite a MusicBrainz release date, and then
+refuse every correction for good — the user's own `DATE` tag included. Three
+independent sequences reproduced it; each is now a test.
+
+The sort works each album's date out once and orders by it. Asking for it
+inside the comparator cost about twice the old year sort on a large library,
+on a path that runs on every cache miss — every keystroke of the text filter
+included.
+
+**Existing installs:** rows written before this version have a year and no
+date. The favourites read at startup restates each Qobuz/TIDAL album's date,
+and since it agrees with the year on file, it fills the day in — so a streaming
+library sorts by day from the first start of this build. Dates from local file
+tags arrive with the next `/music` walk (Rescan library runs one now), and
+MusicBrainz's when an album is opened. The `[years]` log line counts albums
+dated to the month or day.
+
+### Changed — no source badge on the album view's artwork
+
+The local / Qobuz / TIDAL mark sat in the artwork's top-right corner, which is
+exactly where the Share button floats, so it peeked out from underneath it. It
+is gone from that artwork — the album view and Now playing share one, so both
+lose it. The tiles on every album wall keep their badges.
+
+### Fixed — the ⋯ button is the height of Play Now and Queue
+
+The overflow button measured 40px, the same as the pills beside it, but it was
+a transparent box around a ring drawn inside its icon — so what the eye
+measured was the ring, about half the pills' height. The ring is now the
+button's own border: the row's height (it stretches with the row rather than
+copying a number), and the pills' own finish — outline, radius, fill, hover and
+press — which it now shares with `.action-btn` by selector rather than by copy,
+so the next restyle of the pills reaches it too. It is the same component on the
+album view and all three playlist screens, so all four match.
+
+### Fixed — the search X closes an empty search bar
+
+Tapping X with nothing typed did nothing visible: X only ever cleared the text,
+and clearing an empty field changes nothing on screen. With text in the field X
+still clears it and keeps the keyboard up; with the field empty (spaces count
+as empty, as they do for the search itself) it closes the bar. Tapping away
+still closes it too.
+
+### Tests
+
+- `test/unit/years.test.js` — `releaseDateOf` (every shape the sources send,
+  impossible days dropped, the year always `yearOfDate`'s), `fileTagDate` (the
+  year it picks is asserted identical to the old `fileTagYear` for every tag
+  shape), every rule of the day beside the year, the database row, and the
+  upgrade path: a year stored before this version gains its day from the next
+  favourites read.
+- `test/unit/libraryview.test.js` — a year whose album out yesterday is titled
+  to sort FIRST alphabetically, so a year-only order puts it in the wrong place
+  in both directions; the whole order to the day, both ways.
+- `test/unit/years.test.js` also pins the day's provenance: a worse source's
+  day never replaces a better one's, a better one still can, `dayOnly` never
+  moves a year, and the three sequences the review reproduced.
+- `test/static/album-dates.test.js` — `date` and `date_src` are migrated in,
+  written by every insert, and read back at startup (the unit suite has no
+  SQLite, so it could not see a half-done migration). The shipping statements
+  were also run against a real v1.8.59-shaped database, twice.
+- `test/dom/album-actions-row.test.js` — the ⋯ button's height, centre line
+  and painted outline against the pills at three widths, no ring inside it,
+  its menu still opening; no source badge anywhere in the album modal while
+  the grid tile keeps its own. `smart-playlists.test.js` measures the playlist
+  row the same way. `search-toggle.test.js` covers X with text, X empty, X
+  straight after opening, X on spaces, and tap-away.
+
+Mutation-checked: each fix reverted on its own turns its tests red.
+
+1234 unit / 626 DOM / 110 static.
+
 ## [1.8.59] — 2026-09-26
 
 ### Fixed — the side menu opens over the mini transport bar

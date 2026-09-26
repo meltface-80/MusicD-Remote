@@ -109,6 +109,53 @@ const DRIVER = `
   await window.__sleep(120);
   T("closed_after_escape", !isOpen());
   T("cleared_after_escape", input().value);
+
+  // ---- v1.8.60: the X clears text, and closes an EMPTY field --------------
+  var x = function () { return document.getElementById("search-clear"); };
+  glass().click();
+  await window.__sleep(120);
+  input().value = "album";
+  input().dispatchEvent(new Event("input", { bubbles: true }));
+  await window.__sleep(300);
+  x().click();
+  await window.__sleep(120);
+  T("x_with_text_open", isOpen());
+  T("x_with_text_value", input().value);
+  T("x_with_text_focused", document.activeElement === input());
+  T("x_with_text_home_back", !document.getElementById("home-sections").classList.contains("hidden"));
+
+  // The same X, now on an empty field: closes the bar.
+  x().click();
+  await window.__sleep(120);
+  T("x_empty_closed", !isOpen());
+  T("x_empty_glass_back", !glass().classList.contains("hidden"));
+  T("x_empty_aria", glass().getAttribute("aria-expanded"));
+
+  // Straight after opening — the field has never held text.
+  glass().click();
+  await window.__sleep(120);
+  T("reopened", isOpen());
+  x().click();
+  await window.__sleep(120);
+  T("x_fresh_closed", !isOpen());
+
+  // Whitespace is not a query: onInput already treats it as emptied.
+  glass().click();
+  await window.__sleep(120);
+  input().value = "   ";
+  input().dispatchEvent(new Event("input", { bubbles: true }));
+  await window.__sleep(120);
+  x().click();
+  await window.__sleep(120);
+  T("x_spaces_closed", !isOpen());
+  T("x_spaces_cleared", input().value);
+
+  // And tapping away still closes, as it did before.
+  glass().click();
+  await window.__sleep(120);
+  document.body.click();
+  await window.__sleep(120);
+  T("tap_away_still_closes", !isOpen());
 `;
 
 test("search opens from the glass and closes on a tap away", { concurrency: 1 }, async (t) => {
@@ -159,6 +206,35 @@ test("search opens from the glass and closes on a tap away", { concurrency: 1 },
   await t.test("Escape does the same thing as tapping away", () => {
     assert.equal(r.closed_after_escape, true);
     assert.equal(r.cleared_after_escape, "");
+  });
+
+  await t.test("the X on a field holding text clears it and keeps it open", () => {
+    assert.equal(r.x_with_text_open, true, "the X closed a field that still held a query");
+    assert.equal(r.x_with_text_value, "", "the X did not clear the text");
+    assert.equal(r.x_with_text_focused, true,
+      "the field lost focus on clear — a retype would need a second tap");
+    assert.equal(r.x_with_text_home_back, true, "clearing did not bring the Home rows back");
+  });
+
+  await t.test("v1.8.60: the X on an EMPTY field closes the bar", () => {
+    // Reported: open the search, tap the X with nothing typed, and nothing
+    // happens. Clearing an empty field changes nothing on screen, so an X that
+    // only ever cleared was a button that visibly did nothing.
+    assert.equal(r.x_empty_closed, true,
+      "the X on an empty field left the bar open — the reported bug");
+    assert.equal(r.x_empty_glass_back, true, "the bar closed but the glass did not come back");
+    assert.equal(r.x_empty_aria, "false");
+    assert.equal(r.reopened, true);
+    assert.equal(r.x_fresh_closed, true,
+      "the X straight after opening (nothing ever typed) did not close the bar");
+    assert.equal(r.x_spaces_closed, true,
+      "a field holding only spaces is empty to the search, but the X did not close it");
+    assert.equal(r.x_spaces_cleared, "", "closing left the spaces in the field");
+  });
+
+  await t.test("tapping away still closes, alongside the X", () => {
+    assert.equal(r.tap_away_still_closes, true,
+      "the tap-away close was lost — the user asked for it kept");
   });
 
   await t.test("the top bar no longer changes height between screens", () => {

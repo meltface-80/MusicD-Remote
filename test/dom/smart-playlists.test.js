@@ -196,6 +196,22 @@ const DRIVER_MAIN = OPEN_WALL + `
     function (b) { return b.textContent; });
   T("action_buttons", rowBtns);
   T("overflow_present", !!document.querySelector(".playlist-actions .overflow-btn"));
+  // v1.8.60: the button is one of the row — the pills' height, on their line,
+  // with an outline actually painted (so its box is what is seen, rather than
+  // a transparent box round a ring half the pills' height).
+  (function () {
+    var q = Array.prototype.filter.call(document.querySelectorAll(".playlist-actions > button"),
+      function (b) { return b.textContent === "Queue"; })[0];
+    var o = document.querySelector(".playlist-actions .overflow-btn");
+    if (!q || !o) return;
+    var qb = q.getBoundingClientRect(), ob = o.getBoundingClientRect();
+    var c = getComputedStyle(o), qc = getComputedStyle(q);
+    T("ovf_h", { queue: qb.height, more: ob.height, more_w: ob.width,
+                 queue_mid: (qb.top + qb.bottom) / 2, more_mid: (ob.top + ob.bottom) / 2 });
+    T("ovf_finish", { border_w: parseFloat(c.borderTopWidth) || 0,
+                      border: c.borderTopColor, queue_border: qc.borderTopColor,
+                      bg: c.backgroundColor, queue_bg: qc.backgroundColor });
+  })();
 
   // MEASURED: the bug was six pills shrinking together instead of wrapping, so
   // "Send to Roon" rendered as "end to Roo". Nothing on the row may be clipped.
@@ -466,6 +482,20 @@ test("smart playlists open as a playlist screen with tracks (v1.7.12)", { concur
     assert.equal(r.overflow_present, true, "no overflow button was rendered");
     assert.equal(r.row_clipped, 0,
       r.row_clipped + " button(s) on the action row are clipped");
+  });
+
+  await t.test("v1.8.60: the ⋯ button is the height and finish of the pills beside it", () => {
+    const h = r.ovf_h, f = r.ovf_finish;
+    assert.ok(h && f, "the row was not measured");
+    assert.ok(Math.abs(h.more - h.queue) < 0.5,
+      "the overflow button is " + h.more + "px tall beside a " + h.queue + "px Queue pill");
+    assert.ok(Math.abs(h.more_mid - h.queue_mid) < 0.5, "the overflow button sits off the row's line");
+    assert.ok(Math.abs(h.more_w - h.more) < 0.5, "the overflow button is not round: " +
+      h.more_w + " x " + h.more);
+    assert.ok(f.border_w >= 1, "the overflow button draws no outline");
+    assert.equal(f.border, f.queue_border, "its outline is not the Queue pill's");
+    assert.equal(f.bg, f.queue_bg,
+      "its fill is not the Queue pill's — on this screen the pills are filled, not outlined");
   });
 
   await t.test("the overflow menu holds the other four, Delete last", () => {

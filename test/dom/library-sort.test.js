@@ -6,7 +6,7 @@
 // puts it back when tapped again, replacing the previous wordy
 // "Order: A → Z (tap to reverse)" row. That gives four orderings from two
 // controls: A→Z / Z→A on the alphabetical sorts, and newest→oldest /
-// oldest→newest on Release year.
+// oldest→newest on Release date.
 //
 // What makes this worth a test rather than eyeballing: the arrow is only
 // honest if the request it produces matches what it draws. An arrow that flips
@@ -161,7 +161,7 @@ const DRIVER = `
   T("resel_query", lastQuery());
 
   // ---- tapping a DIFFERENT row switches sort at its own default direction --
-  rowByLabel("Release year").click();
+  rowByLabel("Release date").click();
   await window.__sleep(300);
   T("year_sheet_closed", !document.querySelector(".lib-sheet"));
   T("year_pill", pillValue());
@@ -173,7 +173,7 @@ const DRIVER = `
   // selected row, which is where Roon puts it.
   openSort();
   await window.__sleep(200);
-  rowByLabel("Release year").click();
+  rowByLabel("Release date").click();
   await window.__sleep(300);
   closeSheet();
   await window.__sleep(150);
@@ -300,15 +300,15 @@ test("Library sort: one arrow drives all four orderings (v1.6.58)",
         "tapped back without reopening");
     });
 
-    await t.test("picking Release year opens newest-first, and reverses", () => {
+    await t.test("picking Release date opens newest-first, and reverses", () => {
       assert.equal(r.year_sheet_closed, true);
-      assert.equal(r.year_pill, "Release year");
+      assert.equal(r.year_pill, "Release date");
       // Newest first is what "sort by year" means to a listener; it must not
       // inherit the previous sort's direction.
       assert.equal(r.year_arrow, "↓");
       assert.equal(r.year_query.sort, "year");
       assert.equal(r.year_query.dir, "desc");
-      assert.equal(r.year_row_aria, "Sort — Release year, Newest first",
+      assert.equal(r.year_row_aria, "Sort — Release date, Newest first",
         "the control's accessible name must say what the direction means for " +
         "THIS sort — the arrow glyph alone says nothing to a screen reader");
       assert.equal(r.year_reversed_arrow, "↑");
@@ -459,7 +459,7 @@ test("Library sort: the v2 migration only touches what v2 changed", { concurrenc
     assert.equal(r.arrow, "↓");
   });
 
-  await t.test("a Release year oldest-first preference survives too", () => {
+  await t.test("a Release date oldest-first preference survives too", () => {
     const r = v1Case("v1-year", { sort: "year", dir: "asc", seed: 1,
                                   decade: [], source: [], played: "any" });
     harness.assertNoPageError(assert, r);

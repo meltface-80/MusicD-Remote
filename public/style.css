@@ -1100,7 +1100,6 @@ main { padding-top: calc(var(--topbar-h) + 14px); }
 .action-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   flex: 1 1 0; min-width: 0;
-  border-radius: var(--ctl-radius);
   /*  ONE height for every .action-btn in the app. It used to render at 37px on
       the playlist screens, 40px in the album modal, 38px on a track row and
       38px in the label merge sheet — the same class, four heights, because
@@ -1108,15 +1107,23 @@ main { padding-top: calc(var(--topbar-h) + 14px); }
   min-height: var(--ctl-h);
   padding: 0 8px;
   font-size: 13px; font-weight: 500;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* The FINISH of a pill, declared once for the pills and for the ⋯ overflow
+   button that sits in a row of them (v1.8.60, .overflow-btn below). A copy in
+   the overflow button's own rule is how the two would part on the next
+   restyle. Directly after .action-btn, at the same specificity, so for the
+   pills this cascades exactly as the one rule it was split out of. */
+.action-btn, .overflow-btn {
+  border-radius: var(--ctl-radius);
   background: var(--bg-elev-2);
   color: var(--text);
   border: 1px solid var(--border);
   cursor: pointer;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   transition: filter .15s ease, transform .08s ease;
 }
-.action-btn:hover { filter: brightness(1.12); }
-.action-btn:active { transform: scale(.97); }
+.action-btn:hover, .overflow-btn:hover { filter: brightness(1.12); }
+.action-btn:active, .overflow-btn:active { transform: scale(.97); }
 .action-btn.primary {
   background: var(--accent);
   color: var(--on-accent);
@@ -1133,12 +1140,18 @@ main { padding-top: calc(var(--topbar-h) + 14px); }
    page background rather than filled chips, and its primary carries more
    weight than the rest. */
 .modal-actions .action-btn {
-  background: transparent;
-  border-color: var(--border);
   font-weight: 600;
   padding: 11px 8px;
 }
-.modal-actions .action-btn:hover { background: var(--bg-elev-2); filter: none; }
+/* The finish again shared with the overflow button in this row: outlined on
+   the page, like the pills beside it. */
+.modal-actions .action-btn,
+.modal-actions .overflow-btn {
+  background: transparent;
+  border-color: var(--border);
+}
+.modal-actions .action-btn:hover,
+.modal-actions .overflow-btn:hover { background: var(--bg-elev-2); filter: none; }
 .modal-actions .action-btn.primary {
   background: var(--accent);
   border-color: transparent;
@@ -4096,9 +4109,8 @@ body.show-quality .album-quality { display: block; }
    it rather than sitting lost in a corner. */
 #modal-quality { left: 8px; bottom: 8px; padding: 3px 7px; font-size: 12px; border-radius: 6px; }
 
-/* Larger on the album detail artwork, which is far bigger than a tile. */
-#modal-source { width: 28px; height: 28px; top: 8px; right: 8px; border-radius: 8px; }
-#modal-source::before { -webkit-mask-size: 16px 16px; mask-size: 16px 16px; }
+/* (No source badge on the album view's artwork since v1.8.60 — its top-right
+   corner is under the Share button. index.html says why.) */
 /* TIDAL — its overlapping-diamond mark (evenodd leaves the overlap open,
    which is what gives the logo its character). */
 .album-source.tidal::before {
@@ -4440,17 +4452,26 @@ body.show-quality .album-quality { display: block; }
 
 /* Overflow menu — the three-dots-in-a-circle affordance, used wherever a screen
    has more secondary actions than belong on a row. The dropdown reuses
-   .sel-menu above so there is one dropdown look in the app. */
-.overflow-wrap { position: relative; flex: 0 0 auto; }
+   .sel-menu above so there is one dropdown look in the app.
+
+   It always sits in a row of .action-btn pills — Play now and Queue, on the
+   album view and all three playlist screens — and since v1.8.60 it is sized
+   and finished AS one of them: the row's height here, and the pills' own
+   finish, which it shares by selector with .action-btn (up with that rule,
+   including the album view's outlined variant) rather than by copy. It used
+   to be a transparent 40px box round a ring drawn inside the SVG, so what the
+   eye measured was the ring, about half the height of the pills beside it.
+   The circle is the button's own border now, so its box IS what is seen. The
+   height is the ROW's, not a copy of the pills' number: the row stretches the
+   wrap, the wrap (a flex box) stretches the button, and aspect-ratio keeps it
+   round — if the pills ever grow, this grows with them. */
+.overflow-wrap { position: relative; flex: 0 0 auto; display: flex; }
 .overflow-btn {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 40px; height: 40px; padding: 0;
-  border-radius: 999px; border: 0; background: transparent;
-  color: var(--text); cursor: pointer;
+  min-width: var(--ctl-h); min-height: var(--ctl-h); aspect-ratio: 1 / 1;
+  padding: 0;
 }
-.overflow-btn svg { width: 26px; height: 26px; }
-.overflow-btn:hover { filter: brightness(1.2); }
-.overflow-btn:active { transform: scale(.94); }
+.overflow-btn svg { width: 22px; height: 22px; }
 /* The menu is anchored to the button, and on a narrow screen the button is at
    the right-hand end of its row — so it opens leftwards to stay on screen. */
 .overflow-menu { top: calc(100% + 6px); right: 0; }

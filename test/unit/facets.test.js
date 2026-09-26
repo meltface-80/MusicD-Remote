@@ -63,7 +63,8 @@ function build(opts) {
 
   return loadIndexFunctions(
     ["libraryView", "libraryPrefix", "libraryPrefixMax", "albumMatchesPrefix", "normalize", "albumPlayKey", "libFacetDefs", "facetMatch", "albumGenresOf", "albumFileFactsOf",
-     "albumYearOf", "albumAddedOf", "seededRank", "rateLabel", "channelLabel",
+     "albumYearOf", "albumYearKey", "albumDateOf", "albumAddedOf", "seededRank", "rateLabel",
+     "channelLabel",
      "libAddedWindows", "countWithAny", "smartPlaylistAlbums", "smartOrderDefault",
      "smartOrders", "albumFileFacts", "albumQualityLabel", "albumIsHiRes", "rateShort",
      "albumKeys", "albumTitleVariants", "canonText", "canonArtist", "normalize", "albumKey",
@@ -71,6 +72,9 @@ function build(opts) {
      "addHarvestedQuality"],
     {
       albumIndex, albumYearCache, albumGenreCache, albumFileCache,
+      // libraryView's Release date sort reads this (v1.8.60); empty means every
+      // dated album is known to its year only.
+      albumDateCache: new Map(),
       // No SQLite in the unit suite: the writes are a side effect, and what
       // these tests are about is which value WINS in memory.
       stmtInsertFileFacts: null,
@@ -327,6 +331,15 @@ test("playlist order — random shuffles, and stays shuffled", async (t) => {
   await t.test("album order is the view's own sort", () => {
     assert.deepEqual(titlesOf(F.smartPlaylistAlbums(sp("album"))),
       titlesOf(F.libraryView({ sort: "album", dir: "asc" })));
+  });
+
+  await t.test("a playlist over the Release date sort runs, newest first", () => {
+    // v1.8.60: the date sort reads albumDateOf, which this harness did not
+    // provide — a smart playlist saved on "Release date" threw here instead of
+    // ordering. Newest first, and the undated "1999" (by Prince) last.
+    const bydate = Object.assign(sp("album"), { view: { sort: "year", dir: "desc", seed: 7 } });
+    assert.deepEqual(titlesOf(F.smartPlaylistAlbums(bydate)),
+      ["Goo", "The Wall", "Kind of Blue", "1999"]);
   });
 
   await t.test("a playlist with no order at all behaves as album order", () => {

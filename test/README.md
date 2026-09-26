@@ -114,8 +114,8 @@ sort (the server used to invert plays/lastplayed, so one arrow control would poi
 ways). Also covers decade filtering and stable seeded shuffling — paging a random wall
 re-requests it, so an unstable order shows duplicates and holes as the user scrolls.
 
-**`years.test.js`** — `yearOfDate`, `fileTagYear`, `yearSourceRank`, `setAlbumYear`,
-`addHarvestedYear`, `harvestAlbumYears`. Roon
+**`years.test.js`** — `yearOfDate`, `releaseDateOf`, `fileTagDate`, `yearSourceRank`,
+`setAlbumYear`, `dateRefines`, `addHarvestedYear`, `harvestAlbumYears`. Roon
 publishes no release year, so the Decade filter's data is harvested from payloads fetched
 for other reasons and joined onto the snapshot through each album's `srcKeys`. The join is
 what has to be right: the year must be written under **Roon's** key (`nTitle||nArtist`),
@@ -142,7 +142,7 @@ last one is how an install poisoned by the old unvalidated matches repairs itsel
 > function in `index.js` now specifically so the tests can reach it. A stub that is
 > stricter than production, or a constant that shadows one, is not a simplification.
 >
-> `fileTagYear` exists for the same reason: the ORIGINALDATE-beats-DATE rule used to be an
+> `fileTagDate` (`fileTagYear` until v1.8.60) exists for the same reason: the ORIGINALDATE-beats-DATE rule used to be an
 > inline expression inside `buildFileLabelMap`, which is too entangled to extract, so
 > reverting it was a mutation nothing could see.
 

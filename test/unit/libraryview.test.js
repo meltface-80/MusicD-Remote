@@ -44,12 +44,20 @@ const YEARS = { alpha: "1975", bravo: "1999", delta: "2008" };
 
 function build(opts) {
   opts = opts || {};
+  // opts.albums/years/dates replace the fixture wholesale (v1.8.60's day-level
+  // cases need their own library); every other test uses the one above.
+  const albums = opts.albums || ALBUMS;
+  const years  = opts.years  || YEARS;
   const albumYearCache = new Map();
-  for (const al of ALBUMS) {
-    const y = YEARS[al.nTitle];
+  // key -> the finer release date beside the year, as setAlbumYear keeps it.
+  const albumDateCache = new Map();
+  for (const al of albums) {
+    const y = years[al.nTitle];
     if (y) albumYearCache.set(al.nTitle + "||" + al.nArtist, y);
+    const d = opts.dates && opts.dates[al.nTitle];
+    if (d) albumDateCache.set(al.nTitle + "||" + al.nArtist, d);
   }
-  const albumIndex = { albums: ALBUMS.slice(), builtAt: 1, count: ALBUMS.length };
+  const albumIndex = { albums: albums.slice(), builtAt: 1, count: albums.length };
   // Alpha and Delta have a first-seen date; Bravo and Charlie do not. Keys
   // match ALBUMS' srcKeys so albumAddedOf() finds them the way it does live.
   const albumSeenCache = new Map(opts.seen || [
@@ -60,13 +68,14 @@ function build(opts) {
     // libFacetDefs and facetMatch are EXTRACTED, not stubbed: they are the
     // shipping facet vocabulary, and a stub beside them would let a facet's
     // predicate change without a single test noticing.
-    ["libraryView", "libraryPrefix", "libraryPrefixMax", "albumMatchesPrefix", "normalize", "albumPlayKey", "albumYearOf", "albumAddedOf", "seededRank",
+    ["libraryView", "libraryPrefix", "libraryPrefixMax", "albumMatchesPrefix", "normalize", "albumPlayKey", "albumYearOf", "albumYearKey", "albumDateOf", "albumAddedOf", "seededRank",
      "libFacetDefs", "facetMatch", "albumGenresOf", "albumFileFactsOf", "albumFileFacts",
      "rateLabel", "channelLabel", "libAddedWindows"],
     {
       // libFacetDefs publishes "Record label" only when Labels is on.
       labelsEnabled: true,
       albumYearCache,
+      albumDateCache,
       albumSeenCache,
       albumGenreCache: opts.genres || new Map(),
       albumFileCache:  opts.files  || new Map(),
@@ -191,6 +200,90 @@ test("libraryView — release year", async (t) => {
   await t.test("multiple decades combine as OR", () => {
     const out = titles(F.libraryView({ sort: "album", decade: ["1970", "2000"] }));
     assert.deepEqual(out, ["Alpha", "Delta"]);
+  });
+});
+
+// v1.8.60: the sort orders by DAY where a date is known. Reported as "an album
+// released yesterday isn't at the top newest-first, and isn't at the bottom
+// oldest-first" — by year alone it sat wherever its title put it among the
+// year's albums. The fixture is a year with that shape: the album out
+// yesterday is titled to sort FIRST alphabetically, so a year-only ordering
+// (title tie-break) puts it in the wrong place in BOTH directions.
+test("libraryView — release date orders by the day", async (t) => {
+  const albums = [
+    rec(0, "Aardvark",  "New"),     // released yesterday — first by title
+    rec(1, "Mango",     "Spring"),  // earlier this year
+    rec(2, "Zebra",     "January"), // the first day of the year
+    rec(3, "Kiwi",      "Yearly"),  // this year, day unknown
+    rec(4, "Lime",      "Monthly"), // this year, month known, day not
+    rec(5, "Oak",       "Last"),    // last year, to the day
+    rec(6, "Pine",      "Nowhen"),  // no date at all
+  ];
+  const years = { aardvark: "2026", mango: "2026", zebra: "2026", kiwi: "2026",
+                  lime: "2026", oak: "2025" };
+  const dates = { aardvark: "2026-09-25", mango: "2026-03-14", zebra: "2026-01-01",
+                  lime: "2026-05", oak: "2025-12-31" };
+  const F = build({ albums, years, dates });
+
+  await t.test("THE report: yesterday's album heads newest-first", () => {
+    const out = titles(F.libraryView({ sort: "year", dir: "desc" }));
+    assert.equal(out[0], "Aardvark",
+      "the album released yesterday is not first newest-first: " + out.join(", "));
+  });
+
+  await t.test("THE report, other way: it is the last DATED album oldest-first", () => {
+    const out = titles(F.libraryView({ sort: "year", dir: "asc" }));
+    // Last of the dated albums; only the undated one may follow it.
+    assert.deepEqual(out.slice(-2), ["Aardvark", "Pine"],
+      "the album released yesterday is not at the bottom oldest-first: " + out.join(", "));
+  });
+
+  await t.test("the whole order, to the day, both ways", () => {
+    // A year alone reads as the START of that year, and a month alone as the
+    // start of that month: a date nobody stated can never outrank one that is
+    // known — above all, never above yesterday's.
+    assert.deepEqual(titles(F.libraryView({ sort: "year", dir: "asc" })),
+      ["Oak", "Kiwi", "Zebra", "Mango", "Lime", "Aardvark", "Pine"]);
+    assert.deepEqual(titles(F.libraryView({ sort: "year", dir: "desc" })),
+      ["Aardvark", "Lime", "Mango", "Zebra", "Kiwi", "Oak", "Pine"]);
+  });
+
+  await t.test("a date for some OTHER year is not used", () => {
+    // setAlbumYear never stores one; the reader refuses one anyway, because the
+    // year is what every other screen shows and the two must not disagree.
+    const G = build({ albums, years, dates: Object.assign({}, dates, { oak: "2031-01-01" }) });
+    const out = titles(G.libraryView({ sort: "year", dir: "desc" }));
+    assert.equal(out[0], "Aardvark", "a mismatched date lifted an album out of its own year");
+    assert.equal(out[out.length - 2], "Oak");
+  });
+
+  await t.test("two albums on the same day fall back to title, both ways", () => {
+    // Listed Plum-then-Apple in the index, so a sort that dropped the title
+    // tie-break would keep that order (Array#sort is stable) and fail here.
+    const pair = [rec(0, "Plum", "Same"), rec(1, "Apple", "Day")];
+    const G = build({ albums: pair, years: { plum: "2026", apple: "2026" },
+                      dates: { plum: "2026-03-14", apple: "2026-03-14" } });
+    assert.deepEqual(titles(G.libraryView({ sort: "year", dir: "asc" })), ["Apple", "Plum"]);
+    assert.deepEqual(titles(G.libraryView({ sort: "year", dir: "desc" })), ["Plum", "Apple"]);
+  });
+
+  await t.test("undated means what the Decade focus means by it", () => {
+    // A year that is not a number (a damaged row) is undated to albumYearOf,
+    // so the Decade focus leaves it out — and this sort must hold it out of the
+    // ordering too, rather than filing "n/a-00-00" among the dated albums.
+    const G = build({ albums, years: Object.assign({}, years, { oak: "n/a" }), dates });
+    for (const dir of ["asc", "desc"]) {
+      const out = titles(G.libraryView({ sort: "year", dir }));
+      assert.deepEqual(out.slice(-2), ["Oak", "Pine"],
+        "dir=" + dir + ": an album the Decade focus calls undated was sorted among the " +
+        "dated ones: " + out.join(", "));
+    }
+    assert.ok(!titles(G.libraryView({ sort: "album", decade: ["2020"] })).includes("Oak"));
+  });
+
+  await t.test("the Decade focus still reads the year alone", () => {
+    assert.deepEqual(titles(F.libraryView({ sort: "album", decade: ["2020"] })),
+      ["Aardvark", "Kiwi", "Lime", "Mango", "Oak", "Zebra"]);
   });
 });
 
