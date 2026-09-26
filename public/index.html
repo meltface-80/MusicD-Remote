@@ -266,88 +266,6 @@
     </div>
   </header>
 
-  <!-- Side menu (hamburger). Items with data-target trigger the hidden top-bar
-       button of that id; data-action items switch the main view. -->
-  <div id="menu-overlay" class="menu-overlay hidden" role="dialog" aria-modal="true" aria-label="Menu">
-    <div class="menu-backdrop" data-menu-close></div>
-    <nav class="menu-drawer">
-      <div class="menu-head">
-        <span class="menu-brand">MusicD Remote</span>
-        <button class="icon-btn" type="button" aria-label="Close menu" data-menu-close>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M18 6 6 18M6 6l12 12"/>
-          </svg>
-        </button>
-      </div>
-      <div class="menu-list">
-        <button class="menu-item" type="button" data-action="home">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>
-          <span>Home</span>
-        </button>
-        <button class="menu-item" type="button" data-action="shuffle">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/></svg>
-          <span>Random albums</span>
-        </button>
-        <div class="menu-sep"></div>
-        <button class="menu-item" type="button" data-target="labels-toggle" id="menu-item-labels">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
-          <span>Labels</span>
-        </button>
-        <button class="menu-item hidden" type="button" data-target="qobuz-toggle" id="menu-item-qobuz">
-          <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M39.203 39.203A21.43 21.43 0 0 0 45.5 24c0-11.874-9.626-21.5-21.5-21.5S2.5 12.126 2.5 24S12.126 45.5 24 45.5c4.89 0 9.4-1.633 13.012-4.383"/><circle cx="24" cy="24" r="4.873"/><path d="M32.944 32.944L45.5 45.5"/></svg>
-          <span>Qobuz</span>
-        </button>
-        <button class="menu-item hidden" type="button" data-target="tidal-toggle" id="menu-item-tidal">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 9l3-3 3 3-3 3z"/><path d="M9 9l3-3 3 3-3 3z"/><path d="M16 9l3-3 3 3-3 3z"/><path d="M9 16l3-3 3 3-3 3z"/></svg>
-          <span>Tidal</span>
-        </button>
-        <button class="menu-item" type="button" data-target="pitchfork-toggle">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5h7a3 3 0 0 1 3 3v11a2.5 2.5 0 0 0-2.5-2.5H2z"/><path d="M22 5h-7a3 3 0 0 0-3 3v11a2.5 2.5 0 0 1 2.5-2.5H22z"/></svg>
-          <span>Pitchfork</span>
-        </button>
-        <button class="menu-item hidden" type="button" data-action="discover" id="menu-item-discover">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></svg>
-          <span>Discover</span>
-        </button>
-        <button class="menu-item" type="button" data-action="smart-picks" id="menu-item-picks">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.5-4.5"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>
-          <span>Smart Picks</span>
-        </button>
-        <button class="menu-item" type="button" data-action="smart-playlists">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l2.1 4.6 5 .6-3.7 3.4 1 4.9L12 14.1 7.6 16.5l1-4.9L4.9 8.2l5-.6z"/><line x1="4" y1="20" x2="20" y2="20"/></svg>
-          <span>Dynamic Playlists</span>
-        </button>
-        <button class="menu-item" type="button" data-action="playlists">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="6" x2="14" y2="6"/><line x1="4" y1="12" x2="14" y2="12"/><line x1="4" y1="18" x2="10" y2="18"/><circle cx="17.5" cy="16.5" r="2.5"/><path d="M20 16.5V8l-3 1"/></svg>
-          <span>Playlists</span>
-        </button>
-        <button class="menu-item" type="button" data-action="import-playlist">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
-          <span>Import a playlist</span>
-        </button>
-        <div class="menu-sep"></div>
-        <button class="menu-item" type="button" data-action="rescan-library">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/></svg>
-          <!-- Two lines: the action, and what the snapshot currently is. The
-               automatic rescan is invisible by design — it runs in the
-               background with no toast — so without this there was no way to
-               tell a library that had refreshed itself from one that had
-               quietly stopped refreshing. -->
-          <span class="menu-item-lines">
-            <span>Rescan library</span>
-            <span class="menu-sub" id="rescan-sub"></span>
-          </span>
-        </button>
-        <div class="menu-sep"></div>
-        <button class="menu-item" type="button" data-target="settings-toggle">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-          <span>Settings</span>
-        </button>
-      </div>
-    </nav>
-  </div>
-
   <main>
   <div id="docker-migration-banner" class="docker-banner hidden" role="alert">
     <div class="docker-banner-body">
@@ -465,6 +383,94 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
   </main>
 
   </div><!-- /.app -->
+
+  <!-- Side menu (hamburger). Items with data-target trigger the hidden top-bar
+       button of that id; data-action items switch the main view.
+       OUTSIDE .app, and that is load-bearing: .app is position:fixed with
+       z-index:0, a stacking context of its own, so anything inside it ranks
+       only among the shell's children. The menu's z-index lived there until
+       v1.8.59 and the whole shell sat under the transport pill (70) — so did
+       the menu, whatever number it carried. At the root its 95 is compared
+       with the pill directly. -->
+  <div id="menu-overlay" class="menu-overlay hidden" role="dialog" aria-modal="true" aria-label="Menu">
+    <div class="menu-backdrop" data-menu-close></div>
+    <nav class="menu-drawer">
+      <div class="menu-head">
+        <span class="menu-brand">MusicD Remote</span>
+        <button class="icon-btn" type="button" aria-label="Close menu" data-menu-close>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 6 6 18M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+      <div class="menu-list">
+        <button class="menu-item" type="button" data-action="home">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>
+          <span>Home</span>
+        </button>
+        <button class="menu-item" type="button" data-action="shuffle">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/></svg>
+          <span>Random albums</span>
+        </button>
+        <div class="menu-sep"></div>
+        <button class="menu-item" type="button" data-target="labels-toggle" id="menu-item-labels">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+          <span>Labels</span>
+        </button>
+        <button class="menu-item hidden" type="button" data-target="qobuz-toggle" id="menu-item-qobuz">
+          <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M39.203 39.203A21.43 21.43 0 0 0 45.5 24c0-11.874-9.626-21.5-21.5-21.5S2.5 12.126 2.5 24S12.126 45.5 24 45.5c4.89 0 9.4-1.633 13.012-4.383"/><circle cx="24" cy="24" r="4.873"/><path d="M32.944 32.944L45.5 45.5"/></svg>
+          <span>Qobuz</span>
+        </button>
+        <button class="menu-item hidden" type="button" data-target="tidal-toggle" id="menu-item-tidal">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 9l3-3 3 3-3 3z"/><path d="M9 9l3-3 3 3-3 3z"/><path d="M16 9l3-3 3 3-3 3z"/><path d="M9 16l3-3 3 3-3 3z"/></svg>
+          <span>Tidal</span>
+        </button>
+        <button class="menu-item" type="button" data-target="pitchfork-toggle">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 5h7a3 3 0 0 1 3 3v11a2.5 2.5 0 0 0-2.5-2.5H2z"/><path d="M22 5h-7a3 3 0 0 0-3 3v11a2.5 2.5 0 0 1 2.5-2.5H22z"/></svg>
+          <span>Pitchfork</span>
+        </button>
+        <button class="menu-item hidden" type="button" data-action="discover" id="menu-item-discover">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></svg>
+          <span>Discover</span>
+        </button>
+        <button class="menu-item" type="button" data-action="smart-picks" id="menu-item-picks">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.5-4.5"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>
+          <span>Smart Picks</span>
+        </button>
+        <button class="menu-item" type="button" data-action="smart-playlists">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l2.1 4.6 5 .6-3.7 3.4 1 4.9L12 14.1 7.6 16.5l1-4.9L4.9 8.2l5-.6z"/><line x1="4" y1="20" x2="20" y2="20"/></svg>
+          <span>Dynamic Playlists</span>
+        </button>
+        <button class="menu-item" type="button" data-action="playlists">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="6" x2="14" y2="6"/><line x1="4" y1="12" x2="14" y2="12"/><line x1="4" y1="18" x2="10" y2="18"/><circle cx="17.5" cy="16.5" r="2.5"/><path d="M20 16.5V8l-3 1"/></svg>
+          <span>Playlists</span>
+        </button>
+        <button class="menu-item" type="button" data-action="import-playlist">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          <span>Import a playlist</span>
+        </button>
+        <div class="menu-sep"></div>
+        <button class="menu-item" type="button" data-action="rescan-library">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/></svg>
+          <!-- Two lines: the action, and what the snapshot currently is. The
+               automatic rescan is invisible by design — it runs in the
+               background with no toast — so without this there was no way to
+               tell a library that had refreshed itself from one that had
+               quietly stopped refreshing. -->
+          <span class="menu-item-lines">
+            <span>Rescan library</span>
+            <span class="menu-sub" id="rescan-sub"></span>
+          </span>
+        </button>
+        <div class="menu-sep"></div>
+        <button class="menu-item" type="button" data-target="settings-toggle">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <span>Settings</span>
+        </button>
+      </div>
+    </nav>
+  </div>
 
   <!-- Label merge action bar: appears in select mode -->
   <div id="label-merge-bar" class="label-merge-bar hidden" role="toolbar" aria-label="Label merge">
