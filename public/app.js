@@ -6488,7 +6488,10 @@
     if (!album) return;
     const params = new URLSearchParams({
       title:  album.title    || "",
-      artist: album.subtitle || ""
+      artist: album.subtitle || "",
+      // This screen shows the full release date, so it asks the server to look
+      // the day up if it has only the year (the other callers do not wait).
+      day:    "1"
     });
     const r = await fetch(`/api/album/extras?${params}`);
     if (!r.ok) return;

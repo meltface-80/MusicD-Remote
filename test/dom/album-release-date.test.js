@@ -35,9 +35,13 @@ function stub(extras) {
   return `
 window.__zone = ${JSON.stringify(ZONE)};
 try { localStorage.setItem("rra-zone", "z1"); } catch (e) { /* storage optional: the zone falls back to the first */ }
+window.__extrasUrls = [];
 window.__installFetch(function (u) {
   if (u.indexOf("/api/user-playlists") > -1) return window.__json({ playlists: [] });
-  if (u.indexOf("/api/album/extras") > -1)   return window.__json(${JSON.stringify(extras)});
+  if (u.indexOf("/api/album/extras") > -1) {
+    window.__extrasUrls.push(u);
+    return window.__json(${JSON.stringify(extras)});
+  }
   if (u.indexOf("/api/album") > -1)          return window.__json(${JSON.stringify(DETAIL)});
   if (u.indexOf("/api/random-albums") > -1)
     return window.__json({ albums: ${JSON.stringify(ALBUMS)}, total: 1, filtered: false });
@@ -63,6 +67,9 @@ const DRIVER = `
   await window.__sleep(1200);
   var modal = document.getElementById("album-modal");
   T("open", !!modal && !modal.classList.contains("hidden") && !modal.classList.contains("np-mode"));
+  // The album view is the screen that shows the day, so it asks for it.
+  T("asked_for_day", window.__extrasUrls.length > 0 &&
+    window.__extrasUrls.every(function (u) { return /[?&]day=1(&|$)/.test(u); }));
   var dates = modal.querySelectorAll(".modal-subtitle-year");
   T("date_text", dates.length ? dates[0].textContent : null);
   // The same date, as this browser writes it — so the check is on the spelling
@@ -84,6 +91,9 @@ test("album view: the full release date, as the Release date sort has it (v1.8.6
 
     await t.test("to the day: day, month and year", () => {
       const r = render("album-date-day", { year: 2026, release_date: "2026-09-25" });
+      assert.equal(r.asked_for_day, true,
+        "the album view did not ask the server to look the day up (day=1), so an album with " +
+        "only a year never gets one on the page");
       assert.ok(r.date_text && r.date_text.startsWith(" · "), "no date on the header line: " + r.date_text);
       assert.match(r.date_text, /\b25\b/, "the day is missing: " + r.date_text);
       assert.ok(r.date_text.includes(r.september), "the month is missing: " + r.date_text);

@@ -172,6 +172,7 @@ function fill(opts) {
       DATE_FILL_RETRY_MS: 30 * 24 * 60 * 60 * 1000,
       DATE_FILL_RECENT_RETRY_MS: 3 * 24 * 60 * 60 * 1000,
       DATE_FILL_BATCH: opts.batchSize || 20, DATE_FILL_BATCH_URL_MAX: 4000, MB_SEARCH_PAGE: 100,
+      DATE_FILL_SPLIT_MIN: 4,
       bumpLibraryMeta: () => {}, scheduleLibraryMetaBump: () => {},
       scheduleLibraryDateBump: () => { bumps.scheduled++; }, libraryDateVersion: 0,
       console: { log: (...a) => logs.push(a.join(" ")), error: (...a) => logs.push(a.join(" ")) },
@@ -442,6 +443,7 @@ test("the lookups re-sort only the date views, and not on every answer", async (
     {
       albumIndex: { albums, count: 2, builtAt: 1 },
       DATE_FILL_BATCH: 20, DATE_FILL_BATCH_URL_MAX: 4000, MB_SEARCH_PAGE: 100,
+      DATE_FILL_SPLIT_MIN: 4,
       fetchMbReleaseDays: async () => new Map(),
       albumYearCache: new Map([["a||x", "2026"], ["b||y", "2026"]]), albumYearSource: new Map(),
       albumDateCache: new Map(), albumDateSource: new Map(), dateFillTried: new Map(),
@@ -570,18 +572,21 @@ test("the lookups, many albums a request", async (t) => {
     assert.equal(h.dateFillTried.get("old||x").day, null);
   });
 
-  await t.test("a full page is split until it can be read — down to one album, then alone", async () => {
-    const albums = ["T0", "T1", "T2", "T3"].map(t => rec(t, "A"));
+  await t.test("a full page is split until it can be read; a small full page goes alone", async () => {
+    // T9's title fills a page on its own. Every batch holding it comes back
+    // full: halved while more than four albums, then each asked alone — where
+    // the page is ranked for one album — instead of split all the way down.
+    const albums = Array.from({ length: 10 }, (_, i) => rec("T" + i, "A"));
     const years = {}; for (const a of albums) years[a.nTitle + "||a"] = "2026";
     const h = fill({ albums, years,
-      batch: (b) => (b.length > 1 || b[0].al.title === "T3" ? null
-                     : new Map([[b[0].key, "2026-02-1" + b[0].al.title.slice(1)]])),
+      batch: (b) => (b.some(c => c.al.title === "T9") ? null
+                     : new Map(b.map(c => [c.key, "2026-02-1" + c.al.title.slice(1)]))),
       fetch: () => "2026-03-03" });
-    assert.equal(await h.F.runReleaseDayFill("test"), 4);
-    assert.deepEqual(h.batches.map(b => b.length), [4, 2, 1, 1, 2, 1, 1]);
-    assert.deepEqual(h.asked, ["T3"], "an album no page could hold was never asked alone");
+    assert.equal(await h.F.runReleaseDayFill("test"), 10);
+    assert.deepEqual(h.batches.map(b => b.length), [10, 5, 5, 3, 2]);
+    assert.deepEqual(h.asked, ["T8", "T9"], "a small full page was not asked album by album");
     assert.equal(h.albumDateCache.get("t0||a"), "2026-02-10");
-    assert.equal(h.albumDateCache.get("t3||a"), "2026-03-03");
+    assert.equal(h.albumDateCache.get("t9||a"), "2026-03-03");
   });
 
   await t.test("a refused batch is asked once more after the rest", async () => {
@@ -648,18 +653,21 @@ test("the album page: the sort's own date, and its day looked up on the spot", a
     const albumDateCache = new Map(Object.entries(opts.dates || {}));
     const dateFillTried = new Map(Object.entries(opts.tried || {}));
     const asked = [];
+    const errors = [];
     const P = loadIndexFunctions(
       ["lookUpAlbumDay", "storedReleaseDate", "recordDateFill", "setAlbumYear", "releaseDateOf",
        "yearOfDate", "dateRefines", "yearSourceRank", "dateFillRetryMs"],
       {
-        albumYearCache, albumYearSource: new Map(), albumDateCache, albumDateSource: new Map(),
-        dateFillTried, labelsDb: null, stmtInsertYear: null, stmtInsertDateFill: null, DEBUG: false,
+        albumYearCache, albumYearSource: new Map(Object.entries(opts.yearSrc || {})), albumDateCache,
+        albumDateSource: new Map(),
+        dateFillTried, labelsDb: opts.db || null, stmtInsertYear: opts.insert || null,
+        stmtInsertDateFill: null, DEBUG: false,
         DATE_FILL_RETRY_MS: 30 * 864e5, DATE_FILL_RECENT_RETRY_MS: 3 * 864e5,
         bumpLibraryMeta: () => {}, scheduleLibraryDateBump: () => {},
-        console: { log() {}, error() {} },
+        console: { log() {}, error: (...a) => errors.push(a.join(" ")) },
         fetchMbReleaseDay: async (title, artist, year) => { asked.push(title); return opts.fetch(year); },
       });
-    return { P, asked, albumDateCache, dateFillTried };
+    return { P, asked, albumDateCache, dateFillTried, errors };
   }
 
   await t.test("a day already known is shown, and nothing is asked", async () => {
@@ -701,6 +709,19 @@ test("the album page: the sort's own date, and its day looked up on the spot", a
     assert.equal(h.P.storedReleaseDate("none"), null);
   });
 
+  await t.test("a guessed year is not looked up — its day would be the lead single's", async () => {
+    const h = page({ years: { "k": "2025" }, yearSrc: { "k": "guess" }, fetch: () => "2025-11-14" });
+    assert.equal(await h.P.lookUpAlbumDay("k", "T", "A"), false);
+    assert.deepEqual(h.asked, []);
+  });
+
+  await t.test("a write that throws never rejects — the page must not be taken down", async () => {
+    const h = page({ years: { "k": "2026" }, fetch: () => "2026-09-25",
+                     db: {}, insert: { run: () => { throw new Error("SQLITE_FULL"); } } });
+    assert.equal(await h.P.lookUpAlbumDay("k", "T", "A"), false);
+    assert.ok(h.errors.some(e => /SQLITE_FULL/.test(e)), "the failed write was swallowed without a word");
+  });
+
   await t.test("a day for some other year is never shown", async () => {
     const h = page({ years: { "k": "2026" }, dates: { "k": "2025-12-31" }, fetch: () => null });
     assert.equal(h.P.storedReleaseDate("k"), "2026");
@@ -721,4 +742,55 @@ test("mbReleaseDayFrom reports an album listed without a day (v1.8.62)", () => {
   const none = {};
   M.mbReleaseDayFrom(groups, "Songs of Hate", "Leonard Cohen", "1971", none);
   assert.equal(none.listed, undefined, "another title counted as this album listed");
+});
+
+test("mbReleaseDayFrom: a single's day never stands in for an album listed only to the year (v1.8.62)", () => {
+  // The album's own release group says "2026" and nothing more; the lead
+  // single, out the same year, has a whole day. That day is the single's.
+  const groups = [
+    rg("Floating", "Emile Parisien", "2026", "Album"),
+    rg("Floating", "Emile Parisien", "2026-01-16", "Single"),
+  ];
+  const seen = {};
+  assert.equal(M.mbReleaseDayFrom(groups, "Floating", "Emile Parisien", "2026", seen), null);
+  assert.equal(seen.listed, true, "listed without a day is still an answer");
+  // A month is no day either.
+  assert.equal(M.mbReleaseDayFrom([rg("Floating", "Emile Parisien", "2026-09", "Album"),
+                                    rg("Floating", "Emile Parisien", "2026-01-16", "Single")],
+                                   "Floating", "Emile Parisien", "2026"), null);
+  // The album WITH its day still beats the single, as before.
+  assert.equal(M.mbReleaseDayFrom([rg("Floating", "Emile Parisien", "2026-09-25", "Album"),
+                                    rg("Floating", "Emile Parisien", "2026-01-16", "Single")],
+                                   "Floating", "Emile Parisien", "2026"), "2026-09-25");
+});
+
+test("a guessed year never gets a day looked up for it (v1.8.62)", async (t) => {
+  // The album page's MusicBrainz year is the earliest of five loose matches —
+  // the lead single's, as often as not. A strict lookup against the single's
+  // year finds the single's day.
+  await t.test("not by the background pass", async () => {
+    const h = fill({ albums: [rec("G", "X"), rec("R", "Y")], years: { "g||x": "2025", "r||y": "2026" },
+                     yearSrc: { "g||x": "guess", "r||y": "file" }, fetch: () => null });
+    await h.F.runReleaseDayFill("test");
+    assert.deepEqual(h.batches, [["R"]], "an album dated only by a guess was looked up");
+  });
+});
+
+test("notePageYear: the page's year fills a gap, as a guess, and replaces nothing (v1.8.62)", () => {
+  const albumYearCache = new Map([["cat||x", "2026"], ["old||y", "1999"]]);
+  const albumYearSource = new Map([["cat||x", "catalog"]]);   // old||y: written before sources
+  const albumDateCache = new Map([["cat||x", "2026-01-16"]]);
+  const N = loadIndexFunctions(["notePageYear", "setAlbumYear", "releaseDateOf", "yearOfDate",
+                                "dateRefines", "yearSourceRank"],
+    { albumYearCache, albumYearSource, albumDateCache, albumDateSource: new Map(),
+      labelsDb: null, stmtInsertYear: null, bumpLibraryMeta: () => {} });
+  assert.equal(N.notePageYear("cat||x", "2025"), false);
+  assert.equal(albumYearCache.get("cat||x"), "2026",
+    "the page's loose year replaced a catalogue year — and threw away its day");
+  assert.equal(albumDateCache.get("cat||x"), "2026-01-16");
+  assert.equal(N.notePageYear("old||y", "1998"), false, "it replaced a year with no recorded source");
+  assert.equal(N.notePageYear("new||z", "2024"), true);
+  assert.equal(albumYearCache.get("new||z"), "2024");
+  assert.equal(albumYearSource.get("new||z"), "guess");
+  assert.equal(N.notePageYear("none||z", null), false);
 });

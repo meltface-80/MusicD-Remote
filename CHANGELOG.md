@@ -14,7 +14,10 @@ written the way the device writes dates ("25 September 2026", or "September
 25, 2026" on a US phone): the day where one is known, the month where only that
 is, the year otherwise. An album opened with only a year is looked up there and
 then — one strict lookup, under the same rules as the background pass — so the
-page an album is opened on is the first place its day appears.
+page an album is opened on is the first place its day appears. Only the album
+view asks for that (the share card and the other screens that read the same
+data do not wait for it), and it waits at most a second and a half: a slow
+MusicBrainz shows the year, and the day is there on the next open.
 
 ### Changed — the day lookups: twenty albums a request, started by themselves
 
@@ -38,7 +41,8 @@ error: a rate limit spent one item at a time.
   exactly as before. An album a batch finds listed with only a year is answered
   there: alone, it would find the same entry. A page that comes back full is
   never read, because the album's own release group could be on the next page
-  with only its single left to match; the batch is split and asked again. A
+  with only its single left to match; the batch is split and asked again, and
+  a few albums that fill a page between them are asked one at a time. A
   refused request is asked once more after the rest.
 - **They start by themselves** after every /music walk and every favourites
   read — at every start, and whenever the library changes — instead of waiting
@@ -50,25 +54,46 @@ error: a rate limit spent one item at a time.
 `GET /api/debug/dates` now shows `day_lookups.waiting`: the albums still to be
 asked about. Zero is done.
 
+### Fixed — three ways a wrong day could get in, found in review
+
+- **The album page's own MusicBrainz year replaced better ones.** It is the
+  earliest of five loose matches — as often the lead single's as the album's —
+  and it was recorded under the same source name as the strict sources, so it
+  replaced catalogue and TIDAL years outright, taking with it a day just found
+  for the year it replaced. It now only fills a gap, recorded as a *guess* that
+  anything better replaces, and no day is ever looked up for a guess: a strict
+  match against the single's year finds the single's day. Class of error: a
+  loose answer filed under a strict answer's name.
+- **A single's day stood in for an album listed only to the year.** When
+  MusicBrainz states only "2026" for the album itself, a same-named single out
+  that year with a whole day was taken instead. The plainest release group
+  listed decides whose day counts now, and if it has none, there is none.
+- **A database write that failed during the album page's lookup** (a full disk,
+  a locked file) would have ended the process. It is logged, and the page is
+  answered without the day.
+
 ### Tests
 
 - `test/unit/releasedays.test.js` — the clause; one request for a batch, and
   only what it answered taken; listed-without-a-day answered; a full page
-  never read, split down to one album; a refused batch asked again once; five
-  refusals stop it; new albums start the lookups at once while a view starts
-  them at most hourly; the album page's own lookup and the date it shows.
+  never read, halved and then asked album by album; a refused batch asked again
+  once; five refusals stop it; new albums start the lookups at once while a
+  view starts them at most hourly; the album page's own lookup and the date it
+  shows; a guessed year never looked up; a failed write never rejecting; the
+  page's year replacing nothing; a single's day never standing in.
 - `test/unit/releasedays-e2e.test.js` — the reported library through the batch
   path: every album that needed a day in ONE request, then Roon's order.
-- `test/dom/album-release-date.test.js` — the header shows the day, month and
-  year; a month-only date invents no day; a year alone, and a server that sends
-  no `release_date`, still show the year.
+- `test/dom/album-release-date.test.js` — the album view asks for the day; the
+  header shows the day, month and year; a month-only date invents no day; a
+  year alone, and a server that sends no `release_date`, still show the year.
 - `test/static/release-days-wiring.test.js` — the walk and the favourites read
   start the lookups; the album page is sent the sort's date, its day asked for
-  alongside the rest of the page.
+  alongside the rest of the page, only by the album view, never more than once,
+  and never for longer than the race allows.
 
 Mutation-checked: each rule reverted on its own turns its tests red.
 
-1321 unit / 633 DOM / 117 static.
+1327 unit / 633 DOM / 117 static.
 
 ## [1.8.61] — 2026-09-26
 
