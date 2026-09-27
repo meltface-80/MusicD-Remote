@@ -63,6 +63,7 @@ function world() {
   const albumDateCache = new Map(), albumDateSource = new Map();
   const qobuzAlbumYears = new Map(), fileAlbumYears = new Map();
   const libraryViewCache = new Map();
+  const dateFillTried = new Map();
   const requests = [];     // albums per MusicBrainz request, in order
   const F = loadIndexFunctions(
     ["harvestAlbumYears", "addHarvestedYear", "setAlbumYear", "releaseDateOf", "yearOfDate",
@@ -80,7 +81,7 @@ function world() {
       albumYearCache, albumYearSource, albumDateCache, albumDateSource,
       fileAlbumYears, qobuzAlbumYears, tidalAlbumYears: new Map(),
       ambiguousAlbumKeys: new Set(),
-      dateFillTried: new Map(), dateFillRunning: false, DATE_FILL_RETRY_MS: 30 * 864e5,
+      dateFillTried, dateFillRunning: false, DATE_FILL_RETRY_MS: 30 * 864e5,
       DATE_FILL_RECENT_RETRY_MS: 3 * 864e5,
       labelsIndex: { building: false },
       labelsDb: null, stmtInsertYear: null, stmtInsertDateFill: null, DEBUG: false,
@@ -93,18 +94,21 @@ function world() {
       // and one at a time for anything a batch left unanswered.
       DATE_FILL_BATCH: 20, DATE_FILL_BATCH_URL_MAX: 4000, MB_SEARCH_PAGE: 100,
       DATE_FILL_SPLIT_MIN: 4,
+      // As the real matcher does, a day only for the YEAR asked about: asked
+      // about the wrong year, MusicBrainz has nothing to say.
       fetchMbReleaseDays: async (batch) => {
         requests.push(batch.length);
         const found = new Map();
         for (const c of batch) {
           const day = (LIBRARY.find(r => r[0] === c.al.title) || [])[2];
-          if (day) found.set(c.key, day);
+          if (day && day.slice(0, 4) === c.year) found.set(c.key, day);
         }
         return found;
       },
-      fetchMbReleaseDay: async (title) => {
+      fetchMbReleaseDay: async (title, artist, year) => {
         requests.push(1);
-        return (LIBRARY.find(r => r[0] === title) || [])[2] || null;
+        const day = (LIBRARY.find(r => r[0] === title) || [])[2];
+        return day && day.slice(0, 4) === year ? day : null;
       },
       labelsEnabled: false,
       albumSeenCache: new Map(), albumGenreCache: new Map(), albumFileCache: new Map(),
@@ -115,7 +119,13 @@ function world() {
       playStats: () => ({ count: new Map(), last: new Map() }),
     });
   const newestFirst = () => F.libraryView({ sort: "year", dir: "desc" }).map(a => a.subtitle);
-  return { F, qobuzAlbumYears, fileAlbumYears, newestFirst, requests };
+  // One complete /music walk over these tags, and the harvest after it.
+  const walk = (lib) => {
+    fileAlbumYears.clear();
+    for (const r of lib) F.addHarvestedYear(fileAlbumYears, r[0], null, [r[1]], F.fileTagDate(r[3]));
+    F.harvestAlbumYears("file tags");
+  };
+  return { F, qobuzAlbumYears, fileAlbumYears, newestFirst, requests, walk, dateFillTried };
 }
 
 // Roon's order: the true days, newest first; a day's albums by artist, A→Z.
@@ -170,5 +180,43 @@ test("the reported library, through the real pipeline", async (t) => {
         .sort((a, b) => K.normalize(a).localeCompare(K.normalize(b))));
     }
     assert.deepEqual(w.F.libraryView({ sort: "year", dir: "asc" }).map(a => a.subtitle), want);
+  });
+});
+
+// v1.8.63, the follow-up report: "an album that's been deleted and re-added
+// with corrected metadata, the date of release still shows wrong."
+test("a retagged album's date follows its corrected tags", async (t) => {
+  const w = world();
+  for (const r of LIBRARY) if (r[4]) w.F.addHarvestedYear(w.qobuzAlbumYears, r[0], null, [r[1]], r[4]);
+  w.F.harvestAlbumYears("stream favourites: startup");
+
+  const actorsDate = () => w.F.albumDateOf(
+    w.F.libraryView({ sort: "year", dir: "desc" }).find(a => a.subtitle === "ACTORS"));
+
+  // Before: ACTORS' tag said 2024 — the wrong year, and only the year — and
+  // MusicBrainz, asked about 2024, had no day for it.
+  const WRONG = LIBRARY.map(r => (r[1] === "ACTORS" ? [r[0], r[1], r[2], { year: 2024 }, r[4]] : r));
+  w.walk(WRONG);
+  await w.F.runReleaseDayFill("Release date view");
+  await t.test("the wrong tag put it in 2024, and MusicBrainz had no day for 2024", () => {
+    assert.equal(actorsDate(), "2024-00-00");
+    assert.equal(w.dateFillTried.get("our love will live forever||actors").year, "2024");
+  });
+
+  // The tags are corrected and the album re-added: the next walk reads 2026.
+  w.walk(LIBRARY);
+  await t.test("the walk's corrected year replaces the old tag's", () => {
+    // Year only for now — which sorts at the START of 2026, below every 2026
+    // album with a day, until the lookup below finds its day.
+    assert.equal(actorsDate(), "2026-00-00",
+      "the corrected tag was refused: an equal-rank source could never replace itself");
+  });
+
+  // ...and its day is asked for at once — the lookup for 2024 is not a
+  // lookup for 2026.
+  await w.F.runReleaseDayFill("after the /music walk");
+  await t.test("THE result: it heads the list on its real day", () => {
+    assert.equal(w.newestFirst()[0], "ACTORS");
+    assert.equal(w.dateFillTried.get("our love will live forever||actors").year, "2026");
   });
 });

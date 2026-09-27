@@ -232,11 +232,11 @@ test("the release-day lookups", async (t) => {
   await t.test("an older album's miss is asked again after a month, not before", async () => {
     const days = (n) => Date.now() - n * 24 * 60 * 60 * 1000;
     const early = fill({ albums: [rec("X", "A")], years: { "x||a": "1999" },
-                         tried: { "x||a": { ts: days(29), day: null } }, fetch: () => "1999-02-02" });
+                         tried: { "x||a": { ts: days(29), day: null, year: "1999" } }, fetch: () => "1999-02-02" });
     assert.equal(await early.F.runReleaseDayFill("test"), 0);
     assert.deepEqual(early.asked, [], "an old album's miss was asked about again inside the month");
     const late = fill({ albums: [rec("X", "A")], years: { "x||a": "1999" },
-                        tried: { "x||a": { ts: days(31), day: null } }, fetch: () => "1999-02-02" });
+                        tried: { "x||a": { ts: days(31), day: null, year: "1999" } }, fetch: () => "1999-02-02" });
     assert.equal(await late.F.runReleaseDayFill("test"), 1);
   });
 
@@ -249,16 +249,16 @@ test("the release-day lookups", async (t) => {
     const lastYear = String(new Date().getUTCFullYear() - 1);
     for (const year of [thisYear, lastYear]) {
       const early = fill({ albums: [rec("X", "A")], years: { "x||a": year },
-                           tried: { "x||a": { ts: days(2), day: null } }, fetch: () => year + "-02-02" });
+                           tried: { "x||a": { ts: days(2), day: null, year } }, fetch: () => year + "-02-02" });
       assert.equal(await early.F.runReleaseDayFill("test"), 0, year + ": asked again inside three days");
       const late = fill({ albums: [rec("X", "A")], years: { "x||a": year },
-                          tried: { "x||a": { ts: days(4), day: null } }, fetch: () => year + "-02-02" });
+                          tried: { "x||a": { ts: days(4), day: null, year } }, fetch: () => year + "-02-02" });
       assert.equal(await late.F.runReleaseDayFill("test"), 1, year + ": not asked again after three days");
     }
     // ...and the boundary: two years back is an older record, on the month.
     const older = String(new Date().getUTCFullYear() - 2);
     const h = fill({ albums: [rec("X", "A")], years: { "x||a": older },
-                     tried: { "x||a": { ts: days(4), day: null } }, fetch: () => older + "-02-02" });
+                     tried: { "x||a": { ts: days(4), day: null, year: older } }, fetch: () => older + "-02-02" });
     assert.equal(await h.F.runReleaseDayFill("test"), 0, older + ": asked again after only three days");
   });
 
@@ -345,7 +345,7 @@ test("releaseDateReport says why each album sits where it does", async (t) => {
       albumYearCache: years, albumDateCache: dates,
       albumYearSource: new Map([["wild in the streets||clinic", "file"], ["ride lonesome||beck", "file"]]),
       albumDateSource: new Map([["ride lonesome||beck", "release"]]),
-      dateFillTried: new Map([["wild in the streets||clinic", { ts: 1790000000000, day: null }]]),
+      dateFillTried: new Map([["wild in the streets||clinic", { ts: 1790000000000, day: null, year: "2026" }]]),
       // The order, as the real sort gives it for these dates.
       libraryView: () => [albums[1], albums[0], albums[2], albums[3]],
       albumSource: () => "local", sourceBadgesDistinguish: () => false,
@@ -379,7 +379,8 @@ test("releaseDateReport says why each album sits where it does", async (t) => {
     assert.equal(a.sorts_as, "2026-00-00");
     assert.equal(a.local_file, true);
     assert.equal(a.qobuz_favourite, false);
-    assert.deepEqual(a.musicbrainz_lookup, { at: new Date(1790000000000).toISOString(), day: null });
+    assert.deepEqual(a.musicbrainz_lookup,
+      { at: new Date(1790000000000).toISOString(), year: "2026", day: null });
   });
 
   await t.test("the default list is the top of the newest-first order", () => {
@@ -709,6 +710,14 @@ test("the album page: the sort's own date, and its day looked up on the spot", a
     assert.equal(h.P.storedReleaseDate("none"), null);
   });
 
+  await t.test("a lookup for another YEAR does not stand in for this one (v1.8.63)", async () => {
+    const h = page({ years: { "k": "2026" }, tried: { "k": { ts: Date.now(), day: null, year: "2025" } },
+                     fetch: (y) => y + "-09-25" });
+    assert.equal(await h.P.lookUpAlbumDay("k", "T", "A"), true,
+      "a retagged album's page kept the answer given for its old year");
+    assert.equal(h.dateFillTried.get("k").year, "2026");
+  });
+
   await t.test("a guessed year is not looked up — its day would be the lead single's", async () => {
     const h = page({ years: { "k": "2025" }, yearSrc: { "k": "guess" }, fetch: () => "2025-11-14" });
     assert.equal(await h.P.lookUpAlbumDay("k", "T", "A"), false);
@@ -793,4 +802,26 @@ test("notePageYear: the page's year fills a gap, as a guess, and replaces nothin
   assert.equal(albumYearCache.get("new||z"), "2024");
   assert.equal(albumYearSource.get("new||z"), "guess");
   assert.equal(N.notePageYear("none||z", null), false);
+});
+
+// ---------------------------------------------------------------------------
+// v1.8.63: "an album that's been deleted and re-added with corrected metadata,
+// the date of release still shows wrong."
+// ---------------------------------------------------------------------------
+test("a lookup is remembered for the YEAR it asked about (v1.8.63)", async (t) => {
+  await t.test("the same year inside the window waits", async () => {
+    const h = fill({ albums: [rec("X", "A")], years: { "x||a": "2026" },
+                     tried: { "x||a": { ts: Date.now(), day: null, year: "2026" } }, fetch: () => null });
+    await h.F.runReleaseDayFill("test");
+    assert.deepEqual(h.batches, []);
+  });
+  await t.test("a year corrected since is a new question, asked at once", async () => {
+    // Asked about 2025 yesterday (the wrong tag); the tag says 2026 now.
+    const h = fill({ albums: [rec("X", "A")], years: { "x||a": "2026" },
+                     tried: { "x||a": { ts: Date.now() - 864e5, day: null, year: "2025" } },
+                     batch: () => new Map([["x||a", "2026-09-25"]]) });
+    assert.equal(await h.F.runReleaseDayFill("test"), 1,
+      "a retagged album waited out the month the lookup for its OLD year had earned");
+    assert.equal(h.dateFillTried.get("x||a").year, "2026", "the new lookup was not remembered with its year");
+  });
 });

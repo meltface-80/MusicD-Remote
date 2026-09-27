@@ -48,7 +48,8 @@ function v1860Db() {
   return db;
 }
 
-const S = loadIndexFunctions(["hasDateFillTable", "dropReleaseDays"], {});
+const S = loadIndexFunctions(["hasDateFillTable", "dropReleaseDays", "dateFillHasYear",
+                              "forgetLookedUpDays"], {});
 
 test("the first start of v1.8.61 clears v1.8.60's release days", async (t) => {
   if (!Database) {
@@ -96,4 +97,54 @@ test("a database from before v1.8.60 has no days to clear", async (t) => {
   assert.equal(S.dropReleaseDays(db), 0);
   assert.deepEqual(db.prepare("SELECT year, src, date, date_src FROM album_years").get(),
     { year: "1994", src: "file", date: null, date_src: null });
+});
+
+// ---------------------------------------------------------------------------
+// v1.8.63: v1.8.61-62 recorded each lookup without the year it asked about, so
+// a retagged album stayed "asked" for a month; and before v1.8.62's fix their
+// matcher could take a single's day. Once, every day those lookups found is
+// asked for again, and the record of lookups starts over with years.
+// ---------------------------------------------------------------------------
+test("the first start of v1.8.63 asks v1.8.61-62's lookups again", async (t) => {
+  if (!Database) {
+    t.skip("better-sqlite3 is not installed here");
+    return;
+  }
+  const db = v1860Db();
+  // date_fill as v1.8.61-62 created it — historical, so written out here.
+  db.exec("CREATE TABLE date_fill (key TEXT PRIMARY KEY, ts INTEGER NOT NULL, day TEXT)");
+  const put = db.prepare("INSERT INTO album_years (key, year, src, date, date_src) VALUES (?, ?, ?, ?, ?)");
+  put.run("mb||day",     "2026", "file", "2026-09-25", "release");  // MusicBrainz found exactly this
+  put.run("qobuz||day",  "2026", "file", "2026-09-18", "release");  // a favourite's day, never looked up
+  put.run("other||day",  "2026", "file", "2026-01-16", "release");  // looked up, but the day is another's
+  put.run("tag||day",    "2026", "file", "2026-03-06", "file");
+  put.run("miss||none",  "2025", "file", null, null);
+  const fill = db.prepare("INSERT INTO date_fill (key, ts, day) VALUES (?, ?, ?)");
+  fill.run("mb||day", 1, "2026-09-25");
+  fill.run("other||day", 1, "2026-01-17");
+  fill.run("miss||none", 1, null);
+
+  await t.test("a database from v1.8.61-62 has no year column", () => {
+    assert.equal(S.dateFillHasYear(db), false);
+  });
+
+  await t.test("the days the lookups found go; every other day and every year stays", () => {
+    assert.equal(S.forgetLookedUpDays(db), 1);
+    const rows = Object.fromEntries(db.prepare("SELECT key, year, date, date_src FROM album_years")
+      .all().map(r => [r.key, [r.year, r.date, r.date_src]]));
+    assert.deepEqual(rows, {
+      "mb||day":    ["2026", null, null],
+      "qobuz||day": ["2026", "2026-09-18", "release"],
+      "other||day": ["2026", "2026-01-16", "release"],
+      "tag||day":   ["2026", "2026-03-06", "file"],
+      "miss||none": ["2025", null, null],
+    });
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM date_fill").get().n, 0,
+      "the old record of lookups was kept, so a retagged album still waits out its month");
+  });
+
+  await t.test("once the column is added, it never runs again", () => {
+    db.exec("ALTER TABLE date_fill ADD COLUMN year TEXT");
+    assert.equal(S.dateFillHasYear(db), true);
+  });
 });

@@ -2106,9 +2106,11 @@ const albumDateCache = new Map();
 // then comes from another — which a better source for the day must still be
 // able to correct, and a worse one never overwrite.
 const albumDateSource = new Map();
-// album key → { ts, day } of the last MusicBrainz release-day lookup for it,
-// mirroring the date_fill table: a library is walked once, then only its new
-// albums (see runReleaseDayFill). `day` is null for a lookup that found none.
+// album key → { ts, day, year } of the last MusicBrainz release-day lookup for
+// it, mirroring the date_fill table: a library is walked once, then only its
+// new albums (see runReleaseDayFill). `day` is null for a lookup that found
+// none; `year` is the year it asked about (v1.8.63), so an album whose year is
+// corrected afterwards is asked again rather than left waiting out a month.
 const dateFillTried = new Map();
 let stmtInsertDateFill = null;
 // album key → { ts, src } — powers the "Recently added" sort. Roon's extension
@@ -2353,6 +2355,30 @@ function dropReleaseDays(db) {
     "UPDATE album_years SET date = NULL, date_src = NULL WHERE date_src = 'release'").run().changes;
 }
 
+// Whether date_fill records the year each lookup asked about (v1.8.63).
+function dateFillHasYear(db) {
+  return db.prepare("PRAGMA table_info(date_fill)").all().some(c => c.name === "year");
+}
+
+// Once, on the first start of v1.8.63, for a database v1.8.61 or v1.8.62 kept.
+// Their lookups were recorded without the year asked about, so an album whose
+// year was corrected afterwards — retagged and re-added — stayed "asked" for up
+// to a month; and before v1.8.62's fix the matcher could take a same-named
+// single's day when the album itself was listed only to the year. So every day
+// those lookups found is dropped (only where date_fill shows the lookup found
+// exactly that day — a Qobuz day is left alone, and the favourites restate
+// theirs anyway), every year stays, and the record of lookups is cleared: each
+// album is asked once more, twenty at a time, and remembered with its year.
+// Returns how many days it dropped.
+function forgetLookedUpDays(db) {
+  const n = db.prepare(
+    "UPDATE album_years SET date = NULL, date_src = NULL " +
+    "WHERE date_src = 'release' AND date IS NOT NULL AND EXISTS " +
+    "(SELECT 1 FROM date_fill f WHERE f.key = album_years.key AND f.day = album_years.date)").run().changes;
+  db.exec("DELETE FROM date_fill");
+  return n;
+}
+
 function openLabelsDb() {
   if (!Database) {
     console.warn("[labels] better-sqlite3 not available — cache in memory only (data won't persist)");
@@ -2365,6 +2391,8 @@ function openLabelsDb() {
     // Read BEFORE the schema below creates it: date_fill arrives with v1.8.61,
     // so a database without one has never been opened by it (dropReleaseDays).
     const firstStartWithDateFill = !hasDateFillTable(labelsDb);
+    // ...and whether its lookups were recorded without their year (v1.8.61–62).
+    const lookupsWithoutYear = !firstStartWithDateFill && !dateFillHasYear(labelsDb);
     labelsDb.exec(`
       CREATE TABLE IF NOT EXISTS label_names (
         key   TEXT PRIMARY KEY,
@@ -2411,9 +2439,10 @@ function openLabelsDb() {
       -- album is asked about once — a miss again after three days for a record
       -- from this year or last, after a month otherwise (dateFillRetryMs).
       CREATE TABLE IF NOT EXISTS date_fill (
-        key TEXT PRIMARY KEY,
-        ts  INTEGER NOT NULL,
-        day TEXT
+        key  TEXT PRIMARY KEY,
+        ts   INTEGER NOT NULL,
+        day  TEXT,
+        year TEXT
       );
       -- Genres per album, harvested from Roon's own genres hierarchy because
       -- the browse response for an album carries none. Stored newline-joined:
@@ -2587,6 +2616,21 @@ function openLabelsDb() {
         console.error("[years] clearing v1.8.60's release days failed: " + e.message);
       }
     }
+    // v1.8.63: the year each lookup asked about, and — once — every day those
+    // lookups found asked for again (forgetLookedUpDays).
+    try { labelsDb.exec("ALTER TABLE date_fill ADD COLUMN year TEXT"); }
+    catch (e) { /* already present — SQLite has no ADD COLUMN IF NOT EXISTS */ }
+    if (lookupsWithoutYear) {
+      try {
+        const n = forgetLookedUpDays(labelsDb);
+        console.log("[years] MusicBrainz release-day lookups reset" +
+                    (n ? " (" + n + " days to look up again)" : "") + " — they now remember the year asked");
+      } catch (e) {
+        // Logged, not fatal: the lookups stay as recorded, which is v1.8.62's
+        // behaviour, and the rest of the database still opens.
+        console.error("[years] resetting the release-day lookups failed: " + e.message);
+      }
+    }
     // v1.7.37: formats can now come from a streaming service as well as from a
     // local file, and a local file must win. Rows written by v1.7.35-36 have no
     // src and read back as rank 0, so the first identified source corrects them.
@@ -2601,7 +2645,7 @@ function openLabelsDb() {
     stmtCompletePlay = labelsDb.prepare("UPDATE plays SET completed=1 WHERE id=?");
     stmtInsertYear  = labelsDb.prepare("INSERT OR REPLACE INTO album_years (key, year, src, date, date_src) VALUES (?, ?, ?, ?, ?)");
     stmtInsertSeen  = labelsDb.prepare("INSERT OR REPLACE INTO album_seen (key, ts, src) VALUES (?, ?, ?)");
-    stmtInsertDateFill = labelsDb.prepare("INSERT OR REPLACE INTO date_fill (key, ts, day) VALUES (?, ?, ?)");
+    stmtInsertDateFill = labelsDb.prepare("INSERT OR REPLACE INTO date_fill (key, ts, day, year) VALUES (?, ?, ?, ?)");
     stmtInsertGenres = labelsDb.prepare("INSERT OR REPLACE INTO album_genres (key, genres) VALUES (?, ?)");
     stmtInsertGenreScan = labelsDb.prepare(
       "INSERT OR REPLACE INTO genre_scan (name, subtitle, image_key, total, ts, v) VALUES (?,?,?,?,?,?)");
@@ -2649,8 +2693,8 @@ function openLabelsDb() {
         }
       }
     }
-    for (const r of labelsDb.prepare("SELECT key, ts, day FROM date_fill").all()) {
-      if (r.ts) dateFillTried.set(r.key, { ts: r.ts, day: r.day || null });
+    for (const r of labelsDb.prepare("SELECT key, ts, day, year FROM date_fill").all()) {
+      if (r.ts) dateFillTried.set(r.key, { ts: r.ts, day: r.day || null, year: r.year || null });
     }
     for (const r of labelsDb.prepare("SELECT key, ts, src FROM album_seen").all()) {
       if (r.ts) albumSeenCache.set(r.key, { ts: r.ts, src: r.src || "" });
@@ -2840,6 +2884,13 @@ function dateRefines(finer, coarser) {
 // and on an album with no year it does nothing. The harvest uses it for every
 // source other than the one it chose for the year.
 //
+// opts.restate (v1.8.63) says this is the source's WHOLE current statement,
+// not one more claim to rank: a source may always replace what it said before.
+// Without it a corrected tag could never replace the tag it corrects — both
+// are "file", and an equal rank was refused — so an album retagged and
+// re-added kept the wrong date for good. What the source said before and no
+// longer says goes with it: a day it has dropped is no longer its day.
+//
 // The bump used to happen unconditionally at the top, before the value was even
 // validated — so a rejected year still threw away every memoised ordering, and
 // the bulk harvest below would have done that thousands of times per sync.
@@ -2850,6 +2901,7 @@ function setAlbumYear(key, year, opts) {
   const fine = date.length > 4 ? date : null;
   const src  = (opts && opts.src) || null;
   const rank = yearSourceRank(src);
+  const restating = !!(opts && opts.restate && src);
   const known   = albumYearCache.has(key);
   const oldYear = known ? albumYearCache.get(key) : null;
   const oldSrc  = albumYearSource.get(key) || null;
@@ -2859,13 +2911,15 @@ function setAlbumYear(key, year, opts) {
 
   // The year: exactly the rule it has always had.
   let newYear = oldYear, newSrc = oldSrc;
-  if (!(opts && opts.dayOnly) && (!known || rank > yearSourceRank(oldSrc))) {
+  if (!(opts && opts.dayOnly) &&
+      (!known || rank > yearSourceRank(oldSrc) || (restating && src === oldSrc))) {
     newYear = y;
     newSrc  = src;
   }
   // The day: only a day of the year that now stands.
   let newFine    = newYear === oldYear ? oldFine    : null;
   let newFineSrc = newYear === oldYear ? oldFineSrc : null;
+  if (restating && newFineSrc === src) { newFine = null; newFineSrc = null; }
   if (fine && y === newYear) {
     const better = rank > yearSourceRank(newFineSrc);
     if (!newFine || dateRefines(fine, newFine)) {
@@ -4442,7 +4496,13 @@ function harvestAlbumYears(reason) {
       // setAlbumYear decides whether this source is allowed to write — it fills
       // a gap, or corrects a year from a source that ranks lower.
       if (!found) continue;
-      let changed = setAlbumYear(ykey, found, { src: foundSrc, deferBump: true });
+      // File tags are RESTATED, not offered (v1.8.63): the map is the last
+      // complete walk's reading of the files, so it is the tags as they are
+      // now — a corrected tag replaces the one it corrects. The services are
+      // not: "release" is several sources' name, and one must not keep
+      // overwriting another's answer.
+      let changed = setAlbumYear(ykey, found,
+                                 { src: foundSrc, deferBump: true, restate: foundSrc === "file" });
       // The DAY may come from any other source that agrees with the year now
       // on file: file tags often say only "2024" where the Qobuz favourite says
       // 2024-03-15, and that is no disagreement. Each is offered under ITS OWN
@@ -5922,18 +5982,20 @@ function releaseDayFillCandidates(now) {
     if (albumYearSource.get(key) === "guess") continue;   // see yearSourceRank
     const day = albumDateCache.get(key);
     if (day && day.length === 10) continue;
+    // Asked about THIS year within the window: wait. A year corrected since the
+    // lookup (a retagged album) makes it a new question.
     const tried = dateFillTried.get(key);
-    if (tried && now - tried.ts < dateFillRetryMs(year, now)) continue;
+    if (tried && tried.year === year && now - tried.ts < dateFillRetryMs(year, now)) continue;
     out.push({ al, key, year });
   }
   out.sort((a, b) => (a.year < b.year ? 1 : a.year > b.year ? -1 : 0));
   return out;
 }
 
-function recordDateFill(key, day, now) {
-  dateFillTried.set(key, { ts: now, day: day || null });
+function recordDateFill(key, day, now, year) {
+  dateFillTried.set(key, { ts: now, day: day || null, year: year || null });
   if (labelsDb && stmtInsertDateFill) {
-    try { stmtInsertDateFill.run(key, now, day || null); }
+    try { stmtInsertDateFill.run(key, now, day || null, year || null); }
     catch (e) { if (DEBUG) console.error("[years] date_fill write failed:", e.message); }
   }
 }
@@ -5951,7 +6013,7 @@ async function runReleaseDayFill(reason) {
   // One album's answer, a day or none: remembered either way.
   const take = (c, day) => {
     asked++;
-    recordDateFill(c.key, day, Date.now());
+    recordDateFill(c.key, day, Date.now(), c.year);
     if (day && setAlbumYear(c.key, day, { src: "release", dayOnly: true, deferBump: true })) {
       filled++;
       scheduleLibraryDateBump();
@@ -6090,7 +6152,7 @@ async function lookUpAlbumDay(key, title, artist) {
     if (cur && cur.length === 10 && cur.slice(0, 4) === year) return false;
     const now = Date.now();
     const tried = dateFillTried.get(key);
-    if (tried && now - tried.ts < dateFillRetryMs(year, now)) return false;
+    if (tried && tried.year === year && now - tried.ts < dateFillRetryMs(year, now)) return false;
     let day;
     try {
       day = await fetchMbReleaseDay(title, artist, year);
@@ -6100,7 +6162,7 @@ async function lookUpAlbumDay(key, title, artist) {
       if (DEBUG) console.error("[years] album-page day lookup failed for " + title + ": " + e.message);
       return false;
     }
-    recordDateFill(key, day, Date.now());
+    recordDateFill(key, day, Date.now(), year);
     if (day && setAlbumYear(key, day, { src: "release", dayOnly: true, deferBump: true })) {
       scheduleLibraryDateBump();
       return true;
@@ -9680,7 +9742,7 @@ function releaseDateReport(query) {
         source: albumSource(al.title, al.subtitle, al),
         local_file: (al.srcKeys || []).some(k => localAlbumKeys.has(k)),
         qobuz_favourite: (al.srcKeys || []).some(k => qobuzAlbumKeys.has(k)),
-        musicbrainz_lookup: tried ? { at: iso(tried.ts), day: tried.day } : null,
+        musicbrainz_lookup: tried ? { at: iso(tried.ts), year: tried.year, day: tried.day } : null,
       };
     }),
   };

@@ -797,3 +797,69 @@ test("the day is judged by who stated the DAY, not who stated the year", async (
     assert.equal(h.F.harvestAlbumYears("third"), 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// v1.8.63: "an album that's been deleted and re-added with corrected metadata,
+// the date of release still shows wrong." Every source outranked the others
+// and never itself: a corrected tag and the tag it corrects are both "file",
+// an equal rank was refused, and the wrong date stood for good.
+// ---------------------------------------------------------------------------
+test("a source restating itself replaces what it said before", async (t) => {
+  const KEY = "wild in the streets||clinic";
+  const album = () => [rec(0, "Wild In The Streets", "Clinic")];
+  const walkSays = (date) => {
+    const m = new Map();
+    for (const k of K.albumKeys("Wild In The Streets", "Clinic")) m.set(k, date);
+    return m;
+  };
+
+  await t.test("THE report: the retagged album's walk replaces the old tag's year and day", () => {
+    const h = harness({ albums: album(), known: { [KEY]: "2025" }, knownSrc: { [KEY]: "file" },
+                        knownDate: { [KEY]: "2025-03-01" }, knownDateSrc: { [KEY]: "file" },
+                        file: walkSays("2026-09-25") });
+    h.F.harvestAlbumYears("file tags");
+    assert.equal(h.albumYearCache.get(KEY), "2026", "the corrected tag's year was refused");
+    assert.equal(h.albumDateCache.get(KEY), "2026-09-25", "the corrected tag's day was refused");
+  });
+
+  await t.test("a different day in the same year: the tag's new day", () => {
+    const h = harness({ albums: album(), known: { [KEY]: "2026" }, knownSrc: { [KEY]: "file" },
+                        knownDate: { [KEY]: "2026-09-26" }, knownDateSrc: { [KEY]: "file" },
+                        file: walkSays("2026-09-25") });
+    h.F.harvestAlbumYears("file tags");
+    assert.equal(h.albumDateCache.get(KEY), "2026-09-25");
+  });
+
+  await t.test("a tag that now states only the year takes its old day with it", () => {
+    // The day is no longer anything the files say — so the lookups can ask.
+    const h = harness({ albums: album(), known: { [KEY]: "2026" }, knownSrc: { [KEY]: "file" },
+                        knownDate: { [KEY]: "2026-09-26" }, knownDateSrc: { [KEY]: "file" },
+                        file: walkSays("2026") });
+    h.F.harvestAlbumYears("file tags");
+    assert.equal(h.albumYearCache.get(KEY), "2026");
+    assert.equal(h.albumDateCache.has(KEY), false, "a day the tags no longer state was kept as theirs");
+  });
+
+  await t.test("another source's day for the same year is not the file's to drop", () => {
+    const h = harness({ albums: album(), known: { [KEY]: "2026" }, knownSrc: { [KEY]: "file" },
+                        knownDate: { [KEY]: "2026-09-25" }, knownDateSrc: { [KEY]: "release" },
+                        file: walkSays("2026") });
+    h.F.harvestAlbumYears("file tags");
+    assert.equal(h.albumDateCache.get(KEY), "2026-09-25", "the file restated away a Qobuz day");
+  });
+
+  await t.test("nothing else restates: one 'release' source never overwrites another's", () => {
+    // "release" is several sources' name — the label scan's, the favourites'.
+    // A favourites read must not keep replacing what another of them found.
+    const h = harness({ albums: album(), known: { [KEY]: "2019" }, knownSrc: { [KEY]: "release" },
+                        qobuz: walkSays("2020-05-05") });
+    h.F.harvestAlbumYears("stream favourites: test");
+    assert.equal(h.albumYearCache.get(KEY), "2019");
+  });
+
+  await t.test("restating is by a source of itself only — never a way past a better one", () => {
+    const h = harness({ known: { [KEY]: "2026" }, knownSrc: { [KEY]: "file" } });
+    assert.equal(h.F.setAlbumYear(KEY, "2019-01-01", { src: "release", restate: true }), false);
+    assert.equal(h.albumYearCache.get(KEY), "2026");
+  });
+});
