@@ -2,6 +2,56 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.64] — 2026-09-27
+
+### Fixed — v1.8.63 stated an album's tags twice per walk
+
+Found by the review of v1.8.63, whose fixes were pushed minutes after that
+release was merged and so missed it.
+
+v1.8.63 made the /music walk RESTATE its dates, so a corrected tag replaces the
+tag it corrects. But the walk also still wrote each FOLDER's date as it went,
+as one more claim to rank. An album the walk finds twice — a CD rip tagged
+"1977" and a hi-res copy tagged "1977-02-04", under the same album and album
+artist — was therefore stated two ways on every walk: the folder writes refined
+the day to 1977-02-04, the restatement of the first folder's "1977" took it
+away again, and a day MusicBrainz had found in between was relabelled as the
+tags' and destroyed with it (and then not looked up again for a month, the year
+having been asked about). Class of error: one source making two statements
+about one album in one pass.
+
+- **One statement per album per walk.** The walk collects its dates now and
+  writes nothing itself. Each album gets the first folder's date, refined by a
+  later folder that says more of the same date — "1977" and "1977-02-04" are
+  one statement, "1977-02-04", whichever folder the walk reaches first — and a
+  second walk over the same folders changes nothing.
+- **The albums the join skips are corrected too.** An album whose identity
+  another library album shares ("Rumours" beside "Rumours (Deluxe Edition)":
+  the deluxe's stripped title is the plain album's key) is left out of the
+  srcKeys join on purpose, and its only writer was that per-folder write — so
+  v1.8.63's fix, a corrected tag replacing the old one, did not reach it. The
+  walk's statement under the tag's own key now restates those albums, and never
+  one the join already restated.
+- **A walk that broke off states nothing.** It used to publish whatever it had
+  read before it stopped; a restatement has to be the tags as they are, which a
+  walk that did not finish does not know.
+
+### Tests
+
+- `test/unit/years.test.js` — an album in two folders stated once, the fuller
+  date, in either folder order, and unchanged by a second walk; a MusicBrainz
+  day surviving the next walk; the join and the tag key never restating one
+  album two ways (the "&"/"and" spellings they key differently); an album
+  sharing its identity with another corrected too.
+- `test/unit/releasedays-e2e.test.js` — the walk modelled whole: both of the
+  maps it collects, published together.
+- `test/static/release-days-wiring.test.js` — a walk that broke off publishes no
+  dates, and the walk writes no year folder by folder.
+
+Mutation-checked: each rule reverted on its own turns its tests red.
+
+1352 unit / 633 DOM / 120 static.
+
 ## [1.8.63] — 2026-09-27
 
 ### Fixed — a corrected tag could never replace the date it corrected
@@ -29,16 +79,6 @@ others and none could correct itself.
   Qobuz favourites, the label scan, the MusicBrainz lookups), and one must not
   keep overwriting another's answer. A better source is never bypassed: a
   source restating itself replaces only its own statements.
-- **One statement per album per walk.** The walk used to write each FOLDER's
-  date as it went, so an album found twice — a CD rip tagged "1977" and a
-  hi-res copy tagged "1977-02-04" — was stated twice, and restating one undid
-  the other on every walk (and took with it any day MusicBrainz had found in
-  between). The walk collects its dates now and states each album once: the
-  first folder's date, refined by a later folder that says more of the same
-  date, whichever the walk reaches first. That statement also reaches an album
-  whose identity another library album shares ("Rumours" beside "Rumours
-  (Deluxe Edition)"), which the join skips on purpose and where a corrected
-  tag was still refused. A walk that broke off states nothing at all.
 - **Each MusicBrainz day lookup remembers the year it asked about.** Asked
   about the wrong year, MusicBrainz rightly had no day; with the lookup
   remembered by album alone, the corrected album then waited out up to a month
@@ -62,10 +102,7 @@ came from, and which year MusicBrainz was asked about.
   album's year and day replace the old tag's); a new day in the same year; a
   tag reduced to the year drops its old day; another source's day is not the
   file's to drop; no other source restates; restating never gets past a
-  better source; an album in two folders stated once, the fuller date, in
-  either order, unchanged by a second walk; a MusicBrainz day surviving the
-  next walk; the join and the tag key never restating one album two ways; an
-  album sharing its identity corrected too.
+  better source.
 - `test/unit/releasedays-e2e.test.js` — the report end to end: a tag with the
   wrong year, MusicBrainz asked about that year and finding nothing, the tag
   corrected and walked again, and the album at the head of the list on its
@@ -75,12 +112,11 @@ came from, and which year MusicBrainz was asked about.
 - `test/unit/releasedays-store.test.js` — the one-time reset against a real
   SQLite database shaped as v1.8.62 left it.
 - `test/static/release-days-wiring.test.js` — the harvest restates file tags;
-  the reset runs in the only order that works; a walk that broke off publishes
-  no dates, and the walk writes no year folder by folder.
+  the reset runs in the only order that works.
 
 Mutation-checked: each rule reverted on its own turns its tests red.
 
-1352 unit / 633 DOM / 120 static.
+1346 unit / 633 DOM / 119 static.
 
 ## [1.8.62] — 2026-09-27
 
