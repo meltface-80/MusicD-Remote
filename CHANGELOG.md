@@ -2,6 +2,74 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.62] — 2026-09-27
+
+### Added — the album view shows the full release date
+
+Asked for: "I want to see the full release dates per album on the album view
+screens." The header line read "Artist · 2026" — the year alone, from
+MusicBrainz's loosest match — while the Release date sort was ordering the same
+album by a day the page never showed. The page shows the sort's own date now,
+written the way the device writes dates ("25 September 2026", or "September
+25, 2026" on a US phone): the day where one is known, the month where only that
+is, the year otherwise. An album opened with only a year is looked up there and
+then — one strict lookup, under the same rules as the background pass — so the
+page an album is opened on is the first place its day appears.
+
+### Changed — the day lookups: twenty albums a request, started by themselves
+
+Reported: "I see them slowly going in order, but this isn't good enough."
+MusicBrainz asks for no more than a request a second, and every album cost one,
+so a library of a few thousand albums took an hour, the order creeping into
+place with the Library open. The limit is on REQUESTS, not albums. Class of
+error: a rate limit spent one item at a time.
+
+- **Twenty albums a request.** Each album is its own clause in one search: its
+  title as a phrase, its edition-stripped forms, and its artist. Checked live
+  against MusicBrainz with 25 albums — the seven from the report and eighteen
+  more, including an apostrophe, "and" for "&" and an edition suffix: 22 dated
+  in 3 requests and 4.4 seconds, where one at a time took 25 requests. The
+  other three are answers too: Clinic's album is not in MusicBrainz yet, and
+  for *Songs of Love and Hate* and *Don't Stand Me Down* it states only the
+  year.
+- **Nothing given up for the speed.** A batch searches phrases only — narrower
+  than the lone lookup, which also searches the title's words for spellings a
+  phrase misses — so an album a batch does not find is asked alone afterwards,
+  exactly as before. An album a batch finds listed with only a year is answered
+  there: alone, it would find the same entry. A page that comes back full is
+  never read, because the album's own release group could be on the next page
+  with only its single left to match; the batch is split and asked again. A
+  refused request is asked once more after the rest.
+- **They start by themselves** after every /music walk and every favourites
+  read — at every start, and whenever the library changes — instead of waiting
+  for someone to sort by Release date.
+- **The Release date order refreshes every 20 seconds** while they run (it was
+  two minutes), and again as soon as the batches are done, ahead of the albums
+  asked alone.
+
+`GET /api/debug/dates` now shows `day_lookups.waiting`: the albums still to be
+asked about. Zero is done.
+
+### Tests
+
+- `test/unit/releasedays.test.js` — the clause; one request for a batch, and
+  only what it answered taken; listed-without-a-day answered; a full page
+  never read, split down to one album; a refused batch asked again once; five
+  refusals stop it; new albums start the lookups at once while a view starts
+  them at most hourly; the album page's own lookup and the date it shows.
+- `test/unit/releasedays-e2e.test.js` — the reported library through the batch
+  path: every album that needed a day in ONE request, then Roon's order.
+- `test/dom/album-release-date.test.js` — the header shows the day, month and
+  year; a month-only date invents no day; a year alone, and a server that sends
+  no `release_date`, still show the year.
+- `test/static/release-days-wiring.test.js` — the walk and the favourites read
+  start the lookups; the album page is sent the sort's date, its day asked for
+  alongside the rest of the page.
+
+Mutation-checked: each rule reverted on its own turns its tests red.
+
+1321 unit / 633 DOM / 117 static.
+
 ## [1.8.61] — 2026-09-26
 
 ### Fixed — the Release date sort disagreed with Roon's

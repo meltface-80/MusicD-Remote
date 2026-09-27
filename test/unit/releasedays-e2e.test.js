@@ -63,10 +63,13 @@ function world() {
   const albumDateCache = new Map(), albumDateSource = new Map();
   const qobuzAlbumYears = new Map(), fileAlbumYears = new Map();
   const libraryViewCache = new Map();
+  const requests = [];     // albums per MusicBrainz request, in order
   const F = loadIndexFunctions(
     ["harvestAlbumYears", "addHarvestedYear", "setAlbumYear", "releaseDateOf", "yearOfDate",
      "dateRefines", "yearSourceRank", "albumYearKey", "fileTagDate",
      "runReleaseDayFill", "releaseDayFillCandidates", "recordDateFill", "dateFillRetryMs",
+     "releaseDayBatches", "mbBatchUrl", "mbAlbumClause", "mbQuote", "albumTitleVariants",
+     "canonText",
      "libraryView", "libraryPrefix", "libraryPrefixMax", "albumMatchesPrefix", "albumPlayKey",
      "albumYearOf", "albumDateOf", "albumAddedOf", "seededRank", "libFacetDefs", "facetMatch",
      "albumGenresOf", "albumFileFactsOf", "albumFileFacts", "rateLabel", "channelLabel",
@@ -86,8 +89,22 @@ function world() {
       scheduleLibraryMetaBump: () => libraryViewCache.clear(),
       scheduleLibraryDateBump: () => {},   // the run's own final bump is what shows its days
       console: { log() {}, error() {} },
-      // MusicBrainz, answering with the true day.
-      fetchMbReleaseDay: async (title) => (LIBRARY.find(r => r[0] === title) || [])[2] || null,
+      // MusicBrainz, answering with the true day — twenty albums a request,
+      // and one at a time for anything a batch left unanswered.
+      DATE_FILL_BATCH: 20, DATE_FILL_BATCH_URL_MAX: 4000, MB_SEARCH_PAGE: 100,
+      fetchMbReleaseDays: async (batch) => {
+        requests.push(batch.length);
+        const found = new Map();
+        for (const c of batch) {
+          const day = (LIBRARY.find(r => r[0] === c.al.title) || [])[2];
+          if (day) found.set(c.key, day);
+        }
+        return found;
+      },
+      fetchMbReleaseDay: async (title) => {
+        requests.push(1);
+        return (LIBRARY.find(r => r[0] === title) || [])[2] || null;
+      },
       labelsEnabled: false,
       albumSeenCache: new Map(), albumGenreCache: new Map(), albumFileCache: new Map(),
       libraryMetaVersion: 0, libraryDateVersion: 0, libraryViewCache, LIBRARY_VIEW_CACHE_MAX: 8,
@@ -97,7 +114,7 @@ function world() {
       playStats: () => ({ count: new Map(), last: new Map() }),
     });
   const newestFirst = () => F.libraryView({ sort: "year", dir: "desc" }).map(a => a.subtitle);
-  return { F, qobuzAlbumYears, fileAlbumYears, newestFirst };
+  return { F, qobuzAlbumYears, fileAlbumYears, newestFirst, requests };
 }
 
 // Roon's order: the true days, newest first; a day's albums by artist, A→Z.
@@ -129,6 +146,12 @@ test("the reported library, through the real pipeline", async (t) => {
 
   // Stage 2 — a Release date view starts the MusicBrainz lookups for the rest.
   await w.F.runReleaseDayFill("Release date view");
+
+  await t.test("every album that needed a day asked about in ONE request", () => {
+    // Five albums dated only to the year (the favourites and Green Lung's tag
+    // already had days). One album a request was the whole cost before v1.8.62.
+    assert.deepEqual(w.requests, [5]);
+  });
 
   await t.test("THE result: newest-first is Roon's order", () => {
     assert.deepEqual(w.newestFirst(), ROON);

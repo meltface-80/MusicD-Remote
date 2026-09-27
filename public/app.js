@@ -6498,9 +6498,31 @@
     renderExtras(j, album);
   }
 
+  // "2026-09-25" as the device writes a date ("25 September 2026" or
+  // "September 25, 2026"), "2026-09" as a month, "2026" as it is. Read as UTC,
+  // because a bare date parsed in a timezone west of Greenwich is the evening
+  // before. "" for anything else.
+  function formatReleaseDate(s) {
+    const m = /^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/.exec(String(s || ""));
+    if (!m) return "";
+    if (!m[2]) return m[1];
+    const opts = { year: "numeric", month: "long", timeZone: "UTC" };
+    if (m[3]) opts.day = "numeric";
+    const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, m[3] ? Number(m[3]) : 1));
+    // "2026-13-40" would roll over into another month rather than fail.
+    if (isNaN(d.getTime()) || d.getUTCMonth() !== Number(m[2]) - 1 ||
+        (m[3] && d.getUTCDate() !== Number(m[3]))) return m[1];
+    try { return d.toLocaleDateString(undefined, opts); }
+    catch (e) { return m[1]; /* no Intl on this device: the year is still right */ }
+  }
+
   function renderExtras(extras, album) {
-    // 1. Append year + label to subtitle line (artist button already present)
-    const yearToShow = extras.year || (extras.album && extras.album.year ? String(extras.album.year) : "");
+    // 1. Append the release date + label to subtitle line (artist button
+    // already present). The date is the one the Release date sort orders this
+    // album by, to the day wherever one is known (v1.8.62); the year the page
+    // showed before is the fallback.
+    const yearToShow = formatReleaseDate(extras.release_date) || extras.year ||
+      (extras.album && extras.album.year ? String(extras.album.year) : "");
     if (yearToShow) {
       const yearSpan = document.createElement("span");
       yearSpan.className = "modal-subtitle-year";

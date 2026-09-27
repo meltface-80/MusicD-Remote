@@ -85,3 +85,26 @@ test("v1.8.60's album-page days are cleared once, before anything reads them", (
   assert.ok(column < cleared, "the clean-up runs before the column it clears exists");
   assert.ok(cleared < readBack, "the clean-up runs after the caches were loaded");
 });
+
+test("the lookups start by themselves when albums can have become year-only (v1.8.62)", () => {
+  const walk = bodyOf(/^async function runFileMetadataScan\(/);
+  assert.match(walk, /harvestAlbumYears\("file tags"\);\s*kickReleaseDayFill\("after the \/music walk", true\)/,
+    "the /music walk does not start the day lookups — they wait for someone to sort by date");
+  const favs = bodyOf(/^async function refreshStreamAlbumKeys\(/);
+  assert.match(favs, /harvestAlbumYears\("stream favourites: " \+ reason\);\s*kickReleaseDayFill\("after the favourites read", true\)/,
+    "the favourites read does not start the day lookups");
+});
+
+test("the album page is sent the sort's date, its day looked up first (v1.8.62)", () => {
+  const route = bodyOf(/^app\.get\("\/api\/album\/extras"/);
+  const first = route.indexOf("const dayFirst = lookUpAlbumDay(exKey, title, artist)");
+  const both  = route.indexOf("await Promise.all(");
+  const again = route.indexOf("await lookUpAlbumDay(exKey, title, artist)");
+  assert.ok(first >= 0 && both > first, "the day is not asked for alongside the rest of the page");
+  assert.ok(again > both, "an album whose year arrived with the page is never asked for its day");
+  assert.match(route, /if \(!yearKnown\) await lookUpAlbumDay\(exKey, title, artist\)/,
+    "the second lookup is not limited to an album that had no year — after a refused first " +
+    "one it asks MusicBrainz again at once and holds the album page for it");
+  assert.match(route, /release_date: storedReleaseDate\(exKey\)/,
+    "the album page is not sent the date the sort uses");
+});

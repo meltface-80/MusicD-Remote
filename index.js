@@ -2296,11 +2296,13 @@ function bumpLibraryMeta() {
 // enough to be used, and every Library page would re-sort the whole library.
 // This caps the staleness at LIBRARY_META_BUMP_MS instead.
 const LIBRARY_META_BUMP_MS = 20000;
-// The release-day lookups' own, slower bump. A Release date wall is paged by
-// offset, and re-sorting it every few seconds for the hour a first run can take
-// would repeat and skip albums at the page boundaries under someone scrolling
-// it. Every two minutes at most, and once more when a run ends.
-const LIBRARY_DATE_BUMP_MS = 2 * 60 * 1000;
+// The release-day lookups' own bump. A Release date wall is paged by offset,
+// and re-sorting it every second while days arrive would repeat and skip
+// albums at the page boundaries under someone scrolling it. Every twenty
+// seconds at most (two minutes until v1.8.62, when a first run took an hour
+// rather than minutes and there was nothing to watch), and once more when a
+// run's batches and again when the whole run ends.
+const LIBRARY_DATE_BUMP_MS = 20 * 1000;
 let _dateBumpTimer = null;
 function scheduleLibraryDateBump() {
   if (_dateBumpTimer) return;
@@ -3926,6 +3928,9 @@ async function refreshStreamAlbumKeys(reason) {
     // isn't built yet (startup, "service connected") — the library sync calls
     // this again once it is.
     harvestAlbumYears("stream favourites: " + reason);
+    // Whatever is still dated only to the year gets its day looked up now,
+    // rather than whenever someone next sorts by date (v1.8.62).
+    kickReleaseDayFill("after the favourites read", true);
   } finally {
     _streamRefreshInFlight = false;
     if (_streamRefreshQueued) {
@@ -4837,6 +4842,9 @@ async function runFileMetadataScan(reason) {
     if (localKeys && localKeys.size) setLocalAlbumKeys(localKeys, localDirs);
     // The walk just re-read every album's tags, so join its years on now.
     harvestAlbumYears("file tags");
+    // ...and look up the day of every album the tags dated only to the year,
+    // straight away (v1.8.62).
+    kickReleaseDayFill("after the /music walk", true);
     console.log("[files] tag scan complete (" + (reason || "scheduled") + ")");
   } catch (e) {
     console.error("[files] tag scan failed: " + e.message);
@@ -5772,7 +5780,12 @@ function mbCreditMatches(credit, names) {
 //   * several candidate days: the one on the plainest album — a studio album
 //     over a live one, an album over its single of the same name — and if
 //     that still leaves two days, none.
-function mbReleaseDayFrom(groups, title, artist, year) {
+//
+// `seen`, when passed, is told whether the album is LISTED at all — its title,
+// its artist, its year, whatever the date's precision (v1.8.62). Listed with
+// no day ("1971" is all MusicBrainz says of Songs of Love and Hate) is an
+// answer: any search that finds the album finds the same year-only date.
+function mbReleaseDayFrom(groups, title, artist, year, seen) {
   const want = canonText(title);
   const wantForms = new Set(albumTitleVariants(title));
   const names = creditNameSet(title, artist);
@@ -5785,6 +5798,7 @@ function mbReleaseDayFrom(groups, title, artist, year) {
     if (!exact && !wantForms.has(theirs)) continue;
     if (!mbCreditMatches(g["artist-credit"], names)) continue;
     const day = releaseDateOf(g["first-release-date"]);
+    if (seen && day && day.slice(0, 4) === String(year)) seen.listed = true;
     if (!day || day.length !== 10 || day.slice(0, 4) !== String(year)) continue;
     const type  = String(g["primary-type"] || "").toLowerCase();
     const plain = !(Array.isArray(g["secondary-types"]) && g["secondary-types"].length);
@@ -5813,6 +5827,73 @@ async function fetchMbReleaseDay(title, artist, year) {
   const url = `https://musicbrainz.org/ws/2/release-group/?query=${encodeURIComponent(q)}&fmt=json&limit=15`;
   const json = await httpJson(url, { "User-Agent": MB_USER_AGENT });
   return mbReleaseDayFrom(json && json["release-groups"], title, artist, year);
+}
+
+// Many albums in ONE request (v1.8.62). One lookup a second was the whole cost
+// of the day lookups — MusicBrainz asks for no more than a request a second —
+// so an album a second was the ceiling: an hour for a few thousand albums, the
+// order creeping into place in front of whoever was watching. Searched
+// together, twenty albums cost one request. Checked against MusicBrainz with
+// ten of the reported albums: one request, 18 release groups back, and every
+// day the one-at-a-time lookups gave.
+//
+// Each album is its own clause: its title as a phrase, and each
+// edition-stripped form of it ("In Rainbows" for "In Rainbows (Deluxe
+// Edition)"), with its credited artist. Phrases only — the single lookup also
+// searches the title's WORDS, which across twenty albums would bring back most
+// of every artist's catalogue. So a batch is narrower than a single lookup and
+// its misses prove nothing: they are asked again one at a time.
+const DATE_FILL_BATCH = 20;
+const DATE_FILL_BATCH_URL_MAX = 4000;   // well inside what the server accepts
+const MB_SEARCH_PAGE = 100;             // MusicBrainz's largest page
+function mbAlbumClause(title, artist) {
+  const phrases = ['"' + mbQuote(title) + '"'];
+  for (const v of albumTitleVariants(title).slice(1)) phrases.push('"' + mbQuote(v) + '"');
+  return "(release:(" + phrases.join(" OR ") + ') AND artist:"' + mbQuote(artist) + '")';
+}
+function mbBatchUrl(batch) {
+  const q = batch.map(c => mbAlbumClause(c.al.title, c.al.subtitle)).join(" OR ");
+  return "https://musicbrainz.org/ws/2/release-group/?query=" + encodeURIComponent(q) +
+         "&fmt=json&limit=" + MB_SEARCH_PAGE;
+}
+
+// What one batched request ANSWERED, by album key: a day, or null for an album
+// it found listed with no day to give (seen.listed — the lone lookup would find
+// the same year-only entry, so asking it would be a request thrown away). An
+// album it did not find at all is ABSENT: the phrases may simply have missed
+// it, and it is asked alone. Or null for the whole batch when the page came
+// back full: then some album's release groups may be on a page never fetched,
+// and the matcher, shown only the lead single, would take the single's day. A
+// full page is not read at all; the caller splits the batch and asks again.
+async function fetchMbReleaseDays(batch) {
+  await mbWait();
+  const json = await httpJson(mbBatchUrl(batch), { "User-Agent": MB_USER_AGENT });
+  const groups = json && Array.isArray(json["release-groups"]) ? json["release-groups"] : [];
+  if (!(json && Number.isFinite(json.count) && json.count <= groups.length)) return null;
+  const found = new Map();
+  for (const c of batch) {
+    const seen = {};
+    const day = mbReleaseDayFrom(groups, c.al.title, c.al.subtitle, c.year, seen);
+    if (day || seen.listed) found.set(c.key, day || null);
+  }
+  return found;
+}
+
+// The candidates, in order, cut into batches of at most DATE_FILL_BATCH albums
+// and DATE_FILL_BATCH_URL_MAX characters of URL.
+function releaseDayBatches(todo) {
+  const out = [];
+  let cur = [];
+  for (const c of todo) {
+    if (cur.length && (cur.length >= DATE_FILL_BATCH ||
+                       mbBatchUrl(cur.concat([c])).length > DATE_FILL_BATCH_URL_MAX)) {
+      out.push(cur);
+      cur = [];
+    }
+    cur.push(c);
+  }
+  if (cur.length) out.push(cur);
+  return out;
 }
 
 // Albums worth asking about: a year on file, no whole day, a credited artist
@@ -5846,57 +5927,166 @@ function recordDateFill(key, day, now) {
 async function runReleaseDayFill(reason) {
   if (dateFillRunning) return 0;
   dateFillRunning = true;
-  let asked = 0, filled = 0, failures = 0, failed = 0;
+  let asked = 0, filled = 0, failures = 0, failed = 0, requests = 0, stopped = false;
+  // Rechecked before every request: a walk or a harvest may have supplied the
+  // day meanwhile, or moved the year.
+  const stillWanted = (c) => {
+    const cur = albumDateCache.get(c.key);
+    return albumYearCache.get(c.key) === c.year && !(cur && cur.length === 10);
+  };
+  // One album's answer, a day or none: remembered either way.
+  const take = (c, day) => {
+    asked++;
+    recordDateFill(c.key, day, Date.now());
+    if (day && setAlbumYear(c.key, day, { src: "release", dayOnly: true, deferBump: true })) {
+      filled++;
+      scheduleLibraryDateBump();
+    }
+  };
+  // A failed REQUEST is not an answer about any album in it: nothing is
+  // recorded, and they are asked again next run. Five in a row and MusicBrainz
+  // is not answering — stop.
+  const failedOnce = (e, what) => {
+    failed++;
+    if (DEBUG) console.error("[years] MusicBrainz release-day lookup failed (" + what + "): " + e.message);
+    if (++failures >= 5) {
+      console.error("[years] MusicBrainz is not answering (" + e.message + ") — release-day lookups paused");
+      stopped = true;
+    }
+  };
   try {
     const todo = releaseDayFillCandidates(Date.now());
     if (!todo.length) return 0;
     console.log("[years] looking up release days on MusicBrainz for " + todo.length +
                 " albums dated only to the year (" + reason + ")");
-    for (const c of todo) {
-      // No standing down for the label scan's own MusicBrainz pass: every
-      // request here and there waits its turn in mbWait's one queue, so the two
-      // loops share the rate rather than doubling it.
-      //
-      // Rechecked: a walk or a harvest may have supplied the day meanwhile.
-      const cur = albumDateCache.get(c.key);
-      if (albumYearCache.get(c.key) !== c.year || (cur && cur.length === 10)) continue;
+    // No standing down for the label scan's own MusicBrainz pass: every
+    // request here and there waits its turn in mbWait's one queue, so the two
+    // loops share the rate rather than doubling it.
+    //
+    // 1. In batches, newest year first. What a batch does not answer is kept,
+    //    in order, for the second pass.
+    const alone = [];
+    const queue = releaseDayBatches(todo);
+    const retried = new Set();
+    while (queue.length && !stopped) {
+      const batch = queue.shift().filter(stillWanted);
+      if (!batch.length) continue;
+      let found;
+      requests++;
+      try {
+        found = await fetchMbReleaseDays(batch);
+        failures = 0;
+      } catch (e) {
+        failedOnce(e, batch.length + " albums");
+        // Asked once more, after the rest: one refused request should not
+        // cost twenty albums their day until the next run.
+        const first = batch[0];
+        if (!retried.has(first.key)) { retried.add(first.key); queue.push(batch); }
+        continue;
+      }
+      if (found === null) {
+        // A full page: split and ask again, down to one album at a time.
+        if (batch.length > 1) {
+          const half = Math.ceil(batch.length / 2);
+          queue.unshift(batch.slice(0, half), batch.slice(half));
+        } else {
+          alone.push(batch[0]);
+        }
+        continue;
+      }
+      for (const c of batch) {
+        if (found.has(c.key)) take(c, found.get(c.key)); else alone.push(c);
+      }
+    }
+    // The first pass's days in view now, ahead of the slow tail.
+    if (filled) libraryDateVersion++;
+    // 2. One at a time, for what the batches could not answer — the single
+    //    lookup also searches the title's words, which the batches cannot.
+    for (const c of alone) {
+      if (stopped) break;
+      if (!stillWanted(c)) continue;
       let day;
+      requests++;
       try {
         day = await fetchMbReleaseDay(c.al.title, c.al.subtitle, c.year);
         failures = 0;
       } catch (e) {
-        // Not recorded: a failed request is not an answer about the album, and
-        // it is asked about again next run. Counted for the summary line.
-        failed++;
-        if (DEBUG) console.error("[years] MusicBrainz release-day lookup failed for " +
-                                 c.al.title + " / " + c.al.subtitle + ": " + e.message);
-        if (++failures >= 5) {
-          console.error("[years] MusicBrainz is not answering (" + e.message + ") — release-day lookups paused");
-          break;
-        }
+        failedOnce(e, c.al.title + " / " + c.al.subtitle);
         continue;
       }
-      asked++;
-      recordDateFill(c.key, day, Date.now());
-      if (day && setAlbumYear(c.key, day, { src: "release", dayOnly: true, deferBump: true })) {
-        filled++;
-        scheduleLibraryDateBump();
-      }
+      take(c, day);
     }
   } finally {
     dateFillRunning = false;
   }
   if (filled) libraryDateVersion++;   // the whole run's days, in view now
-  if (asked || failed) console.log("[years] release days: " + filled + " found in " + asked +
-                                  " MusicBrainz lookups" + (failed ? ", " + failed + " requests failed" : ""));
+  if (asked || failed) console.log("[years] release days: " + filled + " found for " + asked +
+                                  " albums in " + requests + " MusicBrainz requests" +
+                                  (failed ? ", " + failed + " requests failed" : ""));
   return filled;
 }
 
-function kickReleaseDayFill(reason) {
-  if (dateFillRunning || !isIndexBuilt()) return;
-  if (dateFillLastKick && Date.now() - dateFillLastKick < DATE_FILL_KICK_MS) return;
+// Start the lookups. A Release date view asks at most once an hour — the view
+// is served page by page, and each page would ask again — while `force` is for
+// the moments new albums can have become candidates: a /music walk or a
+// favourites read finishing. Forced while a run is going, it runs again after,
+// for whatever arrived meanwhile.
+let dateFillAgain = null;
+function kickReleaseDayFill(reason, force) {
+  if (!isIndexBuilt()) return;
+  if (dateFillRunning) {
+    if (force) dateFillAgain = reason;
+    return;
+  }
+  if (!force && dateFillLastKick && Date.now() - dateFillLastKick < DATE_FILL_KICK_MS) return;
   dateFillLastKick = Date.now();
-  runReleaseDayFill(reason).catch(e => console.error("[years] release-day lookups failed: " + e.message));
+  runReleaseDayFill(reason)
+    .catch(e => console.error("[years] release-day lookups failed: " + e.message))
+    .then(() => {
+      if (!dateFillAgain) return;
+      const why = dateFillAgain;
+      dateFillAgain = null;
+      kickReleaseDayFill(why, true);
+    });
+}
+
+// What the album page shows for a date (v1.8.62): the date the Release date
+// sort orders this album by — "YYYY-MM-DD", "YYYY-MM" or "YYYY" — or null.
+function storedReleaseDate(key) {
+  const y = albumYearCache.get(key);
+  if (!/^\d{4}$/.test(String(y || ""))) return null;
+  const d = albumDateCache.get(key);
+  return d && d.slice(0, 4) === y ? d : y;
+}
+
+// The album being LOOKED AT gets its day now, not when the background pass
+// reaches it: one strict lookup for an album with a year and no day, unless it
+// was asked about within the retry window. Through the same queue as every
+// other MusicBrainz request, and remembered the same way. Resolves true when a
+// day was stored; never rejects.
+async function lookUpAlbumDay(key, title, artist) {
+  const year = albumYearCache.get(key);
+  if (!/^\d{4}$/.test(String(year || "")) || !String(artist || "").trim()) return false;
+  const cur = albumDateCache.get(key);
+  if (cur && cur.length === 10 && cur.slice(0, 4) === year) return false;
+  const now = Date.now();
+  const tried = dateFillTried.get(key);
+  if (tried && now - tried.ts < dateFillRetryMs(year, now)) return false;
+  let day;
+  try {
+    day = await fetchMbReleaseDay(title, artist, year);
+  } catch (e) {
+    // Not recorded, exactly as in the background pass: a failed request says
+    // nothing about the album. The page shows the year.
+    if (DEBUG) console.error("[years] album-page day lookup failed for " + title + ": " + e.message);
+    return false;
+  }
+  recordDateFill(key, day, Date.now());
+  if (day && setAlbumYear(key, day, { src: "release", dayOnly: true, deferBump: true })) {
+    scheduleLibraryDateBump();
+    return true;
+  }
+  return false;
 }
 
 // Qobuz: search the public site, scrape the editorial review off the album page.
@@ -9429,8 +9619,11 @@ function releaseDateReport(query) {
     claiming_services: claimingServices(),
     coverage,
     file_walk_running: _fileScanRunning,
+    // `waiting`: albums still dated only to the year and due a lookup — what a
+    // run would ask about if one started now. Zero is "all done".
     day_lookups: { running: dateFillRunning, last_started: iso(dateFillLastKick),
-                   albums_asked: dateFillTried.size },
+                   albums_asked: dateFillTried.size,
+                   waiting: releaseDayFillCandidates(Date.now()).length },
     albums: rows.slice(0, limit).map(al => {
       const key = albumYearKey(al);
       const tried = dateFillTried.get(key);
@@ -16526,16 +16719,24 @@ app.get("/api/album/extras", async (req, res) => {
   const artist = String(req.query.artist || "");
   if (!title) return res.status(400).json({ error: "title query parameter required" });
   try {
+    const exKey = normalize(title) + "||" + normalize(artist);
+    // A library album already has a year, so its day is asked for alongside
+    // everything else rather than after it (lookUpAlbumDay).
+    const yearKnown = /^\d{4}$/.test(String(albumYearCache.get(exKey) || ""));
+    const dayFirst = lookUpAlbumDay(exKey, title, artist);
     let [year, bios] = await Promise.all([
       fetchAlbumYear(title, artist),
       fetchAlbumBios(title, artist)
     ]);
     // Opportunistically record the year so it feeds the Decade filter too.
     // The year only — see fetchAlbumYear for why its day is not trusted.
-    if (year) {
-      const exKey = normalize(title) + "||" + normalize(artist);
-      setAlbumYear(exKey, year, { src: "release" });
-    }
+    if (year) setAlbumYear(exKey, year, { src: "release" });
+    await dayFirst;
+    // An album that had no year until the line above is asked for its day now.
+    // Only then: after a REFUSED first lookup (not recorded, so not "tried") a
+    // second would go straight back to a MusicBrainz that just said no, and
+    // hold the page another eight seconds for it.
+    if (!yearKnown) await lookUpAlbumDay(exKey, title, artist);
     // Prefer MusicBrainz's first-release year (the album's original release)
     // over Qobuz's edition date, which can be a later reissue.
     if (bios && bios.album && year) bios.album.year = year;
@@ -16580,6 +16781,9 @@ app.get("/api/album/extras", async (req, res) => {
 
     res.json({
       year,
+      // The date the Release date sort orders this album by, to the day
+      // wherever any source states one (v1.8.62) — what the album page shows.
+      release_date: storedReleaseDate(exKey),
       album:  bios ? bios.album  : null,
       artist: bios ? bios.artist : null,
       links
