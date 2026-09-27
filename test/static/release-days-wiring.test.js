@@ -59,8 +59,8 @@ test("a Release date view starts the MusicBrainz day lookups", () => {
 
 test("the day lookups are remembered across restarts", () => {
   assert.match(CODE, /CREATE TABLE IF NOT EXISTS date_fill \(/);
-  assert.match(CODE, /INSERT OR REPLACE INTO date_fill \(key, ts, day\) VALUES \(\?, \?, \?\)/);
-  assert.match(CODE, /SELECT key, ts, day FROM date_fill/,
+  assert.match(CODE, /INSERT OR REPLACE INTO date_fill \(key, ts, day, year\) VALUES \(\?, \?, \?, \?\)/);
+  assert.match(CODE, /SELECT key, ts, day, year FROM date_fill/,
     "the lookups are written and never read back — every restart would ask MusicBrainz again");
 });
 
@@ -111,4 +111,33 @@ test("the album page is sent the sort's date, its day looked up first (v1.8.62)"
     "a second lookup would run the strict matcher against the page's loose year");
   assert.match(route, /release_date: storedReleaseDate\(exKey\)/,
     "the album page is not sent the date the sort uses");
+});
+
+test("v1.8.61-62's lookups are asked again once, before anything reads them (v1.8.63)", () => {
+  // Asked AFTER the ALTER, the year column always exists and the reset never
+  // happens; the ALTER must precede the prepared insert that names the column;
+  // and the reset must run before the read-back, or the caches keep what it
+  // cleared until a restart that no longer resets.
+  const open = bodyOf(/^function openLabelsDb\(/);
+  const at = (re) => {
+    const m = re.exec(open);
+    assert.ok(m, "not found in openLabelsDb: " + re);
+    return m.index;
+  };
+  const asked   = at(/const lookupsWithoutYear = !firstStartWithDateFill && !dateFillHasYear\(labelsDb\)/);
+  const schema  = at(/CREATE TABLE IF NOT EXISTS date_fill \(/);
+  const column  = at(/ALTER TABLE date_fill ADD COLUMN year TEXT/);
+  const reset   = at(/if \(lookupsWithoutYear\) \{[\s\S]*?forgetLookedUpDays\(labelsDb\)/);
+  const insert  = at(/INSERT OR REPLACE INTO date_fill \(key, ts, day, year\)/);
+  const readYears = at(/SELECT key, year, src, date, date_src FROM album_years/);
+  const readFill  = at(/SELECT key, ts, day, year FROM date_fill/);
+  assert.ok(asked < schema, "the year column is looked for after the schema could have added it");
+  assert.ok(column < reset && column < insert, "the year column is used before it is added");
+  assert.ok(reset < readYears && reset < readFill, "the reset runs after the caches were loaded");
+});
+
+test("the harvest RESTATES file tags — a corrected tag replaces the tag it corrects (v1.8.63)", () => {
+  const harvest = bodyOf(/^function harvestAlbumYears\(/);
+  assert.match(harvest, /restate: foundSrc === "file"/,
+    "the harvest offers file tags as one more claim, so a corrected tag can never win");
 });

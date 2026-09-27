@@ -2,6 +2,72 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.63] — 2026-09-27
+
+### Fixed — a corrected tag could never replace the date it corrected
+
+Reported: "an album that's been deleted and re-added with corrected metadata,
+the date of release still shows wrong" — with a request to wipe the database
+to get rid of it. No wipe is needed, and this is why it seemed to be.
+
+Every stored date carries the source that stated it, and a source replaces a
+date only when it outranks the one on file. File tags rank highest — but a
+corrected tag and the tag it corrects are BOTH "file", an equal rank was
+refused, and so the wrong date could never be replaced by the right one.
+Deleting and re-adding the album changes nothing here: it comes back under the
+same title and artist, which is the same record. Reproduced exactly that way
+before the fix: tags reading 2026-09-25, a walk, and the stored date still
+2025-03-01. Class of error: a ranking in which every source could outrank the
+others and none could correct itself.
+
+- **The /music walk now RESTATES the tags**, rather than offering them as one
+  more claim to rank: each walk reads every file afresh, so what it reads is
+  the tags as they are now, and a source may always replace what it said
+  before. That includes a day the tags no longer state — a tag corrected to
+  read only "2026" takes its old wrong day with it, and the day is looked up
+  again. Only the tags restate: "release" is the name of several sources (the
+  Qobuz favourites, the label scan, the MusicBrainz lookups), and one must not
+  keep overwriting another's answer. A better source is never bypassed: a
+  source restating itself replaces only its own statements.
+- **Each MusicBrainz day lookup remembers the year it asked about.** Asked
+  about the wrong year, MusicBrainz rightly had no day; with the lookup
+  remembered by album alone, the corrected album then waited out up to a month
+  before being asked again. A lookup for another year is a new question now,
+  asked straight away.
+- **Once, the lookups made by v1.8.61 and v1.8.62 are made again**, because
+  they were remembered without their year — and because before v1.8.62's fix
+  their matcher could take a same-named single's day. The days they found are
+  cleared (only those: a Qobuz day or a tag's day is left alone), every year is
+  kept, and every album is asked again, twenty a request, with the fixed
+  matcher. On a library of a few thousand albums that is a few minutes after
+  the first start; the order fills back in as the answers arrive.
+
+After installing, the corrected date arrives with the walk every start runs —
+or press Rescan. `GET /api/debug/dates?q=<album>` shows the date, where it
+came from, and which year MusicBrainz was asked about.
+
+### Tests
+
+- `test/unit/years.test.js` — the report reproduced and fixed (a retagged
+  album's year and day replace the old tag's); a new day in the same year; a
+  tag reduced to the year drops its old day; another source's day is not the
+  file's to drop; no other source restates; restating never gets past a
+  better source.
+- `test/unit/releasedays-e2e.test.js` — the report end to end: a tag with the
+  wrong year, MusicBrainz asked about that year and finding nothing, the tag
+  corrected and walked again, and the album at the head of the list on its
+  real day.
+- `test/unit/releasedays.test.js` — a lookup for the same year waits, one for
+  another year is asked at once, in the background pass and on the album page.
+- `test/unit/releasedays-store.test.js` — the one-time reset against a real
+  SQLite database shaped as v1.8.62 left it.
+- `test/static/release-days-wiring.test.js` — the harvest restates file tags;
+  the reset runs in the only order that works.
+
+Mutation-checked: each rule reverted on its own turns its tests red.
+
+1346 unit / 633 DOM / 119 static.
+
 ## [1.8.62] — 2026-09-27
 
 ### Added — the album view shows the full release date
