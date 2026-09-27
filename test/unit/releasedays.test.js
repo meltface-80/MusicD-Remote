@@ -240,6 +240,11 @@ test("the release-day lookups", async (t) => {
                           tried: { "x||a": { ts: days(4), day: null } }, fetch: () => year + "-02-02" });
       assert.equal(await late.F.runReleaseDayFill("test"), 1, year + ": not asked again after three days");
     }
+    // ...and the boundary: two years back is an older record, on the month.
+    const older = String(new Date().getUTCFullYear() - 2);
+    const h = fill({ albums: [rec("X", "A")], years: { "x||a": older },
+                     tried: { "x||a": { ts: days(4), day: null } }, fetch: () => older + "-02-02" });
+    assert.equal(await h.F.runReleaseDayFill("test"), 0, older + ": asked again after only three days");
   });
 
   await t.test("a failed REQUEST is not an answer: not remembered, and five in a row stop it", async () => {

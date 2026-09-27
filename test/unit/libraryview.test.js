@@ -273,6 +273,19 @@ test("libraryView — release date orders by the day", async (t) => {
     }
   });
 
+  await t.test("Recently added keeps its own tie-break — the artist rule is Release date's", () => {
+    // Added on the same rebuild (one timestamp), titles and artists in opposite
+    // orders: by title, reversed with the dates, exactly as before v1.8.61.
+    // Nothing says how Roon orders a day's additions, so nothing changed here.
+    const trio = [rec(0, "Apple", "Zed"), rec(1, "Plum", "Abba"), rec(2, "Banana", "Abba")];
+    const G = build({ albums: trio, years: {},
+                      seen: [["apple||zed", { ts: 5000, src: "first-seen" }],
+                             ["plum||abba", { ts: 5000, src: "first-seen" }],
+                             ["banana||abba", { ts: 5000, src: "first-seen" }]] });
+    assert.deepEqual(titles(G.libraryView({ sort: "added", dir: "asc" })), ["Apple", "Banana", "Plum"]);
+    assert.deepEqual(titles(G.libraryView({ sort: "added", dir: "desc" })), ["Plum", "Banana", "Apple"]);
+  });
+
   await t.test("the tie-break never outranks the date", () => {
     const pair = [rec(0, "Zulu", "Zed"), rec(1, "Alpha", "Abba")];
     const G = build({ albums: pair, years: { zulu: "2026", alpha: "2026" },

@@ -8499,18 +8499,23 @@ function libraryView(q) {
       const d = dateOf(al);
       if (d === null) unknown.push(al); else known.push({ al, d });
     }
-    // Same-day albums, for Release date: artist A→Z, then title, in BOTH
-    // directions — Roon's own order (v1.8.61). Its newest-first list in the
-    // report showed six albums out the same Friday as ACTORS, Clinic, Emile
-    // Parisien, Europe, Godflesh, Hermanos Gutierrez, while this one reversed a
-    // title tie-break along with the dates and ran them backwards by title.
-    // "Recently added" keeps its tie-break: nothing says how Roon orders those.
-    const dir = desc ? -1 : 1;
-    const tie = sort === "year"
-      ? (a, b) => (a.cFirst || a.nArtist).localeCompare(b.cFirst || b.nArtist) ||
-                  a.sortTitle.localeCompare(b.sortTitle)
-      : (a, b) => dir * a.sortTitle.localeCompare(b.sortTitle);
-    known.sort((a, b) => dir * (a.d < b.d ? -1 : a.d > b.d ? 1 : 0) || tie(a.al, b.al));
+    const byDate = (a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : 0);
+    if (sort === "year") {
+      // Same-day albums: artist A→Z, then title, in BOTH directions — Roon's
+      // own order (v1.8.61). Its newest-first list in the report showed six
+      // albums out the same Friday as ACTORS, Clinic, Emile Parisien, Europe,
+      // Godflesh, Hermanos Gutierrez, while this one reversed a title
+      // tie-break along with the dates and ran them backwards by title.
+      const dir = desc ? -1 : 1;
+      known.sort((a, b) => dir * byDate(a, b) ||
+        (a.al.cFirst || a.al.nArtist).localeCompare(b.al.cFirst || b.al.nArtist) ||
+        a.al.sortTitle.localeCompare(b.al.sortTitle));
+    } else {
+      // "Recently added" exactly as before: nothing says how Roon orders a
+      // day's additions, so its tie-break is left alone.
+      known.sort((a, b) => byDate(a, b) || a.al.sortTitle.localeCompare(b.al.sortTitle));
+      if (desc) known.reverse();
+    }
     unknown.sort((a, b) => a.sortTitle.localeCompare(b.sortTitle));
     out = known.map(k => k.al).concat(unknown);
   } else {

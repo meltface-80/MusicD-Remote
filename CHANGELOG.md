@@ -140,8 +140,8 @@ name wherever it sits; `?limit=200` shows more of the order.
   SQLite database built from the shipping schema and migrations.
 - `test/unit/years.test.js` — the refined `ORIGINALDATE`, and the year it may
   never change.
-- `test/unit/libraryview.test.js` — a day's albums by artist, both ways, and
-  the tie-break never outranking the date.
+- `test/unit/libraryview.test.js` — a day's albums by artist, both ways; the
+  tie-break never outranking the date; and Recently added keeping its own.
 - `test/unit/sourcederive.test.js` — a service Roon is not signed in to claims
   nothing; nothing read keeps the old behaviour; everything is local only when
   Roon streams nothing.
@@ -152,7 +152,7 @@ name wherever it sits; `?limit=200` shows more of the order.
 
 Mutation-checked: each rule reverted on its own turns its tests red.
 
-1297 unit / 629 DOM / 115 static.
+1298 unit / 629 DOM / 115 static.
 
 ## [1.8.60] — 2026-09-26
 

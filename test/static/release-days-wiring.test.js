@@ -15,10 +15,12 @@
  */
 const test = require("node:test");
 const assert = require("node:assert");
-const fs = require("node:fs");
-const path = require("node:path");
+// indexSource() rather than a direct read, so MUSICD_INDEX_JS still points this
+// file at a mutated copy — a test that reads index.js itself silently opts out
+// of mutation checking and can never be shown to bite.
+const { indexSource } = require("../lib/extract");
 
-const SRC = fs.readFileSync(path.join(__dirname, "..", "..", "index.js"), "utf8");
+const SRC = indexSource();
 const isComment = (line) => /^\s*(\/\/|\*|\/\*)/.test(line);
 const CODE = SRC.split("\n").filter((l) => !isComment(l)).join("\n");
 
