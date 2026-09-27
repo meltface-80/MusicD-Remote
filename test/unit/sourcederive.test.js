@@ -38,9 +38,14 @@ function build(opts) {
      // change the elimination rules these tests pin, so it is extracted for
      // real rather than stubbed out.
      "titleOnlySource",
-     "albumFileFacts", "albumQualityLabel", "albumIsHiRes", "rateShort"],
+     "albumFileFacts", "albumQualityLabel", "albumIsHiRes", "rateShort",
+     // v1.8.61: whether ROON is signed in to a service, from its browse root.
+     "roonHasService", "roonClaimSets"],
     {
       AK: require("../../lib/albumkeys"),
+      NO_CLAIMS: new Set(),
+      // null = never read, which keeps the behaviour before it existed.
+      roonServices: opts.roonServices === undefined ? null : opts.roonServices,
       albumFileCache:  new Map(opts.files || []),
       localAlbumKeys:  new Set(opts.local || []),
       qobuzAlbumKeys:  new Set(opts.qobuz || []),
@@ -195,5 +200,101 @@ test("a connected service that told us nothing does not count as claiming", asyn
     const F = build({ qobuz: ["goo||sonic youth"] });
     assert.deepEqual(F.claimingServices(), []);
     assert.equal(F.unclaimedIsLocal(), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.8.61: the extension signed in to a service Roon is NOT signed in to.
+//
+// Reported: "I don't have Roon logged in to Qobuz but I have within the
+// extension. The extension seems to think my local files are from Qobuz."
+// Every rule above took "the extension is connected" to mean "Roon is", and a
+// Roon without Qobuz can only be playing local files — so its Qobuz favourites
+// say nothing about where Roon's albums come from.
+// ---------------------------------------------------------------------------
+test("a service Roon itself is not signed in to claims nothing", async (t) => {
+  const qobuzOnly = { qobuzWaveToken: "tok", qobuz: ["goo||sonic youth", "rumours||fleetwood mac"] };
+
+  await t.test("THE report: a local album that is also a Qobuz favourite is not badged Q", () => {
+    const F = build(Object.assign({}, qobuzOnly, { roonServices: { qobuz: false, tidal: false } }));
+    assert.notEqual(F.albumSource("Goo", "Sonic Youth"), "qobuz",
+      "a Qobuz favourite was called a Qobuz album on a Roon that is not signed in to Qobuz");
+  });
+
+  await t.test("with no service in Roon, everything is local again — elimination holds", () => {
+    const F = build(Object.assign({}, qobuzOnly, { roonServices: { qobuz: false, tidal: false } }));
+    assert.deepEqual(F.claimingServices(), []);
+    assert.equal(F.unclaimedIsLocal(), true);
+    assert.equal(F.albumSource("Rumours", "Fleetwood Mac"), "local");
+    // ...so the badge is decoration and is not sent, exactly as with no
+    // service connected at all.
+    assert.equal(F.sourceBadgesDistinguish(), false);
+    assert.equal(F.withSource(album("Goo", "Sonic Youth")).source, null);
+  });
+
+  await t.test("the title-only rung does not reach for the service either", () => {
+    const F = build(Object.assign({}, qobuzOnly, { roonServices: { qobuz: false, tidal: false } }));
+    assert.equal(F.albumSource("Goo", ""), "local");
+  });
+
+  await t.test("Roon signed in to Qobuz: exactly the behaviour before", () => {
+    const F = build(Object.assign({}, qobuzOnly, { roonServices: { qobuz: true, tidal: false } }));
+    assert.deepEqual(F.claimingServices(), ["qobuz"]);
+    assert.equal(F.albumSource("Goo", "Sonic Youth"), "qobuz");
+  });
+
+  await t.test("never read (null): exactly the behaviour before — a failed read takes nothing away", () => {
+    const F = build(Object.assign({}, qobuzOnly));
+    assert.deepEqual(F.claimingServices(), ["qobuz"]);
+    assert.equal(F.albumSource("Goo", "Sonic Youth"), "qobuz");
+  });
+
+  await t.test("one service in Roon and another not: only Roon's counts", () => {
+    const F = build({ qobuzWaveToken: "tok", tidalRefreshToken: "r", tidalUserId: "u",
+                      qobuz: ["goo||sonic youth"], tidal: ["rumours||fleetwood mac"],
+                      roonServices: { qobuz: false, tidal: true } });
+    assert.deepEqual(F.claimingServices(), ["tidal"]);
+    assert.equal(F.albumSource("Rumours", "Fleetwood Mac"), "tidal");
+    assert.notEqual(F.albumSource("Goo", "Sonic Youth"), "qobuz");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.8.61 review: the elimination is asked of ROON once Roon's services are
+// known. The first cut set aside the claims of a service Roon lacks and then
+// still asked the EXTENSION whether anything could claim an album — so with
+// the extension on Qobuz and Roon on TIDAL, nothing "could", and every TIDAL
+// album was called local.
+// ---------------------------------------------------------------------------
+test("everything is local only when ROON streams nothing", async (t) => {
+  await t.test("THE regression: Roon on TIDAL, the extension on Qobuz only", () => {
+    const F = build({ qobuzWaveToken: "tok", qobuz: ["goo||sonic youth"],
+                      roonServices: { qobuz: false, tidal: true } });
+    assert.equal(F.unclaimedIsLocal(), false,
+      "a TIDAL album the extension cannot see into was concluded to be a local file");
+    assert.equal(F.albumSource("Some TIDAL Record", "Someone"), null);
+    assert.equal(F.sourceBadgesDistinguish(), true, "badges still distinguish local from the rest");
+  });
+
+  await t.test("Roon on Qobuz, the extension signed in to nothing: not everything is local", () => {
+    // Before Roon was asked, "nothing connected here" meant "everything local"
+    // — true only if Roon streamed nothing either.
+    const F = build({ roonServices: { qobuz: true, tidal: false } });
+    assert.equal(F.unclaimedIsLocal(), false);
+    assert.equal(F.albumSource("A Qobuz Record", "Someone"), null);
+  });
+
+  await t.test("a service this extension cannot see into at all keeps it honest too", () => {
+    const F = build({ roonServices: { qobuz: false, tidal: false, other: true } });
+    assert.equal(F.unclaimedIsLocal(), false);
+  });
+
+  await t.test("Roon on nothing: every album is local, whatever is signed in here", () => {
+    const F = build({ qobuzWaveToken: "tok", tidalRefreshToken: "r", tidalUserId: "u",
+                      qobuz: ["goo||sonic youth"], tidal: ["rumours||fleetwood mac"],
+                      roonServices: { qobuz: false, tidal: false, other: false } });
+    assert.equal(F.unclaimedIsLocal(), true);
+    assert.equal(F.albumSource("Rumours", "Fleetwood Mac"), "local");
+    assert.equal(F.sourceBadgesDistinguish(), false);
   });
 });

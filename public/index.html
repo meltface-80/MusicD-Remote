@@ -209,8 +209,11 @@
         <button id="select-menu-btn" class="icon-btn" type="button"
                 aria-haspopup="true" aria-expanded="false" aria-label="Actions for selected items">
           <span id="select-count" class="sel-count">0</span>
-          <!-- The same three-dots-in-a-circle the playlist screens use (see
-               OVERFLOW_SVG in app.js). This was already an overflow menu — it
+          <!-- The same three-dots-in-a-circle the playlist screens use. There,
+               since v1.8.60, the circle is the button's own border
+               (.overflow-btn); this top-bar button is an .icon-btn with an
+               outline of its own and keeps the ring drawn in its icon, as it
+               always has. This was already an overflow menu — it
                just wore a chevron, which reads as "expand" rather than "more
                actions". The count badge stays: it is the only indication of how
                many items are selected. -->
@@ -553,9 +556,12 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
           <button class="modal-tab is-active" type="button" data-tab="album">Now playing</button>
           <button class="modal-tab"           type="button" data-tab="queue">Queue</button>
         </div>
+        <!-- No source badge on this artwork (v1.8.60). The album view and Now
+             playing share it, and its top-right corner is where the Share
+             button sits: the local / Qobuz / TIDAL mark showed through under
+             the button. The tiles on every grid keep theirs. -->
         <div class="modal-art">
           <img id="modal-img" alt="">
-          <span id="modal-source" class="album-source local hidden" title="Local albums" aria-label="Local albums"></span>
           <span id="modal-quality" class="album-quality hidden"></span>
         </div>
         <div class="modal-info">
