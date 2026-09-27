@@ -92,6 +92,7 @@ function world() {
       // MusicBrainz, answering with the true day — twenty albums a request,
       // and one at a time for anything a batch left unanswered.
       DATE_FILL_BATCH: 20, DATE_FILL_BATCH_URL_MAX: 4000, MB_SEARCH_PAGE: 100,
+      DATE_FILL_SPLIT_MIN: 4,
       fetchMbReleaseDays: async (batch) => {
         requests.push(batch.length);
         const found = new Map();

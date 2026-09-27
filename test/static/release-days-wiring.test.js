@@ -97,14 +97,18 @@ test("the lookups start by themselves when albums can have become year-only (v1.
 
 test("the album page is sent the sort's date, its day looked up first (v1.8.62)", () => {
   const route = bodyOf(/^app\.get\("\/api\/album\/extras"/);
-  const first = route.indexOf("const dayFirst = lookUpAlbumDay(exKey, title, artist)");
-  const both  = route.indexOf("await Promise.all(");
-  const again = route.indexOf("await lookUpAlbumDay(exKey, title, artist)");
-  assert.ok(first >= 0 && both > first, "the day is not asked for alongside the rest of the page");
-  assert.ok(again > both, "an album whose year arrived with the page is never asked for its day");
-  assert.match(route, /if \(!yearKnown\) await lookUpAlbumDay\(exKey, title, artist\)/,
-    "the second lookup is not limited to an album that had no year — after a refused first " +
-    "one it asks MusicBrainz again at once and holds the album page for it");
+  const ask  = route.indexOf('const dayLookup = req.query.day === "1" ? lookUpAlbumDay(exKey, title, artist) : null');
+  const both = route.indexOf("await Promise.all(");
+  assert.ok(ask >= 0, "the day lookup is not limited to the album view (day=1)");
+  assert.ok(both > ask, "the day is not asked for alongside the rest of the page");
+  assert.match(route, /notePageYear\(exKey, year\)/,
+    "the page's loose MusicBrainz year is not written as a gap-filling guess");
+  assert.doesNotMatch(route, /setAlbumYear\(exKey, year, \{ src: "release" \}\)/,
+    "the page's loose year still replaces catalogue and TIDAL years, and the day found with them");
+  assert.match(route, /Promise\.race\(\[dayLookup,/,
+    "the page waits for MusicBrainz without a limit");
+  assert.equal((route.match(/lookUpAlbumDay\(/g) || []).length, 1,
+    "a second lookup would run the strict matcher against the page's loose year");
   assert.match(route, /release_date: storedReleaseDate\(exKey\)/,
     "the album page is not sent the date the sort uses");
 });
