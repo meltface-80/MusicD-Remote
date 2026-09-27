@@ -29,6 +29,16 @@ others and none could correct itself.
   Qobuz favourites, the label scan, the MusicBrainz lookups), and one must not
   keep overwriting another's answer. A better source is never bypassed: a
   source restating itself replaces only its own statements.
+- **One statement per album per walk.** The walk used to write each FOLDER's
+  date as it went, so an album found twice — a CD rip tagged "1977" and a
+  hi-res copy tagged "1977-02-04" — was stated twice, and restating one undid
+  the other on every walk (and took with it any day MusicBrainz had found in
+  between). The walk collects its dates now and states each album once: the
+  first folder's date, refined by a later folder that says more of the same
+  date, whichever the walk reaches first. That statement also reaches an album
+  whose identity another library album shares ("Rumours" beside "Rumours
+  (Deluxe Edition)"), which the join skips on purpose and where a corrected
+  tag was still refused. A walk that broke off states nothing at all.
 - **Each MusicBrainz day lookup remembers the year it asked about.** Asked
   about the wrong year, MusicBrainz rightly had no day; with the lookup
   remembered by album alone, the corrected album then waited out up to a month
@@ -52,7 +62,10 @@ came from, and which year MusicBrainz was asked about.
   album's year and day replace the old tag's); a new day in the same year; a
   tag reduced to the year drops its old day; another source's day is not the
   file's to drop; no other source restates; restating never gets past a
-  better source.
+  better source; an album in two folders stated once, the fuller date, in
+  either order, unchanged by a second walk; a MusicBrainz day surviving the
+  next walk; the join and the tag key never restating one album two ways; an
+  album sharing its identity corrected too.
 - `test/unit/releasedays-e2e.test.js` — the report end to end: a tag with the
   wrong year, MusicBrainz asked about that year and finding nothing, the tag
   corrected and walked again, and the album at the head of the list on its
@@ -62,11 +75,12 @@ came from, and which year MusicBrainz was asked about.
 - `test/unit/releasedays-store.test.js` — the one-time reset against a real
   SQLite database shaped as v1.8.62 left it.
 - `test/static/release-days-wiring.test.js` — the harvest restates file tags;
-  the reset runs in the only order that works.
+  the reset runs in the only order that works; a walk that broke off publishes
+  no dates, and the walk writes no year folder by folder.
 
 Mutation-checked: each rule reverted on its own turns its tests red.
 
-1346 unit / 633 DOM / 119 static.
+1352 unit / 633 DOM / 120 static.
 
 ## [1.8.62] — 2026-09-27
 

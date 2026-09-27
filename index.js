@@ -3545,6 +3545,12 @@ let tidalFavouritesRead = 0, tidalFavouritesTotal = 0;
 // as finely as the source states (releaseDateOf) — still named for the year,
 // which is what the Decade filter takes from them.
 let fileAlbumYears  = new Map();   // albumKey → release date, from /music file tags
+// The same walk's dates under the TAG-derived key (normalize(album)||
+// normalize(albumartist)) — the year cache's own key space — for albums the
+// join through srcKeys cannot reach, above all an identity two library albums
+// share ("Rumours" beside "Rumours (Deluxe Edition)"). Published with
+// fileAlbumYears and applied by harvestAlbumYears (v1.8.63).
+let fileDirectYears = new Map();
 let qobuzAlbumYears = new Map();   // albumKey → release date, from Qobuz favourites
 let tidalAlbumYears = new Map();   // albumKey → release date, from TIDAL favourites
 /*
@@ -4450,12 +4456,20 @@ function addHarvestedYear(map, title, version, artists, year) {
   for (const t of titles) {
     for (const artist of artists) {
       if (!artist) continue;
-      const key = albumKey(t, artist);
-      // First writer wins: the earliest page of favourites is as good a source
-      // as any, and this keeps the map stable across re-runs.
-      if (key && !map.has(key)) map.set(key, y);
+      noteHarvestedDate(map, albumKey(t, artist), y);
     }
   }
+}
+// One date per identity per read. First writer wins — the earliest page of
+// favourites is as good a source as any, and the walk's first folder as good
+// as its second — which keeps the map stable across re-runs; but a later
+// writer that says MORE of the same date refines it (v1.8.63): a CD rip tagged
+// "1977" and a hi-res copy tagged "1977-02-04" are one statement,
+// "1977-02-04", whichever folder the walk reaches first.
+function noteHarvestedDate(map, key, date) {
+  if (!key || !date) return;
+  const cur = map.get(key);
+  if (!cur || dateRefines(date, cur)) map.set(key, date);
 }
 
 // Join the harvested years onto the library snapshot. Runs after the index is
@@ -4476,8 +4490,11 @@ function harvestAlbumYears(reason) {
     { map: qobuzAlbumYears, src: "release" },
     { map: tidalAlbumYears, src: "edition" },
   ];
-  if (!sources.some(s => s.map.size)) return 0;
+  if (!sources.some(s => s.map.size) && !fileDirectYears.size) return 0;
   let added = 0;
+  // The year-cache keys this run restated from the file tags, so the tag-key
+  // statements below never restate the same album a second time.
+  const statedFile = new Set();
   const run = () => {
     for (const al of albumIndex.albums) {
       const ykey = albumYearKey(al);   // the key albumYearOf reads
@@ -4501,6 +4518,7 @@ function harvestAlbumYears(reason) {
       // now — a corrected tag replaces the one it corrects. The services are
       // not: "release" is several sources' name, and one must not keep
       // overwriting another's answer.
+      if (foundSrc === "file") statedFile.add(ykey);
       let changed = setAlbumYear(ykey, found,
                                  { src: foundSrc, deferBump: true, restate: foundSrc === "file" });
       // The DAY may come from any other source that agrees with the year now
@@ -4522,6 +4540,16 @@ function harvestAlbumYears(reason) {
             setAlbumYear(ykey, d, { src: s.src, dayOnly: true, deferBump: true })) changed = true;
       }
       if (changed) added++;
+    }
+    // The walk's statements under the tag-derived key, for every album the
+    // join above did not restate from the tags — above all one whose only
+    // identity another library album shares, which the join skips on purpose.
+    // Restated too: a corrected tag must replace the tag it corrects there as
+    // well (v1.8.63). Never on a key the join restated, or the two could
+    // restate one album two ways.
+    for (const [k, d] of fileDirectYears) {
+      if (statedFile.has(k)) continue;
+      if (setAlbumYear(k, d, { src: "file", deferBump: true, restate: true })) added++;
     }
   };
   // One transaction for the whole join, matching how the other bulk loads here
@@ -4616,7 +4644,11 @@ async function buildFileLabelMap(onProgress) {
   // every album already dated. (Source precedence in setAlbumYear is the real
   // guard; this keeps the map itself from ever being observed half-built.)
   const fileYears = new Map();
-  let yearsWritten = 0;
+  // The same dates under the tag-derived key (fileDirectYears). Collected, not
+  // written as the walk goes: a write per FOLDER made two statements for an
+  // album the walk finds twice, and the harvest's restatement of one undid the
+  // other's on every walk (v1.8.63).
+  const fileDirect = new Map();
   let formatWrites = 0;
   if (!musicDirMounted()) return { labelMap: map, bandcampMap, localKeys, localDirs };
   let mm;
@@ -4765,10 +4797,9 @@ async function buildFileLabelMap(onProgress) {
         // its year, the Release date sort its day).
         const fyear = fileTagDate(meta.common);
         if (album && fyear) {
-          // Direct write under the TAG-derived key. Kept because it costs
-          // nothing and lands immediately whenever the tags and Roon agree.
-          const ykey = normalize(album) + "||" + normalize(albumartist || "");
-          if (setAlbumYear(ykey, fyear, { src: "file", deferBump: true })) yearsWritten++;
+          // Under the TAG-derived key — the year cache's own key space — for
+          // the albums the srcKeys join below cannot reach (fileDirectYears).
+          noteHarvestedDate(fileDirect, normalize(album) + "||" + normalize(albumartist || ""), fyear);
           // ...and again in the badge key space, so harvestAlbumYears can reach
           // it through the album's srcKeys when they DON'T agree. Roon renames
           // albums ("(Deluxe Edition)"), reads a different album artist, and
@@ -4812,9 +4843,11 @@ async function buildFileLabelMap(onProgress) {
     }
   }
 
+  let walkAborted = false;
   try {
     await scanDir(MUSIC_DIR, 0);
   } catch (e) {
+    walkAborted = true;
     if (DEBUG) console.error("[labels:files] scan error:", e.message);
   }
   if (DEBUG) console.log("[labels:files] file scan found", map.size, "labels,", bandcampMap.size,
@@ -4828,8 +4861,15 @@ async function buildFileLabelMap(onProgress) {
               (walk.unreadable  ? ", " + walk.unreadable + " unreadable" : "") +
               (walk.parseFailed ? ", " + walk.parseFailed + " tag reads failed" : "") +
               (walk.noAlbumTag  ? ", " + walk.noAlbumTag + " had no album tag" : ""));
-  // Publish in one assignment, so the join never sees a partial walk.
-  fileAlbumYears = fileYears;
+  // Publish in one assignment, so the join never sees a partial walk — and not
+  // at all from a walk that broke off: the harvest RESTATES these as what the
+  // files say now (v1.8.63), and a walk that stopped halfway does not know.
+  if (walkAborted) {
+    console.error("[files] the /music walk broke off — its release dates were not used");
+  } else {
+    fileAlbumYears = fileYears;
+    fileDirectYears = fileDirect;
+  }
   let seenWrites = 0;
   for (const [k, ts] of fileSeen) if (setAlbumSeen(k, ts, "file")) seenWrites++;
   if (seenWrites) {
@@ -4840,14 +4880,9 @@ async function buildFileLabelMap(onProgress) {
     bumpLibraryMeta();   // the Format/Sample rate/Bit depth facets just gained values
     console.log("[format] " + albumFileCache.size + " album identities carry file format");
   }
-  // The direct tag-key writes above all deferred their bump, and the only other
-  // flush is harvestAlbumYears' `if (added)` — which counts ONLY the albums the
-  // srcKeys join filled. A well-tagged library whose tags agree with Roon lands
-  // every year through the direct write, leaving added === 0 and no
-  // invalidation at all: the Library would keep serving a memoised ordering in
-  // which thousands of albums are still undated, while the Focus sheet
-  // simultaneously reported them as dated.
-  if (yearsWritten) bumpLibraryMeta();
+  // No year is written here any more: the walk's dates reach the cache through
+  // harvestAlbumYears("file tags"), which the only caller runs next and which
+  // counts the tag-key applications in `added`, so its bump covers them.
   return { labelMap: map, bandcampMap, localKeys, localDirs };
 }
 
