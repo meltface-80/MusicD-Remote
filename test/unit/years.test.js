@@ -54,7 +54,7 @@ function harness(opts) {
     // shadowed the shipping one, so a mutation that reordered the real table
     // changed nothing and the suite stayed green.
     ["yearOfDate", "releaseDateOf", "fileTagDate", "addHarvestedYear", "harvestAlbumYears",
-     "setAlbumYear", "dateRefines", "yearSourceRank", "albumYearKey"],
+     "setAlbumYear", "dateRefines", "yearSourceRank", "albumYearKey", "noteHarvestedDate"],
     {
       albumKey: K.albumKey,
       albumYearCache,
@@ -64,6 +64,7 @@ function harness(opts) {
       albumIndex,
       ambiguousAlbumKeys: opts.ambiguous || new Set(),
       fileAlbumYears:  opts.file  || new Map(),
+      fileDirectYears: opts.fileDirect || new Map(),
       qobuzAlbumYears: opts.qobuz || new Map(),
       tidalAlbumYears: opts.tidal || new Map(),
       bumpLibraryMeta: () => { bumps++; },
@@ -861,5 +862,74 @@ test("a source restating itself replaces what it said before", async (t) => {
     const h = harness({ known: { [KEY]: "2026" }, knownSrc: { [KEY]: "file" } });
     assert.equal(h.F.setAlbumYear(KEY, "2019-01-01", { src: "release", restate: true }), false);
     assert.equal(h.albumYearCache.get(KEY), "2026");
+  });
+});
+
+// v1.8.63 review: ONE statement per album per walk.
+test("the walk states each album once, and the statement is stable", async (t) => {
+  const KEY = "rumours||fleetwood mac";
+  const walk = (dates) => {
+    // What buildFileLabelMap collects, folder by folder, in walk order.
+    const file = new Map(), direct = new Map();
+    const W = harness();
+    for (const d of dates) {
+      W.F.addHarvestedYear(file, "Rumours", null, ["Fleetwood Mac"], d);
+      W.F.noteHarvestedDate(direct, KEY, d);
+    }
+    return { file, direct };
+  };
+
+  for (const order of [["1977", "1977-02-04"], ["1977-02-04", "1977"]]) {
+    await t.test("a CD rip and a hi-res copy (" + order.join(" then ") + "): one date, the fuller", () => {
+      const w = walk(order);
+      const h = harness({ albums: [rec(0, "Rumours", "Fleetwood Mac")], file: w.file, fileDirect: w.direct });
+      h.F.harvestAlbumYears("file tags");
+      assert.equal(h.albumDateCache.get(KEY), "1977-02-04");
+      assert.equal(h.F.harvestAlbumYears("file tags"), 0,
+        "the second walk changed the album again — two statements fighting over one album");
+      assert.equal(h.albumDateCache.get(KEY), "1977-02-04");
+    });
+  }
+
+  await t.test("a MusicBrainz day found between walks survives the next walk", () => {
+    const w = walk(["1977", "1977"]);
+    const h = harness({ albums: [rec(0, "Rumours", "Fleetwood Mac")], file: w.file, fileDirect: w.direct,
+                        known: { [KEY]: "1977" }, knownSrc: { [KEY]: "file" },
+                        knownDate: { [KEY]: "1977-02-04" }, knownDateSrc: { [KEY]: "release" } });
+    h.F.harvestAlbumYears("file tags");
+    assert.equal(h.albumDateCache.get(KEY), "1977-02-04", "the walk destroyed a day it never stated");
+  });
+
+  await t.test("the join and the tag key never restate one album two ways", () => {
+    // Two folders the join sees as one album ("&" and "and" canonicalise
+    // alike) but the tag key sees as two: the join restates the first folder's
+    // day, the tag key for Roon's spelling holds only the second's year.
+    const KEY2 = "songs of love and hate||leonard cohen";
+    const file = new Map(), direct = new Map();
+    const W = harness();
+    W.F.addHarvestedYear(file, "Songs of Love & Hate", null, ["Leonard Cohen"], "1971-03-19");
+    W.F.noteHarvestedDate(direct, "songs of love hate||leonard cohen", "1971-03-19");
+    W.F.addHarvestedYear(file, "Songs of Love and Hate", null, ["Leonard Cohen"], "1971");
+    W.F.noteHarvestedDate(direct, KEY2, "1971");
+    const h = harness({ albums: [rec(0, "Songs of Love and Hate", "Leonard Cohen")], file, fileDirect: direct });
+    h.F.harvestAlbumYears("file tags");
+    assert.equal(h.albumDateCache.get(KEY2), "1971-03-19");
+    assert.equal(h.F.harvestAlbumYears("file tags"), 0, "the two statements undid each other");
+    assert.equal(h.albumDateCache.get(KEY2), "1971-03-19");
+  });
+
+  await t.test("an album whose identity another shares is corrected too", () => {
+    // "Rumours" beside "Rumours (Deluxe Edition)": the deluxe's stripped form
+    // IS the plain album's key, so the srcKeys join skips it — and the tag-key
+    // statement was the only writer, still refused at equal rank.
+    const w = walk(["1977"]);
+    const plain = rec(0, "Rumours", "Fleetwood Mac");
+    const h = harness({ albums: [plain, rec(1, "Rumours (Deluxe Edition)", "Fleetwood Mac")],
+                        ambiguous: new Set([K.albumKey("Rumours", "Fleetwood Mac")]),
+                        file: w.file, fileDirect: w.direct,
+                        known: { [KEY]: "1976" }, knownSrc: { [KEY]: "file" } });
+    h.F.harvestAlbumYears("file tags");
+    assert.equal(h.albumYearCache.get(KEY), "1977", "the retagged album with a deluxe sibling kept its old year");
+    assert.equal(h.F.harvestAlbumYears("file tags"), 0);
   });
 });

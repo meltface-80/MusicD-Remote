@@ -141,3 +141,14 @@ test("the harvest RESTATES file tags — a corrected tag replaces the tag it cor
   assert.match(harvest, /restate: foundSrc === "file"/,
     "the harvest offers file tags as one more claim, so a corrected tag can never win");
 });
+
+test("a walk that broke off publishes no dates (v1.8.63)", () => {
+  // The harvest RESTATES the walk's dates as what the files say now; a walk
+  // that stopped halfway does not know that.
+  const walk = bodyOf(/^async function buildFileLabelMap\(/);
+  assert.match(walk, /catch \(e\) \{\s*walkAborted = true;/, "a broken-off walk is not noticed");
+  assert.match(walk, /if \(walkAborted\) \{[\s\S]*?\} else \{\s*fileAlbumYears = fileYears;\s*fileDirectYears = fileDirect;/,
+    "the walk's dates are published whether or not it finished");
+  assert.doesNotMatch(walk, /setAlbumYear\(/,
+    "the walk writes years folder by folder again — two statements for an album it finds twice");
+});

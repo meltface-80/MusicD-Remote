@@ -61,12 +61,12 @@ function world() {
   const albums = LIBRARY.map((r, i) => rec(i, r[0], r[1]));
   const albumYearCache = new Map(), albumYearSource = new Map();
   const albumDateCache = new Map(), albumDateSource = new Map();
-  const qobuzAlbumYears = new Map(), fileAlbumYears = new Map();
+  const qobuzAlbumYears = new Map(), fileAlbumYears = new Map(), fileDirectYears = new Map();
   const libraryViewCache = new Map();
   const dateFillTried = new Map();
   const requests = [];     // albums per MusicBrainz request, in order
   const F = loadIndexFunctions(
-    ["harvestAlbumYears", "addHarvestedYear", "setAlbumYear", "releaseDateOf", "yearOfDate",
+    ["harvestAlbumYears", "addHarvestedYear", "noteHarvestedDate", "setAlbumYear", "releaseDateOf", "yearOfDate",
      "dateRefines", "yearSourceRank", "albumYearKey", "fileTagDate",
      "runReleaseDayFill", "releaseDayFillCandidates", "recordDateFill", "dateFillRetryMs",
      "releaseDayBatches", "mbBatchUrl", "mbAlbumClause", "mbQuote", "albumTitleVariants",
@@ -79,7 +79,7 @@ function world() {
       albumKey: K.albumKey,
       albumIndex: { albums, count: albums.length, builtAt: 1 },
       albumYearCache, albumYearSource, albumDateCache, albumDateSource,
-      fileAlbumYears, qobuzAlbumYears, tidalAlbumYears: new Map(),
+      fileAlbumYears, fileDirectYears, qobuzAlbumYears, tidalAlbumYears: new Map(),
       ambiguousAlbumKeys: new Set(),
       dateFillTried, dateFillRunning: false, DATE_FILL_RETRY_MS: 30 * 864e5,
       DATE_FILL_RECENT_RETRY_MS: 3 * 864e5,
@@ -120,9 +120,16 @@ function world() {
     });
   const newestFirst = () => F.libraryView({ sort: "year", dir: "desc" }).map(a => a.subtitle);
   // One complete /music walk over these tags, and the harvest after it.
+  // Both halves of what buildFileLabelMap collects: the srcKeys map and the
+  // tag-key map (fileDirectYears), published together.
   const walk = (lib) => {
     fileAlbumYears.clear();
-    for (const r of lib) F.addHarvestedYear(fileAlbumYears, r[0], null, [r[1]], F.fileTagDate(r[3]));
+    fileDirectYears.clear();
+    for (const r of lib) {
+      const d = F.fileTagDate(r[3]);
+      F.addHarvestedYear(fileAlbumYears, r[0], null, [r[1]], d);
+      F.noteHarvestedDate(fileDirectYears, K.normalize(r[0]) + "||" + K.normalize(r[1]), d);
+    }
     F.harvestAlbumYears("file tags");
   };
   return { F, qobuzAlbumYears, fileAlbumYears, newestFirst, requests, walk, dateFillTried };
@@ -141,8 +148,7 @@ test("the reported library, through the real pipeline", async (t) => {
   // start) and the /music walk (minutes after pairing), in either order.
   for (const r of LIBRARY) if (r[4]) w.F.addHarvestedYear(w.qobuzAlbumYears, r[0], null, [r[1]], r[4]);
   w.F.harvestAlbumYears("stream favourites: startup");
-  for (const r of LIBRARY) w.F.addHarvestedYear(w.fileAlbumYears, r[0], null, [r[1]], w.F.fileTagDate(r[3]));
-  w.F.harvestAlbumYears("file tags");
+  w.walk(LIBRARY);
 
   await t.test("stage 1 is the report: the only albums with a day lead", () => {
     const top = w.newestFirst().slice(0, 3);
