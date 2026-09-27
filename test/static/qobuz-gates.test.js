@@ -74,7 +74,9 @@ test("the three sites the drift switched off call qobuzReady()", () => {
 
   // 2. The badge authority. A service that is connected but not counted as
   //    claiming makes its albums look local.
-  assert.match(src, /if \(qobuzReady\(\) && qobuzAlbumKeys\.size\) out\.push\("qobuz"\)/,
+  //    (v1.8.61 added a third condition — Roon itself must be signed in to
+  //    Qobuz — which narrows the claim and leaves this gate as it was.)
+  assert.match(src, /if \(qobuzReady\(\) && qobuzAlbumKeys\.size && roonHasService\("qobuz"\)\) out\.push\("qobuz"\)/,
     "claimingServices() no longer gates Qobuz on qobuzReady()");
 
   // 3. The artist bio.

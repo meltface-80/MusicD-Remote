@@ -3447,8 +3447,14 @@
             // identifies — so when nothing else can claim an album, counting by
             // elimination is both exact and honest, and the user should know
             // that's the reasoning rather than assume every file was matched.
-            note(s.section, "No streaming service is connected, so every album in your " +
-                            "Roon library came from your own files.");
+            // Which fact the elimination rests on (v1.8.61): Roon's own list of
+            // services when it has been read — "none" there is true even while
+            // this extension is signed in to Qobuz for its own features, and
+            // saying "no service is connected" then contradicts Settings.
+            note(s.section, (f.sources_derived_why === "roon"
+                              ? "Roon isn't signed in to any streaming service"
+                              : "No streaming service is connected") +
+                            ", so every album in your Roon library came from your own files.");
           }
         }
 

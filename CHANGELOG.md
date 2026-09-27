@@ -2,6 +2,158 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.61] — 2026-09-26
+
+### Fixed — the Release date sort disagreed with Roon's
+
+Reported with two screenshots of the same library sorted newest-first: Roon's
+top was ACTORS, Clinic, Emile Parisien, Europe, Godflesh, Hermanos Gutierrez;
+this extension's was Beck, Rhiannon Giddens, The Proclaimers — every one of
+them wearing the Q badge.
+
+**Where the dates come from.** Roon publishes no release dates to extensions,
+so every date here comes from somewhere else: the `DATE`/`ORIGINALDATE` tags of
+the files in `/music` (read by the walk that runs after pairing at every
+start), the Qobuz and TIDAL favourites, and the label scan's catalogue lookups.
+A DAY comes only from a source that states one — the Qobuz favourites always
+do, file tags often stop at the year — and a year alone sorts at the START of
+its year, below every album of it that has a day. So wherever the day was known
+for some albums and not others, the sort ordered by which source knew the day
+rather than by the day, and the favourites, which always know it, led. Class of
+error: a sort over a field with uneven coverage orders by the coverage.
+
+**Days are looked up.** Albums known only to the year are looked up on
+MusicBrainz, which states the first release day of almost every album — newest
+year first, one request at a time through the limiter every MusicBrainz call
+here shares. Only the DAY is taken, so a lookup can never move a year, and only
+from a record that matches: the same year, the same credited artist, the album
+over its single, the studio album over a live one of the same name, the exact
+title first, and two candidate days is no day. Every answer is remembered
+(`date_fill`), so a library is asked about once and then only its new albums.
+The lookups start with the first Release date view a process serves — nothing
+is asked of MusicBrainz for a library nobody sorts by date — and the order
+improves as the answers arrive: reopen the Library to see it.
+
+Checked live against MusicBrainz for the albums in the report: Émile Parisien's
+*Floating* and Europe's *Come This Madness* come back 2026-09-25 (the album, not
+the single three days earlier), Beck's *Ride Lonesome* 2026-09-18 (not the
+April single). Two limits no lookup removes. MusicBrainz is edited by people,
+and a record can reach it days after release — Clinic's *Wild In The Streets*
+had no entry the day after it came out — so a miss for a record from this year
+or last is asked again after three days rather than a month. And MusicBrainz
+and Roon can disagree: it dates ACTORS' album 2026-09-04, which Roon sorts with
+the 25th.
+
+**A file's own day was thrown away.** An `ORIGINALDATE` that stops at the year
+beat a `DATE` inside that same year, so `ORIGINALDATE=2026`, `DATE=2026-09-25`
+read as "2026". Picard writes exactly that when MusicBrainz knows the release
+group only to the year. A same-year `DATE` refines it now; a `DATE` in another
+year is still the reissue and still loses.
+
+**A day's albums in Roon's order.** Roon lists albums out the same day by
+artist, A→Z, in both directions — the six at the top of its list came out the
+same Friday. The sort here broke those ties by title and reversed them along
+with the dates, running a Friday's releases backwards. Release date now matches
+Roon; Recently added is unchanged.
+
+**v1.8.60's album-page days.** Opening an album stored the day of the earliest
+of five loose MusicBrainz hits for its title — as often the lead single's as
+the album's — and once an album has a day, nothing corrects it and the lookups
+pass it by. The album page keeps the year only now. And on the first start of
+this version every day stored under that source's name is cleared, once, years
+kept: the name is "release", which the Qobuz favourites share, so the two
+cannot be told apart — but the favourites restate theirs at every start, as
+soon as they are read after the library index is built, and the lookups ask
+about the rest.
+
+### Fixed — local files badged Q when Roon is not signed in to Qobuz
+
+Reported: "I don't have Roon logged in to Qobuz but I have within the
+extension. The extension seems to think my local files are from Qobuz."
+Every source claim — the Q and T badges, the Source focus, "an album no
+service claims must be local" — assumed that an account connected here is one
+Roon streams from. It is not a safe assumption: the extension signs in to
+Qobuz for its own features (the catalogue, bios, waveforms), and a Roon that is
+not signed in to Qobuz can only be playing local files. There, a local album
+whose tags did not match Roon's name for it, and which was also a Qobuz
+favourite, was called a Qobuz album. Class of error: the extension's accounts
+taken for Roon's.
+
+Roon says which services it has: its browse root lists each signed-in
+streaming service by name, beside Library and Playlists. It is read on pairing
+and on every Rescan, and remembered across restarts (`data/roon-services.json`).
+A service Roon does not list claims nothing, so on a Roon with no streaming
+service every album is local again — and, exactly as with no service connected
+at all, the badge stops being drawn, because where everything is local it says
+nothing. Keep Qobuz connected here: its catalogue, bios and release dates all
+still work; it just no longer speaks for Roon's library. The Focus sheet's
+note says which fact the count rests on: "Roon isn't signed in to any
+streaming service" when Roon's list has been read.
+
+The same rule runs the other way. With Roon signed in to a service this
+extension is not (or whose favourites could not be read), v1.8.60 still called
+every album nothing claimed local — the streamed ones included — and hid the
+badges. Now only albums the /music walk found are local: those show the local
+badge, and a streamed album is left unbadged rather than called local.
+
+Fail-safe in the direction that matters: a read that fails, or a list that is
+not a root this code recognises, leaves the old behaviour in place, so no
+failure can take a service's badges away from someone Roon really streams it to.
+
+### Changed — one MusicBrainz request at a time
+
+The limiter read the clock, slept, then wrote it, so callers that arrived
+together slept together and fired in the same millisecond — with the day
+lookups running, every album-page lookup would have landed on top of one of
+theirs. It is a queue now, which is also why the lookups no longer stand down
+while the label scan runs: the two share the rate instead of doubling it (and
+standing down cost an hour, because the next start of the lookups is throttled
+from the moment they were asked). The query asks for the exact title OR its
+words: `release:"In Rainbows (Deluxe Edition)"` matches nothing in MusicBrainz,
+so an edition-suffixed title never reached the matcher's edition-stripped rung.
+
+### Added — `GET /api/debug/dates`
+
+What the Release date sort knows, album by album: coverage (to the day, to the
+month, year only, undated), which services Roon has and which the extension is
+signed in to, and for each album its position, its year and the source that set
+it, its day and the source that set that, whether the walk and the Qobuz
+favourites know it, and its MusicBrainz lookup. `?q=clinic` finds an album by
+name wherever it sits; `?limit=200` shows more of the order.
+
+### Tests
+
+- `test/unit/releasedays-e2e.test.js` — the reported library through the real
+  pipeline: the favourites harvest and the walk's harvest (tags through
+  `fileTagDate`), then the lookups (MusicBrainz stubbed to the true days), then
+  the Library's own sort. Before the lookups it is the report's order; after
+  them, Roon's — the screenshot's four at the head, in its order, both
+  directions. The fixture's one assumption is stated in it: the local albums'
+  tags stop at the year.
+- `test/unit/releasedays.test.js` — the matcher (year, artist, album over
+  single, studio over live, exact title first, ambiguity declined), the lookups
+  (newest first, remembered, a failed request not recorded, five in a row stop
+  it, three days for a new record and a month for an old one, never a year),
+  the query shape, the queue, the date-only re-sort, the album page's year-only
+  rule, the browse-root reader, and the diagnostic.
+- `test/unit/releasedays-store.test.js` — the one-time clean-up against a real
+  SQLite database built from the shipping schema and migrations.
+- `test/unit/years.test.js` — the refined `ORIGINALDATE`, and the year it may
+  never change.
+- `test/unit/libraryview.test.js` — a day's albums by artist, both ways, and
+  the tie-break never outranking the date.
+- `test/unit/sourcederive.test.js` — a service Roon is not signed in to claims
+  nothing; nothing read keeps the old behaviour; everything is local only when
+  Roon streams nothing.
+- `test/dom/focus-source-note.test.js` — the Focus note names Roon or the
+  extension, whichever the count rests on.
+- `test/static/release-days-wiring.test.js` — pairing, Rescan and the Library
+  route call all of it, and the clean-up runs in the only order that works.
+
+Mutation-checked: each rule reverted on its own turns its tests red.
+
+1297 unit / 629 DOM / 115 static.
+
 ## [1.8.60] — 2026-09-26
 
 ### Fixed — the Library's date sort orders by the day, not the year

@@ -111,8 +111,11 @@ things here fail invisibly, because a wrongly-ordered list still looks like a li
 undated albums must sort **last in both directions** (v1.6.57 reversed the whole list and
 floated them to the top of "newest first"), and `dir` must mean the same thing for every
 sort (the server used to invert plays/lastplayed, so one arrow control would point two
-ways). Also covers decade filtering and stable seeded shuffling — paging a random wall
-re-requests it, so an unstable order shows duplicates and holes as the user scrolls.
+ways). Release date orders by the DAY, and a day's albums by artist A→Z in both
+directions — Roon's own order, read off its list in the v1.8.61 report; a tie-break
+reversed along with the dates runs a Friday's releases backwards. Also covers decade
+filtering and stable seeded shuffling — paging a random wall re-requests it, so an
+unstable order shows duplicates and holes as the user scrolls.
 
 **`years.test.js`** — `yearOfDate`, `releaseDateOf`, `fileTagDate`, `yearSourceRank`,
 `setAlbumYear`, `dateRefines`, `addHarvestedYear`, `harvestAlbumYears`. Roon
@@ -122,7 +125,10 @@ what has to be right: the year must be written under **Roon's** key (`nTitle||nA
 never the service's, or it is stored and never found again. Pins the tolerant matching
 (`&`/`and`, leading `The`, one artist of a multi-artist credit), the gap-only rule (a
 service's reissue date must never overwrite a year read from the user's own file tags),
-and the ambiguous-identity suppression `withSource` already applies to badges.
+and the ambiguous-identity suppression `withSource` already applies to badges. And the
+tag rule both ways: ORIGINALDATE beats a reissue's DATE, but an ORIGINALDATE that stops
+at the year is refined by a DATE inside that year — returning the bare year threw away a
+day the file states.
 
 Source **precedence** is the other half. Gap-only is not safe when the sources race — the
 disk walk takes minutes while the favourites come back in seconds, so on any rescan the

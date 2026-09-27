@@ -137,6 +137,19 @@ test("fileTagDate prefers the ORIGINAL release date over the reissue", async (t)
     assert.equal(F.fileTagDate({ year: 1994 }), "1994");
   });
 
+  await t.test("an ORIGINALDATE that stops at the year is refined by a DATE inside it (v1.8.61)", () => {
+    // Picard writes ORIGINALDATE "2026" when MusicBrainz knows the release group
+    // only to the year, beside a full DATE for the release itself. Returning the
+    // bare year threw that day away — and a year sorts below every album of it
+    // that has a day, which is how a record out this week sank in Release date.
+    assert.equal(F.fileTagDate({ originaldate: "2026", date: "2026-09-25", year: 2026 }), "2026-09-25");
+    assert.equal(F.fileTagDate({ originaldate: "2026-09", date: "2026-09-25" }), "2026-09-25");
+    // ...and never across years: a DATE in another year is the reissue.
+    assert.equal(F.fileTagDate({ originaldate: "1973", date: "2011-09-26", year: 2011 }), "1973");
+    // A DATE that says no more than ORIGINALDATE changes nothing.
+    assert.equal(F.fileTagDate({ originaldate: "2026-09-25", date: "2026", year: 2026 }), "2026-09-25");
+  });
+
   await t.test("a DATE from a different year does not lend its day to YEAR", () => {
     // YEAR and DATE can disagree when both tags are present. The year comes
     // from YEAR, as it always did; attaching DATE's month and day to it would
@@ -161,6 +174,8 @@ test("fileTagDate prefers the ORIGINAL release date over the reissue", async (t)
       { originaldate: "1973-03-01", date: "2011-09-26", year: 2011 },
       { originaldate: "1973", date: "2011-09-26", year: 2011 },
       { originaldate: "junk", date: "2011-09-26", year: 2011 },
+      { originaldate: "2026", date: "2026-09-25", year: 2026 }, { originaldate: "2026-09", date: "2026-09-25" },
+      { originaldate: "2026", date: "2025-09-25", year: 2025 },
       { year: 1994, date: "1994-06-01" }, { year: 1994, date: "1995-06-01" },
       { date: "1988-01-01" }, { date: "1988" }, { year: "1988" }, { originaldate: "1969-13-40" },
       { date: "2024-00-00" }, { originaldate: "", year: 0, date: "" }, {}, null,

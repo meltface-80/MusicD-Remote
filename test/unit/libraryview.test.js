@@ -80,7 +80,7 @@ function build(opts) {
       albumGenreCache: opts.genres || new Map(),
       albumFileCache:  opts.files  || new Map(),
       albumIndex,
-      libraryMetaVersion: 0,
+      libraryMetaVersion: 0, libraryDateVersion: 0,
       // A fresh cache per build, so memoisation can never leak an ordering
       // from one test case into the next.
       libraryViewCache: new Map(),
@@ -257,14 +257,28 @@ test("libraryView — release date orders by the day", async (t) => {
     assert.equal(out[out.length - 2], "Oak");
   });
 
-  await t.test("two albums on the same day fall back to title, both ways", () => {
-    // Listed Plum-then-Apple in the index, so a sort that dropped the title
-    // tie-break would keep that order (Array#sort is stable) and fail here.
-    const pair = [rec(0, "Plum", "Same"), rec(1, "Apple", "Day")];
-    const G = build({ albums: pair, years: { plum: "2026", apple: "2026" },
-                      dates: { plum: "2026-03-14", apple: "2026-03-14" } });
-    assert.deepEqual(titles(G.libraryView({ sort: "year", dir: "asc" })), ["Apple", "Plum"]);
-    assert.deepEqual(titles(G.libraryView({ sort: "year", dir: "desc" })), ["Plum", "Apple"]);
+  await t.test("albums out the same day: artist A→Z, then title — both ways, as Roon does", () => {
+    // v1.8.61. Roon's newest-first list in the report ran six albums out the
+    // same Friday as ACTORS, Clinic, Emile Parisien, Europe, Godflesh, Hermanos
+    // Gutierrez: artist order, not reversed with the dates. v1.8.60 broke ties
+    // by title and reversed them with everything else. Artist and title
+    // disagree here on purpose, and the index lists them in neither order, so a
+    // sort that dropped either rung, or reversed it, fails.
+    const trio = [rec(0, "Apple", "Zed"), rec(1, "Plum", "Abba"), rec(2, "Banana", "Abba")];
+    const G = build({ albums: trio, years: { apple: "2026", plum: "2026", banana: "2026" },
+                      dates: { apple: "2026-09-25", plum: "2026-09-25", banana: "2026-09-25" } });
+    for (const dir of ["asc", "desc"]) {
+      assert.deepEqual(titles(G.libraryView({ sort: "year", dir })), ["Banana", "Plum", "Apple"],
+        "dir=" + dir);
+    }
+  });
+
+  await t.test("the tie-break never outranks the date", () => {
+    const pair = [rec(0, "Zulu", "Zed"), rec(1, "Alpha", "Abba")];
+    const G = build({ albums: pair, years: { zulu: "2026", alpha: "2026" },
+                      dates: { zulu: "2026-09-25", alpha: "2026-09-18" } });
+    assert.deepEqual(titles(G.libraryView({ sort: "year", dir: "desc" })), ["Zulu", "Alpha"]);
+    assert.deepEqual(titles(G.libraryView({ sort: "year", dir: "asc" })), ["Alpha", "Zulu"]);
   });
 
   await t.test("undated means what the Decade focus means by it", () => {

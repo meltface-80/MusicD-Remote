@@ -365,6 +365,13 @@ const roon = new RoonApi({
     // Discover's daily list, likewise on its own timer and likewise gated on
     // being switched on — see kickDiscover.
     startDiscoverMaintenance();
+    // Which streaming services Roon itself is signed in to — every source
+    // badge follows it (roonServices). A few seconds in, so it does not queue
+    // behind the pairing-time browse traffic.
+    const svcTimer = setTimeout(() => {
+      probeRoonServices("paired").catch(e => console.error("[roon] services read failed:", e.message));
+    }, 5000);
+    if (svcTimer.unref) svcTimer.unref();
   },
   core_unpaired: function () {
     core = null; zones = {}; outputs = {}; outputsFeedLive = false;
@@ -1774,6 +1781,8 @@ const qobuzCache    = new Map();
 const pitchforkCache = new Map();
 const wikiCache     = new Map();
 let mbLastReq    = 0;
+// Callers of mbWait, in the order they asked (see mbWait).
+let mbQueue      = Promise.resolve();
 let qobuzLastReq = 0;
 
 // ---------------------------------------------------------------------------
@@ -2097,6 +2106,11 @@ const albumDateCache = new Map();
 // then comes from another — which a better source for the day must still be
 // able to correct, and a worse one never overwrite.
 const albumDateSource = new Map();
+// album key → { ts, day } of the last MusicBrainz release-day lookup for it,
+// mirroring the date_fill table: a library is walked once, then only its new
+// albums (see runReleaseDayFill). `day` is null for a lookup that found none.
+const dateFillTried = new Map();
+let stmtInsertDateFill = null;
 // album key → { ts, src } — powers the "Recently added" sort. Roon's extension
 // API exposes no date-added of any kind, so every value here is this
 // extension's own evidence, ranked: a local file's mtime is a real date; an
@@ -2246,6 +2260,12 @@ function setAlbumSeen(key, ts, src) {
 // ABOVE setAlbumYear, because that function invalidates the cache and would hit
 // the temporal dead zone if these lived with the rest of the view code.
 let libraryMetaVersion = 0;
+// The DATE orderings' own version (v1.8.61): part of a view's signature only
+// when it is sorted by Release date. The release-day lookups change nothing
+// but days — no year, so no decade, and nothing any other sort reads — so they
+// re-sort only those views, and not the genre lists bumpLibraryMeta also
+// clears. See scheduleLibraryDateBump for why they are batched as well.
+let libraryDateVersion = 0;
 const libraryViewCache = new Map();      // sig -> ordered album array
 const LIBRARY_VIEW_CACHE_MAX = 8;
 // The two genre lists that are cached against the Core. Declared HERE, above
@@ -2276,6 +2296,18 @@ function bumpLibraryMeta() {
 // enough to be used, and every Library page would re-sort the whole library.
 // This caps the staleness at LIBRARY_META_BUMP_MS instead.
 const LIBRARY_META_BUMP_MS = 20000;
+// The release-day lookups' own, slower bump. A Release date wall is paged by
+// offset, and re-sorting it every few seconds for the hour a first run can take
+// would repeat and skip albums at the page boundaries under someone scrolling
+// it. Every two minutes at most, and once more when a run ends.
+const LIBRARY_DATE_BUMP_MS = 2 * 60 * 1000;
+let _dateBumpTimer = null;
+function scheduleLibraryDateBump() {
+  if (_dateBumpTimer) return;
+  _dateBumpTimer = setTimeout(() => { _dateBumpTimer = null; libraryDateVersion++; },
+                              LIBRARY_DATE_BUMP_MS);
+  if (_dateBumpTimer.unref) _dateBumpTimer.unref();
+}
 let _metaBumpTimer = null;
 function scheduleLibraryMetaBump() {
   if (_metaBumpTimer) return;
@@ -2300,6 +2332,25 @@ function isLikelyNotALabel(name) {
   return !name || NON_LABEL_RE.test(name);
 }
 
+// Whether this database has been opened by v1.8.61 or later, which creates
+// date_fill. Asked before the schema runs, since that creates it.
+function hasDateFillTable(db) {
+  return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'date_fill'").get();
+}
+
+// v1.8.60's album page stored a DAY from a loose MusicBrainz match — the
+// earliest of five hits for the title, which is as often the lead single as
+// the album — and once an album has a day, nothing of the same rank corrects
+// it and the release-day lookups pass it by. Those days carry the same name,
+// "release", as the Qobuz favourites', so the two cannot be told apart: every
+// "release" day is dropped, once, and every year stays. The favourites restate
+// theirs at every start, and the lookups ask about the rest, strictly. Rows
+// from before v1.8.60 have no day to drop. Returns how many rows it changed.
+function dropReleaseDays(db) {
+  return db.prepare(
+    "UPDATE album_years SET date = NULL, date_src = NULL WHERE date_src = 'release'").run().changes;
+}
+
 function openLabelsDb() {
   if (!Database) {
     console.warn("[labels] better-sqlite3 not available — cache in memory only (data won't persist)");
@@ -2309,6 +2360,9 @@ function openLabelsDb() {
     fs.mkdirSync(LABELS_DB_DIR, { recursive: true });
     labelsDb = new Database(LABELS_DB_FILE);
     labelsDb.pragma("journal_mode = WAL");
+    // Read BEFORE the schema below creates it: date_fill arrives with v1.8.61,
+    // so a database without one has never been opened by it (dropReleaseDays).
+    const firstStartWithDateFill = !hasDateFillTable(labelsDb);
     labelsDb.exec(`
       CREATE TABLE IF NOT EXISTS label_names (
         key   TEXT PRIMARY KEY,
@@ -2350,6 +2404,14 @@ function openLabelsDb() {
         key TEXT PRIMARY KEY,
         ts  INTEGER NOT NULL,
         src TEXT
+      );
+      -- The MusicBrainz release-DAY lookups already made (v1.8.61), so each
+      -- album is asked about once — a miss again after three days for a record
+      -- from this year or last, after a month otherwise (dateFillRetryMs).
+      CREATE TABLE IF NOT EXISTS date_fill (
+        key TEXT PRIMARY KEY,
+        ts  INTEGER NOT NULL,
+        day TEXT
       );
       -- Genres per album, harvested from Roon's own genres hierarchy because
       -- the browse response for an album carries none. Stored newline-joined:
@@ -2510,6 +2572,19 @@ function openLabelsDb() {
     // source for the DAY can correct it after a restart as well as before.
     try { labelsDb.exec("ALTER TABLE album_years ADD COLUMN date_src TEXT"); }
     catch (e) { /* already present — SQLite has no ADD COLUMN IF NOT EXISTS */ }
+    // Once, on the first start of v1.8.61: see dropReleaseDays. Before the
+    // read-back below, so the caches never hold what it clears.
+    if (firstStartWithDateFill) {
+      try {
+        const n = dropReleaseDays(labelsDb);
+        if (n) console.log("[years] cleared " + n + " release days stored by v1.8.60 — " +
+                           "the Qobuz favourites and the MusicBrainz lookups restate them");
+      } catch (e) {
+        // Logged, not fatal: the days stay as they were, which is v1.8.60's
+        // behaviour, and the rest of the database still opens.
+        console.error("[years] clearing v1.8.60's release days failed: " + e.message);
+      }
+    }
     // v1.7.37: formats can now come from a streaming service as well as from a
     // local file, and a local file must win. Rows written by v1.7.35-36 have no
     // src and read back as rank 0, so the first identified source corrects them.
@@ -2524,6 +2599,7 @@ function openLabelsDb() {
     stmtCompletePlay = labelsDb.prepare("UPDATE plays SET completed=1 WHERE id=?");
     stmtInsertYear  = labelsDb.prepare("INSERT OR REPLACE INTO album_years (key, year, src, date, date_src) VALUES (?, ?, ?, ?, ?)");
     stmtInsertSeen  = labelsDb.prepare("INSERT OR REPLACE INTO album_seen (key, ts, src) VALUES (?, ?, ?)");
+    stmtInsertDateFill = labelsDb.prepare("INSERT OR REPLACE INTO date_fill (key, ts, day) VALUES (?, ?, ?)");
     stmtInsertGenres = labelsDb.prepare("INSERT OR REPLACE INTO album_genres (key, genres) VALUES (?, ?)");
     stmtInsertGenreScan = labelsDb.prepare(
       "INSERT OR REPLACE INTO genre_scan (name, subtitle, image_key, total, ts, v) VALUES (?,?,?,?,?,?)");
@@ -2570,6 +2646,9 @@ function openLabelsDb() {
           if (r.date_src) albumDateSource.set(r.key, r.date_src);
         }
       }
+    }
+    for (const r of labelsDb.prepare("SELECT key, ts, day FROM date_fill").all()) {
+      if (r.ts) dateFillTried.set(r.key, { ts: r.ts, day: r.day || null });
     }
     for (const r of labelsDb.prepare("SELECT key, ts, src FROM album_seen").all()) {
       if (r.ts) albumSeenCache.set(r.key, { ts: r.ts, src: r.src || "" });
@@ -3882,14 +3961,116 @@ function clearStreamAlbumKeys(which) {
               (dropped ? ", " + dropped + " formats" : ""));
 }
 
+// Which streaming services ROON ITSELF is signed in to (v1.8.61).
+//
+// Every claim this extension makes about where a library album comes from —
+// the Q and T badges, the Source focus, "an album no service claims must be
+// local" — rested on one premise: that if the extension is connected to a
+// service, Roon is too. It is not safe. The extension signs in to Qobuz for its
+// own reasons (the catalogue browser, bios, waveforms), and a Roon that is NOT
+// signed in to Qobuz can only be playing local files — yet a local album that
+// was also a Qobuz favourite got the Q badge. Reported exactly that way.
+//
+// Roon says which services it has: its browse root lists each signed-in
+// streaming service by name, beside Library and Playlists. Read on pairing and
+// on every Rescan, and persisted, so a restart does not show the old badges
+// until the first read. `null` means "not read yet" and counts as YES — the
+// behaviour before this existed — because a failed read must never take a
+// service's badges away from someone Roon really does stream it to.
+const ROON_SERVICES_FILE = path.join(__dirname, "data", "roon-services.json");
+let roonServices = null;   // { qobuz: bool, tidal: bool, other: bool, root: [titles], at: ms }
+function loadRoonServices() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(ROON_SERVICES_FILE, "utf8"));
+    if (raw && typeof raw.qobuz === "boolean" && typeof raw.tidal === "boolean") roonServices = raw;
+  } catch (e) { /* absent until the first read — null keeps the old behaviour */ }
+}
+loadRoonServices();
+
+// Which services a browse root lists, or null when the list is not a root this
+// code recognises. Absence is only evidence from the real root: a read that
+// landed anywhere else must not conclude "Roon has no Qobuz" and strip every
+// Qobuz badge. Every root seen so far starts with Library, which the Tags and
+// Labels walkers below already depend on.
+function roonServicesFromRoot(titles) {
+  const t = (titles || []).map(x => String(x || "").trim());
+  if (!t.some(x => /^library$/i.test(x))) return null;
+  return {
+    qobuz: t.some(x => /^qobuz\b/i.test(x)),
+    tidal: t.some(x => /^tidal\b/i.test(x)),
+    // Services this extension has no view into at all. Their albums can be
+    // neither claimed nor ruled out, so their presence alone stops "every
+    // album is local" (unclaimedIsLocal).
+    other: t.some(x => /^(kkbox|nugs)\b/i.test(x)),
+  };
+}
+
+// Does Roon have this service? Unknown counts as yes (see above).
+function roonHasService(name) {
+  return !roonServices || roonServices[name] !== false;
+}
+
+// The key sets that can say where a ROON album came from: the local files, and
+// each service's favourites only when Roon itself is signed in to it. One
+// accessor, so the badge, the title-only rung and the identity dumps cannot
+// disagree about it. (The streaming WAVEFORM deliberately does not use this:
+// fetching a track's audio from the extension's own account is not a claim
+// about where Roon's copy came from, and for a local file the matcher missed it
+// still draws the right shape.)
+const NO_CLAIMS = new Set();
+function roonClaimSets() {
+  return {
+    local: localAlbumKeys,
+    qobuz: roonHasService("qobuz") ? qobuzAlbumKeys : NO_CLAIMS,
+    tidal: roonHasService("tidal") ? tidalAlbumKeys : NO_CLAIMS,
+  };
+}
+
+// Read Roon's browse root and record which services it lists.
+async function probeRoonServices(reason) {
+  if (!core) return null;
+  let titles;
+  try {
+    titles = await withBrowseSession(async (sessionKey) => {
+      await browse({ hierarchy: "browse", pop_all: true, multi_session_key: sessionKey });
+      const root = await loadLevel(sessionKey, "browse", 100);
+      return root.items.map(i => String(i.title || "").trim());
+    });
+  } catch (e) {
+    console.error("[roon] could not read the browse root (" + reason + "): " + e.message);
+    return null;
+  }
+  const found = roonServicesFromRoot(titles);
+  if (!found) {
+    console.log("[roon] browse root not recognised (" + reason + ") — streaming services left as " +
+                (roonServices ? "last read" : "assumed") + "; root: " + JSON.stringify(titles.slice(0, 12)));
+    return null;
+  }
+  const changed = !roonServices || roonServices.qobuz !== found.qobuz ||
+                  roonServices.tidal !== found.tidal || !!roonServices.other !== found.other;
+  roonServices = { qobuz: found.qobuz, tidal: found.tidal, other: found.other,
+                   root: titles.slice(0, 20), at: Date.now() };
+  writeJsonAtomic(ROON_SERVICES_FILE, roonServices, "[roon]");
+  if (changed) {
+    console.log("[roon] streaming services signed in to Roon: " +
+                ([found.qobuz && "Qobuz", found.tidal && "TIDAL", found.other && "another service"]
+                  .filter(Boolean).join(", ") || "none") +
+                " (" + reason + ")");
+    bumpLibraryMeta();   // the badges and the Source focus both follow this
+  }
+  return roonServices;
+}
+
 // Which streaming services could be claiming albums in this library right now.
 // A service counts only when it is connected AND its favourites actually
 // loaded — a connected account whose fetch failed knows nothing, and treating
-// its silence as "claims nothing" would call its albums local.
+// its silence as "claims nothing" would call its albums local. And only when
+// ROON has it (v1.8.61): favourites of an account Roon is not signed in to say
+// nothing about where Roon's albums come from.
 function claimingServices() {
   const out = [];
-  if (qobuzReady() && qobuzAlbumKeys.size) out.push("qobuz");
-  if (tidalReady() && tidalAlbumKeys.size) out.push("tidal");
+  if (qobuzReady() && qobuzAlbumKeys.size && roonHasService("qobuz")) out.push("qobuz");
+  if (tidalReady() && tidalAlbumKeys.size && roonHasService("tidal")) out.push("tidal");
   return out;
 }
 
@@ -3910,8 +4091,16 @@ function claimingServices() {
 // With a service connected the elimination does not hold — an unclaimed album
 // could be local, or from a service that is NOT connected here — so positive
 // evidence is all we have and the old behaviour stands.
+//
+// v1.8.61: once Roon's own services are known, the elimination is asked of
+// ROON — it holds exactly when Roon streams from no service at all. Asking the
+// extension instead went wrong both ways: signed in here to a service Roon
+// lacks, it refused to say "local" on a library that is nothing but files; and
+// with that service's claims set aside, it said "local" of the albums of a
+// service Roon DOES stream but this extension cannot see into.
 function unclaimedIsLocal() {
-  return claimingServices().length === 0;
+  if (roonServices) return !roonServices.qobuz && !roonServices.tidal && !roonServices.other;
+  return claimingServices().length === 0;   // not read yet: as before
 }
 
 // Where an album came from, as far as the evidence goes: "local" | "qobuz" |
@@ -3928,13 +4117,16 @@ function unclaimedIsLocal() {
 // coin-flip answer.
 function albumSource(title, subtitle, rec) {
   const keys = (rec && rec.srcKeys) ? rec.srcKeys : albumKeys(title, subtitle);
+  // A service Roon is not signed in to cannot be where a Roon album came from,
+  // whatever the extension's own account has favourited (roonClaimSets).
+  const sets = roonClaimSets();
   for (const key of keys) {
     // Two library albums share this identity — we can't tell which is which,
     // so neither gets a badge.
     if (ambiguousAlbumKeys.has(key)) continue;
-    if (localAlbumKeys.has(key)) return "local";
-    const inQobuz = qobuzAlbumKeys.has(key);
-    const inTidal = tidalAlbumKeys.has(key);
+    if (sets.local.has(key)) return "local";
+    const inQobuz = sets.qobuz.has(key);
+    const inTidal = sets.tidal.has(key);
     if (inQobuz && inTidal) break;              // favourited in both — unknowable
     if (inQobuz) return "qobuz";
     if (inTidal) return "tidal";
@@ -3973,9 +4165,7 @@ function titleOnlySource(title, subtitle) {
   // for deciding whether to go and FETCH a particular album, where picking the
   // wrong one of two costs a waveform of the wrong recording. A badge only has
   // to name the source.
-  return AK.locateByTitle(titles, {
-    local: localAlbumKeys, qobuz: qobuzAlbumKeys, tidal: tidalAlbumKeys,
-  }).source;
+  return AK.locateByTitle(titles, roonClaimSets()).source;
 }
 
 // Does a source badge tell the user anything? Only when the library could hold
@@ -4106,12 +4296,18 @@ function releaseDateOf(v) {
 // lend one release's day to another's year.
 function fileTagDate(common) {
   if (!common) return null;
-  const original = releaseDateOf(common.originaldate);
-  if (original) return original;
   const year = yearOfDate(common.year);
   const date = releaseDateOf(common.date);
-  if (year && date && date.slice(0, 4) === year) return date;
-  return year || date;
+  const tagged = (year && date && date.slice(0, 4) === year) ? date : (year || date);
+  const original = releaseDateOf(common.originaldate);
+  if (!original) return tagged;
+  // ORIGINALDATE wins, but one that stops at the year (or the month) is REFINED
+  // by a DATE inside it (v1.8.61): the same year is the same release, not the
+  // reissue ORIGINALDATE is there to outrank. Returning the bare "2026" threw
+  // away a day the file states — Picard writes exactly that when MusicBrainz
+  // knows the release group only to the year — and a year sorts below every
+  // album of that year with a day.
+  return tagged && dateRefines(tagged, original) ? tagged : original;
 }
 // Record a harvested year under every identity the source can offer, mirroring
 // addFavouriteKeys so the join keys line up with the badge keys exactly.
@@ -5300,10 +5496,22 @@ async function kickDiscogsLogoFetches() {
   appendLabelsLog(msg);
 }
 
-async function mbWait() {
-  const elapsed = Date.now() - mbLastReq;
-  if (elapsed < 1100) await new Promise(r => setTimeout(r, 1100 - elapsed));
-  mbLastReq = Date.now();
+// One MusicBrainz request at a time, 1.1 s apart, in the order they were asked
+// for. It used to read the clock, sleep, then write it — so callers that
+// arrived together slept together and fired in the same millisecond. That was
+// rare while MusicBrainz was only asked when an album was opened; with the
+// release-day lookups running in the background for an hour at a time, every
+// album-page lookup would have landed on top of one of theirs, and a refusal
+// caches the album page's year as missing until a restart. A queue cannot
+// collide.
+function mbWait() {
+  const turn = mbQueue.then(async () => {
+    const elapsed = Date.now() - mbLastReq;
+    if (elapsed < 1100) await new Promise(r => setTimeout(r, 1100 - elapsed));
+    mbLastReq = Date.now();
+  });
+  mbQueue = turn.catch(() => { /* a turn cannot reject; kept so the queue never breaks */ });
+  return turn;
 }
 async function bandcampWait() {
   const elapsed = Date.now() - bandcampLastReq;
@@ -5456,14 +5664,18 @@ function stripHtml(html) {
     .trim();
 }
 
-// MusicBrainz: release date (the year of it is what the album page shows)
+// MusicBrainz: release year
 function mbQuote(s) {
   return String(s).replace(/[+\-&|!(){}\[\]^"~*?:\\\/]/g, "\\$&");
 }
-// The album's first release date as MusicBrainz states it — "YYYY-MM-DD",
-// "YYYY-MM" or "YYYY" (releaseDateOf) — or null. It returned only the year
-// until v1.8.60; the day is kept now for the Release date sort.
-async function fetchAlbumReleaseDate(title, artist) {
+// The album's release YEAR, for the album page: the earliest of the five
+// closest matches. Only the year, and only ever the year (v1.8.61): v1.8.60 kept
+// the whole date, but "the earliest of five fuzzy matches" is often the album's
+// own lead single, out weeks before it — and a day stored from that would also
+// have stopped the release-day lookups, which never ask about an album already
+// dated to the day. Days come from those lookups' strict matcher alone
+// (mbReleaseDayFrom).
+async function fetchAlbumYear(title, artist) {
   if (!title) return null;
   const key = normalize(title) + "||" + normalize(artist || "");
   if (mbCache.has(key)) return mbCache.get(key);
@@ -5476,14 +5688,215 @@ async function fetchAlbumReleaseDate(title, artist) {
     const rgs = json["release-groups"] || [];
     rgs.sort((a, b) =>
       (a["first-release-date"] || "9999").localeCompare(b["first-release-date"] || "9999"));
-    const date = releaseDateOf(rgs[0] && rgs[0]["first-release-date"]);
-    mbCache.set(key, date);
-    return date;
+    const year = yearOfDate(rgs[0] && rgs[0]["first-release-date"]);
+    mbCache.set(key, year);
+    return year;
   } catch (e) {
     if (DEBUG) console.error("[mb]", e.message);
     mbCache.set(key, null);
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Release DAYS for albums whose sources only ever stated a year (v1.8.61).
+//
+// The Release date sort orders by day, and only some sources state one: the
+// Qobuz favourites always do, a file's tags often stop at the year. A year alone
+// sorts at the START of that year — below every album of it with a day,
+// newest-first — so where the day is known for some albums and not others, the
+// sort orders by WHICH SOURCE KNEW THE DAY rather than by the day. That is how
+// it disagreed with Roon's in the v1.8.61 report, where every album at the top
+// was a Qobuz favourite: Roon has its own full date for every album it has
+// identified, and publishes none of them to extensions.
+//
+// MusicBrainz states the first release date of almost every album — the same
+// kind of date Roon sorts by. So albums with a year and no day are looked up
+// there, newest year first, through the one limiter every MusicBrainz call here
+// shares. Only ever for the DAY: offered dayOnly, it can never move a year, and
+// that is the guard against a wrong match too — another album by that name had
+// to come out the same year, with the same credited artist, to be taken. Every
+// attempt is remembered (date_fill), so a library is walked once and then only
+// its new albums; a miss is retried after a month, when MusicBrainz may know
+// more — or after three days for a record from this year or last, because
+// MusicBrainz is edited by people and a new release often reaches it a few
+// days after it is out (Clinic's, the day after release, had no entry yet),
+// and those are exactly the albums at the top of a newest-first list.
+//
+// Started by the first Release date view a process serves, not on a timer:
+// nothing is asked of MusicBrainz for a library nobody sorts by date.
+// ---------------------------------------------------------------------------
+const DATE_FILL_RETRY_MS = 30 * 24 * 60 * 60 * 1000;
+const DATE_FILL_RECENT_RETRY_MS = 3 * 24 * 60 * 60 * 1000;
+const DATE_FILL_KICK_MS = 60 * 60 * 1000;
+// How long a lookup stands before an album of `year` is asked about again.
+function dateFillRetryMs(year, now) {
+  return Number(year) >= new Date(now).getUTCFullYear() - 1
+    ? DATE_FILL_RECENT_RETRY_MS : DATE_FILL_RETRY_MS;
+}
+let dateFillRunning = false;
+let dateFillLastKick = 0;
+
+// The artists an album is credited to, as its identity keys name them —
+// albumKeys' own split (the whole credit, and each artist on " / ", "/",
+// "feat.", "ft.", ", ", " & ", " + "), so a day is matched on exactly the
+// names the album is known by everywhere else, not on a third way of reading
+// a credit.
+function creditNameSet(title, subtitle) {
+  return new Set(albumKeys(title, subtitle).map(k => k.slice(k.indexOf("||") + 2)).filter(Boolean));
+}
+
+// Does a MusicBrainz artist-credit name one of these artists?
+function mbCreditMatches(credit, names) {
+  const parts = Array.isArray(credit) ? credit : [];
+  let phrase = "";
+  for (const c of parts) {
+    if (!c) continue;
+    const credited = c.name || (c.artist && c.artist.name) || "";
+    if (names.has(canonArtist(credited))) return true;
+    if (c.artist && names.has(canonArtist(c.artist.name))) return true;
+    phrase += credited + (c.joinphrase || "");
+  }
+  return !!phrase && names.has(canonArtist(phrase));
+}
+
+// From a MusicBrainz release-group search, the day this album was first
+// released — or null unless the answer is unambiguous. Pure, so every rule
+// here is a test.
+//
+//   * the title must match: exactly, or failing any exact match, by one of
+//     the edition-stripped forms of ROON's title ("X (Deluxe)" is X) — never
+//     by stripping MusicBrainz's, which would let "X (Remixes)" stand for X;
+//   * the credited artist must be one Roon credits;
+//   * the date must be a whole day, in the year already on file;
+//   * several candidate days: the one on the plainest album — a studio album
+//     over a live one, an album over its single of the same name — and if
+//     that still leaves two days, none.
+function mbReleaseDayFrom(groups, title, artist, year) {
+  const want = canonText(title);
+  const wantForms = new Set(albumTitleVariants(title));
+  const names = creditNameSet(title, artist);
+  if (!want || !names.size || !/^\d{4}$/.test(String(year || ""))) return null;
+  const found = [];
+  for (const g of Array.isArray(groups) ? groups : []) {
+    if (!g) continue;
+    const theirs = canonText(g.title || "");
+    const exact = theirs === want;
+    if (!exact && !wantForms.has(theirs)) continue;
+    if (!mbCreditMatches(g["artist-credit"], names)) continue;
+    const day = releaseDateOf(g["first-release-date"]);
+    if (!day || day.length !== 10 || day.slice(0, 4) !== String(year)) continue;
+    const type  = String(g["primary-type"] || "").toLowerCase();
+    const plain = !(Array.isArray(g["secondary-types"]) && g["secondary-types"].length);
+    const rank  = (type === "album" ? 4 : type === "ep" ? 2 : type === "single" ? 1 : 0) + (plain ? 1 : 0);
+    found.push({ day, exact, rank });
+  }
+  const pick = (list) => {
+    if (!list.length) return null;
+    const best = Math.max(...list.map(c => c.rank));
+    const days = new Set(list.filter(c => c.rank === best).map(c => c.day));
+    return days.size === 1 ? [...days][0] : null;
+  };
+  const exact = found.filter(c => c.exact);
+  return exact.length ? pick(exact) : pick(found);
+}
+
+async function fetchMbReleaseDay(title, artist, year) {
+  await mbWait();
+  // The exact title as a phrase, OR its words: a phrase alone finds nothing
+  // for Roon's edition-suffixed titles — "In Rainbows (Deluxe Edition)" is
+  // not a phrase anywhere in MusicBrainz, "In Rainbows" is — so the matcher's
+  // edition-stripped rung would never see a candidate, and the album would be
+  // recorded as having no day for a month. The phrase still ranks first.
+  const t = mbQuote(title);
+  const q = `(release:"${t}" OR release:(${t})) AND artist:"${mbQuote(artist)}"`;
+  const url = `https://musicbrainz.org/ws/2/release-group/?query=${encodeURIComponent(q)}&fmt=json&limit=15`;
+  const json = await httpJson(url, { "User-Agent": MB_USER_AGENT });
+  return mbReleaseDayFrom(json && json["release-groups"], title, artist, year);
+}
+
+// Albums worth asking about: a year on file, no whole day, a credited artist
+// to match on, and no lookup within the retry window. Newest year first — the
+// top of a newest-first wall is what is looked at, so it is fixed first.
+function releaseDayFillCandidates(now) {
+  const out = [];
+  for (const al of albumIndex.albums) {
+    if (!al || !String(al.subtitle || "").trim()) continue;
+    const key = albumYearKey(al);
+    const year = albumYearCache.get(key);
+    if (!year) continue;
+    const day = albumDateCache.get(key);
+    if (day && day.length === 10) continue;
+    const tried = dateFillTried.get(key);
+    if (tried && now - tried.ts < dateFillRetryMs(year, now)) continue;
+    out.push({ al, key, year });
+  }
+  out.sort((a, b) => (a.year < b.year ? 1 : a.year > b.year ? -1 : 0));
+  return out;
+}
+
+function recordDateFill(key, day, now) {
+  dateFillTried.set(key, { ts: now, day: day || null });
+  if (labelsDb && stmtInsertDateFill) {
+    try { stmtInsertDateFill.run(key, now, day || null); }
+    catch (e) { if (DEBUG) console.error("[years] date_fill write failed:", e.message); }
+  }
+}
+
+async function runReleaseDayFill(reason) {
+  if (dateFillRunning) return 0;
+  dateFillRunning = true;
+  let asked = 0, filled = 0, failures = 0, failed = 0;
+  try {
+    const todo = releaseDayFillCandidates(Date.now());
+    if (!todo.length) return 0;
+    console.log("[years] looking up release days on MusicBrainz for " + todo.length +
+                " albums dated only to the year (" + reason + ")");
+    for (const c of todo) {
+      // No standing down for the label scan's own MusicBrainz pass: every
+      // request here and there waits its turn in mbWait's one queue, so the two
+      // loops share the rate rather than doubling it.
+      //
+      // Rechecked: a walk or a harvest may have supplied the day meanwhile.
+      const cur = albumDateCache.get(c.key);
+      if (albumYearCache.get(c.key) !== c.year || (cur && cur.length === 10)) continue;
+      let day;
+      try {
+        day = await fetchMbReleaseDay(c.al.title, c.al.subtitle, c.year);
+        failures = 0;
+      } catch (e) {
+        // Not recorded: a failed request is not an answer about the album, and
+        // it is asked about again next run. Counted for the summary line.
+        failed++;
+        if (DEBUG) console.error("[years] MusicBrainz release-day lookup failed for " +
+                                 c.al.title + " / " + c.al.subtitle + ": " + e.message);
+        if (++failures >= 5) {
+          console.error("[years] MusicBrainz is not answering (" + e.message + ") — release-day lookups paused");
+          break;
+        }
+        continue;
+      }
+      asked++;
+      recordDateFill(c.key, day, Date.now());
+      if (day && setAlbumYear(c.key, day, { src: "release", dayOnly: true, deferBump: true })) {
+        filled++;
+        scheduleLibraryDateBump();
+      }
+    }
+  } finally {
+    dateFillRunning = false;
+  }
+  if (filled) libraryDateVersion++;   // the whole run's days, in view now
+  if (asked || failed) console.log("[years] release days: " + filled + " found in " + asked +
+                                  " MusicBrainz lookups" + (failed ? ", " + failed + " requests failed" : ""));
+  return filled;
+}
+
+function kickReleaseDayFill(reason) {
+  if (dateFillRunning || !isIndexBuilt()) return;
+  if (dateFillLastKick && Date.now() - dateFillLastKick < DATE_FILL_KICK_MS) return;
+  dateFillLastKick = Date.now();
+  runReleaseDayFill(reason).catch(e => console.error("[years] release-day lookups failed: " + e.message));
 }
 
 // Qobuz: search the public site, scrape the editorial review off the album page.
@@ -8026,7 +8439,8 @@ function libraryView(q) {
   // the whole reason it replaced the A-Z scroll rail — a letter index is
   // meaningless the moment the wall is ordered by anything but the alphabet.
   const prefix = libraryPrefix(q.prefix);
-  const sig = [albumIndex.builtAt, libraryMetaVersion, sort, desc, seed, played, "p=" + prefix]
+  const sig = [albumIndex.builtAt, libraryMetaVersion, sort === "year" ? "d" + libraryDateVersion : "",
+               sort, desc, seed, played, "p=" + prefix]
     .concat(picked.map(x => x.def.id + "=" + x.sel.slice().sort().join(","))).join("|");
   // A free-text param is unbounded, so it must not be allowed to fill a
   // fixed-size cache with one-hit entries — every keystroke is a new key.
@@ -8085,9 +8499,18 @@ function libraryView(q) {
       const d = dateOf(al);
       if (d === null) unknown.push(al); else known.push({ al, d });
     }
-    known.sort((a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : 0) ||
-                         a.al.sortTitle.localeCompare(b.al.sortTitle));
-    if (desc) known.reverse();
+    // Same-day albums, for Release date: artist A→Z, then title, in BOTH
+    // directions — Roon's own order (v1.8.61). Its newest-first list in the
+    // report showed six albums out the same Friday as ACTORS, Clinic, Emile
+    // Parisien, Europe, Godflesh, Hermanos Gutierrez, while this one reversed a
+    // title tie-break along with the dates and ran them backwards by title.
+    // "Recently added" keeps its tie-break: nothing says how Roon orders those.
+    const dir = desc ? -1 : 1;
+    const tie = sort === "year"
+      ? (a, b) => (a.cFirst || a.nArtist).localeCompare(b.cFirst || b.nArtist) ||
+                  a.sortTitle.localeCompare(b.sortTitle)
+      : (a, b) => dir * a.sortTitle.localeCompare(b.sortTitle);
+    known.sort((a, b) => dir * (a.d < b.d ? -1 : a.d > b.d ? 1 : 0) || tie(a.al, b.al));
     unknown.sort((a, b) => a.sortTitle.localeCompare(b.sortTitle));
     out = known.map(k => k.al).concat(unknown);
   } else {
@@ -8194,6 +8617,9 @@ app.get("/api/library/facets", async (req, res) => {
       // else it could be". The sheet says which, because they mean different
       // things and one of them is exact.
       sources_derived: unclaimedIsLocal(),
+      // Which fact the elimination rests on, so the sheet can say it: Roon's own
+      // list of services, or (before that is read) the extension's.
+      sources_derived_why: roonServices ? "roon" : "extension",
       played: libPlayedIds(),
       hasPlays: !!(labelsDb && getPlayedTitlesSince(0).size)
     });
@@ -8219,6 +8645,9 @@ app.get("/api/library/albums", async (req, res) => {
     await ensureAlbumIndex();
     if (!isIndexBuilt()) return res.status(503).json({ error: "Library index is still building" });
     const view   = libraryView(req.query);
+    // A Release date view is what the day lookups are for; the first one a
+    // process serves starts them (see runReleaseDayFill).
+    if (req.query.sort === "year") kickReleaseDayFill("Release date view");
     const total  = view.length;
     const offset = Math.max(0, Math.min(total, parseInt(req.query.offset || "0", 10) || 0));
     const count  = Math.max(1, Math.min(200, parseInt(req.query.count || "60", 10) || 60));
@@ -8727,6 +9156,9 @@ app.post("/api/library/rescan", async (req, res) => {
 // wording to the labels log, so that one is told apart by its timing only.
 async function rescanChain(rebuildResult, reason, force) {
   reason = reason || "manual rescan";
+  // First and cheapest: a service switched on or off in Roon since pairing
+  // changes every badge, and a Rescan is where someone goes to fix one.
+  await bgRun("roon services", () => probeRoonServices(reason));
   await bgRun("stream favourites", () => refreshStreamAlbumKeys(reason));
   // `force` is NOT a synonym for "run it now" — in both of these it means "a
   // human insisted", and it buys past the `libraryIsImporting()` gate and, in
@@ -8953,6 +9385,72 @@ app.get("/api/labels-scan-log", (req, res) => {
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.send("No scan log yet — run a scan first.\n");
   }
+});
+
+// Debug: what the Release date sort knows, album by album (v1.8.61).
+//
+//   /api/debug/dates              → coverage, services, and the first 40 of the
+//                                   newest-first order
+//   /api/debug/dates?limit=200    → more of that order
+//   /api/debug/dates?q=clinic     → the albums whose title or artist contains
+//                                   "clinic", wherever they sit in the order
+//
+// Each album carries its year and the source that set it, its day and the
+// source that set THAT, the position the sort gives it, its badge, and whether
+// the /music walk and the Qobuz favourites know it — enough to say why any one
+// album sits where it does. Read-only: nothing here asks Roon or anyone else.
+function releaseDateReport(query) {
+  const limit = Math.max(1, Math.min(500, parseInt((query && query.limit) || "40", 10) || 40));
+  const q = normalize(String((query && query.q) || ""));
+  const view = libraryView({ sort: "year", dir: "desc" });
+  const position = new Map(view.map((al, i) => [al, i + 1]));
+  const rows = q
+    ? albumIndex.albums.filter(al => al.nTitle.includes(q) || al.nArtist.includes(q))
+    : view;
+  const coverage = { albums: albumIndex.albums.length, to_the_day: 0, to_the_month: 0,
+                     year_only: 0, undated: 0 };
+  for (const al of albumIndex.albums) {
+    const key = albumYearKey(al);
+    const d = albumDateCache.get(key);
+    if (!albumYearCache.get(key)) coverage.undated++;
+    else if (d && d.length === 10) coverage.to_the_day++;
+    else if (d && d.length === 7) coverage.to_the_month++;
+    else coverage.year_only++;
+  }
+  const iso = (ms) => (ms ? new Date(ms).toISOString() : null);
+  return {
+    roon_services: roonServices,
+    extension_signed_in: { qobuz: qobuzReady(), tidal: tidalReady() },
+    claiming_services: claimingServices(),
+    coverage,
+    file_walk_running: _fileScanRunning,
+    day_lookups: { running: dateFillRunning, last_started: iso(dateFillLastKick),
+                   albums_asked: dateFillTried.size },
+    albums: rows.slice(0, limit).map(al => {
+      const key = albumYearKey(al);
+      const tried = dateFillTried.get(key);
+      return {
+        position: position.get(al) || null,
+        title: al.title, artist: al.subtitle,
+        year: albumYearCache.get(key) || null,
+        year_source: albumYearSource.get(key) || null,
+        date: albumDateCache.get(key) || null,
+        date_source: albumDateSource.get(key) || null,
+        sorts_as: albumDateOf(al),
+        // What the tile shows (nothing, where badges would all say the same),
+        // and the answer behind it.
+        badge: sourceBadgesDistinguish() ? albumSource(al.title, al.subtitle, al) : null,
+        source: albumSource(al.title, al.subtitle, al),
+        local_file: (al.srcKeys || []).some(k => localAlbumKeys.has(k)),
+        qobuz_favourite: (al.srcKeys || []).some(k => qobuzAlbumKeys.has(k)),
+        musicbrainz_lookup: tried ? { at: iso(tried.ts), day: tried.day } : null,
+      };
+    }),
+  };
+}
+app.get("/api/debug/dates", (req, res) => {
+  if (!isIndexBuilt()) return res.status(503).json({ error: "Library index is not built yet" });
+  res.json(releaseDateReport(req.query));
 });
 
 // Debug: dump the browse root + Library contents so we can see whether (and
@@ -13708,9 +14206,9 @@ function identityReport(album, artist) {
     },
     title_only: Object.assign(
       { titles },
-      AK.locateByTitle(titles, {
-        local: localAlbumKeys, qobuz: qobuzAlbumKeys, tidal: tidalAlbumKeys,
-      })
+      // The same sets the badge answers from, or the dump could call one album
+      // "qobuz" and "local" at once.
+      AK.locateByTitle(titles, roonClaimSets())
     ),
   };
 }
@@ -16023,17 +16521,15 @@ app.get("/api/album/extras", async (req, res) => {
   const artist = String(req.query.artist || "");
   if (!title) return res.status(400).json({ error: "title query parameter required" });
   try {
-    let [releaseDate, bios] = await Promise.all([
-      fetchAlbumReleaseDate(title, artist),
+    let [year, bios] = await Promise.all([
+      fetchAlbumYear(title, artist),
       fetchAlbumBios(title, artist)
     ]);
-    // The page shows the year; the store keeps the whole date.
-    const year = releaseDate ? releaseDate.slice(0, 4) : null;
-    // Opportunistically record it so it feeds the Decade filter and the
-    // Release date sort too.
-    if (releaseDate) {
+    // Opportunistically record the year so it feeds the Decade filter too.
+    // The year only — see fetchAlbumYear for why its day is not trusted.
+    if (year) {
       const exKey = normalize(title) + "||" + normalize(artist);
-      setAlbumYear(exKey, releaseDate, { src: "release" });
+      setAlbumYear(exKey, year, { src: "release" });
     }
     // Prefer MusicBrainz's first-release year (the album's original release)
     // over Qobuz's edition date, which can be a later reissue.

@@ -43,8 +43,12 @@ function fixture() {
      // withSource now attaches the quality badge too, so its helpers come with
      // it — extracted rather than stubbed, so a change to what a badge SAYS is
      // visible to the tests that assert badges.
-     "albumFileFacts", "albumQualityLabel", "albumIsHiRes", "rateShort"],
+     "albumFileFacts", "albumQualityLabel", "albumIsHiRes", "rateShort",
+     // v1.8.61: never read (null) — Roon is assumed to have what the
+     // extension has, which is what every assertion in this file is about.
+     "roonHasService", "roonClaimSets"],
     { localAlbumKeys, qobuzAlbumKeys, tidalAlbumKeys, ambiguousAlbumKeys,
+      roonServices: null, NO_CLAIMS: new Set(),
       albumFileCache: new Map(),
       // titleOnlySource matches by title half against the same key sets.
       AK: require("../../lib/albumkeys"),
