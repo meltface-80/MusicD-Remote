@@ -199,6 +199,14 @@
   let trackSelected = [];          // [{index,title}] within the open album
   let albumSelectMode = false;
   let albumSelected = [];          // [{offset,title,subtitle}] albums chosen in select mode
+  // The queue's "played earlier" select mode, and the picks in the order they
+  // were MADE — which is the order they will be queued in, and is not the order
+  // they are shown in. Both are reset whenever the list is rebuilt: the rows are
+  // new nodes then, and a selection pointing at rows that no longer exist is
+  // worse than none. Up here with the other flags because liveBusy() reads the
+  // mode (a live re-read must not rebuild the list mid-selection).
+  let historySelectMode = false;
+  let historySelected = [];
   // The filter that the currently-open album modal belongs to. Usually the
   // active genre/tag filter, but a per-open override is used for label albums
   // so detail + play resolve offsets against the right list.
@@ -220,6 +228,236 @@
            (f.parent ? "&filter_parent=" + encodeURIComponent(f.parent) : "");
   }
   function filterQS() { return filterQSOf(activeFilter); }
+
+  // ===========================================================================
+  // LIVE STATE (v1.8.65): a screen shows what the server holds NOW.
+  //
+  // It used to show what the server held when the screen was entered — and on
+  // Home not even that. The Library row counted itself fresh whenever the SORT
+  // matched, so a row saved under the current sort was reused across every
+  // visit, every cold open and every upgrade: the order and the badges on it
+  // were whatever they had been the day it was saved, and the only way to move
+  // it was to change the sort and change it back.
+  //
+  // /api/live answers a handful of revisions (liveRevisions on the server). The
+  // app asks every LIVE_POLL_MS while it is on screen and straight away when it
+  // comes back, and a screen whose revision moved re-reads itself IN PLACE: same
+  // scroll position, no "Loading…", and no repaint when the answer is what is
+  // already showing. Two rules every screen keeps:
+  //
+  //   * Nothing is swapped under a finger. A tile that changes as it is pressed
+  //     opens an album nobody chose, so a change waits until the screen has been
+  //     left alone for a moment, and for any selection to end (liveWhenIdle).
+  //   * A random pick is not stale. The random rows re-read with the seed they
+  //     were drawn with (seededPick on the server), so a re-read shows the same
+  //     albums with current facts — never a new draw nobody asked for.
+  // ===========================================================================
+  const LIVE_POLL_MS = 3000;
+  const LIVE_IDLE_MS = 1200;
+  let liveRev = null;              // the revisions the server last reported
+  const liveListeners = [];
+  function onLive(fn) { liveListeners.push(fn); }
+  // The revisions `keys` stand at, as one comparable string — "?" until the
+  // server has answered. Something read before that is compared as unknown and
+  // read again once the answer comes, rather than guessed to be current.
+  function liveStamp(keys) {
+    if (!liveRev) return "?";
+    return keys.map(k => k + "=" + (liveRev[k] === undefined ? "" : String(liveRev[k]))).join("&");
+  }
+  let liveInFlight = false;
+  // Set while the server cannot be reached. A screen whose re-read failed in
+  // that time is stale with nothing left to tell it so — the revisions may not
+  // move again for hours — so the first answer after an outage asks every
+  // screen to check itself (liveCatchUp), whether or not anything moved.
+  let liveUnreachable = false;
+  async function pollLive() {
+    if (liveInFlight) return;
+    liveInFlight = true;
+    try {
+      const r = await fetch("/api/live", { cache: "no-store" });
+      if (!r.ok) { liveUnreachable = true; return; }
+      const j = await r.json();
+      const next = j && j.rev;
+      if (!next || typeof next !== "object") return;
+      const recovered = liveUnreachable;
+      liveUnreachable = false;
+      // The first answer of a page reports every key as changed — nothing was
+      // known before it — and says so, for listeners that would otherwise
+      // repeat work the boot path already does.
+      const first = !liveRev;
+      const changed = new Set();
+      for (const k of Object.keys(next)) {
+        if (first || String(liveRev[k]) !== String(next[k])) changed.add(k);
+      }
+      liveRev = next;
+      if (!changed.size) {
+        if (recovered) liveCatchUp();
+        return;
+      }
+      for (const fn of liveListeners) {
+        // One screen's fault must not stop the others hearing about the change.
+        try { fn(changed, first); } catch (e) { console.error("[live]", e); }
+      }
+    } catch (e) {
+      // Offline, or the server restarting: the next tick asks again, and the
+      // first answer after it brings every screen up to date (see above).
+      liveUnreachable = true;
+    } finally {
+      liveInFlight = false;
+    }
+  }
+  let liveTimer = null;
+  function startLive() {
+    if (liveTimer) return;
+    pollLive();
+    liveTimer = setInterval(pollLive, LIVE_POLL_MS);
+  }
+  function stopLive() {
+    if (!liveTimer) return;
+    clearInterval(liveTimer);
+    liveTimer = null;
+  }
+  // Only while the app is on screen: a hidden tab has nobody to show a change
+  // to, and coming back asks at once — which is exactly when a stale screen
+  // would otherwise be seen.
+  document.addEventListener("visibilitychange", () => { if (document.hidden) stopLive(); else startLive(); });
+  window.addEventListener("online", () => { if (!document.hidden) pollLive(); });
+  // A page restored from the back/forward cache (iOS keeps an installed app's
+  // page this way) comes back with its timers as they were and may not report
+  // a visibility change: ask straight away.
+  window.addEventListener("pageshow", (e) => {
+    if (e.persisted && !document.hidden) { startLive(); pollLive(); }
+  });
+  // Ask every screen to check itself against the revisions already known, with
+  // no change announced. For a screen coming back into view that missed changes
+  // while it was put away — the artist view hands the grid back this way. The
+  // listeners that compare stamps act; the ones that wait for a change do not.
+  function liveCatchUp() {
+    for (const fn of liveListeners) {
+      try { fn(new Set()); } catch (e) { console.error("[live]", e); }
+    }
+  }
+  window.__liveCatchUp = liveCatchUp;
+
+  // When the user last touched, scrolled or typed. `scroll` does not bubble, so
+  // it is caught on the way DOWN — a capturing listener on the document hears
+  // <main>'s and every carousel's.
+  let liveLastInput = 0;
+  // When the press being held began, or 0. A press is busy for as long as it is
+  // held, not just when it starts — a long press (select mode) outlasts any idle
+  // window. A FLAG with a time limit, never a count: a release the page does not
+  // hear (a mouse let go outside the window, a press on a node removed under it)
+  // would leave a count stuck above zero, and every live update after it would
+  // wait for ever. Past LIVE_PRESS_MAX_MS a "press" is not a tap on anything.
+  let livePressAt = 0;
+  const LIVE_PRESS_MAX_MS = 10000;
+  {
+    const touched = () => { liveLastInput = Date.now(); };
+    for (const ev of ["touchstart", "wheel", "keydown"]) {
+      document.addEventListener(ev, touched, { capture: true, passive: true });
+    }
+    document.addEventListener("scroll", touched, { capture: true, passive: true });
+    document.addEventListener("pointerdown", () => { livePressAt = Date.now(); touched(); },
+                              { capture: true, passive: true });
+    const lifted = () => { livePressAt = 0; touched(); };
+    document.addEventListener("pointerup", lifted, { capture: true, passive: true });
+    document.addEventListener("pointercancel", lifted, { capture: true, passive: true });
+    // Leaving the app ends any press; the release may never be delivered here.
+    window.addEventListener("blur", () => { livePressAt = 0; });
+    document.addEventListener("visibilitychange", () => { if (document.hidden) livePressAt = 0; });
+  }
+  // Busy = mid-gesture, or choosing things: a repaint during a selection would
+  // take the user's picks off the screen they are making them on.
+  function liveBusy() {
+    const held = livePressAt && (Date.now() - livePressAt) < LIVE_PRESS_MAX_MS;
+    return !!held ||
+           (Date.now() - liveLastInput) < LIVE_IDLE_MS ||
+           albumSelectMode || trackSelectMode || historySelectMode;
+  }
+  // Run each job once the screen is idle. Keyed, so a burst of changes while
+  // the user is busy runs each job once when they stop, not once per change.
+  const liveIdleJobs = new Map();
+  let liveIdleTimer = null;
+  function liveWhenIdle(key, fn) {
+    liveIdleJobs.set(key, fn);
+    if (liveIdleTimer) return;
+    const tick = () => {
+      if (liveBusy()) {
+        // Until the idle window has run, then a few looks a second while a
+        // press or a selection lasts — never a tight loop.
+        const wait = Math.max(250, LIVE_IDLE_MS - (Date.now() - liveLastInput));
+        liveIdleTimer = setTimeout(tick, wait);
+        return;
+      }
+      liveIdleTimer = null;
+      const jobs = Array.from(liveIdleJobs.values());
+      liveIdleJobs.clear();
+      for (const job of jobs) {
+        try { job(); } catch (e) { console.error("[live]", e); }
+      }
+    };
+    liveIdleTimer = setTimeout(tick, 0);
+  }
+
+  // What a tile SHOWS, as one string: two albums with equal keys draw identical
+  // tiles. Every field buildAlbumTile() reads is here — leave one out and a
+  // change to it (a badge, say) would be "nothing changed" to every live
+  // re-read, which is the stale screen this exists to end.
+  function albumTileKey(a) {
+    return JSON.stringify([a.offset, a.title || "", a.subtitle || "", a.image_key || null,
+                           Array.isArray(a.art_keys) ? a.art_keys : null,
+                           a.source || null, !!a.local, a.quality || null, !!a.hires]);
+  }
+  // Make `container` show `entries` ({key, build}) in order, REUSING every child
+  // already showing the same key. appendChild moves a live node — cover already
+  // loaded, listeners intact — where re-creating it would reload every image
+  // from cache and make the whole row blink for a change to one tile. (Moving is
+  // also what CLAUDE.md pre-flight step 4 asks for over re-parsing markup.)
+  // Nothing is touched at all when the keys are already in that order, so the
+  // usual live re-read — the same answer again — costs no DOM work. Anything in
+  // the container without a key (an empty-state line) is dropped.
+  function paintRow(container, entries) {
+    if (!container) return;
+    const kids = container.children;
+    if (kids.length === entries.length) {
+      let same = true;
+      for (let i = 0; i < entries.length; i++) {
+        if (kids[i].__tileKey !== entries[i].key) { same = false; break; }
+      }
+      if (same) return;
+    }
+    // A carousel keeps its sideways position; emptying it for an instant must
+    // not throw the user back to its first tile.
+    const left = container.scrollLeft;
+    const spare = new Map();
+    for (const el of Array.from(kids)) {
+      if (!el.__tileKey) continue;
+      const list = spare.get(el.__tileKey);
+      if (list) list.push(el); else spare.set(el.__tileKey, [el]);
+    }
+    const frag = document.createDocumentFragment();
+    for (const entry of entries) {
+      const list = spare.get(entry.key);
+      let el = list && list.length ? list.shift() : null;
+      if (!el) { el = entry.build(); el.__tileKey = entry.key; }
+      frag.appendChild(el);
+    }
+    container.textContent = "";
+    container.appendChild(frag);
+    if (left) container.scrollLeft = left;
+  }
+  function reconcileTiles(container, albums, build) {
+    paintRow(container, (albums || []).map(a => ({ key: albumTileKey(a), build: () => build(a) })));
+  }
+  // The same machinery for the screens that live in the other closures of this
+  // file (the artist view, the label browser). One implementation: a second
+  // copy would be a second idea of when a screen is stale.
+  window.__live = { on: onLive, stamp: liveStamp, whenIdle: liveWhenIdle,
+                    paintRow, tileKey: albumTileKey };
+  // Started here, at the top of the app, so the first answer is normally in
+  // before anything asks for a stamp — a screen read before it is read again
+  // once it lands (see liveStamp).
+  if (!document.hidden) startLive();
 
   // ----- Themes -----
   // Four themes, expressed as TWO attributes rather than four values of one:
@@ -375,22 +613,87 @@
   const topbarBack   = document.getElementById("topbar-back");
   const topbarRefresh = document.getElementById("topbar-refresh");
   const topbarSearch  = document.getElementById("topbar-search");
-  let homeSectionsLoaded = false;
-  let homeLotwLoaded = false;   // set once the label-of-the-week row populates
-  // The ORDER the Library row currently holds, or "" for nothing loaded yet.
+  // ---------------------------------------------------------------------------
+  // What each Home row holds, and what it was built from (v1.8.65).
   //
-  // This was a boolean — "the row has tiles, never load it again", on the
-  // reasoning that the library only changes when the library changes. But the
-  // row's order is the wall's Sort setting, and that changes whenever the user
-  // says so: with a boolean the row stayed "fresh" for the session and a new
-  // sort never reached Home. Keyed by the order instead, so choosing a new one
-  // makes the row stale exactly like new content would.
-  let homeLibraryKey = "";
-  // Smart Picks are built once a day on the server. The row is retried on each
-  // Home visit until it populates (the first build runs in the background and
-  // can take a minute), then left alone — the set does not change again today.
-  let homePicksDay = "";
-  let homeHistoryLoaded = false;  // set once the recently-played row populates
+  // A row is fresh when it holds the answer to the question it would ask NOW,
+  // and that question has two halves: the server data it reads (the live
+  // revisions in homeRowDeps) and what this device chose — the wall's order for
+  // the Library row, the seed for the two random rows (homeRowStamp). Before
+  // this, no row tracked both. The Library row remembered the ORDER it held and
+  // nothing about the data, so it counted as fresh for as long as the sort
+  // stayed put — across visits, cold opens and upgrades; Recently played, Label
+  // of the week and the genres loaded once per session and never again; Smart
+  // Picks once a day.
+  // ---------------------------------------------------------------------------
+  function homeRowDeps(id) {
+    switch (id) {
+      // Album of the day turns over at midnight, and is withheld once played.
+      case "unplayed": return ["library", "plays", "day"];
+      case "history":  return ["library", "plays"];
+      case "picks":    return ["picks", "library", "day"];
+      case "random":   return ["library"];
+      // The same revisions the wall it heads reads (Focus aside — see libSortParams).
+      case "library":  return libOrderDeps(libView.sort, "any");
+      // The week turns over on a day; the label scan adds labels as it goes.
+      case "lotw":     return ["labels", "library", "day"];
+      // Read from the Core, so only a rebuilt library re-reads them — never a
+      // year or a badge arriving (those do not change which genres Roon has).
+      case "genres":   return ["snapshot"];
+      default:         return [];
+    }
+  }
+  // The two random rows are a DRAW, fixed by a seed so that re-reading them
+  // shows the same albums with current facts (seededPick on the server). They
+  // are drawn afresh on a Home visit once HOME_ROWS_TTL_MS old — that TTL is
+  // what stops every Back tap costing a new set of covers.
+  const HOME_ROWS_TTL_MS = 5 * 60 * 1000;
+  const newHomeSeed = () => Math.floor(Math.random() * 1e9) + 1;
+  const homeSeeds = { unplayed: newHomeSeed(), random: newHomeSeed() };
+  let homeRowsRolledAt = 0;
+  function rerollHomeRandomRows() {
+    homeSeeds.unplayed = newHomeSeed();
+    homeSeeds.random = newHomeSeed();
+    homeRowsRolledAt = Date.now();
+  }
+  // Settled BEFORE anything loads the two rows — by a Home visit, and by the
+  // cold open's repaint, because the first live answer can reach the rows
+  // before bootstrap gets as far as showHome(). Deciding it in only one of the
+  // two drew the rows twice on an old copy: once with its seeds, once anew.
+  function rerollHomeRandomRowsIfDue() {
+    if (!homeRowsRolledAt || (Date.now() - homeRowsRolledAt) >= HOME_ROWS_TTL_MS) rerollHomeRandomRows();
+  }
+  function homeRowStamp(id) {
+    const s = liveStamp(homeRowDeps(id));
+    if (id === "library") return libSortKey() + "#" + s;
+    if (id === "unplayed" || id === "random") return "seed=" + homeSeeds[id] + "#" + s;
+    return s;
+  }
+  // id -> { held: the stamp of what the row shows, inflight: the stamp being
+  // fetched, seq: which load is the newest }.
+  const homeRowState = {};
+  function homeRowStateOf(id) {
+    return homeRowState[id] || (homeRowState[id] = { held: null, inflight: null, seq: 0 });
+  }
+  function homeRowFresh(id) { return homeRowStateOf(id).held === homeRowStamp(id); }
+  // Run a row's loader so that the same question is never asked twice at once,
+  // an older answer never paints over a newer one, and the row records what it
+  // holds only when the loader says it painted a real answer. The loader gets
+  // isCurrent(), false once a newer load of the row has started, and resolves
+  // true when it painted.
+  function runHomeRow(id, loader) {
+    const st = homeRowStateOf(id);
+    const stamp = homeRowStamp(id);
+    if (st.inflight === stamp) return;
+    st.inflight = stamp;
+    const seq = ++st.seq;
+    const isCurrent = () => seq === st.seq;
+    Promise.resolve()
+      .then(() => loader(isCurrent))
+      .then((painted) => { if (painted && isCurrent()) st.held = stamp; },
+            (e) => { console.error("[home] " + id + " row:", e); })
+      .then(() => { if (isCurrent()) st.inflight = null; });
+  }
 
   // ---------------------------------------------------------------------------
   // The Home rows, as one table.
@@ -407,20 +710,46 @@
   // ---------------------------------------------------------------------------
   const HOME_ROWS = [
     { id: "unplayed", title: "Not played in 6 months",
-      load: () => { loadHomeUnplayed(); }, isFresh: () => rowsTtlFresh() },
+      load: () => runHomeRow("unplayed", loadHomeUnplayed),   isFresh: () => homeRowFresh("unplayed") },
     { id: "history",  title: "Recently played",
-      load: () => { loadHomeHistory(); }, isFresh: () => homeHistoryLoaded },
+      load: () => runHomeRow("history", loadHomeHistory),     isFresh: () => homeRowFresh("history") },
     { id: "picks",    title: "Smart Picks",
-      load: () => { loadHomeSmartPicks(); }, isFresh: () => homePicksDay === localDayKey() },
+      load: () => runHomeRow("picks", loadHomeSmartPicks),    isFresh: () => homeRowFresh("picks") },
     { id: "random",   title: "Random albums",
-      load: () => { loadHomeRandom(); }, isFresh: () => rowsTtlFresh() },
+      load: () => runHomeRow("random", loadHomeRandom),       isFresh: () => homeRowFresh("random") },
     { id: "library",  title: "Library",
-      load: () => { loadHomeLibrary(); }, isFresh: () => homeLibraryKey === libSortKey() },
+      load: () => runHomeRow("library", loadHomeLibrary),     isFresh: () => homeRowFresh("library") },
     { id: "lotw",     title: "Label of the week",
-      load: () => { loadHomeLabelOfWeek(); }, isFresh: () => homeLotwLoaded },
+      load: () => runHomeRow("lotw", loadHomeLabelOfWeek),    isFresh: () => homeRowFresh("lotw") },
     { id: "genres",   title: "Browse by genre",
-      load: () => { loadHomeGenres(); }, isFresh: () => homeSectionsLoaded },
+      load: () => runHomeRow("genres", loadHomeGenres),       isFresh: () => homeRowFresh("genres") },
   ];
+  // Load every enabled row that does not hold the answer to its question now.
+  // showHome() calls it on every visit, and the live listener below whenever a
+  // revision moves while Home is on screen.
+  function refreshHomeRows() {
+    for (const row of HOME_ROWS) {
+      if (!homeRowOn(row.id)) continue;   // off means the work does not run
+      if (row.isFresh()) continue;
+      row.load();
+    }
+  }
+  function homeOnScreen() { return !!(homeView && !homeView.classList.contains("hidden")); }
+  onLive((changed, first) => {
+    // A settings write can come from any device: the row order and switches,
+    // and the features behind rows and menu entries. (Not on a page's first
+    // answer: bootstrap reads both itself.)
+    const layout = changed.has("settings") && !first
+      // Both catch their own failures and keep what is showing; this only stops
+      // an unexpected throw from also skipping the row refresh below.
+      ? Promise.all([loadHomeLayout(), applyFeatureMenuFromServer()]).catch((e) => console.error("[live] layout:", e))
+      : Promise.resolve();
+    // Off screen, nothing is fetched: showHome asks every row again on the way
+    // back in. On screen — even under an open album — the rows are brought up
+    // to date where they are, once the user is not mid-gesture.
+    layout.then(() => { if (homeOnScreen()) liveWhenIdle("home", refreshHomeRows); });
+  });
+
   function homeRowEl(id) {
     return homeSections ? homeSections.querySelector('[data-row="' + id + '"]') : null;
   }
@@ -575,27 +904,18 @@
     setTopbarNav(false, false, true);   // Home: search box, no Back/Refresh
     const m = document.querySelector("main");
     if (m) m.scrollTop = 0;
-    // The unplayed + random rows keep their tiles for 5 minutes: every Back tap
-    // lands here, and rebuilding ~60 fresh-random tiles each time re-fetched
-    // ~60 cover images through the Roon Core — the single biggest repeated cost
-    // in the app. Within the TTL the existing DOM (and the browser's image
-    // cache) is reused; after it, or if a load failed, both rows reload fresh.
-    // The unplayed and random rows share one TTL, so mark it before the loop
-    // rather than once per row.
-    if (!rowsTtlFresh()) homeRowsLoadedAt = Date.now();
-    for (const row of HOME_ROWS) {
-      if (!homeRowOn(row.id)) continue;   // off means the work does not run
-      if (row.isFresh()) continue;
-      row.load();
-    }
-  }
-  // Shared freshness for the two rows that turn over on a clock rather than a
-  // flag: recheck every 5 minutes, but only when they actually hold tiles.
-  function rowsTtlFresh() {
-    return !!(homeRowsLoadedAt &&
-      (Date.now() - homeRowsLoadedAt) < HOME_ROWS_TTL_MS &&
-      homeUnplayed && homeUnplayed.querySelector(".album") &&
-      homeRandom && homeRandom.querySelector(".album"));
+    // The unplayed + random rows keep their DRAW for 5 minutes: every Back tap
+    // lands here, and a fresh draw each time re-fetched ~60 cover images through
+    // the Roon Core — the single biggest repeated cost in the app. After that a
+    // visit draws them afresh.
+    //
+    // It never did, from the day the rows became a table until v1.8.65. The
+    // stamp was set BEFORE the rows were asked whether they were fresh, and the
+    // freshness check read that same stamp — so a visit after the five minutes
+    // renewed the stamp, and every row holding tiles then answered "fresh". The
+    // draw is its own step now, and freshness is the stamp model above.
+    rerollHomeRandomRowsIfDue();
+    refreshHomeRows();
   }
   // Reveal the album wall. opts.loadIfEmpty loads a fresh wall only when it has
   // no content yet (so passive reveals — opening an overlay from the menu —
@@ -638,16 +958,13 @@
   if (topbarBack)    topbarBack.addEventListener("click", showHome);
   if (topbarRefresh) topbarRefresh.addEventListener("click", () => loadRandom());
 
-  // Home unplayed/random rows are reused within this TTL instead of being
-  // rebuilt (and re-randomised) on every visit — see showHome.
-  const HOME_ROWS_TTL_MS = 5 * 60 * 1000;
-  let homeRowsLoadedAt = 0;
+  // (The Home rows' TTL, HOME_ROWS_TTL_MS, is declared with their seeds above.)
 
   // --- Home content persistence (instant open) --------------------------
   // The in-memory rows above live only as long as the page's JS context, so a
-  // cold PWA open (the process is torn down when the app is backgrounded) reset
-  // homeRowsLoadedAt to 0 and reloaded — and re-randomised — the entire Home
-  // screen every single time. Persist the last rendered rows to localStorage
+  // cold PWA open (the process is torn down when the app is backgrounded) had
+  // nothing to show and reloaded — and re-randomised — the entire Home screen
+  // every single time. Persist the last rendered rows to localStorage
   // and repaint them instantly on open, then revalidate in the background
   // (stale-while-revalidate). Covers come straight from the browser's HTTP
   // cache (the server sends them immutable for a week), so it's a flash-free
@@ -718,118 +1035,146 @@
     return btn;
   }
 
+  // Album of the day, as a tile with its "★ Today" badge.
+  function buildAotdTile(aotd) {
+    const tile = homeTile(aotd, "home-aotd");
+    const wrap = tile.querySelector(".album-art-wrap");
+    if (wrap) {
+      const badge = document.createElement("span");
+      badge.className = "aotd-badge";
+      badge.textContent = "★ Today";
+      wrap.appendChild(badge);
+    }
+    return tile;
+  }
+
   // Render helper shared by the live loader and the instant-open cache repaint.
+  // Tiles are reused by key (paintRow), so a re-read that changes one album —
+  // one just played dropping out — moves the others rather than rebuilding them.
   function renderHomeUnplayed(aotd, albums) {
     albums = albums || [];
-    homeUnplayed.innerHTML = "";
+    if (!homeUnplayed) return;
     if (!albums.length && !aotd) {
       homeUnplayed.innerHTML = '<div class="home-carousel-empty">Nothing here yet — play some music and check back.</div>';
       return;
     }
-    const frag = document.createDocumentFragment();
     // "Play something unheard" leads the row it belongs to: this carousel IS
     // the unheard albums, so the action and the row mean the same thing, and
     // it sits at the top of Home without needing a place of its own. Built as
     // a tile so it inherits the carousel's sizing on every screen rather than
     // carrying breakpoints of its own.
-    frag.appendChild(buildUnheardTile());
-    if (aotd) {
-      const tile = homeTile(aotd, "home-aotd");
-      const wrap = tile.querySelector(".album-art-wrap");
-      if (wrap) {
-        const badge = document.createElement("span");
-        badge.className = "aotd-badge";
-        badge.textContent = "★ Today";
-        wrap.appendChild(badge);
-      }
-      frag.appendChild(tile);
-    }
-    for (const a of albums) frag.appendChild(homeTile(a));
-    homeUnplayed.appendChild(frag);
+    const entries = [{ key: "unheard", build: buildUnheardTile }];
+    if (aotd) entries.push({ key: "aotd:" + albumTileKey(aotd), build: () => buildAotdTile(aotd) });
+    for (const a of albums) entries.push({ key: albumTileKey(a), build: () => homeTile(a) });
+    paintRow(homeUnplayed, entries);
   }
 
-  async function loadHomeUnplayed() {
-    if (!homeUnplayed) return;
+  async function loadHomeUnplayed(isCurrent) {
+    if (!homeUnplayed) return false;
     // Don't flash "Loading…" over cached tiles the user is already looking at —
     // only when the row is genuinely empty (first ever load).
     if (!rowHasContent(homeUnplayed)) homeUnplayed.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
+    // The draw this row is showing. Asked for by seed, so a re-read after a play
+    // returns the same albums less the one played (seededPick on the server).
+    const seed = homeSeeds.unplayed;
     // Album of the day (completely random; hidden once played today) sits
     // first. Fetched in PARALLEL with the unplayed list — they're independent,
     // and awaiting them in sequence added a full round-trip to every reload.
     const aotdPromise = fetch("/api/home/album-of-the-day")
       .then(ar => ar.json()).catch(() => null);
-    const unplayedPromise = fetch("/api/home/unplayed?months=6&count=30");
+    const unplayedPromise = fetch("/api/home/unplayed?months=6&count=30&seed=" + seed);
     unplayedPromise.catch(() => {});   // handled at the await below — this just silences the pre-await rejection warning
     const aj = await aotdPromise;
     const aotd = (aj && aj.album) ? aj.album : null;   // non-fatal — just no album-of-the-day
     try {
       const r = await unplayedPromise;
-      if (r.status === 503) {
-        if (!rowHasContent(homeUnplayed)) homeUnplayed.innerHTML = '<div class="home-carousel-empty">Waiting for Roon Core…</div>';
-        homeRowsLoadedAt = 0;   // retry on the next Home visit
-        return;   // keep any cached tiles + cache untouched while the index builds
+      if (!isCurrent()) return false;
+      if (!r.ok) {
+        // 503 while the index builds, or a server error: keep any cached tiles
+        // and the saved copy untouched. Not painted, so the row is asked again
+        // on the next visit or the next change the live check hears about.
+        if (!rowHasContent(homeUnplayed)) {
+          homeUnplayed.innerHTML = '<div class="home-carousel-empty">' +
+            (r.status === 503 ? "Waiting for Roon Core…" : "Couldn’t load.") + '</div>';
+        }
+        return false;
       }
       const j = await r.json();
+      if (!isCurrent()) return false;
       const albums = (j && j.albums) || [];
       renderHomeUnplayed(aotd, albums);
       // Persist only a non-empty row (mirrors random/genres) so a legitimately
       // empty response can't be cached and shown as "Nothing here yet" next
-      // open. Timestamp is per-row so a stale sibling can't ride a fresh one's
-      // freshness (see hydrateHomeFromCache).
-      if (albums.length || aotd) saveHomeCache({ unplayed: { aotd, albums }, unplayedAt: Date.now() });
+      // open. The draw's seed and time go with it, so a reopen within the TTL
+      // re-reads the same albums (see hydrateHomeFromCache).
+      if (albums.length || aotd) {
+        saveHomeCache({ unplayed: { aotd, albums }, unplayedAt: homeRowsRolledAt, unplayedSeed: seed });
+      }
+      return true;
     } catch (e) {
+      if (!isCurrent()) return false;
       if (!rowHasContent(homeUnplayed)) homeUnplayed.innerHTML = '<div class="home-carousel-empty">Couldn’t load.</div>';
-      homeRowsLoadedAt = 0;   // retry on the next Home visit
+      return false;
     }
   }
 
   // Random-albums row (reuses /api/random-albums, no filter → full library).
-  // Reloaded when the Home rows go stale (see showHome's TTL); tapping the
-  // header opens the full random wall (same as the hamburger "Random albums").
-  // One renderer for the plain album carousels (Random, Library) — same tiles,
-  // same empty state, so the rows can't drift apart.
+  // A DRAW, fixed by its seed: drawn afresh on a visit once the TTL has run
+  // (see showHome), re-read with the same seed when the library changes under
+  // it. Tapping the header opens the full random wall (same as the hamburger
+  // "Random albums").
+  // One renderer for the plain album carousels (Random, Library, Recently
+  // played) — same tiles, same empty state, so the rows can't drift apart.
   function renderAlbumRow(rowEl, albums) {
     albums = albums || [];
     if (!rowEl) return;
-    rowEl.innerHTML = "";
     if (!albums.length) {
       rowEl.innerHTML = '<div class="home-carousel-empty">No albums.</div>';
       return;
     }
-    const frag = document.createDocumentFragment();
-    for (const a of albums) frag.appendChild(homeTile(a));   // filter:null → offsets resolve
-    rowEl.appendChild(frag);
+    reconcileTiles(rowEl, albums, (a) => homeTile(a));   // filter:null → offsets resolve
   }
   function renderHomeRandom(albums) { renderAlbumRow(homeRandom, albums); }
 
-  async function loadHomeRandom() {
-    if (!homeRandom) return;
+  async function loadHomeRandom(isCurrent) {
+    if (!homeRandom) return false;
     if (!rowHasContent(homeRandom)) homeRandom.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
+    const seed = homeSeeds.random;
     try {
-      const r = await fetch("/api/random-albums?count=30");
-      if (r.status === 503) {
-        if (!rowHasContent(homeRandom)) homeRandom.innerHTML = '<div class="home-carousel-empty">Waiting for Roon Core…</div>';
-        homeRowsLoadedAt = 0;   // retry on the next Home visit
-        return;   // keep any cached tiles while the index builds
+      const r = await fetch("/api/random-albums?count=30&seed=" + seed);
+      if (!isCurrent()) return false;
+      if (!r.ok) {
+        // Keep any cached tiles while the index builds (503) or the server
+        // errs; not painted, so asked again on the next visit or change.
+        if (!rowHasContent(homeRandom)) {
+          homeRandom.innerHTML = '<div class="home-carousel-empty">' +
+            (r.status === 503 ? "Waiting for Roon Core…" : "Couldn’t load.") + '</div>';
+        }
+        return false;
       }
       const j = await r.json();
+      if (!isCurrent()) return false;
       const albums = (j && j.albums) || [];
       renderHomeRandom(albums);
-      if (albums.length) saveHomeCache({ random: albums, randomAt: Date.now() });
+      if (albums.length) saveHomeCache({ random: albums, randomAt: homeRowsRolledAt, randomSeed: seed });
+      return true;
     } catch (e) {
+      if (!isCurrent()) return false;
       if (!rowHasContent(homeRandom)) homeRandom.innerHTML = '<div class="home-carousel-empty">Couldn’t load.</div>';
-      homeRowsLoadedAt = 0;   // retry on the next Home visit
+      return false;
     }
   }
 
   // Library row — the first albums of the library in the order the user chose
   // on the wall, so the row is the head of the same list its header opens.
-  // Re-reads whenever that order changes (see homeLibraryKey) and is otherwise
-  // retried each Home visit until it populates, like the label of the week.
+  // Re-read whenever that order changes OR the data under it does (a release
+  // day arriving moves a Release date order; a play moves Most played) — see
+  // homeRowStamp. Both halves, because the row that tracked only the order
+  // (v1.7.76) counted as fresh for as long as the sort was left alone.
   function renderHomeLibrary(albums) { renderAlbumRow(homeLibrary, albums); }
 
-  async function loadHomeLibrary() {
-    if (!homeLibrary) return;
+  async function loadHomeLibrary(isCurrent) {
+    if (!homeLibrary) return false;
     if (!rowHasContent(homeLibrary)) homeLibrary.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
     // Captured BEFORE the request: the answer describes the order that was
     // current when it was asked for, and the user can change Sort while it is
@@ -837,29 +1182,33 @@
     const key = libSortKey();
     try {
       const r = await fetch("/api/library/albums?offset=0&count=30&" + key);
+      if (!isCurrent()) return false;
       // Any non-OK response (503 while the index builds, 500 on a transient
       // server error) keeps the cached tiles — a built index never legitimately
       // returns zero albums, so blanking the row to "No albums." would only
       // ever be showing an error as an empty state.
       if (!r.ok) {
         if (!rowHasContent(homeLibrary)) homeLibrary.innerHTML = '<div class="home-carousel-empty">Waiting for Roon Core…</div>';
-        return;   // retried on the next Home visit (homeLibraryKey stays unset)
+        return false;   // not painted: asked again on the next visit or change
       }
       const j = await r.json();
+      if (!isCurrent()) return false;
       const albums = (j && j.albums) || [];
       // The order changed while this was in flight. Painting it would put the
       // previous order on screen and, worse, record it as the current one — so
       // the row would look settled on an order the user had already replaced.
-      if (key !== libSortKey()) return;
+      if (key !== libSortKey()) return false;
       if (albums.length) {
         renderHomeLibrary(albums);
-        homeLibraryKey = key;   // this order is loaded — don't refetch it
         saveHomeCache({ library: albums, librarySort: key });
-      } else if (!rowHasContent(homeLibrary)) {
-        renderHomeLibrary([]);   // genuinely empty and nothing cached — show the empty state
+        return true;
       }
+      if (!rowHasContent(homeLibrary)) renderHomeLibrary([]);   // genuinely empty and nothing cached
+      return false;
     } catch (e) {
+      if (!isCurrent()) return false;
       if (!rowHasContent(homeLibrary)) homeLibrary.innerHTML = '<div class="home-carousel-empty">Couldn’t load.</div>';
+      return false;
     }
   }
 
@@ -874,22 +1223,24 @@
     const sec = homeHistory.closest(".home-section");
     if (sec) sec.classList.toggle("hidden", !albums.length || !homeRowOn("history"));
   }
-  async function loadHomeHistory() {
-    if (!homeHistory) return;
+  async function loadHomeHistory(isCurrent) {
+    if (!homeHistory) return false;
     try {
       const r = await fetch("/api/home/history?count=30");
-      if (!r.ok) return;   // retried next visit — homeHistoryLoaded stays false
+      if (!isCurrent() || !r.ok) return false;   // not painted: asked again on the next visit or change
       const j = await r.json();
+      if (!isCurrent()) return false;
       const albums = (j && j.albums) || [];
       renderHomeHistory(albums);
-      // Marked loaded even when empty: an empty history is a real answer, and
-      // retrying it on every Home visit would query the plays table forever on
-      // a box nobody has played anything from.
-      homeHistoryLoaded = true;
       if (albums.length) saveHomeCache({ history: albums });
+      // Painted even when empty: an empty history is a real answer, and it
+      // stays the answer until a play is recorded — which is a live revision,
+      // so the row is asked again exactly when there could be something in it.
+      return true;
     } catch (e) {
       // Offline or the server went away. The row keeps whatever it had; the
-      // next visit tries again.
+      // next visit or change tries again.
+      return false;
     }
   }
 
@@ -903,19 +1254,12 @@
   // tap handlers all assume an offset into the albums hierarchy.
   // -------------------------------------------------------------------------
 
-  // Today, in the viewer's own timezone.
-  //
-  // This is deliberately NOT compared against the server's `day`. The container
-  // sets no TZ and runs UTC, so for anyone east or west of Greenwich the two
-  // strings differ for part of every day — and the guard below would then be
-  // permanently true, refetching and re-rendering the row on every Back tap.
-  // "Has the day rolled over" is a question about the VIEWER's midnight, so the
-  // client answers it with its own clock and stores its own key.
-  function localDayKey() {
-    const d = new Date();
-    const p = (n) => (n < 10 ? "0" + n : String(n));
-    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
-  }
+  // (The row used to decide "is it a new day" with the viewer's own clock —
+  // localDayKey — because comparing that against the server's day, which runs
+  // UTC in the container, disagreed for part of every day. Since v1.8.65 it
+  // follows the server's `day` revision instead, which is only ever compared
+  // with itself: the day the picks are BUILT for is the server's, so the
+  // server's midnight is exactly when the row can change.)
 
   function smartPickAddLabel(added) { return added ? "✓ Added" : "＋ Add"; }
 
@@ -1103,31 +1447,37 @@
       return false;
     }
     if (sec) sec.classList.toggle("hidden", !homeRowOn("picks"));   // never un-hide a row the layout switched off
-    homePicks.innerHTML = "";
-    const frag = document.createDocumentFragment();
-    for (const p of picks) frag.appendChild(smartPickCard(p, false));
-    homePicks.appendChild(frag);
+    // Keyed on everything the card shows, so a pick that changed (added to a
+    // service, now in the library) is rebuilt and the rest are kept.
+    paintRow(homePicks, picks.map(p => ({ key: "pick:" + JSON.stringify(p), build: () => smartPickCard(p, false) })));
     return true;
   }
 
-  async function loadHomeSmartPicks() {
-    if (!homePicks) return;
+  async function loadHomeSmartPicks(isCurrent) {
+    if (!homePicks) return false;
     try {
       const r = await fetch("/api/smart-picks");
-      if (!r.ok) return;   // 503 while pairing / 500 — retried on the next visit
+      if (!isCurrent() || !r.ok) return false;   // 503 while pairing / 500 — asked again on the next visit or change
       const j = await r.json();
+      if (!isCurrent()) return false;
       const picks = (j && j.picks) || [];
       if (picks.length) {
         renderHomePicks(picks);
-        homePicksDay = localDayKey();   // our own key — see localDayKey
-      } else if (!rowHasContent(homePicks)) {
+        return true;
+      }
+      if (!rowHasContent(homePicks)) {
         // Genuinely nothing yet (the build runs in the background) and no
         // cached row to keep — hide the section rather than leave an empty one.
+        // A real answer: the build finishing is a live revision, so the row is
+        // asked again the moment there is something to show.
         renderHomePicks([]);
+        return true;
       }
+      return false;   // keep the row that is showing until the day's set lands
     } catch (e) {
-      // Transient — the row simply stays hidden and is retried next visit.
-      // Silence is safe here because nothing was replaced or lost.
+      // Transient — the row keeps what it had and is asked again on the next
+      // visit or change. Silence is safe here because nothing was replaced.
+      return false;
     }
   }
 
@@ -1135,10 +1485,24 @@
   // (smartPicksActive / smartPicksSeq are declared with the other view flags at
   // the top of the file — leavePlaylistScreens writes them, and that can run
   // during boot.)
-  async function showSmartPicks() {
-    enterFullWall("Smart Picks");
-    smartPicksActive = true;
+  // v1.8.65: the screen follows the day's set. It used to say "Come back
+  // shortly" while the first build ran — the exact thing a live screen does
+  // not ask of anyone. When the build lands (the `picks` revision) the screen
+  // re-reads where it stands, and a pick blocked on another device goes here too.
+  const SMART_PICKS_DEPS = ["picks", "day"];
+  let smartPicksReadStamp = null;
+  const smartPicksOnScreen = () =>
+    smartPicksActive && !(window.__artistViewActive && window.__artistViewActive());
+  async function showSmartPicks(opts) {
+    // The section header passes its click event here, so only a real
+    // { live: true } counts.
+    const live = !!(opts && opts.live === true);
+    if (!live) {
+      enterFullWall("Smart Picks");
+      smartPicksActive = true;
+    }
     const mySeq = ++smartPicksSeq;
+    const stamp = liveStamp(SMART_PICKS_DEPS);
     let j = null;
     try {
       const r = await fetch("/api/smart-picks");
@@ -1150,9 +1514,12 @@
     } catch (e) {
       j = null;
     }
-    if (!smartPicksActive || mySeq !== smartPicksSeq) return;   // user moved on
-    grid.innerHTML = "";
+    if (!smartPicksOnScreen() || mySeq !== smartPicksSeq) return;   // user moved on
+    // A re-read that fails leaves the screen as it is; the next change retries.
+    if (live && (!j || j.error)) return;
+    smartPicksReadStamp = stamp;
     if (!j || j.error) {
+      grid.innerHTML = "";
       setBanner(j && j.error
         ? ("Couldn't load Smart Picks — " + j.error)
         : "Couldn't load Smart Picks — the extension didn't answer. Try again.", true);
@@ -1160,19 +1527,34 @@
     }
     const picks = j.picks || [];
     if (!picks.length) {
+      grid.innerHTML = "";
       setBanner(j.service_ready
-        ? "Building today's picks — this takes a minute the first time. Come back shortly."
+        ? "Building today's picks — this takes a minute the first time. They appear here the moment they are ready."
         : "Connect Qobuz or TIDAL in Settings and Smart Picks can suggest albums " +
           "you can add straight to your library.", false);
       return;
     }
     setBanner(j.service_ready ? null
       : "Connect Qobuz or TIDAL in Settings to add any of these to your library.", false);
-    const wrap = document.createElement("div");
-    wrap.className = "pick-list";
-    for (const p of picks) wrap.appendChild(smartPickCard(p, true));
-    grid.appendChild(wrap);
+    let wrap = Array.prototype.find.call(grid.children, el => el.classList.contains("pick-list"));
+    if (!wrap) {
+      grid.innerHTML = "";
+      wrap = document.createElement("div");
+      wrap.className = "pick-list";
+      grid.appendChild(wrap);
+    }
+    // Keyed on everything a card shows: a card whose pick is unchanged is the
+    // same node — its "✓ Added — waiting for Roon" latch, which lives only on
+    // the node, survives a re-read.
+    const m = document.querySelector("main");
+    const top = m ? m.scrollTop : 0;
+    paintRow(wrap, picks.map(p => ({ key: "pick:" + JSON.stringify(p), build: () => smartPickCard(p, true) })));
+    if (live && m && m.scrollTop !== top) m.scrollTop = top;
   }
+  onLive(() => {
+    if (!smartPicksOnScreen() || smartPicksReadStamp === liveStamp(SMART_PICKS_DEPS)) return;
+    liveWhenIdle("smart-picks-screen", () => { if (smartPicksOnScreen()) showSmartPicks({ live: true }); });
+  });
 
   /*
    * DISCOVER — new records by the acts you play.
@@ -1189,10 +1571,22 @@
    * emphasis: here the RECORD is the headline and the act is the quiet line,
    * because you already know the act. That is the whole point of the screen.
    */
-  async function showDiscover() {
-    enterFullWall("Discover");
-    discoverActive = true;
+  // v1.8.65: live, like Smart Picks — "come back shortly" while a build ran is
+  // gone; the list appears when the build lands (the `discover` revision), and
+  // turns over with the day. Rows are keyed, so an unchanged row stays the same
+  // node through a re-read, its upgraded Qobuz link and all.
+  const DISCOVER_DEPS = ["discover", "day"];
+  let discoverReadStamp = null;
+  const discoverOnScreen = () =>
+    discoverActive && !(window.__artistViewActive && window.__artistViewActive());
+  async function showDiscover(opts) {
+    const live = !!(opts && opts.live === true);
+    if (!live) {
+      enterFullWall("Discover");
+      discoverActive = true;
+    }
     const mySeq = ++discoverSeq;
+    const stamp = liveStamp(DISCOVER_DEPS);
     let j = null;
     try {
       const r = await fetch("/api/discover");
@@ -1203,15 +1597,19 @@
     } catch (e) {
       j = null;
     }
-    if (!discoverActive || mySeq !== discoverSeq) return;   // the user moved on
-    grid.innerHTML = "";
+    if (!discoverOnScreen() || mySeq !== discoverSeq) return;   // the user moved on
+    // A re-read that fails leaves the screen as it is; the next change retries.
+    if (live && (!j || j.error)) return;
+    discoverReadStamp = stamp;
     if (!j || j.error) {
+      grid.innerHTML = "";
       setBanner(j && j.error
         ? ("Couldn't load Discover — " + j.error)
         : "Couldn't load Discover — the extension didn't answer. Try again.", true);
       return;
     }
     if (!j.enabled) {
+      grid.innerHTML = "";
       setBanner("Discover is switched off. Turn it on in Settings \u2192 Discover and " +
                 "it will look for new records by the artists you play.", false);
       return;
@@ -1219,10 +1617,11 @@
     const releases = j.releases || [];
     if (!releases.length) {
       // "Building" and "found nothing" are different answers and the screen
-      // says which: the first is worth coming back to in a minute, the second
-      // is not.
+      // says which: the first fills in by itself when the build lands, the
+      // second is the day's answer.
+      grid.innerHTML = "";
       setBanner(j.building
-        ? "Looking for new records by the artists you play \u2014 come back shortly."
+        ? "Looking for new records by the artists you play \u2014 they appear here the moment they are found."
         : "Nothing new from the artists you play in the last " +
           (j.window_days || 60) + " days. This rebuilds every day.", false);
       return;
@@ -1234,28 +1633,43 @@
       // load. Nothing can reach this screen before that has run, so this is a
       // guard against a future reordering rather than a live case — and a
       // silent empty screen would be a worse way to find out.
+      grid.innerHTML = "";
       setBanner("Couldn't draw the list — reload the app.", true);
       return;
     }
-    const wrap = document.createElement("div");
-    wrap.className = "discover-list";
-    for (const rel of releases) {
-      if (!rel || !rel.album) continue;
-      wrap.appendChild(window.__goRow(rel, rel.album, discoverSubLine(rel),
-                                      discoverArt(rel)));
+    let wrap = Array.prototype.find.call(grid.children, el => el.classList.contains("discover-list"));
+    if (!wrap) {
+      grid.innerHTML = "";
+      wrap = document.createElement("div");
+      wrap.className = "discover-list";
+      grid.appendChild(wrap);
     }
-    grid.appendChild(wrap);
+    const m = document.querySelector("main");
+    const top = m ? m.scrollTop : 0;
+    // The sub line ("3 days ago") is in the key: it moves with the day while
+    // the release itself does not.
+    paintRow(wrap, releases.filter(rel => rel && rel.album).map(rel => {
+      const sub = discoverSubLine(rel);
+      return { key: "rel:" + JSON.stringify(rel) + "|" + sub,
+               build: () => window.__goRow(rel, rel.album, sub, discoverArt(rel)) };
+    }));
+    if (live && m && m.scrollTop !== top) m.scrollTop = top;
 
     // The Qobuz links upgraded AFTER the rows are on screen and never before
     // them — a page read per row, and a failure leaves the search link that is
-    // already there. Not awaited, for the same reason.
+    // already there. Not awaited, for the same reason. (A reused row keeps the
+    // link it was upgraded to; the helper finds nothing to change on it.)
     if (window.__upgradeQobuzLinks) {
       window.__upgradeQobuzLinks(releases, {
-        container: wrap, current: () => discoverActive && mySeq === discoverSeq,
+        container: wrap, current: () => discoverOnScreen() && mySeq === discoverSeq,
         album: r => r.album, artist: r => r.artist,
       });
     }
   }
+  onLive(() => {
+    if (!discoverOnScreen() || discoverReadStamp === liveStamp(DISCOVER_DEPS)) return;
+    liveWhenIdle("discover-screen", () => { if (discoverOnScreen()) showDiscover({ live: true }); });
+  });
   window.__showDiscover = showDiscover;
 
   /*
@@ -1333,38 +1747,44 @@
     }
     if (titleEl) titleEl.textContent = "Label of the week: " + label;
     homeLotw.dataset.label = label;
-    if (sec) sec.classList.toggle("hidden", !homeRowOn("lotw"));   // never un-hide a row the layout switched off   // un-hide if a prior attempt hid it
-    homeLotw.innerHTML = "";
-    const frag = document.createDocumentFragment();
-    for (const a of albums) frag.appendChild(homeTile(a));   // full-hierarchy offsets → filter:null
-    homeLotw.appendChild(frag);
+    if (sec) sec.classList.toggle("hidden", !homeRowOn("lotw"));   // never un-hide a row the layout switched off
+    reconcileTiles(homeLotw, albums, (a) => homeTile(a));   // full-hierarchy offsets → filter:null
     return true;
   }
 
-  async function loadHomeLabelOfWeek() {
-    if (!homeLotw) return;
+  async function loadHomeLabelOfWeek(isCurrent) {
+    if (!homeLotw) return false;
     if (!rowHasContent(homeLotw)) homeLotw.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
     try {
       const r = await fetch("/api/home/label-of-the-week");
+      if (!isCurrent()) return false;
+      if (!r.ok) throw new Error("HTTP " + r.status);
       const j = await r.json();
+      if (!isCurrent()) return false;
       const albums = (j && j.albums) || [];
       if (j && j.label && albums.length) {
         renderHomeLotw(j.label, albums);
-        homeLotwLoaded = true;   // populated — stop retrying on future visits
         saveHomeCache({ lotw: { label: j.label, albums } });
-      } else if (!rowHasContent(homeLotw)) {
+        return true;
+      }
+      if (!rowHasContent(homeLotw)) {
         // Empty 200 (labels index still building after a restart returns
         // {label:null} — not a 503). Only hide the section when nothing is
-        // cached; otherwise keep the hydrated row rather than blanking it.
+        // cached; otherwise keep the hydrated row rather than blanking it. The
+        // label scan moving is a live revision, so it is asked again as it does.
         renderHomeLotw(null, []);
+        return true;
       }
+      return false;
     } catch (e) {
+      if (!isCurrent()) return false;
       // Transient failure: keep any cached row rather than blanking it. Only
       // hide the section when there's nothing cached to fall back on.
       if (!rowHasContent(homeLotw)) {
         const sec = homeLotw.closest(".home-section");
         if (sec) sec.classList.add("hidden");
       }
+      return false;
     }
   }
   // ---------------------------------------------------------------------
@@ -1527,38 +1947,69 @@
   // Full-screen "Not played in 6 months" grid — reached by tapping the section
   // header. Fills the main grid with a larger unplayed list (tiles open
   // unfiltered, like the Home row) and shows a Back button to Home.
+  // The wall's DRAW and what it was read against (v1.8.65). Each visit draws
+  // afresh; while it is on screen it is re-read with the same seed when plays or
+  // the library move, so an album played from it drops out and nothing else
+  // shifts (seededPick on the server).
+  let unplayedWallSeed = 1;
+  let unplayedWallStamp = null;
+  let unplayedWallSeq = 0;
+  const UNPLAYED_WALL_DEPS = ["library", "plays"];
+  // The artist view borrows the grid without clearing this wall's flag (Back
+  // hands the grid straight back), so "active" alone does not mean on screen.
+  const unplayedWallOnScreen = () =>
+    unplayedWallActive && !(window.__artistViewActive && window.__artistViewActive());
+
   async function showUnplayedWall() {
     enterFullWall("Not played in 6 months", true);
     unplayedWallActive = true;
+    unplayedWallSeed = newHomeSeed();
+    await readUnplayedWall(false);
+  }
+  // `live`: a re-read of the wall already on screen. Same draw, scroll kept,
+  // and a failure leaves what is showing rather than replacing it with an error.
+  async function readUnplayedWall(live) {
+    const seq = ++unplayedWallSeq;
+    const stamp = liveStamp(UNPLAYED_WALL_DEPS);
+    // The user may have navigated away while the fetch ran — a late response
+    // must not clobber whatever view owns the shared grid now.
+    const current = () => unplayedWallOnScreen() && seq === unplayedWallSeq;
     try {
-      const r = await fetch("/api/home/unplayed?months=6&count=96");
-      // The user may have navigated away while the fetch ran — a late response
-      // must not clobber whatever view owns the shared grid now.
-      if (!unplayedWallActive) return;
+      const r = await fetch("/api/home/unplayed?months=6&count=96&seed=" + unplayedWallSeed);
+      if (!current()) return;
       if (r.status === 503) {
+        if (live) return;
         const j = await r.json().catch(() => ({}));
-        if (!unplayedWallActive) return;
+        if (!current()) return;
         setBanner(j.error || "Waiting for Roon Core. Enable this extension in Roon → Settings → Extensions.", true);
         grid.innerHTML = ""; return;
       }
+      if (!r.ok) throw new Error("HTTP " + r.status);
       const j = await r.json();
-      if (!unplayedWallActive) return;
+      if (!current()) return;
       const albums = (j && j.albums) || [];
-      grid.innerHTML = "";
+      unplayedWallStamp = stamp;
       if (!albums.length) {
+        grid.innerHTML = "";
         setBanner("Nothing here yet — play some music and check back.", false);
         return;
       }
       setBanner(null);
-      const frag = document.createDocumentFragment();
-      for (const a of albums) frag.appendChild(homeTile(a));   // filter:null → offsets resolve
-      grid.appendChild(frag);
+      const m = document.querySelector("main");
+      const top = m ? m.scrollTop : 0;
+      // Keyed ("unplayed|…") so a re-read reuses only this wall's own tiles.
+      paintRow(grid, albums.map(a => ({ key: "unplayed|" + albumTileKey(a), build: () => homeTile(a) })));
+      if (live && m && m.scrollTop !== top) m.scrollTop = top;
     } catch (e) {
-      if (!unplayedWallActive) return;
+      if (!current() || live) return;
       grid.innerHTML = "";
       setBanner("Couldn’t load: " + e.message, true);
     }
   }
+  onLive(() => {
+    if (!unplayedWallOnScreen() || unplayedWallStamp === liveStamp(UNPLAYED_WALL_DEPS)) return;
+    liveWhenIdle("unplayed-wall", () => { if (unplayedWallOnScreen()) readUnplayedWall(true); });
+  });
 
   // Full-screen Library wall — the WHOLE library in Roon's own album order,
   // loaded in pages from the snapshot index (no Roon calls) and appended as
@@ -1636,7 +2087,9 @@
   // the migrated blob is written straight back, lose the preference for good.
   const LIB_VIEW_VERSION = 2;
   const LIB_V1_INVERTED_SORTS = ["plays", "lastplayed"];
-  const libWall = { offset: 0, loading: false, done: false, seq: 0, total: 0 };
+  // readStamp: the live revisions the wall's pages were read against (see
+  // refreshLibraryWall).
+  const libWall = { offset: 0, loading: false, done: false, seq: 0, total: 0, readStamp: null };
   // Every multi-select Focus facet, in the order the sheet lays them out. This
   // list is the client's half of libFacetDefs() on the server; the SERVER is
   // what decides which of them actually have values, and the sheet renders
@@ -1717,6 +2170,18 @@
     if (libView.played !== "any") p.set("played", libView.played);
     if (libView.prefix) p.set("prefix", libView.prefix);
     return p.toString();
+  }
+  // The live revisions an order reads (v1.8.65) — the same rule the server's
+  // view cache keys on (libraryView's signature): every order reads the
+  // library; Release date reads the release days too; the play sorts and the
+  // Listening focus read plays. The Home Library row and the wall both ask
+  // this, so the row can never be re-read on a different rule from the wall
+  // it heads.
+  function libOrderDeps(sort, played) {
+    const deps = ["library"];
+    if (sort === "year") deps.push("dates");
+    if (sort === "plays" || sort === "lastplayed" || (played && played !== "any")) deps.push("plays");
+    return deps;
   }
   // How many filters are ON. Every selected chip counts — including the
   // excluded ones, which are as much a filter as the included ones.
@@ -2087,12 +2552,35 @@
 
   function leaveLibraryWall() { const was = libraryWallActive; libraryWallActive = false; return was; }
   window.__leaveLibraryWall = leaveLibraryWall;
-  window.__restoreLibraryWall = (was) => { libraryWallActive = !!was; };
+  window.__restoreLibraryWall = (was) => {
+    libraryWallActive = !!was;
+    // Anything that moved while another view borrowed the grid was not heard:
+    // this wall was not active then. Catch up now that it is on screen again.
+    if (libraryWallNeedsRead()) liveWhenIdle("library-wall", refreshLibraryWall);
+  };
   window.__libraryWallSeq = () => libWall.seq;
+
+  // The wall's tiles carry a key of their own ("libwall|…") so a live re-read
+  // only ever reuses a tile this wall built. The grid is shared with every
+  // other wall, and a tile left by, say, a genre wall opens its album through
+  // THAT wall's filtered offsets.
+  function libWallTile(a) {
+    const el = homeTile(a);   // filter:null → offsets resolve
+    el.__tileKey = "libwall|" + albumTileKey(a);
+    return el;
+  }
+  function libWallCountText() {
+    return "Library · " + libWall.total.toLocaleString() +
+           (libFocusCount() ? " matching" : "") + (libWall.total === 1 ? " album" : " albums");
+  }
+  function libWallStampNow() { return liveStamp(libOrderDeps(libView.sort, libView.played)); }
 
   async function fetchLibraryPage(mySeq, firstPage) {
     if (libWall.loading) return;   // a page is already in flight for this view
     libWall.loading = true;
+    // What this read is against — recorded before the request, so a revision
+    // that moves while it is in the air leaves the wall looking stale, not fresh.
+    if (firstPage) libWall.readStamp = libWallStampNow();
     try {
       const r = await fetch(`/api/library/albums?offset=${libWall.offset}&count=${LIB_PAGE}&${libViewQuery()}`);
       // Left the wall (or re-entered, bumping seq) while the fetch was in
@@ -2113,15 +2601,14 @@
       const albums = (j && j.albums) || [];
       if (firstPage) { grid.innerHTML = ""; setBanner(null); }
       const frag = document.createDocumentFragment();
-      for (const a of albums) frag.appendChild(homeTile(a));   // filter:null → offsets resolve
+      for (const a of albums) frag.appendChild(libWallTile(a));
       grid.appendChild(frag);
       libWall.offset += albums.length;
       // End of library = a short (or empty) page; no separate total bookkeeping.
       libWall.done = albums.length < LIB_PAGE;
       libWall.total = (j && typeof j.total === "number") ? j.total : libWall.offset;
       if (firstPage) {
-        setCountText("Library · " + libWall.total.toLocaleString() +
-                     (libFocusCount() ? " matching" : "") + (libWall.total === 1 ? " album" : " albums"));
+        setCountText(libWallCountText());
         if (!albums.length) setBanner("Nothing matches this focus — try clearing a filter.", false);
       }
     } catch (e) {
@@ -2133,6 +2620,60 @@
       if (mySeq === libWall.seq) libWall.loading = false;
     }
   }
+
+  // Re-read the wall where it stands (v1.8.65), when a revision its order reads
+  // has moved — a release day arriving re-sorts a Release date wall, a play a
+  // Most played one. Everything already on screen is asked for again, from the
+  // top and the same count, and repainted by key (paintRow): tiles that kept
+  // their place and their facts are not touched, and the scroll position is
+  // kept. It has to be the WHOLE loaded range: pages are read by offset, and a
+  // wall assembled from pages of two different orders repeats albums at one
+  // join and skips them at another.
+  const LIB_REFRESH_CHUNK = 200;   // the server's per-request ceiling
+  async function refreshLibraryWall() {
+    if (!libraryWallActive || labelsActive) return;
+    const stamp = libWallStampNow();
+    const want = Math.max(LIB_PAGE, libWall.offset);
+    libWall.seq++;                 // any page in flight read the old order — orphan it
+    const mySeq = libWall.seq;
+    libWall.loading = true;
+    try {
+      const got = [];
+      let total = null;
+      while (got.length < want) {
+        const count = Math.min(LIB_REFRESH_CHUNK, want - got.length);
+        const r = await fetch(`/api/library/albums?offset=${got.length}&count=${count}&${libViewQuery()}`);
+        if (!libraryWallActive || mySeq !== libWall.seq) return;
+        if (!r.ok) return;         // keep what is on screen; the next change tries again
+        const j = await r.json();
+        if (!libraryWallActive || mySeq !== libWall.seq) return;
+        const page = (j && j.albums) || [];
+        if (j && typeof j.total === "number") total = j.total;
+        for (const a of page) got.push(a);
+        if (page.length < count) break;
+      }
+      const m = document.querySelector("main");
+      const top = m ? m.scrollTop : 0;
+      paintRow(grid, got.map(a => ({ key: "libwall|" + albumTileKey(a), build: () => libWallTile(a) })));
+      if (m && m.scrollTop !== top) m.scrollTop = top;
+      libWall.offset = got.length;
+      libWall.done = got.length < want;
+      libWall.total = total !== null ? total : got.length;
+      libWall.readStamp = stamp;
+      setCountText(libWallCountText());
+      setBanner(got.length ? null : "Nothing matches this focus — try clearing a filter.", false);
+    } catch (e) {
+      // Offline mid-read. What is on screen stays, and the next change retries.
+    } finally {
+      if (mySeq === libWall.seq) libWall.loading = false;
+    }
+  }
+  function libraryWallNeedsRead() {
+    return libraryWallActive && !labelsActive && libWall.readStamp !== libWallStampNow();
+  }
+  onLive(() => {
+    if (libraryWallNeedsRead()) liveWhenIdle("library-wall", refreshLibraryWall);
+  });
 
   let libFacets = null;   // cached /api/library/facets payload
 
@@ -4617,50 +5158,59 @@
   // Render the genre buttons from card descriptors ({label, genre} or
   // {label, group, parent}). Shared by the live loader and the cache repaint;
   // the descriptors are plain data, so they persist and rebuild identically.
+  function buildGenreCard(c) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "home-genre-card";
+    card.textContent = c.label;
+    card.addEventListener("click", () => {
+      if (!window.__applyFilter) return;
+      if (c.group) {
+        // Pick a random sub-genre from the group; the breadcrumb keeps the
+        // group label (e.g. "Rock/Metal"). Refreshing the grid reshuffles
+        // that sub-genre; re-tapping the button picks a new one.
+        const sub = pickWeightedSub(c.group);
+        window.__applyFilter({ type: "genre", value: sub.title, parent: c.parent, label: c.label });
+      } else {
+        window.__applyFilter({ type: "genre", value: c.genre });
+      }
+    });
+    return card;
+  }
   function renderHomeGenres(cards) {
     cards = cards || [];
-    homeGenres.innerHTML = "";
+    if (!homeGenres) return;
     if (!cards.length) {
       homeGenres.innerHTML = '<div class="home-carousel-empty">No genres found.</div>';
       return;
     }
-    const frag = document.createDocumentFragment();
-    for (const c of cards) {
-      const card = document.createElement("button");
-      card.type = "button";
-      card.className = "home-genre-card";
-      card.textContent = c.label;
-      card.addEventListener("click", () => {
-        if (!window.__applyFilter) return;
-        if (c.group) {
-          // Pick a random sub-genre from the group; the breadcrumb keeps the
-          // group label (e.g. "Rock/Metal"). Refreshing the grid reshuffles
-          // that sub-genre; re-tapping the button picks a new one.
-          const sub = pickWeightedSub(c.group);
-          window.__applyFilter({ type: "genre", value: sub.title, parent: c.parent, label: c.label });
-        } else {
-          window.__applyFilter({ type: "genre", value: c.genre });
-        }
-      });
-      frag.appendChild(card);
-    }
-    homeGenres.appendChild(frag);
+    // Keyed on the whole descriptor: a card whose sub-genre list changed is
+    // rebuilt (its click handler closes over that list), the rest are kept.
+    paintRow(homeGenres, cards.map(c => ({ key: "genre:" + JSON.stringify(c), build: () => buildGenreCard(c) })));
   }
 
-  async function loadHomeGenres() {
-    if (!homeGenres) return;
+  async function loadHomeGenres(isCurrent) {
+    if (!homeGenres) return false;
     if (!rowHasContent(homeGenres)) homeGenres.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
     try {
       const [genresRes, groupsRes] = await Promise.all([
         fetch("/api/filters/genres").catch(() => null),
         fetch("/api/home/genre-groups").catch(() => null)
       ]);
+      if (!isCurrent()) return false;
       if ((genresRes && genresRes.status === 503) || (groupsRes && groupsRes.status === 503)) {
         if (!rowHasContent(homeGenres)) homeGenres.innerHTML = '<div class="home-carousel-empty">Waiting for Roon Core…</div>';
-        return;   // keep any cached cards while the index builds
+        return false;   // keep any cached cards while the index builds
       }
-      const genresJ = genresRes ? await genresRes.json().catch(() => ({})) : {};
-      const groupsJ = groupsRes ? await groupsRes.json().catch(() => ({})) : {};
+      // Either half can fail on its own and the other still makes cards — the
+      // genre list alone, or the Rock/Metal and Pop split alone — so a failed
+      // half counts as empty, as it always has. But the row is then only
+      // partly answered: it paints what it has and is asked again on the next
+      // visit or rebuild, rather than being taken as settled.
+      const partial = !genresRes || !genresRes.ok || !groupsRes || !groupsRes.ok;
+      const genresJ = genresRes && genresRes.ok ? await genresRes.json().catch(() => ({})) : {};
+      const groupsJ = groupsRes && groupsRes.ok ? await groupsRes.json().catch(() => ({})) : {};
+      if (!isCurrent()) return false;
       // Pull extra genres up front — splitting Pop/Rock adds a card, and we trim
       // down to an even count afterwards so the 2-column grid has full rows.
       const top = ((genresJ && genresJ.genres) || []).slice(0, 16); // biggest first
@@ -4692,55 +5242,66 @@
 
       if (cards.length) {
         renderHomeGenres(cards);
-        homeSectionsLoaded = true;   // populated — stop retrying on future visits
-        saveHomeCache({ genres: cards });
-      } else if (!rowHasContent(homeGenres)) {
+        if (!partial) saveHomeCache({ genres: cards });
+        return !partial;
+      }
+      if (!rowHasContent(homeGenres)) {
         // Empty 200 (index still building after a restart) — keep the hydrated
         // cards if we have them; only show "No genres found." when nothing is
         // cached, rather than blanking a good cached row.
         renderHomeGenres([]);
+        return !partial;
       }
+      return false;
     } catch (e) {
+      if (!isCurrent()) return false;
       if (!rowHasContent(homeGenres)) homeGenres.innerHTML = '<div class="home-carousel-empty">Couldn’t load genres.</div>';
+      return false;
     }
   }
 
   // Instant open: repaint the last persisted Home rows immediately, before we've
   // even reconnected to Roon. Returns true if it painted the main content, so
   // the boot path can reveal Home right away instead of a blank "Connecting…".
-  // The live loaders (called by showHome once paired) then revalidate silently,
-  // swapping fresh data in without a "Loading…" flash. Seeding homeRowsLoadedAt
-  // lets the existing 5-minute TTL skip the unplayed/random refetch entirely on
-  // a quick reopen — but only when BOTH rows are recent: it's seeded from the
-  // OLDER of the two per-row timestamps, so a stale sibling (e.g. unplayed kept
-  // an old cache while random refreshed) forces a silent revalidation instead
-  // of riding the fresh row's freshness.
+  //
+  // What is painted here is never taken as current (v1.8.65). Every row is
+  // asked again as soon as Home loads, and because rows are repainted by key
+  // (paintRow) an answer that matches the copy moves nothing on screen — so the
+  // instant open costs no flash, and a copy that has gone stale is corrected
+  // within a round trip instead of being trusted. The Library row was trusted
+  // outright until then, which is how a row saved weeks earlier went on showing
+  // that day's order and badges for as long as the sort was left alone.
   function hydrateHomeFromCache() {
     const c = readHomeCache();
     if (!c) return false;
     // Order and enablement first: painting into the default order and then
     // reordering is a visible flash on every cold open.
     applyHomeLayout();
+    // The random rows' DRAW comes back with them — their seeds and when they
+    // were drawn — so within the TTL the re-read asks for the same albums and a
+    // reopen changes only facts that moved; after it, showHome draws again. The
+    // OLDER of the two times, so a stale sibling cannot ride a fresh one. A copy
+    // saved before v1.8.65 has no seeds, and its rows are simply drawn afresh.
+    if (typeof c.unplayedSeed === "number" && typeof c.randomSeed === "number" &&
+        typeof c.unplayedAt === "number" && typeof c.randomAt === "number") {
+      homeSeeds.unplayed = c.unplayedSeed;
+      homeSeeds.random = c.randomSeed;
+      homeRowsRolledAt = Math.min(c.unplayedAt, c.randomAt);
+    }
+    rerollHomeRandomRowsIfDue();
     let painted = false;
     if (c.unplayed && homeUnplayed) { renderHomeUnplayed(c.unplayed.aotd, c.unplayed.albums); painted = rowHasContent(homeUnplayed) || painted; }
     if (c.random   && homeRandom)   { renderHomeRandom(c.random);                              painted = rowHasContent(homeRandom)   || painted; }
-    // Only when it was cached in the order that is current NOW. The other rows
-    // hydrate stale-then-revalidate, but "stale" here means the wrong ORDER —
-    // painting it would flash the previous sort on every cold open, which is
-    // the very thing the row is supposed to be reflecting. A cache written
-    // before this field existed has no librarySort, so it does not match and
-    // the row simply loads fresh: no cache-key bump needed for that.
-    if (c.library && homeLibrary && c.librarySort === libSortKey()) {
-      renderHomeLibrary(c.library);
-      homeLibraryKey = c.librarySort;   // hydrated in the current order — no refetch
-    }
+    // Only when it was cached in the order that is current NOW. For this row a
+    // copy in another order is not "slightly old", it is the WRONG ORDER, and
+    // painting it would flash the previous sort on every cold open. A copy
+    // written before the field existed has no librarySort, so it does not
+    // match and the row simply loads fresh.
+    if (c.library && homeLibrary && c.librarySort === libSortKey()) renderHomeLibrary(c.library);
     if (c.lotw     && homeLotw)     { renderHomeLotw(c.lotw.label, c.lotw.albums); }
     if (c.history  && homeHistory)  { renderHomeHistory(c.history); }
     if (c.genres   && homeGenres)   { renderHomeGenres(c.genres); }
     if (!painted) return false;
-    if (typeof c.unplayedAt === "number" && typeof c.randomAt === "number") {
-      homeRowsLoadedAt = Math.min(c.unplayedAt, c.randomAt);   // honour the TTL across reopens
-    }
     // Reveal Home so the cached content is actually on screen while we reconnect.
     if (homeView)     homeView.classList.remove("hidden");
     if (homeSections) homeSections.classList.remove("hidden");
@@ -5205,31 +5766,89 @@
     }
   }
 
-  async function loadRandom() {
-    refreshBtn.disabled = true;
-    albumCount = computeAlbumCount();
-    renderSkeletons(albumCount);
+  // The random wall's DRAW (v1.8.65). Every loadRandom() is a new one — that is
+  // what Refresh, a new filter and a resize all mean — and while it is on screen
+  // it is re-read with the same seed when the library moves, so the same albums
+  // stay put with current facts. Only the draws made from the snapshot take a
+  // seed (the whole library, or a decade). A genre or tag wall is drawn by Roon
+  // itself on every request: re-reading it would be a new draw, and a round of
+  // Core calls, that nobody asked for — so it stays as drawn until Refresh.
+  let randomWallSeed = 1;
+  let randomWallStamp = null;
+  let randomWallSeq = 0;       // bumped by every new DRAW
+  let randomWallReadSeq = 0;   // bumped by every live re-read of the current draw
+  const randomWallSeeded = () => !activeFilter || activeFilter.type === "decade";
+  // The grid is shared by every wall, so "the random wall is showing" is read
+  // off the tiles themselves: only this wall keys its tiles "random|…".
+  function randomWallOnScreen() {
+    const first = grid.firstElementChild;
+    return !grid.classList.contains("hidden") && !homeOnScreen() &&
+           !!(first && typeof first.__tileKey === "string" && first.__tileKey.startsWith("random|"));
+  }
+
+  async function loadRandom(opts) {
+    // Wired straight to the Refresh button too, which passes its click event —
+    // so only a real { live: true } counts.
+    const live = !!(opts && opts.live === true);
+    if (!live) {
+      refreshBtn.disabled = true;
+      albumCount = computeAlbumCount();
+      renderSkeletons(albumCount);
+      randomWallSeed = newHomeSeed();
+    }
+    // A draw is abandoned when a newer draw starts. A re-read also when a newer
+    // re-read starts or anything else takes the grid — and it never counts as
+    // a draw, so it cannot orphan one (the draw owns the Refresh button, and
+    // only the newest draw hands it back).
+    const seq = live ? randomWallSeq : ++randomWallSeq;
+    const readSeq = live ? ++randomWallReadSeq : 0;
+    const seeded = randomWallSeeded();
+    const stamp = liveStamp(["library"]);
+    const current = () => seq === randomWallSeq &&
+      (!live || (readSeq === randomWallReadSeq && randomWallOnScreen()));
     try {
-      const r = await fetch(`/api/random-albums?count=${albumCount}${filterQS()}`);
+      const r = await fetch(`/api/random-albums?count=${albumCount}${filterQS()}` +
+                            (seeded ? "&seed=" + randomWallSeed : ""));
+      if (!current()) return;
       if (r.status === 503) {
+        if (live) return;
         const j = await r.json().catch(() => ({}));
         setBanner(j.error || "Waiting for Roon Core. Enable this extension in Roon \u2192 Settings \u2192 Extensions.", true);
         grid.innerHTML = ""; return;
       }
       if (!r.ok) {
+        if (live) return;
         const j = await r.json().catch(() => ({}));
         throw new Error(j.error || `HTTP ${r.status}`);
       }
       const j = await r.json();
-      renderAlbums(j.albums || []);
-      updateCountReadout(j.filtered ? j.total : null);
+      if (!current()) return;
+      const albums = j.albums || [];
+      if (seeded && albums.length) {
+        setBanner(null);
+        const m = document.querySelector("main");
+        const top = m ? m.scrollTop : 0;
+        paintRow(grid, albums.map(a => ({ key: "random|" + albumTileKey(a), build: () => buildAlbumTile(a) })));
+        if (live && m && m.scrollTop !== top) m.scrollTop = top;
+        randomWallStamp = stamp;
+      } else if (!live) {
+        renderAlbums(albums);
+      }
+      if (!live) updateCountReadout(j.filtered ? j.total : null);
     } catch (e) {
+      if (live || seq !== randomWallSeq) return;
       setBanner(`Couldn't load albums: ${e.message}`, true);
       grid.innerHTML = "";
     } finally {
-      refreshBtn.disabled = false;
+      if (!live && seq === randomWallSeq) refreshBtn.disabled = false;
     }
   }
+  onLive(() => {
+    if (!randomWallOnScreen() || !randomWallSeeded() || randomWallStamp === liveStamp(["library"])) return;
+    liveWhenIdle("random-wall", () => {
+      if (randomWallOnScreen() && randomWallSeeded()) loadRandom({ live: true });
+    });
+  });
 
   // ----- Zones -----
   async function loadZones() {
@@ -5725,12 +6344,9 @@
   // screen re-pulls the queue, and a fold-out that shut itself on each of those
   // would be unusable.
   let queueHistoryOpen = false;
-  // Select mode, and the picks in the order they were MADE — which is the order
-  // they will be queued in, and is not the order they are shown in. Both are
-  // reset whenever the list is rebuilt: the rows are new nodes then, and a
-  // selection pointing at rows that no longer exist is worse than none.
-  let historySelectMode = false;
-  let historySelected = [];
+  // historySelectMode / historySelected are declared with the other view flags
+  // at the top of this scope — liveBusy() reads the mode, and the live code sits
+  // far above this point in the file.
   // Mirrors lib/queue-history.js. Each track is a full browse navigation, so a
   // large selection is minutes of Core traffic; the server enforces the same
   // number and this is only here to say so before the request is made.
@@ -6002,32 +6618,65 @@
     }
   }
 
-  async function loadQueue() {
+  // Orphans a queue read that a newer one has overtaken. Without it two reads
+  // in flight at once (a zone change as the tab opens) each cleared the list
+  // and then BOTH appended to it — every row twice.
+  let queueSeq = 0;
+  // `silent` is the live re-read (v1.8.65): the Queue tab follows the queue as
+  // it moves — a track ending, something queued from Roon's own app, Roon Radio
+  // topping up — where it used to show what was queued when the tab opened. No
+  // "Loading queue…", nothing repainted when the answer is what is showing, the
+  // new rows swapped in whole with the scroll position kept, and a failure
+  // leaves the list alone rather than replacing it with an error.
+  async function loadQueue(opts) {
+    const silent = !!(opts && opts.silent === true);
     const zoneId = queueZoneId();
     if (!zoneId) return;
     const summary = document.getElementById("queue-summary");
     const list    = document.getElementById("queue-list");
     const empty   = document.getElementById("queue-empty");
-    summary.textContent = "Loading queue…";
-    list.innerHTML = "";
-    // The rows about to be discarded are the ones the picks point at, so the
-    // selection goes with them. Select MODE goes too: leaving it on with an
-    // empty selection shows an action bar over rows nobody has picked yet.
-    historySelectMode = false;
-    historySelected = [];
-    empty.classList.add("hidden");
+    const seq = ++queueSeq;
+    if (!silent) {
+      summary.textContent = "Loading queue…";
+      list.innerHTML = "";
+      list.__liveSig = null;
+      // The rows about to be discarded are the ones the picks point at, so the
+      // selection goes with them. Select MODE goes too: leaving it on with an
+      // empty selection shows an action bar over rows nobody has picked yet.
+      historySelectMode = false;
+      historySelected = [];
+      empty.classList.add("hidden");
+    }
     try {
       const r = await fetch(`/api/queue?zone=${encodeURIComponent(zoneId)}`);
+      if (seq !== queueSeq) return;
+      if (silent && !r.ok) return;
       const j = await r.json();
+      if (seq !== queueSeq) return;
       const items = j.items || [];
       const history = Array.isArray(j.history) ? j.history : [];
+      // The same answer as the one on screen: nothing to do.
+      const sig = JSON.stringify([zoneId, items, history]);
+      if (silent && sig === list.__liveSig) return;
+      // A re-read rebuilds the rows, and a selection points at rows. It only
+      // STARTS outside one (liveBusy), but "Select" can be tapped while it is in
+      // the air — then it waits for the selection to end rather than wiping it.
+      if (silent && historySelectMode) { window.__queueMoved(); return; }
+      historySelectMode = false;
+      historySelected = [];
+      // Built off-screen when it replaces a list the user is looking at, and
+      // swapped in at the end, so they never see it empty.
+      const out = silent ? document.createDocumentFragment() : list;
       // Only truly empty when there is nothing either side of the divider. A
       // queue that has run out but played twenty tracks is not an empty screen.
       if (!items.length && !history.length) {
         summary.textContent = "";
+        if (silent) list.textContent = "";
         empty.classList.remove("hidden");
+        list.__liveSig = sig;
         return;
       }
+      empty.classList.add("hidden");
       let totalSec = 0;
       for (const it of items) if (it.length) totalSec += it.length;
       summary.textContent = items.length
@@ -6035,7 +6684,7 @@
         : "Nothing more queued";
 
       // Above the "Now playing" divider, because that is where it happened.
-      renderQueueHistory(list, history);
+      renderQueueHistory(out, history);
 
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
@@ -6048,7 +6697,7 @@
             '<span class="q-divider-line"></span>' +
             '<span class="q-divider-label">Now playing</span>' +
             '<span class="q-divider-line"></span>';
-          list.appendChild(div);
+          out.appendChild(div);
         }
         const li = document.createElement("li");
         if (i === 0) li.classList.add("is-now");
@@ -6107,12 +6756,29 @@
           });
         }
 
-        list.appendChild(li);
+        out.appendChild(li);
       }
+      if (silent) {
+        const body = modal ? modal.querySelector(".modal-body") : null;
+        const top = body ? body.scrollTop : 0;
+        list.textContent = "";
+        list.appendChild(out);
+        if (body && body.scrollTop !== top) body.scrollTop = top;
+      }
+      list.__liveSig = sig;
     } catch (e) {
+      if (seq !== queueSeq || silent) return;
       summary.textContent = "Couldn't load queue: " + e.message;
     }
   }
+  // Called by the now-playing poll when the zone says its queue has moved.
+  function queueTabOpen() {
+    return !!(modal && !modal.classList.contains("hidden") && modal.classList.contains("tab-queue"));
+  }
+  window.__queueMoved = () => {
+    if (!queueTabOpen()) return;
+    liveWhenIdle("queue", () => { if (queueTabOpen()) loadQueue({ silent: true }); });
+  };
   function fmtDuration(secs) {
     secs = Math.max(0, Math.floor(secs || 0));
     const h = Math.floor(secs / 3600);
@@ -6519,6 +7185,34 @@
     catch (e) { return m[1]; /* no Intl on this device: the year is still right */ }
   }
 
+  // The open album's date, re-read when the release days move (v1.8.65). The
+  // page waits 1.5 s for a day lookup and shows the year if it is not back by
+  // then; this is how the day reaches the page once it lands, instead of on
+  // the next visit. Only ever rewrites the date renderExtras drew — never adds
+  // one (renderExtras may still be about to), and never replaces a date with
+  // nothing.
+  async function refreshModalReleaseDate(album) {
+    if (!album || !modalSub || !modalSub.querySelector(".modal-release-date")) return;
+    try {
+      const params = new URLSearchParams({ title: album.title || "", artist: album.subtitle || "" });
+      const r = await fetch("/api/album/release-date?" + params);
+      if (!r.ok) return;
+      const j = await r.json();
+      if (album !== currentAlbum) return;
+      const text = formatReleaseDate(j && j.release_date);
+      const el = modalSub.querySelector(".modal-release-date");
+      if (el && text && el.textContent !== " · " + text) el.textContent = " · " + text;
+    } catch (e) {
+      // Offline, or the server restarting: the date shown stays, and the next
+      // change asks again.
+    }
+  }
+  onLive((changed) => {
+    if (!changed.has("dates") && !changed.has("library")) return;
+    if (!modal || modal.classList.contains("hidden") || !currentAlbum) return;
+    refreshModalReleaseDate(currentAlbum);
+  });
+
   function renderExtras(extras, album) {
     // 1. Append the release date + label to subtitle line (artist button
     // already present). The date is the one the Release date sort orders this
@@ -6528,7 +7222,8 @@
       (extras.album && extras.album.year ? String(extras.album.year) : "");
     if (yearToShow) {
       const yearSpan = document.createElement("span");
-      yearSpan.className = "modal-subtitle-year";
+      // modal-release-date: the one span refreshModalReleaseDate() may rewrite.
+      yearSpan.className = "modal-subtitle-year modal-release-date";
       yearSpan.textContent = " · " + yearToShow;
       modalSub.appendChild(yearSpan);
     }
@@ -7680,35 +8375,67 @@
       setBanner(null);
       setCountText(name);
       renderSkeletons(computeAlbumCount());
+      await readLabelAlbums(name, false);
+    }
+
+    // v1.8.65: the label page follows the library and the label scan while it
+    // is open — an album filed under the label as the scan reaches it appears
+    // on the page, with no Back and in again. `live` is that re-read: the
+    // scroll kept, unchanged tiles kept, and a failure leaving the page as is.
+    const LABEL_ALBUMS_DEPS = ["labels", "library"];
+    let labelAlbumsStamp = null;
+    let labelAlbumsSeq = 0;
+    const labelAlbumsOnScreen = () => labelsActive && mode === "albums" && !!currentLabelName &&
+      !(window.__artistViewActive && window.__artistViewActive());
+    async function readLabelAlbums(name, live) {
+      const seq = ++labelAlbumsSeq;
+      const stamp = liveStamp(LABEL_ALBUMS_DEPS);
+      // A label switched to (or away from) while this was in the air owns the
+      // grid now; its answer must not be painted over by this one.
+      const current = () => seq === labelAlbumsSeq && labelsActive && mode === "albums" &&
+                            currentLabelName === name;
       try {
         const r = await fetch("/api/label-albums?label=" + encodeURIComponent(name) +
                               "&order=" + encodeURIComponent(labelOrder()));
         const j = await r.json();
-        if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+        if (!current()) return;
+        if (!r.ok) {
+          if (live) return;
+          throw new Error(j.error || ("HTTP " + r.status));
+        }
+        labelAlbumsStamp = stamp;
         currentLabelLogoUrl = j.logo_url || null; // expose to logo picker
         const albums = j.albums || [];
         if (!albums.length) {
+          if (live) return;   // never blank a page mid-read; the next change says more
           grid.innerHTML = "";
           setBanner("No albums found for this label.", false);
           return;
         }
-        setCountText(name);
-        grid.innerHTML = "";
-        const frag = document.createDocumentFragment();
-        for (const a of albums) {
-          // Label albums carry FULL-LIBRARY offsets; without the explicit
-          // filter:null override a lingering genre/tag filter would resolve
-          // them against the wrong (filtered) list — the offset misses, and
-          // the stale-offset defense correctly refuses with "library changed"
-          // even though nothing did. (Same override Home rows use.)
-          frag.appendChild(buildAlbumTile(a, () => openAlbum(a, { filter: null })));
-        }
-        grid.appendChild(frag);
+        if (!live) setCountText(name);
+        const top = mainEl ? mainEl.scrollTop : 0;
+        // Label albums carry FULL-LIBRARY offsets; without the explicit
+        // filter:null override a lingering genre/tag filter would resolve
+        // them against the wrong (filtered) list — the offset misses, and
+        // the stale-offset defense correctly refuses with "library changed"
+        // even though nothing did. (Same override Home rows use.)
+        paintRow(grid, albums.map(a => ({
+          key: "label|" + albumTileKey(a),
+          build: () => buildAlbumTile(a, () => openAlbum(a, { filter: null })),
+        })));
+        if (live && mainEl && mainEl.scrollTop !== top) mainEl.scrollTop = top;
       } catch (e) {
+        if (live || !current()) return;
         grid.innerHTML = "";
         setBanner("Couldn't load albums: " + e.message, true);
       }
     }
+    onLive(() => {
+      if (!labelAlbumsOnScreen() || labelAlbumsStamp === liveStamp(LABEL_ALBUMS_DEPS)) return;
+      liveWhenIdle("label-albums", () => {
+        if (labelAlbumsOnScreen()) readLabelAlbums(currentLabelName, true);
+      });
+    });
 
     if (labelsBack) labelsBack.addEventListener("click", () => showLabelsList());
 
@@ -8274,8 +9001,39 @@
     }
   }
 
+  // What the zone says about its QUEUE, as one string (v1.8.65): the track now
+  // playing, how much is queued behind it, and shuffle, which reorders it. The
+  // Queue tab is re-read when this moves, so it follows a track ending, a
+  // queue edit from Roon's own app and Roon Radio topping up — and costs
+  // nothing at all while the queue is still, which is almost all of the time.
+  //
+  // Only moves WITHIN one zone count. Switching zones is not the queue moving:
+  // the zone selector's own handler reloads the Queue tab for the new zone, and
+  // firing here as well asked the Core for the same queue twice.
+  let lastQueueSig = null;
+  let lastQueueZone = null;
+  function queueSigOf(zone) {
+    if (!zone) return "";
+    const np = zone.now_playing || {};
+    return JSON.stringify([np.line1 || "", np.line2 || "", np.line3 || "", np.length || 0,
+                           zone.queue_items_remaining === undefined ? null : zone.queue_items_remaining,
+                           !!(zone.settings && zone.settings.shuffle)]);
+  }
+
   function renderZone(zone) {
     currentZone = zone;
+    {
+      const qs = queueSigOf(zone);
+      const zid = zone ? zone.zone_id : null;
+      if (qs !== lastQueueSig || zid !== lastQueueZone) {
+        // Not on the first read (the state the tab was opened in), and not on
+        // a zone switch (see above).
+        const moved = lastQueueSig !== null && zid !== null && zid === lastQueueZone;
+        lastQueueSig = qs;
+        lastQueueZone = zid;
+        if (moved && window.__queueMoved) window.__queueMoved();
+      }
+    }
     const np = zone && zone.now_playing;
     if (!np) {
       npLen = 0; npSetBase(0); npPrevSrv = null;
@@ -12992,6 +13750,79 @@ initServiceBrowser({
 
   let artistViewActive = false;
   let saved            = null;   // snapshot of the screen we came from
+  // The artist on screen, and the library revision its albums were read at
+  // (v1.8.65): an album of theirs added to Roon, or one whose badge changed,
+  // reaches the page while it is open — see refreshArtistView.
+  let artistViewName  = null;
+  let artistViewStamp = null;
+  let artistReadSeq   = 0;
+  const ARTIST_VIEW_DEPS = ["library"];
+  const liveApi = () => window.__live || null;
+  // The page's children, keyed so a re-read can reuse every one that did not
+  // change: the section headings by their text, the tiles by what they show.
+  // (The bio block keys itself when it arrives.)
+  function artistViewEntries(j) {
+    const L = liveApi();
+    const tileKey = (a) => "artist|" + (L ? L.tileKey(a) : JSON.stringify(a));
+    const heading = (text) => ({ key: "hdr:" + text, build: () => {
+      const hdr = document.createElement("div");
+      hdr.className = "artist-section-header";
+      hdr.textContent = text;
+      return hdr;
+    } });
+    const out = [];
+    if (j.primary.length) {
+      if (j.featured.length) out.push(heading("Albums"));
+      for (const a of j.primary) out.push({ key: tileKey(a), build: () => window.__buildAlbumTile(a) });
+    }
+    if (j.featured.length) {
+      out.push(heading("Also appears on"));
+      for (const a of j.featured) out.push({ key: tileKey(a), build: () => window.__buildAlbumTile(a) });
+    }
+    return out;
+  }
+  function artistCountBar(total, artistName) {
+    if (!countBar) return;
+    countBar.innerHTML = `
+      <button class="artist-view-back" id="artist-back-btn">← Back</button>
+      <span class="count-text"></span>`;
+    countBar.querySelector(".count-text").textContent =
+      `${total} album${total !== 1 ? "s" : ""} · ${artistName}`;
+    document.getElementById("artist-back-btn").addEventListener("click", exitArtistView);
+  }
+  async function refreshArtistView() {
+    const L = liveApi();
+    if (!L || !artistViewActive || !artistViewName) return;
+    const name = artistViewName;
+    const seq = ++artistReadSeq;
+    const stamp = L.stamp(ARTIST_VIEW_DEPS);
+    try {
+      const r = await fetch("/api/artist-albums?artist=" + encodeURIComponent(name));
+      if (!r.ok) return;   // what is on screen stays; the next change retries
+      const j = await r.json();
+      if (!artistViewActive || artistViewName !== name || seq !== artistReadSeq) return;
+      artistViewStamp = stamp;
+      const total = j.primary.length + j.featured.length;
+      if (!total) return;  // an artist whose albums all left: keep the page rather than blank it mid-read
+      const entries = artistViewEntries(j);
+      const head = Array.prototype.find.call(grid.children, el => el.__tileKey === "artist-bio");
+      if (head) entries.unshift({ key: "artist-bio", build: () => head });
+      const mainEl = document.querySelector("main");
+      const top = mainEl ? mainEl.scrollTop : 0;
+      L.paintRow(grid, entries);
+      if (mainEl && mainEl.scrollTop !== top) mainEl.scrollTop = top;
+      artistCountBar(total, name);
+    } catch (e) {
+      // Offline, or the server restarting: the page stays as it is.
+    }
+  }
+  if (window.__live) {
+    window.__live.on(() => {
+      if (!artistViewActive || !artistViewName) return;
+      if (artistViewStamp === window.__live.stamp(ARTIST_VIEW_DEPS)) return;
+      window.__live.whenIdle("artist-view", refreshArtistView);
+    });
+  }
 
   // opts.restore === false: the caller is building its OWN screen (Home, a
   // fresh wall) and has already reset the view flags — putting the captured
@@ -13045,6 +13876,9 @@ initServiceBrowser({
       // Land back where the user was, not at the top of the wall.
       const mainEl = document.querySelector("main");
       if (mainEl && typeof saved.scrollTop === "number") mainEl.scrollTop = saved.scrollTop;
+      // The screen just put back heard nothing while it was away: bring it up
+      // to date where it stands (v1.8.65 — see liveCatchUp).
+      if (window.__liveCatchUp) window.__liveCatchUp();
     }
     saved = null;
   }
@@ -13134,48 +13968,38 @@ initServiceBrowser({
     }
     grid.innerHTML = "";
 
+    // This artist is the one on screen now: a read still in flight for the
+    // previous one — this page's first load or a live re-read — must not paint.
+    artistViewName = artistName;
+    const mySeq = ++artistReadSeq;
+    const L = liveApi();
+    const stamp = L ? L.stamp(ARTIST_VIEW_DEPS) : null;
     try {
       const r = await fetch("/api/artist-albums?artist=" + encodeURIComponent(artistName));
       if (!r.ok) throw new Error("HTTP " + r.status);
       const j = await r.json();
+      if (!artistViewActive || mySeq !== artistReadSeq) return;
+      artistViewStamp = stamp;
       const total = j.primary.length + j.featured.length;
 
-      if (countBar) {
-        countBar.innerHTML = `
-          <button class="artist-view-back" id="artist-back-btn">← Back</button>
-          <span class="count-text">${total} album${total !== 1 ? "s" : ""} · ${artistName}</span>`;
-        document.getElementById("artist-back-btn").addEventListener("click", exitArtistView);
-      }
+      artistCountBar(total, artistName);
 
       if (!total) {
-        grid.innerHTML = `<div class="artist-view-empty">No albums found for "${artistName}"</div>`;
+        const empty = document.createElement("div");
+        empty.className = "artist-view-empty";
+        empty.textContent = `No albums found for "${artistName}"`;
+        grid.appendChild(empty);
         return;
       }
 
+      // Keyed as they are built (artistViewEntries), so the first live re-read
+      // can reuse them rather than rebuild the page.
       const frag = document.createDocumentFragment();
-
-      if (j.primary.length) {
-        if (j.featured.length) {
-          const hdr = document.createElement("div");
-          hdr.className = "artist-section-header";
-          hdr.textContent = "Albums";
-          frag.appendChild(hdr);
-        }
-        for (const a of j.primary) {
-          frag.appendChild(window.__buildAlbumTile(a));
-        }
+      for (const e of artistViewEntries(j)) {
+        const el = e.build();
+        el.__tileKey = e.key;
+        frag.appendChild(el);
       }
-
-      if (j.featured.length) {
-        const hdr = document.createElement("div");
-        hdr.className = "artist-section-header";
-        hdr.textContent = "Also appears on";
-        frag.appendChild(hdr);
-        for (const a of j.featured) {
-          frag.appendChild(window.__buildAlbumTile(a));
-        }
-      }
-
       grid.appendChild(frag);
 
       // Artist header (avatar + validated bio) loads after the albums so the
@@ -13185,6 +14009,7 @@ initServiceBrowser({
                        (j.featured[0] && j.featured[0].title) || "";
       renderArtistBioHead(artistName, bioAlbum);
     } catch (e) {
+      if (!artistViewActive || mySeq !== artistReadSeq) return;   // another page owns the bar now
       if (countBar) {
         countBar.innerHTML = `
           <button class="artist-view-back" id="artist-back-btn">← Back</button>
@@ -13240,6 +14065,7 @@ initServiceBrowser({
       foot.appendChild(toggle); foot.appendChild(src);
       body.appendChild(text); body.appendChild(foot);
       head.appendChild(body);
+      head.__tileKey = "artist-bio";   // a live re-read of the albums keeps it where it is
       grid.prepend(head);
       if (window.__setupBioToggle) window.__setupBioToggle(text, toggle);
     } catch (e) { /* bio is decorative — the album grid stands alone */ }

@@ -2,6 +2,113 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.65] — 2026-09-28
+
+### Fixed — the Home "Library" row showed an order the Library wall had left behind
+
+Reported with two screenshots: Home's Library row read Ride Lonesome, Hope Is
+the Thing with Feathers, You May Offend — with Q badges — while the Library
+wall it heads, sorted the same way (Release date, newest first), read Los Ojos
+Del Cóndor, The Meaning of Flowers, Cursum Perficio, Pylon, Ride Lonesome, with
+none. Clearing the browser's history (or deleting and re-adding the home-screen
+app on iOS) fixed it "until it starts again".
+
+The row decided it was fresh from the SORT alone. v1.7.76 keyed it on the order
+it held, so that a new sort would reach Home — but not on the data behind that
+order. Once loaded, the row was never read again while the sort stayed put, and
+the copy saved in the browser was painted on every cold open and marked fresh
+on the spot. As release days arrived the wall's order moved and the row did
+not, and its badges were the ones from the day it was saved (before v1.8.61
+read Roon's own services). Clearing site data removed the saved copy, the row
+loaded once, and it went stale again as the server moved on — which is exactly
+the "until it starts again". Class of error: a cache keyed on half of its
+inputs — the client's choice (the order), not the server's data.
+
+### Added — live state: every screen shows what the server holds now
+
+"The home page must be a live screen. I should not have to leave a screen and
+then go back to see it updated. This live state applies to the whole
+extension."
+
+- **`GET /api/live`** — one revision per kind of data a screen can show:
+  `snapshot`, `library`, `dates`, `plays`, `settings`, `labels`, `picks`,
+  `discover`, `day`. No Core calls. The app asks every 3 s while it is on
+  screen (never while hidden), straight away when it comes back, and again
+  after an outage, when every screen checks itself.
+- **Screens re-read in place** when a revision they read moves: the scroll
+  position is kept, there is no "Loading…", unchanged tiles stay the same
+  nodes (keyed reconciliation) so nothing blinks, and nothing is swapped under
+  a finger — a change waits while the screen is pressed, scrolled or being
+  selected in.
+- **Home**: every row, and the row order and switches when they are changed
+  on another device. The saved copy is still painted instantly on open, and is
+  now always checked against the server rather than trusted.
+- **Library wall**: re-reads its whole loaded range when the data its order
+  reads moves — release days for Release date, plays for Most played, Last
+  played and the Listening focus.
+- **Not played wall, random wall** (whole library and decade draws), **Queue
+  tab** (a track ending, a queue edit from Roon's own app, Roon Radio topping
+  up — asked only when the zone says its queue moved), **album page** (a release
+  day found after the page opened), **Smart Picks and Discover** ("come back
+  shortly" is gone: the list appears when the build lands), **artist page**,
+  **label page**.
+- **Not live, and why**: Roon playlists and dynamic playlists read their tracks
+  from Roon itself, so re-reading them would repeat Core calls; genre and tag
+  walls are drawn by Roon per request, so a re-read would be a new draw; search
+  results are a snapshot of what was typed; Settings panes.
+- **The random rows are draws fixed by a seed** (`seed` on
+  `/api/random-albums` and `/api/home/unplayed`), so a re-read shows the same
+  albums with current facts: an album played from "Not played in 6 months"
+  drops out and nothing else moves.
+
+### Fixed along the way
+
+- **The Home random rows never re-drew after five minutes** — not since the
+  rows became a table. The TTL stamp was renewed before the rows were asked
+  whether they were fresh, so a visit after the five minutes renewed it and
+  every row holding tiles answered "fresh". Drawn afresh on a visit once five
+  minutes old now, and a cold open settles the draw before anything loads (an
+  old saved copy was otherwise drawn twice).
+- **Most played / Last played / the Listening focus kept a stale order.** The
+  server's memoised views had no record of plays, so a wall sorted by Most
+  played kept the order it was first asked for until something unrelated
+  cleared the cache. `playsVersion` is part of those views' signature now.
+- **A favourites refresh or a /music walk changed which albums wear a Q, T or
+  local badge without telling anything** — the favourites refresh bumped only
+  when it also found new formats, the walk never did — so the memoised Source
+  focus and every screen kept the old badges until something else moved. Both
+  bump when their set actually changes.
+- **Two Queue reads in flight at once** (a zone change as the tab opened) both
+  appended to the list — every row twice. Reads are sequenced now.
+
+### Tests
+
+- `test/unit/live.test.js` — every revision moves with the data it names and
+  nothing else (and `snapshot` not with a badge); every writer moves its
+  revision (a track starting, a prune, a settings write, a finished Smart
+  Picks or Discover build) and a no-op does not; a Most played view re-sorted
+  after a play and a Release date view not re-sorted by one; a seeded draw
+  identical on every read, an album dropping out moving nothing else, and the
+  draw built on a mix that does not merely rotate between seeds; badge sets
+  bumping only when they differ.
+- `test/dom/live-state.test.js` — the report itself (a row changing with Home
+  on screen and nothing tapped; a saved copy in the current order checked, not
+  trusted), unchanged tiles kept as the same nodes, nothing swapped under a
+  held press, the Library wall re-read where it stands, the Queue tab
+  following a track change quietly and costing nothing while still, the seeded
+  rows and the five-minute redraw, a cold open drawing once, the album page's
+  day, the walls and a genre wall left alone, a settings change from another
+  device, Smart Picks and Discover filling in, the artist and label pages, a
+  screen catching up after an outage, and the genre buttons surviving one
+  failed read.
+- `test/dom/discover.test.js` — the building banner promises the list rather
+  than asking the user to come back.
+
+Mutation-checked: each rule reverted on its own — including the original
+"trust the saved copy" — turns its tests red.
+
+1380 unit / 679 DOM / 120 static.
+
 ## [1.8.64] — 2026-09-27
 
 ### Fixed — v1.8.63 stated an album's tags twice per walk

@@ -934,7 +934,24 @@ async function navigateToAlbumList(sessionKey, filter) {
 // the album offset, which is stable as long as the library isn't changing.
 // Optionally constrained to a genre or tag (see navigateToAlbumList).
 // ---------------------------------------------------------------------------
-async function pickRandomAlbums(count, filter) {
+// `want` records out of `pool` (index records), as tiles: the seeded choice
+// when a seed is given (see seededPick), a fresh random one otherwise. The two
+// index-backed paths of pickRandomAlbums share it. The live-browse path below
+// has no stable pool to seed against — the list is Roon's, read per request —
+// so it never takes a seed, and the app does not ask it to re-read.
+function pickFromIndex(pool, want, seed) {
+  let chosen;
+  if (seed !== null && seed !== undefined) {
+    chosen = seededPick(pool, want, seed);
+  } else {
+    const picked = new Set();
+    while (picked.size < want) picked.add(Math.floor(Math.random() * pool.length));
+    chosen = [...picked].map(i => pool[i]);
+  }
+  return chosen.map(al =>
+    withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }, al));
+}
+async function pickRandomAlbums(count, filter, seed) {
   // Decade filter has no Roon list to navigate — pick from the in-memory album
   // index filtered by the release year collected during scanning. Each record's
   // `offset` is its full-library position (resolved on open via filter=null).
@@ -951,13 +968,7 @@ async function pickRandomAlbums(count, filter) {
       if (y !== null && y >= decade && y < decade + 10) matches.push(al);
     }
     if (!matches.length) return { albums: [], total: 0 };
-    const want = Math.min(count, matches.length);
-    const picked = new Set();
-    while (picked.size < want) picked.add(Math.floor(Math.random() * matches.length));
-    const albums = [...picked].map(i => {
-      const al = matches[i];
-      return withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }, al);
-    });
+    const albums = pickFromIndex(matches, Math.min(count, matches.length), seed);
     return { albums, total: matches.length };
   }
 
@@ -970,13 +981,7 @@ async function pickRandomAlbums(count, filter) {
   // first moments after pairing).
   if (!filter && albumIndex.albums.length > 0) {
     const pool = albumIndex.albums;
-    const want = Math.min(count, pool.length);
-    const picked = new Set();
-    while (picked.size < want) picked.add(Math.floor(Math.random() * pool.length));
-    const albums = [...picked].map(i => {
-      const al = pool[i];
-      return withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }, al);
-    });
+    const albums = pickFromIndex(pool, Math.min(count, pool.length), seed);
     return { albums, total: pool.length };
   }
 
@@ -1827,12 +1832,18 @@ function loadPersistedSettings() {
   }
   return _settingsCache;
 }
+// Bumped on every settings write, whichever device made it — one of the live
+// revisions (see liveRevisions). Declared HERE, above its only writer, because
+// settings are saved during startup and a `let` further down would be in its
+// temporal dead zone when that happens.
+let settingsVersion = 0;
 function savePersistedSettings(patch) {
   try {
     const cur = loadPersistedSettings(); // hits cache after first call — no disk read
     Object.assign(cur, patch);           // mutate in place so cache stays coherent
     fs.mkdirSync(LABELS_DB_DIR, { recursive: true });
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(cur, null, 2));
+    settingsVersion++;
     return true;
   } catch (e) {
     console.error("[settings] save failed:", e.message);
@@ -2268,6 +2279,19 @@ let libraryMetaVersion = 0;
 // re-sort only those views, and not the genre lists bumpLibraryMeta also
 // clears. See scheduleLibraryDateBump for why they are batched as well.
 let libraryDateVersion = 0;
+// The other live revisions (v1.8.65), declared with the two above so every one
+// of them exists before anything that bumps it can run. Each counts changes to
+// one kind of data a screen can be showing; /api/live reports them and the app
+// re-reads whatever is on screen when one it depends on moves.
+//
+// playsVersion is ALSO part of a view's signature when its order or filter
+// reads the plays table (Most played, Last played, the Listening focus): those
+// views were memoised with no record of plays at all, so a wall sorted by Most
+// played kept the order it had when it was first asked for until something
+// unrelated — a year arriving, a rescan — happened to clear the cache.
+let playsVersion = 0;      // a play was recorded, or old plays were pruned
+let picksVersion = 0;      // today's Smart Picks were built, rebuilt or pruned
+let discoverVersion = 0;   // a Discover build finished
 const libraryViewCache = new Map();      // sig -> ordered album array
 const LIBRARY_VIEW_CACHE_MAX = 8;
 // The two genre lists that are cached against the Core. Declared HERE, above
@@ -3488,9 +3512,23 @@ function loadLocalAlbumKeys() {
     if (t.unref) t.unref();
   }
 }
+// Do two key sets hold the same members? The badges and the Source focus are
+// read straight off these sets, so replacing one with a set that DIFFERS is a
+// change to what every album screen shows — and must move the library revision
+// (bumpLibraryMeta), or the memoised views and the live screens keep showing
+// the badges from before it (v1.8.65). An identical set, the usual refresh,
+// moves nothing.
+function sameKeySet(a, b) {
+  if (a === b) return true;
+  if (!a || !b || a.size !== b.size) return false;
+  for (const k of a) if (!b.has(k)) return false;
+  return true;
+}
 function setLocalAlbumKeys(keys, dirs) {
+  const moved = !sameKeySet(localAlbumKeys, keys);
   localAlbumKeys = keys;
   localAlbumDirs = dirs || new Map();
+  if (moved) bumpLibraryMeta();   // the "local" badges and the Source focus follow these
   // The per-album file listings were resolved against the OLD directories.
   // Albums move (a re-rip, a reorganised folder), so anything cached against
   // the previous walk is now a guess about paths that may not exist.
@@ -3905,16 +3943,20 @@ async function refreshStreamAlbumKeys(reason) {
                         "will have no badge and no waveform. Please report this.");
         }
         if (qualities) {
-          // The Format/Sample rate/Bit depth facets just gained values, and the
-          // memoised orderings were built without them.
-          bumpLibraryMeta();
           console.log("[format] " + qualities + " album identities given a format by Qobuz");
         }
         // Assigned even when EMPTY — the user may have un-favourited everything,
         // and keeping the old set would badge albums that are no longer theirs.
+        const qobuzKeysMoved = !sameKeySet(qobuzAlbumKeys, keys);
         qobuzAlbumKeys = keys;
         qobuzAlbumYears = years;
         qobuzAlbumIds  = ids;
+        // The Format/Sample rate/Bit depth facets just gained values, or the Q
+        // badges and the Source focus just moved: the memoised orderings — and
+        // every screen showing them — were built without it. Before v1.8.65 only
+        // new formats bumped, so a refresh that changed WHICH albums are
+        // favourites left their badges as they were until something else did.
+        if (qualities || qobuzKeysMoved) bumpLibraryMeta();
         // ALBUMS read and albums Qobuz says there are, both, and in that order.
         // The old line led with keys.size and called it "albums", which is what
         // made a half-read library look like a whole one.
@@ -3970,12 +4012,13 @@ async function refreshStreamAlbumKeys(reason) {
           if (keys.size === before) skipped++;
         }
         if (qualities) {
-          bumpLibraryMeta();
           console.log("[format] " + qualities + " album identities given a format by TIDAL");
         }
+        const tidalKeysMoved = !sameKeySet(tidalAlbumKeys, keys);
         tidalAlbumKeys = keys;   // empty is a valid answer — see the Qobuz note
         tidalAlbumIds  = ids;
         tidalAlbumYears = years;
+        if (qualities || tidalKeysMoved) bumpLibraryMeta();   // see the Qobuz note above
         console.log("[stream] Tidal favourites: read " + rows.length + " albums" +
                     (all.total ? " of " + all.total + " TIDAL states" : "") +
                     " (" + reason + ") -> " + keys.size + " identity keys, " +
@@ -8148,6 +8191,58 @@ app.get("/api/status", (req, res) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// LIVE STATE (v1.8.65): one revision per kind of data a screen can be showing.
+//
+// The app held a screen's content until the screen was left and re-entered,
+// and on Home not even then: the Library row counted itself fresh whenever the
+// SORT matched, so a row saved under the current sort was reused across every
+// visit, every cold open and every server upgrade — the order and the badges
+// on it were whatever they had been the day it was saved. The contract now is
+// that a screen shows what the server holds NOW, and this is what makes that
+// cheap enough to keep: the app asks for these few numbers every few seconds
+// while it is open, and re-reads a screen only when one it depends on moves.
+//
+//   snapshot  the album list itself: the index was rebuilt because the library
+//             changed. The genre buttons follow this and nothing finer — they
+//             are read from the Core, and a year or a badge arriving does not
+//             change which genres Roon has.
+//   library   the snapshot and everything derived from it — years, source
+//             badges, genres, formats, first-seen dates — which is exactly
+//             what bumpLibraryMeta already invalidates the memoised views for.
+//             The two are one contract: a change the views are told about is a
+//             change the screens are told about.
+//   dates     release days (libraryDateVersion), which move only the Release
+//             date order, so only those screens follow it.
+//   plays     a play recorded or pruned.
+//   settings  any settings write, from any device.
+//   labels    the label index (Label of the week, the label screens).
+//   picks / discover   those features' daily builds, and their edits.
+//   day       the server's date: Album of the day and the daily builds turn
+//             over at midnight whether or not anything else moved.
+//
+// Nothing here costs a Core call, a query or an allocation beyond the reply.
+// ---------------------------------------------------------------------------
+function liveRevisions() {
+  return {
+    snapshot: String(albumIndex.builtAt || 0),
+    library:  String(albumIndex.builtAt || 0) + "." + libraryMetaVersion,
+    dates:    String(libraryDateVersion),
+    plays:    String(playsVersion),
+    settings: String(settingsVersion),
+    labels:   (labelsEnabled ? "1" : "0") + "." + (labelsIndex.builtAt || 0) + "." + labelsIndex.map.size,
+    picks:    String(picksVersion),
+    discover: String(discoverVersion),
+    day:      smartDayKey(),
+  };
+}
+app.get("/api/live", (req, res) => {
+  // Never from a cache: an answer that a proxy or the browser replayed is the
+  // stale screen this exists to prevent, one layer down.
+  res.set("Cache-Control", "no-store");
+  res.json({ rev: liveRevisions() });
+});
+
 // Roon's per-zone playback modes, normalised so no client has to cope with a
 // missing `settings` block (a zone that has never been played doesn't get one).
 // `loop` keeps Roon's own vocabulary: "disabled" | "loop" (whole queue) |
@@ -8327,7 +8422,7 @@ app.get("/api/random-albums", async (req, res) => {
   const count = Math.max(1, Math.min(96, parseInt(req.query.count || ALBUM_COUNT_DEFAULT, 10)));
   const filter = parseFilter(req.query);
   try {
-    const r = await pickRandomAlbums(count, filter);
+    const r = await pickRandomAlbums(count, filter, requestSeed(req.query.seed));
     res.json({ albums: r.albums, total: r.total, filtered: !!filter });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -8696,6 +8791,38 @@ function seededRank(str, seed) {
   for (let i = 0; i < str.length; i++) { h = (h * 31 + str.charCodeAt(i)) >>> 0; }
   return h;
 }
+// A seeded CHOICE, for the rows that are random but have to be re-readable
+// (v1.8.65). "Random albums" and "Not played in 6 months" are a random pick the
+// user is looking at, and a live screen re-reads them when the data behind them
+// moves — a badge, a play. A re-read that re-rolled the pick would swap every
+// tile under the user for nothing they could see. With a seed the row is a pure
+// function of (seed, library): the same albums in the same order, less any that
+// stopped qualifying — an album played drops out of "Not played" and the next
+// takes the last place, and nothing else moves. A new seed is a new pick.
+//
+// seededRank alone shuffles badly for this. It is a polynomial hash whose
+// first term is the seed, so every key of the same length is offset by the same
+// amount: a new seed rotates each length's order rather than reshuffling it.
+// murmur3's finaliser (fmix32) scrambles that, making each seed its own order.
+function seededMix(str, seed) {
+  let h = seededRank(str, seed);
+  h ^= h >>> 16; h = Math.imul(h, 0x85ebca6b) >>> 0;
+  h ^= h >>> 13; h = Math.imul(h, 0xc2b2ae35) >>> 0;
+  h ^= h >>> 16;
+  return h >>> 0;
+}
+function seededPick(pool, want, seed) {
+  return pool.map(al => ({ al, r: seededMix(String(al.nTitle || "") + String(al.nArtist || ""), seed) }))
+    .sort((a, b) => a.r - b.r)
+    .slice(0, want)
+    .map(x => x.al);
+}
+// The seed a request asked for, or null for "a fresh random pick" — so every
+// caller that sends none is served exactly as before.
+function requestSeed(raw) {
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
 // Album titles played since a cutoff — the plays table records titles only, so
 // this is title-keyed (two artists' "Greatest Hits" collide). Same limitation
 // the Home "not played" row already carries.
@@ -8765,7 +8892,11 @@ function libraryView(q) {
   // the whole reason it replaced the A-Z scroll rail — a letter index is
   // meaningless the moment the wall is ordered by anything but the alphabet.
   const prefix = libraryPrefix(q.prefix);
+  // Plays only where the view READS them — see playsVersion for why this was
+  // missing, and libraryDateVersion for why no other sort pays for it.
+  const readsPlays = sort === "plays" || sort === "lastplayed" || played !== "any";
   const sig = [albumIndex.builtAt, libraryMetaVersion, sort === "year" ? "d" + libraryDateVersion : "",
+               readsPlays ? "n" + playsVersion : "",
                sort, desc, seed, played, "p=" + prefix]
     .concat(picked.map(x => x.def.id + "=" + x.sel.slice().sort().join(","))).join("|");
   // A free-text param is unbounded, so it must not be allowed to fill a
@@ -9014,12 +9145,17 @@ app.get("/api/home/unplayed", async (req, res) => {
     }
     if (!pool.length) return res.json({ albums: [], total: 0, months });
     const want = Math.min(count, pool.length);
-    const picked = new Set();
-    while (picked.size < want) picked.add(Math.floor(Math.random() * pool.length));
-    const albums = [...picked].map(i => {
-      const al = pool[i];
-      return withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }, al);
-    });
+    const seed = requestSeed(req.query.seed);
+    let chosen;
+    if (seed !== null) {
+      chosen = seededPick(pool, want, seed);   // re-readable: see seededPick
+    } else {
+      const picked = new Set();
+      while (picked.size < want) picked.add(Math.floor(Math.random() * pool.length));
+      chosen = [...picked].map(i => pool[i]);
+    }
+    const albums = chosen.map(al =>
+      withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }, al));
     res.json({ albums, total: pool.length, months });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -9063,8 +9199,11 @@ function pruneOldPlays() {
   try {
     const cutoff = Date.now() - playsRetentionDays() * 24 * 60 * 60 * 1000;
     const r = labelsDb.prepare("DELETE FROM plays WHERE ts < ?").run(cutoff);
-    if (r.changes) console.log("[history] pruned " + r.changes + " plays older than " +
-                               playsRetentionDays() + " days");
+    if (r.changes) {
+      playsVersion++;   // "never played" and the play counts just changed
+      console.log("[history] pruned " + r.changes + " plays older than " +
+                  playsRetentionDays() + " days");
+    }
   } catch (e) {
     // Best effort. A failed prune costs disk, not correctness.
     if (DEBUG) console.warn("[history] prune failed: " + e.message);
@@ -13387,7 +13526,7 @@ function kickSmartPicks(why, force) {
     if (!smartPicksDue()) return;
   }
   _smartBuilding = bgRun("smart picks (" + why + ")", () => buildSmartPicks(day))
-    .finally(() => { _smartBuilding = null; });
+    .finally(() => { _smartBuilding = null; picksVersion++; });
 }
 
 // Hourly check, matching the existing index-maintenance and updater timers.
@@ -14179,7 +14318,7 @@ function kickDiscover(why, force) {
     if (!discoverDue()) return false;
   }
   _discoverBuilding = bgRun("discover (" + why + ")", () => buildNewReleases(day))
-    .finally(() => { _discoverBuilding = null; });
+    .finally(() => { _discoverBuilding = null; discoverVersion++; });
   return true;
 }
 
@@ -16201,6 +16340,7 @@ app.post("/api/smart-picks/rebuild", (req, res) => {
     if (labelsDb) {
       labelsDb.prepare("DELETE FROM smart_picks WHERE day = ?").run(day);
       labelsDb.prepare("DELETE FROM smart_cache WHERE key = ?").run(smartAttemptKey(day));
+      picksVersion++;   // the day's set is gone until the rebuild lands
     }
   } catch (e) {
     return res.status(500).json({ error: e.message });
@@ -16228,6 +16368,7 @@ app.post("/api/smart-picks/block", (req, res) => {
     // Drop it from today's set too, so it disappears on refresh instead of
     // sitting there until tomorrow's build.
     labelsDb.prepare("DELETE FROM smart_picks WHERE canon = ?").run(canon);
+    picksVersion++;   // gone from the Home row on every device, not just this one
     res.json({ ok: true, artist });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -16764,6 +16905,7 @@ function scrobbleUpdate(z) {
             np.image_key || "", np.length || 0
           );
           playId = info.lastInsertRowid;
+          playsVersion++;   // Recently played, Not played and the play sorts all read this row
         } catch (e) {} // scrobble DB optional — null playId is handled below
       }
       scrobbleState.set(zid, {
@@ -16928,6 +17070,19 @@ app.get("/api/album/extras", async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// The release date alone, from what is already stored (v1.8.65). An open album
+// page asks for it when the release days move, so a day found after the page
+// opened — the lookup is waited on for 1.5 s at most — arrives on the page
+// where it is, instead of on the next visit. No lookup and no network: the
+// extras route above is what starts one.
+app.get("/api/album/release-date", (req, res) => {
+  const title  = String(req.query.title  || "");
+  const artist = String(req.query.artist || "");
+  if (!title) return res.status(400).json({ error: "title query parameter required" });
+  res.set("Cache-Control", "no-store");
+  res.json({ release_date: storedReleaseDate(normalize(title) + "||" + normalize(artist)) });
 });
 
 // ---------------------------------------------------------------------------
@@ -17682,6 +17837,12 @@ app.get("/api/zone-state", (req, res) => {
       // Shuffle / repeat / Roon Radio, so the now-playing screen can show the
       // zone's real state instead of guessing from its own last write.
       settings:            zoneSettings(zone),
+      // How much is queued behind the current track. With the track itself
+      // and shuffle, this is how an open Queue tab knows its list has changed
+      // (v1.8.65) — a track ending, something queued from Roon's own app,
+      // Roon Radio topping up — without subscribing to the queue on every
+      // 1.5s poll. null when the Core does not say.
+      queue_items_remaining: Number.isFinite(zone.queue_items_remaining) ? zone.queue_items_remaining : null,
       outputs: (zone.outputs || []).map(o => ({
         output_id:    o.output_id,
         display_name: o.display_name,

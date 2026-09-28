@@ -243,8 +243,12 @@ test("Discover", { concurrency: 1 }, async (t) => {
     const building = render(payload(
       `{ enabled: true, day: "today", window_days: 60, building: true, releases: [] }`));
     assert.equal(building.rows.length, 0);
-    assert.match(building.banner || "", /come back shortly/i,
-      "a build in progress should invite a second look: " + building.banner);
+    // v1.8.65: the screen is live, so a build in progress promises the list
+    // will arrive by itself rather than asking for a second visit.
+    assert.match(building.banner || "", /appear here the moment/i,
+      "a build in progress should say the list is on its way: " + building.banner);
+    assert.doesNotMatch(building.banner || "", /come back/i,
+      "a live screen asked the user to come back: " + building.banner);
 
     const empty = render(payload(
       `{ enabled: true, day: "today", window_days: 60, building: false, releases: [] }`));
@@ -252,7 +256,7 @@ test("Discover", { concurrency: 1 }, async (t) => {
     // The window is quoted from the server rather than written into the copy,
     // so the sentence cannot outlive the number it describes.
     assert.match(empty.banner || "", /60 days/, empty.banner);
-    assert.doesNotMatch(empty.banner || "", /come back shortly/i,
+    assert.doesNotMatch(empty.banner || "", /appear here the moment/i,
       "'nothing found' must not read as 'still working'");
   });
 

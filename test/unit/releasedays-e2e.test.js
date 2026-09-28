@@ -112,7 +112,7 @@ function world() {
       },
       labelsEnabled: false,
       albumSeenCache: new Map(), albumGenreCache: new Map(), albumFileCache: new Map(),
-      libraryMetaVersion: 0, libraryDateVersion: 0, libraryViewCache, LIBRARY_VIEW_CACHE_MAX: 8,
+      libraryMetaVersion: 0, libraryDateVersion: 0, playsVersion: 0, libraryViewCache, LIBRARY_VIEW_CACHE_MAX: 8,
       LIB_SORTS: new Set(["album", "artist", "year", "added", "plays", "lastplayed", "random"]),
       albumSource: () => null, resolveAlbumLabelName: () => null,
       getPlayedTitlesSince: () => new Set(), playedTitleSet: () => new Set(),
