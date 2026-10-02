@@ -4,7 +4,7 @@
 
 </div>
 
-# MusicD Remote (for Roon) - v1.8.72
+# MusicD Remote (for Roon) - v1.8.73
 
 **📖 Install guide & command builder: [meltface-80.github.io/MusicD-Remote](https://meltface-80.github.io/MusicD-Remote/)**
 
@@ -24,7 +24,7 @@ Install with one `docker run` — nothing to download or build — and keep upda
 
 ⸻
 
-🍊 Mandarin, the new default look — *new in v1.8.68*
+🦆 Mandarin, the new default look — *new in v1.8.68*
 
 MusicD Server's graphite-and-brass colour scheme, and the look every device opens in until you choose another.
 
