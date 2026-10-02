@@ -201,3 +201,20 @@ test("the API never refuses an update because of the image (v1.8.71)", () => {
   assert.match(src, /const PUBLISHED_IMAGE = \(process\.env\.MUSICD_IMAGE \|\| ""\)\.trim\(\);/,
     "index.js reads a different variable from the one the image sets");
 });
+
+test("updates are looked for twice a day, as Mandarin does (v1.8.72)", () => {
+  // The one-tap update is only one tap if the app has noticed there is
+  // something to tap. Every 7 days (v1.5.39–v1.8.71) left a release marked
+  // Latest unoffered for up to a week unless someone pressed Check for updates.
+  const src = indexSource();
+  const m = src.match(/^const UPDATE_CHECK_MS = ([\d\s*]+);/m);
+  assert.ok(m, "UPDATE_CHECK_MS is no longer a plain product of numbers");
+  const ms = m[1].split("*").reduce((a, n) => a * Number(n.trim()), 1);
+  const HOUR = 60 * 60 * 1000;
+  assert.ok(ms <= 12 * HOUR, "updates are looked for less often than twice a day: every " + ms / HOUR + " h");
+  assert.ok(ms >= HOUR, "updates are looked for more than once an hour — GitHub allows 60 an hour in all");
+  assert.match(src, /setInterval\(\(\) => \{ updateCheckTick\(\);[^}]*\}, UPDATE_CHECK_MS\)/,
+    "the periodic update check no longer runs on UPDATE_CHECK_MS");
+  assert.match(src, /\n\/\/ Begin background update checks[^\n]*\nupdateCheckTick\(\);/,
+    "the check at startup is gone");
+});
