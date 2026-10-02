@@ -101,7 +101,10 @@ const DRIVER = `
     dpr: window.devicePixelRatio || 1,
   });
   T("tokens", (function () {
-    var cs = getComputedStyle(document.documentElement);
+    // Read where the seek bar is drawn, not off <html>: a palette may set its
+    // own tokens on the panel (Mandarin's album view and Now playing print
+    // their text white, v1.8.68), and the thumb is painted in the panel's.
+    var cs = getComputedStyle(seek);
     return { text: cs.getPropertyValue("--text").trim(),
              accent: cs.getPropertyValue("--accent").trim(),
              bg: cs.getPropertyValue("--bg").trim() };
@@ -240,12 +243,20 @@ test("the thumb rides ON the waveform, not above or below it", async (t) => {
   const isThumb = (px) => Math.abs(px[0] - want[0]) <= 12 &&
                           Math.abs(px[1] - want[1]) <= 12 &&
                           Math.abs(px[2] - want[2]) <= 12;
-  // The played bars are --accent at .95 over the ground; "blue-dominant" picks
-  // them out of any of the four palettes without pinning an exact value.
+  // The played bars are --accent at .95 over the ground; near the accent picks
+  // them out of any palette without pinning an exact value. AND saturated:
+  // ±60 a channel round Mandarin's brass (201,164,92) also takes in its grey
+  // faint text (141,144,150) — the elapsed-time label under the bar — which
+  // dragged the measured midline 10px down and reported a misalignment that
+  // the screenshot does not show (v1.8.68; the thumb's rows are identical in
+  // both themes). A played bar keeps most of the accent's spread between its
+  // strongest and weakest channel; a grey has almost none.
   const acc = hex(r.tokens.accent);
+  const spread = (px) => Math.max(px[0], px[1], px[2]) - Math.min(px[0], px[1], px[2]);
   const isBar = (px) => Math.abs(px[0] - acc[0]) <= 60 &&
                         Math.abs(px[1] - acc[1]) <= 60 &&
-                        Math.abs(px[2] - acc[2]) <= 60;
+                        Math.abs(px[2] - acc[2]) <= 60 &&
+                        spread(px) >= spread(acc) / 2;
 
   // A band generous enough that a thumb drawn OUTSIDE the shape is still found
   // and reported, rather than missed and called absent.

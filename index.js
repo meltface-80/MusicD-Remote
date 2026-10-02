@@ -389,9 +389,9 @@ const roon = new RoonApi({
     stopIndexMaintenance();
     // The album index is deliberately KEPT across an unpair: it's plain
     // offset/title data (no session-scoped item_keys), so it stays usable for
-    // search while disconnected, and startIndexMaintenance() schedules one
-    // recheck on re-pair instead of a full library re-walk — a flapping
-    // connection no longer multiplies full rescans onto the Core.
+    // search while disconnected, and startIndexMaintenance() has the library
+    // watch look again on re-pair instead of re-walking the library — a
+    // flapping connection no longer multiplies full rescans onto the Core.
     console.log("[roon] unpaired from core — index kept, awaiting re-pair");
     _statusSync = "";   // clear any "library updating…" note — sync state is reset on re-pair
     _statusPair = "Not paired with any Roon Core"; _statusPairErr = true; pushStatus();
@@ -612,11 +612,13 @@ function withRoonDeadline(kind, who, reject) {
   };
 }
 
-function browse(opts) {
+// `quiet` keeps a call out of the debug trace — for the library watch, whose
+// looks are routine and frequent (v1.8.68). A failure is logged regardless.
+function browse(opts, quiet) {
   return new Promise((resolve, reject) => {
     if (!core) return reject(new Error("Not paired with a Roon Core yet"));
     const t0 = Date.now();
-    if (DEBUG) console.log("[browse]", JSON.stringify(opts));
+    if (DEBUG && !quiet) console.log("[browse]", JSON.stringify(opts));
     const guard = withRoonDeadline("browse",
       (opts.multi_session_key || "-") + " " + (opts.hierarchy || "-"), reject);
     // The SDK call itself can throw synchronously when the Core is torn down
@@ -636,7 +638,7 @@ function browse(opts) {
         console.error("[browse] failed after " + ms + "ms:", who, msg, "opts:", JSON.stringify(opts));
         return reject(new Error(msg));
       }
-      if (DEBUG) console.log("[browse:res]", ms + "ms", who, body && body.action,
+      if (DEBUG && !quiet) console.log("[browse:res]", ms + "ms", who, body && body.action,
                              body && body.list && body.list.title,
                              "count:", body && body.list ? body.list.count : "-");
       resolve(body);
@@ -644,11 +646,11 @@ function browse(opts) {
     } catch (e) { guard.settle(() => reject(e)); }
   });
 }
-function load(opts) {
+function load(opts, quiet) {
   return new Promise((resolve, reject) => {
     if (!core) return reject(new Error("Not paired with a Roon Core yet"));
     const t0 = Date.now();
-    if (DEBUG) console.log("[load]", JSON.stringify(opts));
+    if (DEBUG && !quiet) console.log("[load]", JSON.stringify(opts));
     const guard = withRoonDeadline("load",
       (opts.multi_session_key || "-") + " " + (opts.hierarchy || "-"), reject);
     try {
@@ -662,7 +664,7 @@ function load(opts) {
         console.error("[load] failed after " + ms + "ms:", who, msg, "opts:", JSON.stringify(opts));
         return reject(new Error(msg));
       }
-      if (DEBUG) console.log("[load:res]", ms + "ms", who, body && body.list && body.list.title,
+      if (DEBUG && !quiet) console.log("[load:res]", ms + "ms", who, body && body.list && body.list.title,
                             "items:", (body && body.items || []).length,
                             "total:", body && body.list ? body.list.count : "-");
       resolve(body);
@@ -1180,8 +1182,10 @@ async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
   const libraryMoved = !navFilter && Number.isFinite(nav.total) &&
                        albumIndex.count > 0 &&
                        nav.total !== (albumIndex.declared || albumIndex.count);
-  if (libraryMoved) scheduleLibraryRecheck("album open saw " + nav.total +
-                                           " albums, snapshot has " + albumIndex.count);
+  // Proof the snapshot is out of date, at the moment somebody is looking at
+  // the consequence: the watch looks now rather than at its next turn.
+  if (libraryMoved) requestLibraryLook("album open saw " + nav.total +
+                                       " albums, snapshot has " + albumIndex.count, 0);
 
   // 2) Re-resolve THIS session's item_key for the album at `offset`
   const albumLoad = await load({
@@ -1224,6 +1228,21 @@ async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
       const live = (expect && expect.title)
         ? await findAlbumViaSearch(sessionKey, expect.title, expect.subtitle, zoneId)
         : null;
+      // And tell the library watch (v1.8.68). The snapshot could not put this
+      // album where Roon has it, so the snapshot is out of date — possibly by a
+      // change no look can see: an album re-identified mid-list moves rows
+      // without moving the count or either end. So this asks for the whole
+      // list to be re-read. Three cases do not:
+      //   * relocation worked (above) — the snapshot was right and the TILE was
+      //     old, from before the watch's last re-read. Asking then would spend
+      //     a full walk on every stale tile after every library change;
+      //   * the count moved — a look sees that, and the watch waits for Roon to
+      //     stop moving before it walks; evidence must not walk the list
+      //     mid-import, which is the one thing the settling exists to prevent;
+      //   * the album is gone from Roon AND from the snapshot — they agree.
+      if (!navFilter && !libraryMoved && (relocatedOffset >= 0 || live)) {
+        requestLibraryLook("album open found another record at offset " + offset, 0, true);
+      }
       if (live) {
         if (DEBUG) console.log("[album] stale offset " + offset + " resolved live via search for " +
                                JSON.stringify(expect.title));
@@ -1350,21 +1369,22 @@ async function loadAlbumSession(sessionKey, offset, filter, expect, zoneId) {
 // as a diagnosis.
 // `sure` also decides the TIMING, because the two cases genuinely wait on
 // different clocks and quoting one number for both is wrong at the moment the
-// user is reading it. When the change is proven, the site that proves it has
-// just armed the recheck chain — libraryRecheckMs(), five minutes. When it is
-// only the likeliest explanation, nothing was armed and the next look is the
-// background watch, libraryCheckMs(), ten minutes.
+// user is reading it. When the change is proven, the site that proved it has
+// just asked the library watch to look at once, and the watch then follows
+// Roon every librarySettleMs() until it settles. When it is only the likeliest
+// explanation, nothing was asked, and the next look is the watch's own turn —
+// libraryWatchActiveMs(), because someone is reading this, so the app is open.
 function libraryChangingAdvice(sure) {
   const when = sure
-    ? "A re-check is already scheduled — about " +
-      Math.round(libraryRecheckMs() / 60000) + " minutes"
-    : "The extension re-checks every " +
-      Math.round(libraryCheckMs() / 60000) + " minutes";
+    ? "The extension is already re-reading it, checking Roon every " +
+      Math.round(librarySettleMs() / 1000) + " seconds until it settles"
+    : "The extension checks Roon every " +
+      Math.round(libraryWatchActiveMs() / 1000) + " seconds while the app is open";
   return (sure
     ? " Your Roon library changed after this list was built"
     : " This usually means your Roon library changed after this list was built") +
     " — normally because albums are being added or identified. " + when +
-    " — and it refreshes itself once Roon settles, so this usually clears on " +
+    ", and this screen refreshes itself once it has, so this usually clears on " +
     "its own. If it hasn't, open the side menu and tap Rescan library.";
 }
 
@@ -1490,9 +1510,9 @@ async function openAlbumByOffset(offset, zoneOrOutputId, invokeKind, filter, exp
           // proves the library CHANGED, not that an import is running now.
           : new Error("Roon offered no playback options for this album." +
                       libraryChangingAdvice(true));
-        // A library that has moved is a transient condition with a recheck
-        // already scheduled, so it gets the same 409 "try again" contract a
-        // stale offset does rather than a 500.
+        // A library that has moved is a transient condition — the library
+        // watch was asked to look the moment the open saw it — so it gets the
+        // same 409 "try again" contract a stale offset does rather than a 500.
         if (libraryMoved) err.stale = true;
         throw err;
       }
@@ -6812,19 +6832,15 @@ async function fetchAlbumBios(title, artist) {
 // playback code.
 // ---------------------------------------------------------------------------
 const SEARCH_PAGE      = 500;              // albums per Roon load() page
-// Staleness rebuild is a safety net (1h), NOT the freshness mechanism: the
-// 5-min maintenance probe below detects library edits (count change, or a
-// count-neutral reorder via the first album's identity) and rebuilds
-// immediately. The old 10-min max-age made nearly every Home visit kick off
-// a full library re-walk over the same single websocket that was serving the
-// render's browse + image traffic — a major sluggishness source after the
-// Home redesign.
 // The album index is a stable snapshot. Roon owns the library; the extension
-// scans it once on first pair, then asks every ten minutes whether anything
-// moved (a 2-3 call probe; see libraryCheckMs) — and NEVER rebuilds while Roon
-// is actively importing (a still-moving album count). The CHECK is frequent
-// because it is cheap; the REBUILD is rare because it is not. This keeps the
-// extension off a busy Core entirely. Playback stays correct against a snapshot
+// walks it once on first pair, then THE LIBRARY WATCH keeps it in step: a
+// three-call look every 30 seconds while the app is open (every three minutes
+// when it is not), and a re-walk only once a change has stopped moving. The
+// LOOK is frequent because it is cheap; the WALK is rare because it is not,
+// and it is never made while Roon's list is still moving under it. (A max-age
+// rebuild used to sit here, and made nearly every Home visit re-walk the whole
+// library over the websocket the render was using — the watch is why there is
+// none.) Playback stays correct against a snapshot
 // that's stale because a stale offset is resolved LIVE by name at play time
 // (see the search fallback in loadAlbumSession), so an out-of-date snapshot
 // never blocks a play.
@@ -6833,11 +6849,14 @@ const IMPORT_SETTLE_MS = 5000;                  // album count must hold steady 
 const albumIndex = {
   albums:   [],     // [{ offset, title, subtitle, image_key, nTitle, nArtist, tTitle[], tArtist[], jTitle, jArtist, artistNames[] }]
   count:    0,
-  builtAt:  0,      // last FULL walk of the library
+  // When the snapshot last CHANGED. The library watch re-reads the list often
+  // and publishes only what differs (v1.8.68), so this is not "last walked" —
+  // every live revision and per-snapshot cache keys on it, and a walk that
+  // found nothing new must not make every screen re-read itself.
+  builtAt:  0,
   progress: 0,      // 0..1 while building
   building: null    // Promise while a build is in flight
 };
-let indexMaintTimer = null;
 
 function indexRecord(item, offset) {
   const title    = item.title    || "";
@@ -7055,12 +7074,36 @@ function creditHasArtist(credit, artist) {
   return qNames.some(q => cNames.includes(q));
 }
 
+// Is a fresh walk the list the snapshot already holds? Position, title,
+// artist and cover, row for row — a moved row, a renamed album and a new cover
+// are all changes a screen would show. Only what Roon sent is compared, never
+// anything this extension derived onto the records afterwards.
+function sameAlbumList(walked, declared) {
+  const cur = albumIndex.albums;
+  if (!cur || cur.length !== walked.length) return false;
+  if ((albumIndex.declared || albumIndex.count) !== declared) return false;
+  for (let i = 0; i < walked.length; i++) {
+    const a = walked[i], b = cur[i];
+    if (a.offset !== b.offset || a.title !== b.title ||
+        a.subtitle !== b.subtitle || a.image_key !== b.image_key) return false;
+  }
+  return true;
+}
+
 // Walk the whole albums hierarchy once and cache a record per album.
 // Concurrent callers share the same in-flight build promise.
-async function buildAlbumIndex() {
+//
+// opts.diff  — the library watch's re-read (v1.8.68): when the walk finds the
+//              list the snapshot already holds, NOTHING is published — builtAt
+//              stays put, so no live revision moves and no screen re-reads.
+// opts.chain — false leaves the background chain to the caller; the watch
+//              coalesces it across changes (scheduleLibraryDependants).
+async function buildAlbumIndex(opts) {
+  opts = opts || {};
   if (albumIndex.building) return albumIndex.building;
 
   albumIndex.progress = 0;
+  let published = false;
   albumIndex.building = withBrowseSession(async (sessionKey) => {
     await browse({ hierarchy: "albums", pop_all: true, multi_session_key: sessionKey });
     const head = await load({ hierarchy: "albums", offset: 0, count: 1, multi_session_key: sessionKey });
@@ -7081,7 +7124,30 @@ async function buildAlbumIndex() {
       albumIndex.progress = total ? Math.min(1, loaded / total) : 1;
     }
 
-    albumIndex.albums   = albums.filter(Boolean);  // drop any holes
+    const walked = albums.filter(Boolean);           // drop any holes
+    if (opts.diff) {
+      if (sameAlbumList(walked, total || walked.length)) {
+        noteLibraryRead(true);
+        albumIndex.progress = 1;
+        return albumIndex;
+      }
+      // A short walk never replaces a COMPLETE snapshot on the watch's say-so.
+      // Roon hands over placeholder rows while it is busy, and a holed snapshot
+      // cannot see a same-count change at all (libraryLook only compares the
+      // ends of a complete one) — so it would sit there, trusted, until
+      // somebody pressed Rescan. Keep the complete one; the watch asks again.
+      // The manual Rescan still publishes what it gets: a person asked.
+      const complete = albumIndex.count > 0 &&
+                       albumIndex.count === (albumIndex.declared || albumIndex.count);
+      if (complete && walked.length < total) {
+        albumIndex.progress = 1;
+        throw new Error("short read: Roon declared " + total + " albums, " + walked.length +
+                        " arrived — the complete snapshot is kept");
+      }
+    }
+    noteLibraryRead(true);
+    published = true;
+    albumIndex.albums   = walked;
     albumIndex.count    = albumIndex.albums.length;
     // What Roon SAID the library held when this snapshot was taken, which is
     // not always what arrived: a short page leaves holes, and the filter above
@@ -7107,6 +7173,8 @@ async function buildAlbumIndex() {
 
   try {
     const idx = await albumIndex.building;
+    // Nothing new: nothing below has anything to do.
+    if (!published) return idx;
     // Join whatever release years are already in hand onto the new snapshot,
     // BEFORE anything that goes to the network — the file-tag years from the
     // last scan survive a rebuild and should apply immediately, without waiting
@@ -7117,7 +7185,9 @@ async function buildAlbumIndex() {
     // the single multiplexed Core websocket that browse and transport share, so
     // issuing them together is a burst the Core feels even though the total
     // number of calls is unchanged. Nothing here is awaited by the caller.
-    syncChain().catch(e => { if (DEBUG) console.error("[sync] chain:", e.message); });
+    if (opts.chain !== false) {
+      syncChain().catch(e => { if (DEBUG) console.error("[sync] chain:", e.message); });
+    }
     return idx;
   } finally {
     albumIndex.building = null;
@@ -7427,18 +7497,31 @@ function browseItemIdentity(it) {
   return it ? (it.title || "") + "||" + (it.subtitle || "") : "";
 }
 
-// One cheap library-change probe (2-3 count:1 round-trips): is the album count,
-// the first album or the last album different from our built snapshot? Returns
-// true when something changed. No side effects — the caller decides whether to
-// rebuild.
+// One cheap look at the library (2-3 count:1 round-trips on a POOLED browse
+// session, so the Core keeps no new state for it): the album count and the
+// first and last albums, against the built snapshot. It decides nothing — the
+// caller decides what to do about the answer; it only notes that Roon was
+// asked (noteLibraryRead), which is what "checked … ago" in the app reports.
 //
-// This is the question the ten-minute watch repeats, and its cheapness is what
-// makes that interval affordable.
-async function libraryChangedSince() {
+//   changed — Roon no longer shows the list the snapshot was built from;
+//   sig     — what Roon showed, as one comparable string. The library watch
+//             compares two of these, librarySettleMs() apart: two looks that
+//             agree are what "Roon has settled" means there.
+//
+// `full` always reads the last album. Without it, a look that has already
+// seen the count move stops there — the answer is known and the third call
+// would only cost the Core (libraryChangedSince's contract). The watch asks
+// for it, because a settle signature without the tail would call a library
+// "settled" while Roon is still re-identifying its end.
+async function libraryLook(opts) {
+  const full = !!(opts && opts.full);
   return await withBrowseSession(async (sessionKey) => {
-    await browse({ hierarchy: "albums", pop_all: true, multi_session_key: sessionKey });
-    const head = await load({ hierarchy: "albums", offset: 0, count: 1, multi_session_key: sessionKey });
+    const quiet = !!(opts && opts.quiet);
+    await browse({ hierarchy: "albums", pop_all: true, multi_session_key: sessionKey }, quiet);
+    const head = await load({ hierarchy: "albums", offset: 0, count: 1, multi_session_key: sessionKey }, quiet);
     const total = head.list && head.list.count ? head.list.count : 0;
+    const identity = browseItemIdentity;
+    const headId = identity(head.items && head.items[0]);
     // DECLARED, not count. `count` is the snapshot AFTER holes were filtered
     // out; `declared` is what Roon said the library held when it was taken.
     // buildAlbumIndex's own comment spells out why the difference matters —
@@ -7448,7 +7531,7 @@ async function libraryChangedSince() {
     // nobody noticed; at ten minutes it is a full re-walk, genre harvest and
     // art prewarm every ten minutes, forever, on a library nobody touched.
     const declared = albumIndex.declared || albumIndex.count;
-    if (total !== declared) return true;      // the count moved — that IS the answer
+    let changed = total !== declared;          // the count moved — that IS the answer
 
     // The counts agree. The identity checks are only meaningful on a COMPLETE
     // snapshot: with holes filtered out, albums[0] and albums[total - 1] are
@@ -7456,33 +7539,92 @@ async function libraryChangedSince() {
     // them re-creates exactly the forever-true loop above. A holed snapshot
     // therefore reports "unchanged" until the count moves or somebody presses
     // Rescan — degraded, but bounded, which the alternative is not.
-    if (albumIndex.count === 0 || albumIndex.count !== declared) return false;
+    const complete = albumIndex.count > 0 && albumIndex.count === declared;
+    if (!changed && complete && headId !== identity(albumIndex.albums[0])) changed = true;
 
-    const identity = browseItemIdentity;
-    if (identity(head.items && head.items[0]) !== identity(albumIndex.albums[0])) return true;
-    if (total > 1) {
-      const tail = await load({ hierarchy: "albums", offset: total - 1, count: 1, multi_session_key: sessionKey });
-      if (identity(tail.items && tail.items[0]) !== identity(albumIndex.albums[total - 1])) return true;
+    // The last album: read when the watch wants the whole signature, or when
+    // nothing cheaper has answered yet — otherwise it is a call for nothing.
+    let tailId = "";
+    if (total > 1 && (full || (!changed && complete))) {
+      const tail = await load({ hierarchy: "albums", offset: total - 1, count: 1, multi_session_key: sessionKey }, quiet);
+      tailId = identity(tail.items && tail.items[0]);
+      if (!changed && complete && tailId !== identity(albumIndex.albums[total - 1])) changed = true;
     }
-    return false;
+    noteLibraryRead(false);
+    return { changed, total, sig: total + "|" + headId + "|" + tailId };
   });
 }
 
-// How often the extension asks Roon, entirely on its own, whether the library
-// moved.
+// The yes/no form, for the manual and reindex paths (checkAndMaybeRebuild).
+async function libraryChangedSince() {
+  return (await libraryLook()).changed;
+}
+
+// ===========================================================================
+// THE LIBRARY WATCH (v1.8.68): as close to live as Roon allows.
 //
-// This is the ONLY detector that needs nobody. The other one is opportunistic —
-// it rides along on `nav.total` when a user opens an album — so on a box that
-// is sitting idle, or one being used only from Home and Now playing, it never
-// fires at all. This interval was TWELVE HOURS, which is why "I added albums to
-// Roon and the extension did nothing" was the normal experience rather than an
-// edge case: with nobody opening albums, twelve hours was the detection time.
+// Albums added to Roon shift every position after them, and every position in
+// the snapshot is what a tile opens and plays by. Until the snapshot is rebuilt
+// those offsets point at the wrong records, which is where the album view's
+// "your Roon library changed after this list was built" lines come from. The
+// watch exists to keep that window as short as it can be made.
 //
-// Ten minutes is affordable because the QUESTION is cheap and the answer is
-// almost always no: `libraryChangedSince()` is 2-3 browse round-trips (~430 a
-// day), and the expensive part — the settle probe and the full re-walk — still
-// only happens when something actually changed.
-function libraryCheckMs() { return 10 * 60 * 1000; }
+// Roon publishes no "library changed" event — not over the browse API, not
+// anywhere an extension can subscribe — so the only way to follow it is to
+// ask. What makes asking often affordable is that the question is tiny: a look
+// (libraryLook) is three count:1 round trips on a POOLED browse session —
+// Roon keeps server-side state for every browse session key, which is why
+// keys are pooled (see acquireBrowseSession) and the watch never mints one —
+// and the answer is almost always "unchanged". The expensive part, re-walking
+// the list (SEARCH_PAGE albums a call) and the jobs built on it, only happens
+// once a look says something moved AND a second look agrees it has stopped.
+//
+// How often it looks follows whether anyone is there to see the answer:
+//   * someone has the app or the wall display open: libraryWatchActiveMs();
+//   * nobody: libraryWatchIdleMs() — and the first request after a quiet spell
+//     looks at once, so a phone picked up after an hour sees what Roon holds
+//     now rather than what it held an hour ago;
+//   * a change seen and not yet settled: librarySettleMs(), slowing to
+//     librarySettleSlowMs() once the import has run for librarySettleBackoffMs()
+//     — counted across its batches and the walks between them, so an import
+//     that runs for hours is followed, not probed or re-walked to death.
+// "Settled" is the same picture HELD for that pace, measured from when it last
+// changed — so a look brought forward (an album open, a client arriving) can
+// never end the wait early. Then the list is re-walked, DIFF-AWARE: a walk that
+// finds what the snapshot already holds publishes nothing, so no screen
+// re-reads and nothing downstream runs; and a walk that comes back short never
+// replaces a complete snapshot. The jobs built on the snapshot — the source
+// badges, genres, file tags, labels and art — run ONCE,
+// libraryDependantsQuietMs() after the library goes quiet: an import of two
+// hundred albums costs one pass of them, not two hundred.
+//
+// What a look cannot see — Roon re-identifying an album in the MIDDLE of the
+// list, which moves rows without moving the count or either end — is caught
+// two ways: an album open that the snapshot cannot place where Roon has it
+// asks for a walk (at most one per libraryEvidenceGapMs(), and not while a
+// change is settling, whose walk covers it), and while someone is looking the
+// list is walked anyway every libraryVerifyMs().
+//
+// Cost, for the record. Watched: three count:1 calls a look, two looks a
+// minute — six calls a minute, against the hundreds a Roon remote makes
+// scrolling one screen of albums. Settling: nine a minute, three once the
+// import has run ten minutes. Unwatched: one look every three minutes. A walk
+// is one call per SEARCH_PAGE albums (26 for a 13,000-album library), made
+// only when Roon has settled, on evidence, or every half hour while watched.
+// ===========================================================================
+function libraryWatchActiveMs()   { return 30 * 1000; }
+function libraryWatchIdleMs()     { return 3 * 60 * 1000; }
+function librarySettleMs()        { return 20 * 1000; }
+function librarySettleSlowMs()    { return 60 * 1000; }
+function librarySettleBackoffMs() { return 10 * 60 * 1000; }
+// How recently a client must have asked for the server to count as watched.
+// The app asks /api/live every 3 seconds while it is on screen and the wall
+// display polls its zone every 2, so a minute of silence means nobody.
+function libraryClientWindowMs()  { return 60 * 1000; }
+function libraryVerifyMs()        { return 30 * 60 * 1000; }
+function libraryEvidenceGapMs()   { return 60 * 1000; }
+function libraryDependantsQuietMs()   { return 2 * 60 * 1000; }
+function libraryDependantsMaxWaitMs() { return 30 * 60 * 1000; }
 
 // How many samples the import probe takes, IMPORT_SETTLE_MS apart. Two is one
 // window and is not enough: Roon imports in bursts, and any burst gap longer
@@ -7492,11 +7634,11 @@ function importSettleReads() { return 3; }
 
 // Best-effort "is Roon importing right now?" — read the album count, wait a few
 // seconds, read it again; a changed count means the library is actively growing.
-// Only called when we're about to start heavy work, never in a loop — the
-// ten-minute watch runs the CHEAP probe (libraryChangedSince) and reaches this
-// one only once that says something moved. This is how the extension honors
-// "never scan while Roon is adding albums": the manual Rescan, the watch and
-// the recheck chain all consult it.
+// Only called when we're about to start heavy work, never in a loop. This is how
+// the manual Rescan, the reindex route, the genre walk and the label scan honour
+// "never scan while Roon is adding albums". The library watch does not call it:
+// its looks ARE the samples, taken librarySettleMs() apart, so it already knows
+// whether the list is still moving without spending five seconds to ask.
 async function libraryIsImporting() {
   if (!core) return false;
   try {
@@ -7537,11 +7679,12 @@ async function libraryIsImporting() {
   } catch (e) { return false; }   // probe blip — don't block work on a transient error
 }
 
-// The library-refresh decision, shared by the 12h auto-check and the manual
-// Rescan button. Rebuilds the snapshot ONLY when the library changed AND Roon
-// is not mid-import. `force` (manual Rescan) rebuilds even if nothing changed,
-// but STILL refuses while Roon is importing — a deliberate press must not fight
-// an active import. Returns a status the UI can toast.
+// The library-refresh decision behind the manual Rescan button and the reindex
+// route; the automatic path is the library watch. Rebuilds the snapshot ONLY
+// when the library changed AND Roon is not mid-import. `force` (manual Rescan)
+// rebuilds even if nothing changed, but STILL refuses while Roon is importing —
+// a deliberate press must not fight an active import. Returns a status the UI
+// can toast.
 let _rebuildInFlight = false;
 async function checkAndMaybeRebuild(reason, force) {
   if (!core) return { status: "unpaired" };
@@ -7560,13 +7703,12 @@ async function checkAndMaybeRebuild(reason, force) {
     if (await libraryIsImporting()) {
       console.log("[index] " + reason + " check: library changed but Roon is still importing — refresh paused");
       _statusSync = "  •  Roon importing — library refresh paused"; pushStatus();
-      // THE gap this version closes. Declining to rebuild during an import is
-      // right; leaving it at that was not. The timer here is a plain 12-hour
-      // interval, so an import caught by one tick left the snapshot stale until
-      // the NEXT tick — up to twelve hours after Roon finished, with every
-      // album open in between hitting stale offsets and empty action lists.
-      // That is why the symptom persisted instead of clearing itself.
-      scheduleLibraryRecheck("Roon was importing at the " + reason + " check");
+      // Declining to rebuild during an import is right; leaving it at that was
+      // not (v1.7.49: a declined check left the snapshot stale until the next
+      // tick, hours after Roon had finished). The library watch takes it from
+      // here: it follows the import every librarySettleMs() and re-walks the
+      // list the moment two looks agree.
+      requestLibraryLook("Roon was importing at the " + reason + " check", librarySettleMs());
       return { status: "importing" };
     }
     console.log("[index] " + reason + " check: library changed and settled — rebuilding snapshot once");
@@ -7574,7 +7716,7 @@ async function checkAndMaybeRebuild(reason, force) {
     // The flag tracks the SNAPSHOT build and nothing else. Chaining the labels
     // map into the same .then/.catch made a throw from rebuildLabelsMap report
     // the whole rebuild as failed — so a perfectly rebuilt snapshot returned
-    // "error", kickPostRebuildChain never fired, and every dependant stayed
+    // "error", the dependants never ran, and every one of them stayed
     // stale. That is the exact failure this version exists to fix, re-created
     // one line away from the fix.
     let built = true;
@@ -7585,10 +7727,9 @@ async function checkAndMaybeRebuild(reason, force) {
     }
     // A rebuild that threw leaves the OLD snapshot in place — buildAlbumIndex
     // only assigns albums/count/declared once a full walk succeeds. Reporting
-    // "rebuilt" anyway told the recheck chain the episode was over and cleared
-    // the "Roon importing" banner, so a library that failed to refresh went
-    // quiet and stayed stale until the next 12-hour tick. "error" is the truth
-    // and is one of the two statuses that re-arm the chain.
+    // "rebuilt" anyway cleared the "Roon importing" banner over a library that
+    // had failed to refresh. "error" is the truth; the library watch's next
+    // look still sees the change and re-reads the list once it settles.
     if (!built) return { status: "error" };
     if (_statusSync) { _statusSync = ""; pushStatus(); }
     return { status: "rebuilt", count: albumIndex.count };
@@ -7598,9 +7739,9 @@ async function checkAndMaybeRebuild(reason, force) {
 }
 
 // Background maintenance: build the snapshot once on pair (if empty), then
-// watch for new albums every ten minutes. No rebuild ever fires from a user
-// action or a play — only this timer, the recheck chain it hands off to, or the
-// manual Rescan button, and never while Roon is importing.
+// keep it in step with Roon — the library watch above. No rebuild ever runs
+// inside a user action or a play: the watch rebuilds, or the manual Rescan
+// button does. An album open can only ask the watch to look sooner.
 function startIndexMaintenance() {
   stopIndexMaintenance();
   _statusSync = "";
@@ -7613,121 +7754,281 @@ function startIndexMaintenance() {
       .then(() => { if (labelsEnabled) seedLabelsFromCache(); })
       .catch(e => { if (DEBUG) console.error("[index] initial build:", e.message); });
   } else {
-    // A re-pair with an existing snapshot asks again in five minutes. The
-    // comment that used to sit here claimed startIndexMaintenance already
-    // "re-verifies it on re-pair with a cheap 2-call probe"; it never did.
-    // That mattered because an unpair CLEARS any pending recheck, and a
-    // websocket flap is most likely during exactly the heavy import the
-    // recheck was waiting on — so the refresh silently dropped from five
-    // minutes back to the next 12-hour tick.
-    scheduleLibraryRecheck("re-paired with an existing snapshot");
+    // A re-pair with an existing snapshot looks again straight away — a few
+    // seconds in, behind the pairing traffic. An unpair clears whatever the
+    // watch had pending, and a websocket flap is most likely during exactly
+    // the heavy import it was following.
+    requestLibraryLook("re-paired with an existing snapshot", 5000);
   }
-  indexMaintTimer = setInterval(() => {
-    // Skip entirely while somebody else owns the library. A pending recheck is
-    // already asking this exact question on a schedule of its own, and a
-    // rebuild in flight would answer "busy" — probing underneath either only
-    // adds calls to a Core that is already working. The guard is read
-    // synchronously and checkAndMaybeRebuild sets _rebuildInFlight before its
-    // first await, so two ticks cannot both get past it.
-    if (_libraryRecheckTimer || _rebuildInFlight || albumIndex.building) return;
-    checkAndMaybeRebuild("watch", false)
-      .then(r => {
-        kickPostRebuildChain(r);
-        // Neither is an answer. Handing off to the recheck chain is what stops
-        // the observation being lost until the next tick — the same reason the
-        // importing branch hands off.
-        if (r && (r.status === "busy" || r.status === "error")) {
-          scheduleLibraryRecheck("watch check returned " + r.status);
-        }
-      })
-      .catch(e => console.error("[index] watch check failed: " + e.message));
-  }, libraryCheckMs());
-  if (indexMaintTimer.unref) indexMaintTimer.unref();
+  if (!_watchTimer) armLibraryWatch(libraryWatchCadence());
 }
 
-// How long to wait before looking again after seeing the library move. Long
-// enough that a long import is not probed to death (each recheck costs a
-// 2-3 call probe plus, if it proceeds, a 5-second settle read), short enough
-// that a finished import is picked up in minutes rather than half a day.
-function libraryRecheckMs() { return 5 * 60 * 1000; }
-// The ceiling on chained rechecks. An import that runs for hours re-arms this
-// each time it is still moving; without a cap a permanently-churning library
-// would probe every five minutes forever.
-function libraryRecheckMax() { return 24; }
-// How long the chain must be completely idle before the next recheck counts as
-// a NEW episode with a full budget. Comfortably longer than the 5-minute chain,
-// so a running episode can never refill itself mid-flight and walk around the
-// cap the way resetting on "rebuilt" did.
-function libraryRecheckIdleMs() { return 30 * 60 * 1000; }
+let _watchTimer = null;
+let _watchDueAt = 0;          // when the pending look fires
+let _watchStepping = false;   // a step is running — there is only ever one
+let _watchAgainMs = -1;       // a look asked for while it ran: how soon after it
+let _watchPending = null;     // { sig, at }: a change seen, and the picture since `at`
+let _watchEpisodeAt = 0;      // when this run of changes began — outlives its walks
+let _watchLastChangeAt = 0;   // when a look last saw the library differ
+let _watchLastLookAt = 0;     // the last answered look at Roon's list — "checked … ago"
+let _watchLastWalkAt = 0;     // the last whole-list walk, by anyone, any outcome
+let _watchWalkWanted = "";    // why evidence asked for a walk, until one runs
+let _libraryClientAt = 0;     // the last request from an open app or wall display
 
-let _libraryRecheckTimer = null;
-let _libraryRecheckCount = 0;
-let _libraryRecheckLast = 0;
-
-// The automatic rebuild stops at the album snapshot. Everything BUILT ON that
-// snapshot — the Qobuz/TIDAL source badges, the Genre facet, the decade and
-// quality data harvested from file tags, the label map — is refreshed only by
-// the chain the manual Rescan button runs. Without this the automatic path
-// brought back the right albums wearing last week's metadata, which reads as
-// the auto-rescan not having run at all.
-function kickPostRebuildChain(r) {
-  if (!r || r.status !== "rebuilt") return;
-  rescanChain(r, "auto rescan", false).catch(e =>
-    console.error("[index] auto rescan chain: " + e.message));
-}
-// Ask again in a few minutes, once. Called when something OBSERVED that the
-// library has moved: the 12-hour check finding an import in progress, or an
-// ordinary album open noticing Roon's live count no longer matches the
-// snapshot. Both are evidence; neither is a reason to rebuild inline, because
-// a rebuild is a full re-walk and these fire while somebody is waiting.
-function scheduleLibraryRecheck(why) {
-  if (_libraryRecheckTimer) return;                       // one pending, ever
+// Every successful read of Roon's album list says when the library was last
+// confirmed — the watch's looks, the manual check, and every walk, the first
+// build and a manual Rescan included. The first build is a whole-list walk:
+// without counting it, the first routine check after a restart walked the
+// library again for nothing.
+function noteLibraryRead(wholeList) {
   const now = Date.now();
-  // The budget is per EPISODE, and an idle gap is what ends one. Refilling it
-  // ONLY on "fresh" made exhaustion permanent: at the cap nothing can be
-  // scheduled, so no recheck can fire, so no "fresh" can ever arrive to refill
-  // it. The fast path died for the lifetime of the container — silently, with
-  // the 12-hour tick still running so nothing looked broken — and every later
-  // import was back to waiting up to twelve hours. The counter is global and
-  // is not refunded on "rebuilt" either, so roughly two dozen ordinary
-  // automatic rescans were enough to reach it on a long-lived install.
-  if (_libraryRecheckLast && now - _libraryRecheckLast >= libraryRecheckIdleMs()) {
-    _libraryRecheckCount = 0;
-  }
-  if (_libraryRecheckCount >= libraryRecheckMax()) return;
-  _libraryRecheckCount++;
-  _libraryRecheckLast = now;
-  console.log("[index] recheck scheduled in " + Math.round(libraryRecheckMs() / 60000) +
-              " min (" + why + ")");
-  _libraryRecheckTimer = setTimeout(() => {
-    _libraryRecheckTimer = null;
-    checkAndMaybeRebuild("auto", false)
-      .then(r => {
-        const st = r && r.status;
-        // A snapshot rebuilt in the background has to drag its dependants with
-        // it, exactly as the manual Rescan button does.
-        if (st === "rebuilt") kickPostRebuildChain(r);
-        // Only "fresh" — the library genuinely matches — ends the episode and
-        // returns a full budget. Resetting on "rebuilt" too meant the cap
-        // could never engage: any rebuild refilled it, so a library whose
-        // count never settles could re-walk itself every five minutes forever.
-        if (st === "fresh") { _libraryRecheckCount = 0; return; }
-        // Dropped because something else was already working, or the probe
-        // failed. Neither is an answer, so the question has to be asked again
-        // rather than silently abandoned until the 12-hour tick.
-        if (st === "busy" || st === "error") scheduleLibraryRecheck("previous check returned " + st);
-      })
-      .catch(e => console.error("[index] auto recheck failed: " + e.message));
-  }, libraryRecheckMs());
-  if (_libraryRecheckTimer.unref) _libraryRecheckTimer.unref();
-}
-function stopIndexMaintenance() {
-  if (_libraryRecheckTimer) { clearTimeout(_libraryRecheckTimer); _libraryRecheckTimer = null; }
-  _libraryRecheckCount = 0;
-  _libraryRecheckLast = 0;
-  if (indexMaintTimer) { clearInterval(indexMaintTimer); indexMaintTimer = null; }
+  _watchLastLookAt = now;
+  if (wholeList) _watchLastWalkAt = now;
 }
 
+function armLibraryWatch(ms) {
+  // One step at a time. A look asked for while one is running is taken when it
+  // finishes, at whichever time is sooner — never alongside it, where two
+  // looks would race to set the same state and could walk the list twice.
+  if (_watchStepping) {
+    _watchAgainMs = _watchAgainMs < 0 ? ms : Math.min(_watchAgainMs, ms);
+    return;
+  }
+  if (_watchTimer) clearTimeout(_watchTimer);
+  _watchDueAt = Date.now() + ms;
+  _watchTimer = setTimeout(libraryWatchTick, ms);
+  if (_watchTimer.unref) _watchTimer.unref();   // a pending look never holds the process open
+}
+// Look sooner than planned — never later. Evidence from an album open, a client
+// arriving after a quiet spell, a re-pair, a manual check that found Roon
+// importing. There is one look pending, ever: this can only bring it forward,
+// so a burst of album opens during an import cannot stack probes on the Core.
+// `walk` asks for the whole list to be re-read, because the evidence is of a
+// change a look cannot see.
+function requestLibraryLook(why, ms, walk) {
+  if (!core) return;
+  if (walk && !_watchWalkWanted) _watchWalkWanted = why;
+  // A change already being followed is looked at on the settle pace and no
+  // sooner. An earlier look tells the watch nothing it is not about to learn,
+  // and costs the Core a round trip per album opened during an import.
+  if (_watchPending) return;
+  const delay = Math.max(0, ms || 0);
+  if (_watchTimer && _watchDueAt <= Date.now() + delay) return;
+  if (DEBUG) console.log("[watch] look in " + delay + "ms (" + why + ")");
+  armLibraryWatch(delay);
+}
+function libraryClientActive() {
+  return Date.now() - _libraryClientAt < libraryClientWindowMs();
+}
+// Called by the routes an open app or wall display polls. The first request
+// after a quiet spell looks at once: whoever just opened the app should see
+// what Roon holds NOW, not what it held when the watch last had a reason to look.
+function noteLibraryClient() {
+  const now = Date.now();
+  const quiet = now - _libraryClientAt >= libraryClientWindowMs();
+  _libraryClientAt = now;
+  if (quiet && core) requestLibraryLook("a client arrived after a quiet spell", 500);
+}
+function libraryWatchCadence() {
+  return libraryClientActive() ? libraryWatchActiveMs() : libraryWatchIdleMs();
+}
+
+async function libraryWatchTick() {
+  _watchTimer = null;
+  if (!core || _watchStepping) return;   // unpaired: the pairing handler starts it again
+  _watchStepping = true;
+  _watchAgainMs = -1;
+  let next;
+  try {
+    next = await libraryWatchStep();
+  } catch (e) {
+    // An unanswered look is asked again soon — never abandoned until the next
+    // routine look, which is how v1.7.49's stale snapshot outlived its import.
+    console.error("[watch] look failed: " + e.message);
+    next = librarySettleMs();
+  } finally {
+    _watchStepping = false;
+  }
+  // Asked for while that ran: sooner — unless a change is now being followed,
+  // which is looked at on the settle pace and no sooner (requestLibraryLook).
+  if (_watchAgainMs >= 0 && !_watchPending) next = Math.min(next, _watchAgainMs);
+  _watchAgainMs = -1;
+  if (core) armLibraryWatch(next);
+}
+
+// One step of the watch. Returns how long to wait before the next one.
+async function libraryWatchStep() {
+  // Somebody else owns the library — the first build, a manual Rescan, a walk
+  // already in flight. Probing underneath only adds calls to a busy Core.
+  if (albumIndex.building || _rebuildInFlight) return librarySettleMs();
+  const now = Date.now();
+
+  // Evidence of a change a look cannot see: re-read the whole list. Not while a
+  // change the look CAN see is settling — the walk that settling ends in reads
+  // the whole list anyway, and walking before then is walking mid-import.
+  if (_watchWalkWanted && !_watchPending && now - _watchLastWalkAt >= libraryEvidenceGapMs()) {
+    const why = _watchWalkWanted;
+    _watchWalkWanted = "";
+    const walked = await libraryWalk(why);
+    // A walk that failed never saw what it was asked about, and no look ever
+    // will — so the evidence is kept, and tried again after the gap, rather
+    // than dropped on the floor with the change still in the list.
+    if (walked.status === "error" && !_watchWalkWanted) _watchWalkWanted = why;
+    return libraryWatchCadence();
+  }
+
+  const look = await libraryLook({ full: true, quiet: true });
+
+  if (!look.changed) {
+    if (_watchPending && DEBUG) console.log("[watch] library is back to the snapshot — nothing to re-read");
+    _watchPending = null;
+    // A manual check's "Roon importing" note on Roon's own Settings page: the
+    // library matches the snapshot, so it no longer says anything true.
+    if (_statusSync) { _statusSync = ""; pushStatus(); }
+    // While someone is looking, re-read the whole list every libraryVerifyMs()
+    // — the only way to see a row Roon re-identified in the middle of the list.
+    if (libraryClientActive() && now - _watchLastWalkAt >= libraryVerifyMs()) {
+      walkedWholeList(await libraryWalk("routine check of the whole list"));
+    }
+    return libraryWatchCadence();
+  }
+
+  // One import is one episode, however many batches it arrives in, and the
+  // walks made along the way do not end it — only librarySettleBackoffMs() with
+  // nothing new does. Were each walk to end it, every batch of a long import
+  // would start over at the fast pace and the backoff would never engage: a
+  // full walk, and every open screen re-reading, once a minute for hours.
+  if (!_watchEpisodeAt || now - _watchLastChangeAt >= librarySettleBackoffMs()) _watchEpisodeAt = now;
+  _watchLastChangeAt = now;
+  // How long a picture must hold to count as settled, and how often to look
+  // meanwhile — one number: librarySettleMs(), slowing to librarySettleSlowMs()
+  // once the episode has run librarySettleBackoffMs(). An import that runs for
+  // hours is followed, not probed or re-walked to death.
+  const pace = now - _watchEpisodeAt >= librarySettleBackoffMs()
+    ? librarySettleSlowMs() : librarySettleMs();
+
+  if (!_watchPending || _watchPending.sig !== look.sig) {
+    if (!_watchPending) {
+      console.log("[watch] Roon's library changed (" + look.total + " albums, snapshot has " +
+                  (albumIndex.declared || albumIndex.count) + ") — re-reading once it settles");
+    }
+    _watchPending = { sig: look.sig, at: now };   // new, or still moving
+    return pace;
+  }
+
+  // The same picture as last time — but settled means the same picture HELD
+  // for the pace, not two looks that happen to agree. Two looks a second apart
+  // agree about everything, mid-import included; anything that brought this
+  // look forward must not be able to end the wait early.
+  const held = now - _watchPending.at;
+  if (held < pace) return pace - held;
+
+  // The picture held: Roon has settled.
+  _watchPending = null;
+  walkedWholeList(await libraryWalk("Roon's library settled"));
+  return libraryWatchCadence();
+}
+// A whole-list walk that worked has answered any evidence waiting for one —
+// the evidence was only ever a request to read the whole list.
+function walkedWholeList(walked) {
+  if (walked && (walked.status === "fresh" || walked.status === "rebuilt")) _watchWalkWanted = "";
+}
+
+// Re-read the whole list, diff-aware. Shares _rebuildInFlight with the manual
+// path, so the two can never walk at once.
+async function libraryWalk(why) {
+  if (albumIndex.building || _rebuildInFlight) return { status: "busy" };
+  _rebuildInFlight = true;
+  try {
+    const before = albumIndex.builtAt;
+    let built = true;
+    await buildAlbumIndex({ diff: true, chain: false }).catch(e => {
+      built = false;
+      console.error("[watch] re-reading the list (" + why + ") failed: " + e.message);
+    });
+    // A failed walk counts too: the evidence gap is about how often the Core
+    // is asked for the whole list, not how often it answered.
+    _watchLastWalkAt = Date.now();
+    if (!built) return { status: "error" };
+    if (albumIndex.builtAt === before) {
+      if (DEBUG) console.log("[watch] re-read the list (" + why + ") — it matches the snapshot");
+      return { status: "fresh" };
+    }
+    console.log("[watch] library re-read (" + why + "): " + albumIndex.count + " albums");
+    clearBrowseOffsetCache();
+    if (labelsEnabled) {
+      try { rebuildLabelsMap(); }
+      catch (e) { console.error("[index] labels map rebuild after the watch: " + e.message); }
+    }
+    if (_statusSync) { _statusSync = ""; pushStatus(); }
+    scheduleLibraryDependants(why);
+    return { status: "rebuilt", count: albumIndex.count };
+  } finally {
+    _rebuildInFlight = false;
+  }
+}
+
+// The jobs built on the snapshot — the source badges, the Genre facet, the
+// decade and quality data from file tags, the label map, the art — follow a
+// change ONCE, after the library has been quiet for libraryDependantsQuietMs().
+// Each new change pushes the run back, but never past
+// libraryDependantsMaxWaitMs() from the first, so an import that never stops
+// still gets its badges. Rebuilding the snapshot without these would show the
+// new albums wearing last week's metadata, which reads as nothing happening.
+let _dependantsTimer = null;
+let _dependantsFirstAt = 0;
+function scheduleLibraryDependants(why) {
+  const now = Date.now();
+  if (!_dependantsFirstAt) _dependantsFirstAt = now;
+  const due = Math.min(now + libraryDependantsQuietMs(),
+                       _dependantsFirstAt + libraryDependantsMaxWaitMs());
+  armLibraryDependants(Math.max(0, due - now));
+}
+function armLibraryDependants(ms) {
+  if (_dependantsTimer) clearTimeout(_dependantsTimer);
+  _dependantsTimer = setTimeout(() => {
+    _dependantsTimer = null;
+    // Unpaired since: wait for a Core rather than run a chain that needs one —
+    // on a fixed interval, NOT the deadline above. Once the Core has been gone
+    // past it, that deadline is in the past, and re-arming on it is a timer
+    // firing every millisecond until somebody re-pairs.
+    if (!core) { armLibraryDependants(libraryDependantsQuietMs()); return; }
+    _dependantsFirstAt = 0;
+    runLibraryDependants("auto rescan").catch(e =>
+      console.error("[index] auto rescan chain: " + e.message));
+  }, ms);
+  if (_dependantsTimer.unref) _dependantsTimer.unref();
+}
+// A manual Rescan that rebuilt the snapshot runs every one of these jobs
+// itself (its own chain, plus the sync chain of the build), so a pass the watch
+// still owes would be the same work twice — the /music walk and the favourites
+// paging included.
+function cancelLibraryDependants() {
+  if (_dependantsTimer) { clearTimeout(_dependantsTimer); _dependantsTimer = null; }
+  _dependantsFirstAt = 0;
+}
+// The manual Rescan's chain plus the two jobs only a snapshot build ran — each
+// job once. Never `force`: in both scans it means "a human insisted", which
+// buys past the import gate and turns the genre walk into a full sweep; the
+// automatic run must do neither.
+async function runLibraryDependants(reason) {
+  await rescanChain({ status: "rebuilt" }, reason, false);
+  await bgRun("art prewarm", () => prewarmAlbumArt());
+  kickSmartPicks("after sync");
+}
+
+function stopIndexMaintenance() {
+  if (_watchTimer) { clearTimeout(_watchTimer); _watchTimer = null; }
+  _watchDueAt = 0;
+  _watchAgainMs = -1;
+  _watchPending = null;
+  _watchEpisodeAt = 0;
+  _watchLastChangeAt = 0;
+  _watchWalkWanted = "";
+  // _dependantsTimer is kept: owed work survives a flap, and its callback waits
+  // for a Core to be there before it runs anything. A step still running
+  // (_watchStepping) finishes on its own, and re-arms only if paired again.
+}
 
 // ---- Matching -------------------------------------------------------------
 // Earliest index i where qTokens[k] is a prefix of tokens[i+k] for every k
@@ -8177,7 +8478,9 @@ app.use(express.json({ limit: "1mb" }));
 // API request tracing (DEBUG): method, path, status, duration — one line per
 // user action. The steady pollers are excluded: they'd bury everything else
 // under a line every 1.5s (zone-state) and per art tile (image).
-const TRACE_SKIP = /^\/api\/(zone-state|zones$|image\/|update\/status|settings\/tidal\/status|settings\/display|labels-scan-status|search-status)/;
+// live$: the app asks it every 3 s while it is on screen (v1.8.65), which is
+// exactly the kind of poll this list exists to keep out of the trace.
+const TRACE_SKIP = /^\/api\/(live$|zone-state|zones$|image\/|update\/status|settings\/tidal\/status|settings\/display|labels-scan-status|search-status)/;
 app.use((req, res, next) => {
   if (!DEBUG || !req.path.startsWith("/api/") || TRACE_SKIP.test(req.path)) return next();
   const t0 = Date.now();
@@ -8216,7 +8519,13 @@ app.get("/api/status", (req, res) => {
     // the next clean one), so it is reported as an observation with a time
     // rather than as a claim about right now.
     library_importing: !!_statusSync,
-    library_recheck_pending: !!_libraryRecheckTimer,
+    // The watch has seen Roon's library move and is waiting for it to settle
+    // before re-reading it (v1.8.68) — "checking again shortly".
+    library_recheck_pending: !!_watchPending,
+    // When the watch last looked at Roon. index_built_at is when the snapshot
+    // last CHANGED, and a library nobody touched can be days old by that clock
+    // while it was confirmed seconds ago.
+    library_checked_at: _watchLastLookAt || null,
     index_built_at: albumIndex.builtAt || null,
     index_count: albumIndex.count || 0
   });
@@ -8271,6 +8580,7 @@ function liveRevisions() {
   };
 }
 app.get("/api/live", (req, res) => {
+  noteLibraryClient();   // an open app — the library watch looks more often while there is one
   // Never from a cache: an answer that a proxy or the browser replayed is the
   // stale screen this exists to prevent, one layer down.
   res.set("Cache-Control", "no-store");
@@ -9618,6 +9928,8 @@ app.post("/api/library/rescan", async (req, res) => {
     // the user is waiting on — the response tells them whether the library
     // changed. Everything else is background work kicked afterwards.
     const r = await checkAndMaybeRebuild("manual", true);
+    // It rebuilt, so this press runs every job the watch still owes a pass of.
+    if (r.status === "rebuilt") cancelLibraryDependants();
 
     // ...and the background jobs run ONE AT A TIME.
     //
@@ -10169,11 +10481,11 @@ async function writeArtFile(imageKey, body) {
 }
 
 // Prewarm: fetch the tile master for every indexed album that doesn't have one
-// on disk yet. Kicked after each snapshot build (first pair, 12h refresh,
-// manual Rescan) — "grab the thumbnails during sync" — so wall scrolling never
-// waits on the Core. Sequential with a small gap: art shares the single
-// multiplexed Core websocket with browse + transport, and a burst here would
-// head-of-line block the UI.
+// on disk yet. Kicked after each snapshot build (first pair, the library
+// watch's re-reads, manual Rescan) — "grab the thumbnails during sync" — so
+// wall scrolling never waits on the Core. Sequential with a small gap: art
+// shares the single multiplexed Core websocket with browse + transport, and a
+// burst here would head-of-line block the UI.
 let _artPrewarmInFlight = false;
 let _artPrewarmQueued   = false;
 async function prewarmAlbumArt() {
@@ -18213,6 +18525,10 @@ app.get("/api/queue", (req, res) => {
 
 app.get("/api/zone-state", (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core" });
+  // The wall display polls this, and only this, every 2 s — and its library
+  // grids play by snapshot offset, so a display on the wall counts as someone
+  // looking (the library watch; the app itself is noticed via /api/live).
+  noteLibraryClient();
   const zoneId = req.query.zone;
   const zone   = zoneId && zones[zoneId];
   if (!zone) return res.json({ zone: null });

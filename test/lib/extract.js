@@ -204,10 +204,30 @@ function loadIndexFunctions(names, injections) {
   return factory(...injNames.map((n) => injections[n]));
 }
 
+/**
+ * Pull a function declaration out of ANY file, at any indentation — for the
+ * client's helpers, which live inside the IIFEs of public/app.js rather than at
+ * column 0. The first `function name(` in the file wins, so use it only for
+ * names that are declared once. Returns the compiled function; it closes over
+ * nothing, so pass it only functions that need nothing from their scope.
+ */
+function extractNestedFunction(file, name) {
+  const src = fs.readFileSync(path.join(REPO_ROOT, file), "utf8");
+  const re = new RegExp("(?:async\\s+)?function\\s+" + name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\(");
+  const m = re.exec(src);
+  if (!m) throw new Error(`extract: no "function ${name}(" in ${file}`);
+  const parenClose = scanBalanced(src, src.indexOf("(", m.index), "(", ")");
+  const braceOpen = src.indexOf("{", parenClose);
+  const braceClose = scanBalanced(src, braceOpen, "{", "}");
+  if (parenClose < 0 || braceOpen < 0 || braceClose < 0) throw new Error(`extract: unbalanced ${name} in ${file}`);
+  return new Function("return (" + src.slice(m.index, braceClose + 1) + ");")();
+}
+
 module.exports = {
   REPO_ROOT,
   INDEX_PATH,
   indexSource,
   extractFunction,
   loadIndexFunctions,
+  extractNestedFunction,
 };

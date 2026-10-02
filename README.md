@@ -26,6 +26,36 @@ Put an album aside to play another time. Roon's own Listen later cannot be reach
 
 ⸻
 
+↔️ Previous / next album — *new in v1.8.66*
+
+Step from album to album without leaving the album view.
+
+* **Swipe** the album card sideways, tap the **chevrons** on the cover's edges, or use the **arrow keys**
+* Previous and next are the albums either side of the one you opened, on the screen you opened it from — a Home row, the Library wall, an artist or label page — so a swipe walks the list you were looking at
+* Close the card and you land on the album you stepped to
+
+⸻
+
+📺 Remote ⇄ wall display, and a screensaver — *new in v1.8.66*
+
+* **Menu → Wall display** turns the remote into the wall display for its zone, and **Remote** on the display (tap the screen to reveal it) brings the remote back exactly as you left it
+* **A screensaver timer** — Settings → Wall display → *Switch to the wall display* after 1 to 60 minutes untouched. Set per device and off unless you choose it, so a wall tablet drifts into the display while the phone in your pocket does not
+* It never interrupts: it waits while Settings, a sheet or a selection is open
+* Shown only while the wall display is switched on
+
+⸻
+
+📡 Live screens — *new in v1.8.65*
+
+Every screen keeps itself up to date — you never have to leave a screen and come back to see a change.
+
+* Home, the Library and Not played walls, the Queue, the album, artist and label pages, Smart Picks and Discover all refresh themselves when something changes: a play, a release date found, a setting changed on another device
+* **In place** — your scroll position is kept, nothing flashes "Loading…", and albums that did not change stay exactly where they are
+* **Nothing moves under your finger** — a change waits while you are pressing, scrolling or selecting
+* The random rows keep their draw: an album you have just played drops out, and nothing else moves
+
+⸻
+
 🧭 Discover — *new in v1.8.50*
 
 New records by the artists you actually listen to. It is the one question the app could not answer: Smart Picks finds acts next to your library that you do not own, and the Pitchfork and streaming screens show what somebody else rates this week — neither can tell you whether anyone you play has put something out.
