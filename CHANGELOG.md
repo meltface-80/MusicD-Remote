@@ -2,6 +2,104 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.69] — 2026-10-02
+
+"Using my software Mandarin I want the settings page to be like Mandarin's. Not
+large buttons. I also want all settings pages to open full screen. Currently
+they open depending on content on the page … Side menu to remain untouched
+other than place things in a similar order to that of Mandarin's side menu."
+
+### Changed — Settings is a list, as Mandarin draws it
+
+- The Settings home was two columns of large icon-over-title cards (v1.8.27).
+  It is one column of flat rows now — a 22px icon, then the title — the way the
+  side menu draws its rows and the way Mandarin lays out its own Settings. A row
+  is 48px: compact, and still a full tap target.
+- A title too long for its row is cut with an ellipsis, rather than wrapping
+  into a taller row or pushing the page sideways.
+- What v1.8.27 decided about the content stands: each description lives in the
+  panel it describes, every row reaches a panel and every panel has a row.
+
+### Changed — every Settings page opens full screen
+
+- The sheet rose only as far as its content, to a cap of 86% of the screen, so
+  every pane opened at a different height. The list and every pane now fill the
+  screen, and a pane longer than the screen scrolls inside it as before. The
+  version and GitHub link sit at the foot of the list's page.
+- A page that fills the screen has no backdrop to tap, so the list has a close
+  (×) button in its head. A pane's back arrow returns to the list; Escape steps
+  back from either.
+- The heads stay at the top while a long page scrolls under them. On a phone
+  the list's × and a pane's back arrow are the only ways out — there is no
+  Escape key, and no backdrop now — so neither can scroll out of reach.
+- Settings is the page's own colour. A full-screen panel is one ground with
+  the page (v1.7.87), because that is the colour iOS fills the status bar
+  with; the bottom sheet's lighter tone, carried up to the top of the screen,
+  would have been a seam directly under the clock.
+- On an iPhone the page reaches into the safe areas, like the other full-page
+  screens, and pads them: the pinned heads clear the status bar, the footer
+  the home indicator, and nothing sits under a landscape notch. Pinned in the
+  static suite, because headless Chromium has no safe areas to measure.
+- Settings only. The Qobuz, TIDAL and Pitchfork browsers already filled the
+  screen, and the filter sheet stays a sheet.
+
+### Changed — the side menu in Mandarin's order
+
+- Listen later moves up under Home, as in Mandarin: Home, Listen later, Random
+  albums | Labels, Qobuz, Tidal, Pitchfork, Discover, Smart Picks, Dynamic
+  Playlists, Playlists, Import a playlist | Rescan library | Settings. Wall
+  display, which Mandarin does not have, keeps its place at the end of the
+  first group. Nothing else in the menu changed: the row was moved, not edited.
+
+### Review
+
+One agent reviewed the change and checked each part by reverting it. It found
+nothing blocking, but several things worth fixing before release, and all are
+fixed here:
+
+- On a phone held sideways, scrolling a long page carried the × or the back
+  arrow off the screen. With no backdrop left to tap, the only way out was to
+  scroll back to the top. Class of error: a control that leaves the screen
+  exactly when it is needed (v1.7.80's, again).
+- The full-screen sheet kept the bottom sheet's lighter ground (above).
+- The static safe-area check read only the FIRST rule for its selector. A
+  later media query that padded the sheet without the insets still passed —
+  the class v1.8.50 named "a shorthand ate the reserve". It now reads every
+  rule.
+- One assertion could not fail, because `env()` is 0 in headless Chromium.
+  And Escape closing the list was claimed by a test's name but never checked.
+- A stale comment ("the Settings head: title only, no button"), a duplicated
+  flex rule, and the Settings backdrop and grip left in the markup though
+  always hidden. Two were removed: the update button's "close Settings" now
+  clicks the × instead.
+
+Two findings left as they are, to stay like Mandarin: a pane closes in two
+taps (back, then ×), and on a desktop the rows span the full width.
+
+### Tests
+
+- `test/dom/settings-page.test.js` replaces `settings-grid.test.js`. It
+  measures the list and EVERY pane against the window at phone, tablet and
+  desktop sizes, including the short panes the old sheet opened half-height.
+  It also checks:
+  - a phone held sideways scrolls the list rather than squeezing it, and the
+    × and every back arrow stay on screen, on top, when scrolled to the foot;
+  - Settings and its heads are the page ground;
+  - the rows form one column of flat 44–60px rows, icon before title;
+  - long titles — one unbreakable word, and one that could wrap — are cut
+    without widening anything;
+  - the close button works when tapped on its icon, and Escape steps from a
+    pane to the list and from the list to closed.
+  Against v1.8.68's page, 20 of its 22 checks fail; the two that pass are the
+  row↔panel wiring and the descriptions, which did not change.
+- `test/dom/menu-order.test.js` pins the drawer's order and every row's name.
+- `test/static/pwa-icons.test.js` pins the full-screen sheet to `height: 100%`
+  (never a viewport unit, v1.7.62). It also pins, across every rule for those
+  selectors, the sheet's side and bottom padding and the heads' top padding
+  to their safe-area insets.
+
+1439 unit / 794 DOM / 121 static.
+
 ## [1.8.68] — 2026-10-02
 
 Two requests: MusicD Server's colour scheme as a fifth theme, and the default;

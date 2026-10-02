@@ -421,6 +421,10 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>
           <span>Home</span>
         </button>
+        <button class="menu-item" type="button" data-action="listen-later" id="menu-item-later">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          <span>Listen later</span>
+        </button>
         <button class="menu-item" type="button" data-action="shuffle">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/></svg>
           <span>Random albums</span>
@@ -451,10 +455,6 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
         <button class="menu-item hidden" type="button" data-action="discover" id="menu-item-discover">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></svg>
           <span>Discover</span>
-        </button>
-        <button class="menu-item" type="button" data-action="listen-later" id="menu-item-later">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
-          <span>Listen later</span>
         </button>
         <button class="menu-item" type="button" data-action="smart-picks" id="menu-item-picks">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.5-4.5"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>
@@ -980,15 +980,20 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
     </div>
   </div>
 
+  <!-- Settings fills the screen (v1.8.69): no backdrop to tap and no grip to
+       drag. It closes from the list's own button below, and Escape. -->
   <div id="settings-overlay" class="settings-overlay hidden" role="dialog" aria-modal="true" aria-label="Settings">
-    <div class="settings-backdrop" data-settings-close></div>
     <div class="settings-sheet">
-      <div class="settings-grip"></div>
 
       <!-- Settings home: category list. Each row opens a pane below. -->
       <div class="settings-view" data-view="home">
         <div class="settings-head">
           <h2>Settings</h2>
+          <!-- The way out of Settings (v1.8.69); a pane's Back returns here.
+               The update button closes Settings by clicking this too. -->
+          <button class="settings-app-close" type="button" data-settings-close aria-label="Close settings">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+          </button>
         </div>
 
         <nav class="settings-nav" aria-label="Settings categories">

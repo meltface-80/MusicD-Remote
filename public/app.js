@@ -13311,8 +13311,10 @@
   };
 
   openBtn.addEventListener("click", open);
+  // closest(), not the target itself: the close button (v1.8.69) holds an
+  // icon, and a tap lands on the icon's path rather than on the button.
   overlay.addEventListener("click", (e) => {
-    if (e.target.hasAttribute("data-settings-close")) close();
+    if (e.target.closest("[data-settings-close]")) close();
   });
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || overlay.classList.contains("hidden")) return;
