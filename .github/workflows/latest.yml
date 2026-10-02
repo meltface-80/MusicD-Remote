@@ -1,0 +1,120 @@
+name: Point latest at the release marked Latest
+
+# `latest` (v1.8.70) follows the release marked Latest on GitHub — never a
+# merge, never a pre-release. That is the same release the in-app updater and
+# the README follow, so `docker pull …:latest` and "Update available" always
+# agree about which version is current.
+#
+# Marking a pre-release as a full release fires `released`; re-marking an
+# existing release as Latest fires `edited`. Either way the release is checked
+# against GitHub's own latest before anything moves, so editing an older
+# release's notes cannot drag `latest` backwards. Run by hand with a version to
+# point it anywhere — a rollback, say.
+#
+# The version's image normally exists already (release.yml builds it on
+# merge). If it does not — a release older than the images, or a build that
+# failed — it is built here from the release's tag first.
+on:
+  release:
+    types: [released, edited]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to point latest at, e.g. 1.8.70"
+        required: true
+
+# One at a time, in the order the events came: promoting a release fires both
+# `released` and `edited`, and two runs moving `latest` at once could finish in
+# either order.
+concurrency:
+  group: latest-image
+  cancel-in-progress: false
+
+jobs:
+  latest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Which version, and is it the Latest release?
+        id: v
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          ASKED: ${{ inputs.version }}
+        run: |
+          IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          if [ -n "$ASKED" ]; then
+            V="${ASKED#v}"
+          else
+            V="${RELEASE_TAG#v}"
+            # Asked three times, 10s apart, so an answer read a moment before
+            # the promotion lands cannot leave latest behind.
+            for TRY in 1 2 3; do
+              LATEST=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)
+              [ "${LATEST#v}" = "$V" ] && break
+              [ "$TRY" = 3 ] || sleep 10
+            done
+            if [ "${LATEST#v}" != "$V" ]; then
+              echo "v$V is not the release marked Latest (that is ${LATEST:-none}) — latest stays where it is"
+              echo "go=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "go=true" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        if: steps.v.outputs.go == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Is this version's image there?
+        id: have
+        if: steps.v.outputs.go == 'true'
+        run: |
+          if docker buildx imagetools inspect "${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.v.outputs.go == 'true' && steps.have.outputs.exists == 'false'
+        with:
+          ref: v${{ steps.v.outputs.version }}
+
+      - uses: docker/setup-qemu-action@v3
+        if: steps.v.outputs.go == 'true' && steps.have.outputs.exists == 'false'
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.v.outputs.go == 'true' && steps.have.outputs.exists == 'false'
+
+      - name: Build and push the version image (missing)
+        if: steps.v.outputs.go == 'true' && steps.have.outputs.exists == 'false'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            MUSICD_IMAGE=${{ steps.v.outputs.image }}
+          tags: ${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.title=MusicD Remote
+            org.opencontainers.image.description=A companion for Roon
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ steps.v.outputs.version }}
+
+      - name: Point latest at it
+        if: steps.v.outputs.go == 'true'
+        run: |
+          docker buildx imagetools create \
+            --tag "${{ steps.v.outputs.image }}:latest" \
+            "${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}"
+          echo "latest -> ${{ steps.v.outputs.version }}"

@@ -1,0 +1,67 @@
+name: Test image
+
+# Every push to a working branch (v1.8.70) builds an image to test before
+# merging, instead of a tarball committed to the branch:
+#   <image>:<version>-test   pinned to package.json's version — the one to run
+#   <image>:test             whichever test build was pushed last, any branch
+# Never main (release.yml publishes those), and never a push that only touches
+# the docs — which includes docker-compose.yml, since it can only name an image
+# already published. A newer push to the same branch cancels a build still running.
+on:
+  push:
+    branches-ignore: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+      - "docker-compose.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: test-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version and image name
+        id: v
+        run: |
+          echo "version=$(jq -r .version package.json)" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push the test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            MUSICD_IMAGE=${{ steps.v.outputs.image }}
+          tags: |
+            ${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}-test
+            ${{ steps.v.outputs.image }}:test
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.title=MusicD Remote (test build)
+            org.opencontainers.image.description=A companion for Roon
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ steps.v.outputs.version }}-test
+          cache-from: type=gha
+          # A cache that fails to save must not fail the image it was saving.
+          cache-to: type=gha,mode=max,ignore-error=true

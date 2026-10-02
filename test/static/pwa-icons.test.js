@@ -351,6 +351,8 @@ test("full-screen panels size against their fixed parent, not the viewport", asy
   const PANELS = [
     [".modal-panel", ".modal"],
     ["#qobuz-overlay .qobuz-sheet", ".settings-overlay"],
+    // v1.8.69: Settings fills the screen too.
+    ["#settings-overlay > .settings-sheet", ".settings-overlay"],
   ];
 
   // The selector may head a GROUP (`a, b, c { ... }`), so the body is whatever
@@ -389,6 +391,59 @@ test("full-screen panels size against their fixed parent, not the viewport", asy
       assert.ok(rule, parent + " rule not found");
       assert.match(rule, /position:\s*fixed/, parent + " is no longer fixed");
       assert.match(rule, /bottom:\s*0/, parent + " no longer reaches the bottom of the screen");
+    }
+  });
+
+  await t.test("full-screen Settings pads every safe area instead (v1.8.69)", () => {
+    // Filling a fixed inset:0 parent puts Settings UNDER the status bar, the
+    // home indicator and, in landscape, the notch. The sheet pads the sides and
+    // the foot; the pinned heads pad the top (a head that sticks at the very
+    // top must carry the inset itself). Headless Chromium has no insets — every
+    // env() is 0 — so this cannot be measured here, only pinned.
+    //
+    // EVERY rule for each selector, not the first: a later block (a media
+    // query, say) whose padding shorthand drops the insets wins over this one,
+    // which is the v1.8.50 "a shorthand ate the reserve" class.
+    function bodiesFor(selector) {
+      const out = [];
+      const re = /([^{}]+)\{([^{}]*)\}/g;
+      let m;
+      while ((m = re.exec(bare)) !== null) {
+        const sels = m[1].split(",").map(x => x.replace(/\s+/g, " ").trim());
+        if (sels.includes(selector)) out.push(m[2]);
+      }
+      return out;
+    }
+    function paddingDecls(body) {
+      return (body.match(/padding(-top|-right|-bottom|-left)?\s*:[^;]*/g) || []);
+    }
+    const SHEET = "#settings-overlay > .settings-sheet";
+    const HEADS = ['#settings-overlay .settings-view[data-view="home"] .settings-head',
+                   "#settings-overlay .settings-pane-head"];
+
+    const sheet = bodiesFor(SHEET);
+    assert.ok(sheet.some(b => paddingDecls(b).length), "no rule pads the full-screen Settings sheet");
+    for (const b of sheet) {
+      for (const d of paddingDecls(b)) {
+        const side = (d.match(/^padding-(\w+)/) || [])[1];
+        const need = side ? (side === "top" ? [] : [side]) : ["right", "bottom", "left"];
+        for (const n of need) {
+          assert.match(d, new RegExp("env\\(safe-area-inset-" + n + "\\)"),
+            "a rule for the Settings sheet sets `" + d + "` without safe-area-inset-" + n);
+        }
+      }
+    }
+    for (const head of HEADS) {
+      const bodies = bodiesFor(head);
+      assert.ok(bodies.some(b => /env\(safe-area-inset-top\)/.test(b)),
+        head + " does not carry the top inset — pinned at the top, it would sit under the clock");
+      for (const b of bodies) {
+        for (const d of paddingDecls(b)) {
+          if (/^padding-(right|bottom|left)/.test(d)) continue;
+          assert.match(d, /env\(safe-area-inset-top\)/,
+            "a rule for " + head + " sets `" + d + "` without the top inset");
+        }
+      }
     }
   });
 

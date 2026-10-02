@@ -11792,6 +11792,19 @@
     notesEl.textContent = notes;
     notesEl.classList.remove("hidden");
   }
+  // The published image (v1.8.70) updates by pulling it — the server says so
+  // with canApply false and the exact pull command. Shared with Settings →
+  // System, so the two places a user is told how to update say the same thing.
+  // "From that image", not "your usual command": a test or pinned install's
+  // usual command names another tag, and recreating from it changes nothing.
+  function pullInstructions(s) {
+    return "This install runs the published image. " +
+           (s.isDowngrade ? "To go back to v" + s.latest + ", pull it:" : "Update it with:") +
+           "\n" + s.pull + "\nthen recreate the container from that image " +
+           "(with Compose: docker compose pull && docker compose up -d). " +
+           "Your data volume carries over.";
+  }
+  window.__updatePullText = pullInstructions;
 
   function showProgress(phase) {
     applying = true;
@@ -11816,8 +11829,16 @@
         toast.classList.remove("is-error");
         const label = s.isDowngrade ? "Rollback to v" : "v";
         show((label) + s.latest + " available (you have v" + s.current + ")");
-        showNotes(s.notes);
-        btnNow.querySelector("span").textContent = s.isDowngrade ? "Roll back" : "Update";
+        if (s.canApply === false) {
+          // Nothing for a button to do on the published image: the update is
+          // a pull, so the toast says how and keeps only Later.
+          btnNow.classList.add("hidden");
+          showNotes(pullInstructions(s) + (s.notes ? "\n\n" + s.notes : ""));
+        } else {
+          btnNow.classList.remove("hidden");
+          showNotes(s.notes);
+          btnNow.querySelector("span").textContent = s.isDowngrade ? "Roll back" : "Update";
+        }
       } else if (!applying) {
         hide();
       }
@@ -13311,8 +13332,10 @@
   };
 
   openBtn.addEventListener("click", open);
+  // closest(), not the target itself: the close button (v1.8.69) holds an
+  // icon, and a tap lands on the icon's path rather than on the button.
   overlay.addEventListener("click", (e) => {
-    if (e.target.hasAttribute("data-settings-close")) close();
+    if (e.target.closest("[data-settings-close]")) close();
   });
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || overlay.classList.contains("hidden")) return;
@@ -14497,7 +14520,17 @@ initServiceBrowser({
       await fetch("/api/update/check", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
       const r = await fetch("/api/update/status", { cache: "no-store" });
       const s = await r.json();
-      if (s && s.available && s.latest) {
+      if (s && s.available && s.latest && s.canApply === false) {
+        // The published image (v1.8.70): there is nothing here to install —
+        // the update is a pull, so say how and leave the button a check.
+        btn.disabled = false;
+        btn.textContent = s.isDowngrade ? "Latest release: v" + s.latest : "v" + s.latest + " available";
+        if (notesDiv) {
+          const how = window.__updatePullText ? window.__updatePullText(s) : (s.pull || "");
+          notesDiv.textContent = how + (s.notes ? "\n\n" + s.notes : "");
+          notesDiv.classList.remove("hidden");
+        }
+      } else if (s && s.available && s.latest) {
         pendingUpdate = true;
         btn.disabled = false;
         btn.classList.add("is-update-ready");
