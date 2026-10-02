@@ -4034,11 +4034,21 @@ input.vol-range::-moz-range-thumb {
 .pick-play { letter-spacing: .01em; }
 .pick-add:disabled, .pick-block:disabled { opacity: .6; cursor: default; }
 .pick-block { color: var(--text-dim); }
+/* Listen later (v1.8.67). The pick's "＋ Listen later" reads as on once the
+   pick is put aside; "Open in Qobuz" is an <a> wearing the same pill, so it
+   needs the box a <button> gets for free. */
+.pick-later.is-on { color: var(--text); border-color: var(--accent); }
+.pick-link {
+  display: inline-flex; align-items: center; justify-content: center;
+  text-decoration: none; box-sizing: border-box;
+}
 /* On a phone the two buttons sit under the text rather than beside it — a
    96px art block plus two stacked pill buttons does not fit a 360px screen. */
 @media (max-width: 520px) {
   .pick-card-full { flex-wrap: wrap; }
-  .pick-actions { flex-direction: row; width: 100%; }
+  /* Three or four pills now (Add, Listen later, Not for me; Open in Qobuz):
+     they wrap to a second line rather than squeeze their labels off the end. */
+  .pick-actions { flex-direction: row; flex-wrap: wrap; width: 100%; }
   .pick-add, .pick-block { flex: 1 1 0; text-align: center; }
 }
 /* 12 genre buttons divide evenly into 2 / 3 / 4 / 6 columns, so every screen

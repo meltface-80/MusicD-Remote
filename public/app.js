@@ -173,6 +173,8 @@
   let smartPicksSeq = 0;            // orphans in-flight Smart Picks fetches
   let discoverActive = false;       // viewing the Discover screen?
   let discoverSeq = 0;              // orphans in-flight Discover fetches
+  let laterActive = false;          // viewing the Listen later screen?
+  let laterSeq = 0;                 // orphans in-flight Listen later fetches
   // How long a report about a long-running queue fill stays up (vs showToast's
   // 2.4s default). Declared here rather than beside showToast() for the same
   // reason as the flags above — a `const` further down the file is a TDZ
@@ -619,6 +621,7 @@
   const homeLibrary  = document.getElementById("home-library");
   const homeLotw     = document.getElementById("home-lotw");
   const homePicks    = document.getElementById("home-picks");
+  const homeLater    = document.getElementById("home-later");
   const homeHistory  = document.getElementById("home-history");
   const homeGenres   = document.getElementById("home-genres");
   const topbarBack   = document.getElementById("topbar-back");
@@ -643,6 +646,9 @@
       case "unplayed": return ["library", "plays", "day"];
       case "history":  return ["library", "plays"];
       case "picks":    return ["picks", "library", "day"];
+      // An album put aside or taken off, and the library — an entry Roon has
+      // just imported turns from "add it" into an ordinary album tile.
+      case "later":    return ["later", "library"];
       case "random":   return ["library"];
       // The same revisions the wall it heads reads (Focus aside — see libSortParams).
       case "library":  return libOrderDeps(libView.sort, "any");
@@ -724,6 +730,8 @@
       load: () => runHomeRow("unplayed", loadHomeUnplayed),   isFresh: () => homeRowFresh("unplayed") },
     { id: "history",  title: "Recently played",
       load: () => runHomeRow("history", loadHomeHistory),     isFresh: () => homeRowFresh("history") },
+    { id: "later",    title: "Listen later",
+      load: () => runHomeRow("later", loadHomeLater),         isFresh: () => homeRowFresh("later") },
     { id: "picks",    title: "Smart Picks",
       load: () => runHomeRow("picks", loadHomeSmartPicks),    isFresh: () => homeRowFresh("picks") },
     { id: "random",   title: "Random albums",
@@ -777,7 +785,7 @@
   // fresh install has no history and no picks, and an empty labelled shelf
   // reads as a fault rather than an absence.
   function rowHidesWhenEmpty(id) {
-    return id === "history" || id === "picks" || id === "lotw";
+    return id === "history" || id === "picks" || id === "lotw" || id === "later";
   }
   function rowHasAnyContent(sectionEl) {
     return !!(sectionEl && sectionEl.querySelector(".album, .pick-card, .home-genre-tile"));
@@ -1335,6 +1343,71 @@
     }
   }
 
+  // The Play / waiting / Add button, shared by a Smart Pick and a Listen later
+  // entry — both are "a record that may or may not be in Roon yet", and two
+  // copies of the three states would drift. `title`/`artist` are the strings
+  // the record was found under; Play opens it under ROON's own strings
+  // (library_title / library_subtitle), because the play routes check identity
+  // against the snapshot and an edition suffix that differs would be refused as
+  // a stale offset. Returns null when there is nothing to offer (not in Roon
+  // and no service album to add).
+  function pickPrimaryButton(item, title, artist, addLabel) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    if (item.offset !== null && item.offset !== undefined) {
+      // PLAY — Roon has imported it, so every ordinary play route works.
+      btn.className = "pick-add pick-play";
+      btn.textContent = "▶ Play";
+      btn.addEventListener("click", () => openAlbum({
+        offset:    item.offset,
+        title:     item.library_title || title || "",
+        subtitle:  item.library_subtitle || artist || "",
+        image_key: item.image_key || null
+      }, { filter: null }));
+    } else if (item.added) {
+      // WAITING — favourited, not imported yet. Roon decides when.
+      btn.className = "pick-add is-done";
+      btn.disabled = true;
+      btn.textContent = "✓ Added — waiting for Roon";
+    } else if (item.album_id && item.service) {
+      // ADD — the one-way favourite (addSmartPick latches on success).
+      btn.className = "pick-add";
+      btn.textContent = addLabel;
+      btn.addEventListener("click", () => addSmartPick(item, btn));
+    } else {
+      return null;
+    }
+    return btn;
+  }
+
+  function smartPickLaterLabel(on) { return on ? "✓ Listen later" : "＋ Listen later"; }
+  function smartPickLaterButton(pick) {
+    let on = !!pick.later;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "pick-block pick-later";
+    const paint = () => {
+      btn.textContent = smartPickLaterLabel(on);
+      btn.classList.toggle("is-on", on);
+      btn.setAttribute("aria-pressed", String(on));
+    };
+    paint();
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      const got = await setListenLater({
+        title: pick.album || "", artist: pick.artist || "",
+        service: pick.service || "", album_id: pick.album_id || "",
+        image: pick.image || "", source: "picks"
+      }, !on);
+      btn.disabled = false;
+      if (got === null) return;   // not saved — already reported
+      on = got;
+      paint();
+      showToast(on ? "Put aside in Listen later" : "Taken off Listen later", "ok");
+    });
+    return btn;
+  }
+
   // One pick. `full` adds the reason line and the action buttons — the Home
   // carousel stays a plain tile so it reads like the rows around it.
   function smartPickCard(pick, full) {
@@ -1383,36 +1456,13 @@
       //              decides when, so there is nothing to press.
       //   ADD      — not in the streaming library. Where every pick sits when
       //              automatic adding is off.
-      if (pick.offset !== null && pick.offset !== undefined) {
-        const play = document.createElement("button");
-        play.type = "button";
-        play.className = "pick-add pick-play";
-        play.textContent = "▶ Play";
-        play.addEventListener("click", () => openAlbum({
-          offset:    pick.offset,
-          // Roon's OWN strings for the album, not Qobuz's — the play routes
-          // check identity against the snapshot, and an edition suffix that
-          // differs would be refused as a stale offset.
-          title:     pick.library_title || pick.album || "",
-          subtitle:  pick.library_subtitle || pick.artist || "",
-          image_key: pick.image_key || null
-        }, { filter: null }));
-        actions.appendChild(play);
-      } else if (pick.added) {
-        const wait = document.createElement("button");
-        wait.type = "button";
-        wait.className = "pick-add is-done";
-        wait.disabled = true;
-        wait.textContent = "✓ Added — waiting for Roon";
-        actions.appendChild(wait);
-      } else {
-        const add = document.createElement("button");
-        add.type = "button";
-        add.className = "pick-add";
-        add.textContent = smartPickAddLabel(false);
-        add.addEventListener("click", () => addSmartPick(pick, add));
-        actions.appendChild(add);
-      }
+      const primary = pickPrimaryButton(pick, pick.album, pick.artist, smartPickAddLabel(false));
+      if (primary) actions.appendChild(primary);
+
+      // Listen later (v1.8.67): the other place a pick can go — put aside
+      // without touching the streaming library. Two-way, unlike Add: taking
+      // a pick back off the list costs nothing and changes nothing elsewhere.
+      actions.appendChild(smartPickLaterButton(pick));
 
       const nope = document.createElement("button");
       nope.type = "button";
@@ -1500,7 +1550,8 @@
   // shortly" while the first build ran — the exact thing a live screen does
   // not ask of anyone. When the build lands (the `picks` revision) the screen
   // re-reads where it stands, and a pick blocked on another device goes here too.
-  const SMART_PICKS_DEPS = ["picks", "day"];
+  // "later" too: a pick put aside on another device shows it here.
+  const SMART_PICKS_DEPS = ["picks", "day", "later"];
   let smartPicksReadStamp = null;
   const smartPicksOnScreen = () =>
     smartPicksActive && !(window.__artistViewActive && window.__artistViewActive());
@@ -1566,6 +1617,289 @@
     if (!smartPicksOnScreen() || smartPicksReadStamp === liveStamp(SMART_PICKS_DEPS)) return;
     liveWhenIdle("smart-picks-screen", () => { if (smartPicksOnScreen()) showSmartPicks({ live: true }); });
   });
+
+  /*
+   * LISTEN LATER (v1.8.67) — albums put aside to play another time.
+   *
+   * Ported from Mandarin. Roon's own Listen later cannot be reached from an
+   * extension, so the list is the server's (GET/POST /api/listen-later), kept
+   * by album identity so it survives a rescan, and shared by every device.
+   *
+   * An entry is one of two things, and every control here turns on which:
+   *
+   *   IN THE LIBRARY  it has an offset, so it is an ordinary album — the Home
+   *                   tile opens the album view, the screen offers Play.
+   *   NOT YET         a Smart Pick sent here rather than to the streaming
+   *                   library. No offset, so nothing can play it: the tile
+   *                   opens this screen, where it can be added to the library
+   *                   (Roon imports it, and it becomes the first kind with no
+   *                   further step) or opened in the service's own app.
+   */
+
+  // Put an album on the list (on: true) or take it off. `on` is the state
+  // ASKED FOR rather than a toggle, so two devices tapping at once both end
+  // where they meant to. Resolves to the state the server reports, or null
+  // when it could not be saved (already reported to the user).
+  async function setListenLater(entry, on) {
+    try {
+      const r = await fetch("/api/listen-later", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(Object.assign({}, entry, { on: !!on }))
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j || !j.ok) {
+        showToast((j && j.error) || "Couldn't save that", "error");
+        return null;
+      }
+      return !!j.on;
+    } catch (e) {
+      showToast("Failed: " + e.message, "error");
+      return null;
+    }
+  }
+
+  const HOME_LATER_MAX = 30;   // tiles on the Home shelf; the screen shows them all
+  const laterInLibrary = (e) => e.offset !== null && e.offset !== undefined;
+  // The album an entry opens as. Roon's OWN strings, not the ones it was put
+  // aside under: the play routes check identity against the snapshot, and an
+  // edition suffix that differs would be refused as a stale offset.
+  function laterAlbum(e) {
+    // The server's own album record when Roon has it — badges and all.
+    if (e.album && e.album.offset !== null && e.album.offset !== undefined) return e.album;
+    return {
+      offset:    e.offset,
+      title:     e.library_title || e.title || "",
+      subtitle:  e.library_subtitle || e.artist || "",
+      image_key: e.image_key || null
+    };
+  }
+  // By calendar day, through the same wording Discover uses: discoverWhen
+  // counts local midnights, so "yesterday" turns over at midnight rather than
+  // twenty-four hours after the album was put aside.
+  function laterAgo(ts) {
+    const d = new Date(ts || 0);
+    const p = (n) => (n < 10 ? "0" + n : String(n));
+    return discoverWhen(d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate())) || "today";
+  }
+  function laterServiceName(service) {
+    return service === "tidal" ? "TIDAL" : service === "qobuz" ? "Qobuz" : "";
+  }
+  // A cover from the service's CDN, for an entry Roon has no artwork for yet.
+  // A dead URL removes itself rather than leave the broken-image glyph, which
+  // reads as "this app is broken" rather than "no cover" (v1.8.39).
+  function laterExternalArt(wrap, url) {
+    // Kept on the element even after a failed <img> removes itself, the way an
+    // album tile keeps data-art-key: "what cover was this given" stays
+    // answerable after the fact.
+    wrap.dataset.artSrc = url;   // the same names the share card's rows use (rowArt)
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = "";
+    img.addEventListener("error", () => {
+      wrap.dataset.artFailed = "1";
+      wrap.classList.add("no-image");
+      img.remove();
+    });
+    img.src = url;
+    wrap.classList.remove("no-image");
+    wrap.appendChild(img);
+  }
+
+  // One Home tile. An album Roon has is an ordinary Home tile; one it does not
+  // is the same shape (so the row reads as one shelf) but opens this screen.
+  function laterTile(e) {
+    if (laterInLibrary(e)) return homeTile(laterAlbum(e));
+    const tile = buildAlbumTile({ title: e.title, subtitle: e.artist },
+                                () => showListenLater(), { selectable: false });
+    tile.classList.add("later-tile-service");
+    const wrap = tile.querySelector(".album-art-wrap");
+    if (wrap && e.image) laterExternalArt(wrap, e.image);
+    return tile;
+  }
+
+  function renderHomeLater(albums) {
+    if (!homeLater) return;
+    const sec = homeLater.closest(".home-section");
+    if (!albums.length) {
+      // Nothing put aside: no shelf at all, rather than an empty labelled one.
+      homeLater.textContent = "";
+      if (sec) sec.classList.add("hidden");
+      return;
+    }
+    // A shelf, not the whole list: picks sent here arrive five a day, and the
+    // full list is one tap away on the header.
+    const shown = albums.slice(0, HOME_LATER_MAX);
+    paintRow(homeLater, shown.map(e => ({ key: "later:" + JSON.stringify(e), build: () => laterTile(e) })));
+    if (sec) sec.classList.toggle("hidden", !homeRowOn("later"));   // never un-hide a row the layout switched off
+  }
+
+  async function loadHomeLater(isCurrent) {
+    if (!homeLater) return false;
+    try {
+      // favs=0: the row never shows "added", so it must not wait on a
+      // streaming service's favourites to paint.
+      const r = await fetch("/api/listen-later?favs=0");
+      if (!isCurrent() || !r.ok) return false;   // asked again on the next visit or change
+      const j = await r.json();
+      if (!isCurrent()) return false;
+      // Painted even when empty: an empty list is a real answer, and it stays
+      // the answer until something is put aside — a live revision.
+      const albums = (j && j.albums) || [];
+      renderHomeLater(albums);
+      // Kept for the cold open, empty included: a list emptied on purpose must
+      // not come back from the cache as a shelf that then vanishes.
+      saveHomeCache({ later: albums });
+      return true;
+    } catch (e) {
+      // Offline or the server went away. The row keeps whatever it had and is
+      // asked again on the next visit or change, so nothing is lost by silence.
+      return false;
+    }
+  }
+
+  // Take an entry off from the full screen, and drop its card.
+  async function removeLaterCard(e, card, button) {
+    button.disabled = true;
+    const got = await setListenLater({ title: e.title, artist: e.artist }, false);
+    if (got === null) { button.disabled = false; return; }
+    if (card && card.parentNode) {
+      const list = card.parentNode;
+      list.removeChild(card);
+      if (!list.children.length && laterOnScreen()) setBanner(LATER_EMPTY, false);
+    }
+    showToast("Taken off Listen later", "ok");
+  }
+
+  // One entry on the full screen: the art, what it is, where it stands, and
+  // what can be done with it.
+  function laterCard(e) {
+    const inLib = laterInLibrary(e);
+    const card = document.createElement("div");
+    card.className = "pick-card pick-card-full later-card";
+
+    const art = document.createElement("div");
+    art.className = "pick-art";
+    if (inLib && e.image_key) {
+      loadArt(art, e.image_key, TILE_IMG_SIZE, (img) => {
+        img.remove();
+        if (e.image) laterExternalArt(art, e.image);
+      });
+    } else if (e.image) {
+      laterExternalArt(art, e.image);
+    }
+    card.appendChild(art);
+
+    const meta = document.createElement("div");
+    meta.className = "pick-meta";
+    const artist = document.createElement("div");
+    artist.className = "pick-artist";
+    artist.textContent = inLib ? (e.library_subtitle || e.artist) : e.artist;
+    meta.appendChild(artist);
+    const album = document.createElement("div");
+    album.className = "pick-album";
+    album.textContent = inLib ? (e.library_title || e.title) : e.title;
+    meta.appendChild(album);
+    const status = document.createElement("div");
+    status.className = "pick-reason";
+    const from = e.source === "picks" ? "From Smart Picks · " : "";
+    status.textContent = inLib
+      ? from + "Put aside " + laterAgo(e.added_at)
+      : e.service
+        ? from + "Not in your library yet — on " + laterServiceName(e.service)
+        : "No longer in your library";
+    meta.appendChild(status);
+    card.appendChild(meta);
+
+    const actions = document.createElement("div");
+    actions.className = "pick-actions";
+    const primary = pickPrimaryButton(e, e.title, e.artist, "＋ Add to library");
+    if (primary) actions.appendChild(primary);
+    if (!inLib && e.service_url) {
+      // Somewhere to hear it before deciding. A link, not a button: it leaves
+      // the app, and that should look different from an action that does not.
+      const open = document.createElement("a");
+      open.className = "pick-block pick-link";
+      open.href = e.service_url;
+      open.target = "_blank";
+      open.rel = "noopener noreferrer";
+      open.textContent = "Open in " + laterServiceName(e.service);
+      actions.appendChild(open);
+    }
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "pick-block later-remove";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => removeLaterCard(e, card, remove));
+    actions.appendChild(remove);
+    card.appendChild(actions);
+    return card;
+  }
+
+  // The full Listen later screen. Live like Smart Picks: it follows the list
+  // (an album put aside on another device, or played through) and the library
+  // (an entry Roon has just imported becomes playable where it stands).
+  const LATER_DEPS = ["later", "library"];
+  const LATER_EMPTY = "Nothing put aside yet. Open any album and choose Listen later from its ⋯ menu, " +
+                      "or send Smart Picks here in Settings → Smart Picks.";
+  let laterReadStamp = null;
+  const laterOnScreen = () =>
+    laterActive && !(window.__artistViewActive && window.__artistViewActive());
+  async function showListenLater(opts) {
+    // The section header passes its click event here, so only a real
+    // { live: true } counts.
+    const live = !!(opts && opts.live === true);
+    if (!live) {
+      enterFullWall("Listen later");
+      laterActive = true;
+    }
+    const mySeq = ++laterSeq;
+    const stamp = liveStamp(LATER_DEPS);
+    let j = null;
+    try {
+      const r = await fetch("/api/listen-later");
+      j = await r.json();
+      if (!r.ok && !(j && j.error)) j = { error: "HTTP " + r.status };
+    } catch (e) {
+      j = null;
+    }
+    if (!laterOnScreen() || mySeq !== laterSeq) return;   // user moved on
+    // A re-read that fails leaves the screen as it is; the next change retries.
+    if (live && (!j || j.error)) return;
+    laterReadStamp = stamp;
+    if (!j || j.error) {
+      grid.innerHTML = "";
+      setBanner(j && j.error
+        ? ("Couldn't load Listen later — " + j.error)
+        : "Couldn't load Listen later — the extension didn't answer. Try again.", true);
+      return;
+    }
+    const albums = j.albums || [];
+    if (!albums.length) {
+      grid.innerHTML = "";
+      setBanner(LATER_EMPTY, false);
+      return;
+    }
+    setBanner(null);
+    let wrap = Array.prototype.find.call(grid.children, el => el.classList.contains("later-list"));
+    if (!wrap) {
+      grid.innerHTML = "";
+      wrap = document.createElement("div");
+      wrap.className = "pick-list later-list";
+      grid.appendChild(wrap);
+    }
+    // Keyed on everything a card shows, so an unchanged entry keeps its node —
+    // and with it the "✓ Added — waiting for Roon" latch, which lives only there.
+    const m = document.querySelector("main");
+    const top = m ? m.scrollTop : 0;
+    paintRow(wrap, albums.map(e => ({ key: "laterfull:" + JSON.stringify(e), build: () => laterCard(e) })));
+    if (live && m && m.scrollTop !== top) m.scrollTop = top;
+  }
+  onLive(() => {
+    if (!laterOnScreen() || laterReadStamp === liveStamp(LATER_DEPS)) return;
+    liveWhenIdle("later-screen", () => { if (laterOnScreen()) showListenLater({ live: true }); });
+  });
+  window.__showListenLater = showListenLater;
+  window.__setListenLater = setListenLater;
 
   /*
    * DISCOVER — new records by the acts you play.
@@ -2553,11 +2887,14 @@
     // slower than most (the server resolves every row against the library), so
     // it is the likeliest of all of them to land after the user has moved on.
     discoverActive = false;
+    // Listen later too: its screen shares the grid like the two above.
+    laterActive = false;
     playlistSeq++;
     smartSeq++;
     userPlSeq++;
     smartPicksSeq++;
     discoverSeq++;
+    laterSeq++;
   }
   window.__leavePlaylistScreens = leavePlaylistScreens;
 
@@ -5155,6 +5492,7 @@
       if (name && window.__showLabelAlbums) window.__showLabelAlbums(name);
     });
     wireSectionHeader("home-picks-title", showSmartPicks);
+    wireSectionHeader("home-later-title", showListenLater);
   }
 
   // Weighted-random pick from a list of { title, count }.
@@ -5311,6 +5649,7 @@
     if (c.library && homeLibrary && c.librarySort === libSortKey()) renderHomeLibrary(c.library);
     if (c.lotw     && homeLotw)     { renderHomeLotw(c.lotw.label, c.lotw.albums); }
     if (c.history  && homeHistory)  { renderHomeHistory(c.history); }
+    if (Array.isArray(c.later) && homeLater) { renderHomeLater(c.later); }
     if (c.genres   && homeGenres)   { renderHomeGenres(c.genres); }
     if (!painted) return false;
     // Reveal Home so the cached content is actually on screen while we reconnect.
@@ -5691,6 +6030,9 @@
     // Albums are allowed. Adding one stores its tracks, which means reading the
     // album on the Core first — see /api/user-playlists/add-albums.
     if (addItem) addItem.classList.remove("hidden");
+    // Listen later is for albums; a track cannot be put aside on its own.
+    const laterItem = selMenu && selMenu.querySelector('[data-sel-act="later"]');
+    if (laterItem) laterItem.classList.toggle("hidden", kind !== "albums");
     if (selMenuBtn) {
       selMenuBtn.setAttribute("aria-label",
         `Actions for ${n} selected ${noun}${n === 1 ? "" : "s"}`);
@@ -7120,10 +7462,28 @@
       first = false;
     }
     const overflow = available.slice(ROW_ACTIONS);
-    if (overflow.length) {
-      modalActs.appendChild(buildOverflowMenu(
-        overflow.map(k => ({ label: labels[k], onClick: (b) => invoke(k, b) })),
-        { label: "More playback actions" }));
+    const menuItems = overflow.map(k => ({ label: labels[k], onClick: (b) => invoke(k, b) }));
+    // Listen later (v1.8.67), under the same ⋯ as Next / Shuffle / Radio. Put
+    // aside under ROON's strings for the album — the ones the server just
+    // answered with — so the entry resolves straight back to this record.
+    const laterTitle = (j.album && j.album.title) || album.title || "";
+    const laterArtist = (j.album && j.album.subtitle) || album.subtitle || "";
+    if (available.length && laterTitle) {
+      let onList = !!j.listen_later;
+      const laterLabel = () => (onList ? "Remove from Listen later" : "Listen later");
+      menuItems.push({
+        label: laterLabel(),
+        onClick: async (b) => {
+          const got = await setListenLater({ title: laterTitle, artist: laterArtist }, !onList);
+          if (got === null) return;   // not saved — already reported
+          onList = got;
+          b.textContent = laterLabel();
+          showToast(onList ? "Put aside in Listen later" : "Taken off Listen later", "ok");
+        }
+      });
+    }
+    if (menuItems.length) {
+      modalActs.appendChild(buildOverflowMenu(menuItems, { label: "More actions" }));
     }
     if (!available.length) {
       // "No playback actions available" was true and useless — it described
@@ -8753,6 +9113,25 @@
     }
   }
 
+  // Put every selected album aside (v1.8.67). One request each, in order — a
+  // selection is a handful of albums, and one failing must not lose the rest.
+  async function laterAlbumMulti() {
+    const picked = albumSelected.slice();
+    if (!picked.length) return;
+    let ok = 0;
+    for (const a of picked) {
+      if (!a.title) continue;
+      const got = await setListenLater({ title: a.title, artist: a.subtitle || "" }, true);
+      if (got) ok++;
+    }
+    if (ok) {
+      showToast(ok === picked.length
+        ? "Put " + ok + " album" + (ok === 1 ? "" : "s") + " aside in Listen later"
+        : "Put " + ok + " of " + picked.length + " albums aside in Listen later", "ok");
+      exitAlbumSelectMode();
+    }
+  }
+
   if (albumActionCancelBtn) albumActionCancelBtn.addEventListener("click", exitAlbumSelectMode);
 
   // ----- Select-menu wiring -------------------------------------------------
@@ -8779,6 +9158,7 @@
         return;
       }
       if (act === "add") { addSelectionToPlaylist(); return; }
+      if (act === "later") { if (selMenuKind === "albums") laterAlbumMulti(); return; }
       if (selMenuKind === "tracks") invokeTrackMulti(act);
       else invokeAlbumMulti(act);
     });
@@ -12401,7 +12781,7 @@
   // 4am costs nothing, the same work at 8pm competes with whatever Roon is
   // doing while somebody is listening.
   const picksHour    = document.getElementById("picks-hour");
-  const picksAutoAdd = document.getElementById("picks-autoadd");
+  const picksDest    = document.getElementById("picks-dest");
   const picksRebuild = document.getElementById("picks-rebuild");
   const picksNote    = document.getElementById("picks-service-note");
 
@@ -12432,7 +12812,7 @@
   const picksEnabled = document.getElementById("picks-enabled");
 
   async function loadSmartPicksSettings() {
-    if (!picksHour && !picksAutoAdd && !picksEnabled) return;
+    if (!picksHour && !picksDest && !picksEnabled) return;
     try {
       const r = await fetch("/api/settings/smart-picks");
       if (!r.ok) return;
@@ -12441,7 +12821,10 @@
       // A device that was not the one that flipped the switch catches up here.
       if (window.__applyFeatureMenu) window.__applyFeatureMenu({ picks: !!j.enabled });
       if (picksHour && Number.isFinite(j.hour)) picksHour.value = String(j.hour);
-      if (picksAutoAdd) picksAutoAdd.checked = !!j.auto_add;
+      if (picksDest && typeof j.dest === "string") {
+        picksDest.value = j.dest;
+        picksDest.dataset.saved = j.dest;   // what a refused change goes back to
+      }
       if (picksNote) {
         picksNote.textContent = j.service_ready
           ? "Picks you were not offered automatically are always yours to accept or reject."
@@ -12474,14 +12857,17 @@
       }
     });
   }
-  if (picksAutoAdd) {
-    picksAutoAdd.addEventListener("change", async () => {
-      const on = picksAutoAdd.checked;
-      if (await saveSmartPicksSettings({ auto_add: on })) {
-        showToast(on ? "Picks will be added automatically"
-                     : "Every pick will ask before adding");
+  if (picksDest) {
+    picksDest.addEventListener("change", async () => {
+      const dest = picksDest.value;
+      if (await saveSmartPicksSettings({ dest })) {
+        picksDest.dataset.saved = dest;
+        showToast(dest === "library" ? "Picks will be added to your library"
+                : dest === "later"   ? "Picks will go to Listen later — your library is left alone"
+                :                      "Every pick will ask first");
       } else {
-        picksAutoAdd.checked = !on;   // the server refused — do not lie about it
+        // The server refused — put back the destination it is actually using.
+        if (picksDest.dataset.saved) picksDest.value = picksDest.dataset.saved;
       }
     });
   }
@@ -14621,6 +15007,10 @@ initServiceBrowser({
       }
       if (action === "wall-display") {
         if (window.__openWallDisplay) window.__openWallDisplay();
+        return;
+      }
+      if (action === "listen-later") {
+        if (window.__showListenLater) window.__showListenLater();
         return;
       }
       if (action === "smart-picks") {

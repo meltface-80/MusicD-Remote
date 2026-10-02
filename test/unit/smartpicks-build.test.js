@@ -45,7 +45,7 @@ const RESOLVE_FNS = ["resolveSmartAlbum"].concat(SHARED);
 // returns are what the assertions read.
 function harness(opts) {
   opts = opts || {};
-  const calls = { resolves: [], cacheSets: [], persisted: null, autoAdded: [], logs: [], errors: [] };
+  const calls = { resolves: [], cacheSets: [], persisted: null, autoAdded: [], later: [], logs: [], errors: [] };
   const cache = new Map(Object.entries(opts.cache || {}));
 
   const candidates = opts.candidates !== undefined ? opts.candidates
@@ -91,8 +91,11 @@ function harness(opts) {
     // v1.7.42: the five genre picks are favourited at build time so Roon can
     // import them overnight. Recorded here so the tests can prove WHICH picks
     // get that treatment.
-    smartPicksAutoAdd: opts.autoAdd !== false,
+    // v1.8.67: a destination rather than a switch. `autoAdd: false` is the
+    // old "off", which is "ask" now.
+    smartPicksDest: opts.dest || (opts.autoAdd === false ? "ask" : "library"),
     autoAddSmartAlbum: async (album) => { calls.autoAdded.push(album.id); return true; },
+    listenLaterAdd: (entry) => { calls.later.push(entry); return true; },
     persistSmartPicks: (day, picks) => { calls.persisted = picks; },
   };
   return { F: loadIndexFunctions(BUILD_FNS, Object.assign(inj, opts.inject || {})), calls, cache };
@@ -147,6 +150,32 @@ test("picks are added automatically when the setting says so", { concurrency: 1 
     assert.deepEqual(h.calls.autoAdded, [],
       "auto-add ran despite the setting being off");
     assert.equal(h.calls.persisted.length, 5, "the picks themselves must still be built");
+    assert.deepEqual(h.calls.later, [], "\"ask\" put picks on Listen later");
+  });
+
+  // v1.8.67, asked for by a user: picks set aside WITHOUT touching the
+  // streaming library. Both halves matter — sent to Listen later, and NOT
+  // favourited, or the setting is "library plus a list".
+  await t.test("the Listen later destination puts every pick aside and favourites none", async () => {
+    const h = harness({ dest: "later" });
+    await h.F.buildSmartPicks("2026-08-05");
+    assert.equal(h.calls.persisted.length, 5, "the picks themselves must still be built");
+    assert.deepEqual(h.calls.autoAdded, [],
+      "picks sent to Listen later were favourited on the service as well");
+    assert.equal(h.calls.later.length, 5, "not every pick went to Listen later");
+    for (const e of h.calls.later) {
+      assert.equal(e.source, "picks");
+      assert.equal(e.service, "qobuz", "the entry lost the service it can be added from");
+      assert.ok(e.album_id, "the entry lost the album id it can be added from");
+      assert.ok(e.title, "the entry has no album title");
+    }
+  });
+
+  await t.test("the library destination does not also fill Listen later", async () => {
+    const h = harness({ dest: "library" });
+    await h.F.buildSmartPicks("2026-08-05");
+    assert.equal(h.calls.autoAdded.length, 5);
+    assert.deepEqual(h.calls.later, []);
   });
 });
 
