@@ -77,6 +77,22 @@ const DRIVER = `
   ShareCard.render = function () {
     return Promise.resolve(new Blob([new Uint8Array([1,2,3])], { type: "image/png" }));
   };
+  // The card's blob becomes a data: URL through FileReader, and FileReader
+  // reads a blob over the browser's blob IPC — REAL time — while every wait in
+  // this harness is VIRTUAL time, which fast-forwards whenever the page is
+  // idle. On a loaded machine (the DOM files run in parallel) the wait below
+  // ran out before the read landed: 12 of 24 runs, eight at once, failed as
+  // "never finished building". What the bytes turn into is not what this file
+  // tests, so the read is made to answer on the virtual clock.
+  window.FileReader = function () {
+    var self = this;
+    this.readAsDataURL = function () {
+      setTimeout(function () {
+        self.result = "data:image/png;base64,AQID";
+        if (self.onload) self.onload();
+      }, 0);
+    };
+  };
   window.__openShareCard({ title: "Western Stars", artist: "Bruce Springsteen", image_key: "k0" });
   const actions = document.getElementById("share-actions");
   const hintEl  = document.getElementById("share-hint");

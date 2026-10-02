@@ -149,6 +149,35 @@ body {
 }
 body.show-ui { cursor: default; }
 body.show-ui .controls { opacity: 1; pointer-events: auto; }
+
+/* Back to the remote (v1.8.66). The same glass as the mode controls and
+   revealed with them, top left where a way back is looked for. Hidden it
+   takes no taps (pointer-events: none), so the tap that reveals it can never
+   also be the tap that leaves. */
+.to-remote {
+  position: fixed;
+  top: max(16px, env(safe-area-inset-top));
+  left: max(16px, env(safe-area-inset-left));
+  z-index: 11;
+  display: flex; align-items: center; gap: 4px;
+  padding: 10px 16px 10px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.1);
+  background: rgba(10,12,14,.72);
+  color: #f2f3f5;
+  font: 600 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .3s ease;
+}
+.to-remote svg { width: 18px; height: 18px; flex: 0 0 auto; }
+body.show-ui .to-remote { opacity: 1; pointer-events: auto; }
+/* Where the centred chips would reach it (six chips are ~480px across), they
+   drop below it instead. */
+@media (max-width: 760px) {
+  .controls { top: calc(max(16px, env(safe-area-inset-top)) + 54px); }
+}
 .ctl-btn {
   border: 0; border-radius: 999px;
   padding: 10px 16px;

@@ -207,6 +207,14 @@
   // mode (a live re-read must not rebuild the list mid-selection).
   let historySelectMode = false;
   let historySelected = [];
+  // Album view: previous / next (v1.8.66). The tile the open album was opened
+  // from, and how to find it again; pendingNavTile is set by a tile's click for
+  // exactly as long as its opener runs. Up here because closeModal() clears
+  // them and can run during boot.
+  let albumNavTile = null;
+  let albumNavParent = null;
+  let albumNavKey = null;
+  let pendingNavTile = null;
   // The filter that the currently-open album modal belongs to. Usually the
   // active genre/tag filter, but a per-open override is used for label albums
   // so detail + play resolve offsets against the right list.
@@ -445,6 +453,9 @@
     container.textContent = "";
     container.appendChild(frag);
     if (left) container.scrollLeft = left;
+    // The album view open from this row: its previous / next hints say what is
+    // beside it NOW, not what was there when it opened.
+    if (albumNavParent === container) paintAlbumSteps();
   }
   function reconcileTiles(container, albums, build) {
     paintRow(container, (albums || []).map(a => ({ key: albumTileKey(a), build: () => build(a) })));
@@ -5603,10 +5614,19 @@
     // queued as one.
     const selectable = opts && "selectable" in opts ? !!opts.selectable : true;
     if (selectable) btn.dataset.offset = String(a.offset);
+    // An album tile can be stepped to from the album view (v1.8.66). A playlist
+    // tile (selectable: false) opens a different screen, so it is not one.
+    if (selectable) btn.__albumNav = true;
 
     btn.addEventListener("click", () => {
       if (selectable && albumSelectMode) { handleAlbumTileSelect(btn, a); return; }
-      (onClick || (() => openAlbum(a)))();
+      // The album view this opens remembers the tile it came from, so a swipe
+      // can step to the one beside it. Set only while the opener runs: one
+      // that does not open the album view there and then must not leave it
+      // behind for an unrelated open later.
+      pendingNavTile = selectable ? btn : null;
+      try { (onClick || (() => openAlbum(a)))(); }
+      finally { pendingNavTile = null; }
     });
     if (selectable) {
       // Long press ARMS selection without selecting the tile under the finger.
@@ -6168,6 +6188,12 @@
     // act on with the wrong list.
     if (albumSelectMode) exitAlbumSelectMode();
     exitTrackSelectMode();
+    // Where this album was opened from, for stepping to its neighbours
+    // (v1.8.66). Only a tile's own click sets pendingNavTile, so every other
+    // way in — Now playing, a search result, a restored modal — clears it.
+    albumNavTile = pendingNavTile;
+    albumNavParent = albumNavTile ? albumNavTile.parentElement : null;
+    albumNavKey = albumNavTile ? (albumNavTile.__tileKey || null) : null;
     currentAlbum = album;
     window.__currentAlbum = album;
     currentSource = opts.source || "random";
@@ -6215,6 +6241,7 @@
     }
     modal.classList.remove("hidden");
     document.body.style.overflow = "hidden";
+    paintAlbumSteps();
 
     if (isNP) {
       // The now-playing screen is driven live by the transport poll loop;
@@ -6792,6 +6819,7 @@
     // Track selection belongs to the album that is closing. Leaving it set
     // would arm the next album's rows with someone else's picks.
     exitTrackSelectMode();
+    albumNavTile = albumNavParent = albumNavKey = null;
     modal.classList.add("hidden");
     modal.classList.remove("np-mode", "tab-album", "tab-queue");
     document.body.style.overflow = "";
@@ -6803,6 +6831,213 @@
   modal.addEventListener("click", (e) => {
     if (e.target.closest && e.target.closest("[data-close]")) closeModal();
   });
+
+  // ---------------------------------------------------------------------------
+  // ALBUM VIEW: PREVIOUS / NEXT (v1.8.66).
+  //
+  // Asked for on the Roon forum: "When looking at a detail card, I'd love to be
+  // able to swipe left or right to see previous/next." Previous and next are the
+  // album tiles either side of the one the card was opened from — the same row,
+  // wall, artist page or label page — so a swipe walks the list the user was
+  // looking at. A step CLICKS that tile rather than calling openAlbum itself,
+  // because each screen opens its albums its own way (Home's tiles insist on
+  // full-library offsets, a genre wall's resolve inside the genre) and the tile
+  // is the one place that knows which.
+  //
+  // Three ways to step, one function: a sideways swipe on the card, the quiet
+  // chevrons on the cover, and the arrow keys. None of them on Now playing (the
+  // zone's screen, not a list), during a track selection, or when nothing is
+  // there that way.
+  // ---------------------------------------------------------------------------
+  // The tile the open album came from — found again by key if a live re-read
+  // replaced it with an identical one (paintRow reuses nodes, so that is rare).
+  function albumNavFrom() {
+    if (albumNavTile && albumNavTile.isConnected) return albumNavTile;
+    if (albumNavKey && albumNavParent && albumNavParent.isConnected) {
+      const again = Array.prototype.find.call(albumNavParent.children, el => el.__tileKey === albumNavKey);
+      if (again) { albumNavTile = again; return again; }
+    }
+    return null;
+  }
+  // The nearest album tile that way, passing over everything else in the list:
+  // section headings, the artist's bio, the "Play something unheard" tile,
+  // skeletons.
+  function albumNeighbour(dir) {
+    let el = albumNavFrom();
+    while (el && (el = dir > 0 ? el.nextElementSibling : el.previousElementSibling)) {
+      if (el.__albumNav && !el.classList.contains("skeleton")) return el;
+    }
+    return null;
+  }
+  function albumStepping() {
+    return !!(modal && !modal.classList.contains("hidden") && !modal.classList.contains("np-mode") &&
+              !trackSelectMode);
+  }
+  function paintAlbumSteps() {
+    const ok = albumStepping();
+    const prev = document.getElementById("modal-prev");
+    const next = document.getElementById("modal-next");
+    if (prev) prev.classList.toggle("hidden", !(ok && albumNeighbour(-1)));
+    if (next) next.classList.toggle("hidden", !(ok && albumNeighbour(+1)));
+  }
+  // Keep the list under the card on the album being looked at, so closing the
+  // card lands on it rather than on the one the walk started from. By hand,
+  // not scrollIntoView: that may scroll every ancestor that can be scrolled,
+  // and the window must never be (see pinWindow).
+  function revealTile(tile) {
+    const row = tile.parentElement;
+    if (row && row.scrollWidth > row.clientWidth + 1) {
+      const r = tile.getBoundingClientRect(), c = row.getBoundingClientRect();
+      if (r.left < c.left) row.scrollLeft -= (c.left - r.left) + 16;
+      else if (r.right > c.right) row.scrollLeft += (r.right - c.right) + 16;
+    }
+    const main = document.querySelector("main");
+    if (main) {
+      // Published on the shell (.app), so read where it is inherited: from
+      // <html> it is not set at all, and the bar overlays the top of <main>.
+      const topbar = parseFloat(getComputedStyle(main).getPropertyValue("--topbar-h")) || 0;
+      const r = tile.getBoundingClientRect(), c = main.getBoundingClientRect();
+      const top = c.top + topbar + 8, bottom = c.bottom - 120;   // clear of the bar and the transport pill
+      if (r.top < top) main.scrollTop -= (top - r.top);
+      else if (r.bottom > bottom) main.scrollTop += (r.bottom - bottom);
+    }
+  }
+  const modalBodyEl = modal ? modal.querySelector(".modal-body") : null;
+  function clearAlbumDrag() {
+    if (!modalBodyEl) return;
+    modalBodyEl.style.transform = "";
+    modalBodyEl.style.opacity = "";
+  }
+  // Play a short animation on the card that NOTHING waits for. The step
+  // itself has already happened by the time this runs: a step that waited for
+  // `onfinish` would be stranded whenever the animation clock stops — a page
+  // put in the background mid-swipe pauses every animation on it. The timer is
+  // a safety net for the same case: the card is never left drawn at the
+  // animation's first frame.
+  function animateCard(frames, ms) {
+    const still = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!modalBodyEl || still || typeof modalBodyEl.animate !== "function") return;
+    const a = modalBodyEl.animate(frames, { duration: ms, easing: "ease-out" });
+    setTimeout(() => {
+      try { a.cancel(); } catch (e) { /* already finished and gone — nothing to undo */ }
+    }, ms + 400);
+  }
+  function stepAlbum(dir) {
+    if (!albumStepping()) return false;
+    const to = albumNeighbour(dir);
+    if (!to) return false;
+    clearAlbumDrag();
+    // The tile's own opener: openAlbum repaints the card synchronously, and the
+    // tile becomes the one the NEXT step counts from.
+    to.click();
+    revealTile(to);
+    // The new album arrives from the side the finger came from.
+    const w = Math.round(Math.min(90, window.innerWidth * 0.25));
+    animateCard([{ transform: "translateX(" + (dir > 0 ? w : -w) + "px)", opacity: 0.4 },
+                 { transform: "translateX(0px)", opacity: 1 }], 200);
+    return true;
+  }
+  {
+    const prev = document.getElementById("modal-prev");
+    const next = document.getElementById("modal-next");
+    // stopPropagation: the cover sits inside the card, and a tap meant for the
+    // chevron is not a tap on anything under it.
+    if (prev) prev.addEventListener("click", (e) => { e.stopPropagation(); stepAlbum(-1); });
+    if (next) next.addEventListener("click", (e) => { e.stopPropagation(); stepAlbum(+1); });
+  }
+  // Nothing is open over the card. Every sheet, dialog and overlay stacks above
+  // the album view, so whatever is hit at the middle of the card's visible part
+  // says whether the album view still has the screen — one question that
+  // covers them all, including ones added later.
+  function albumViewOnTop() {
+    if (!modalBodyEl) return false;
+    const b = modalBodyEl.getBoundingClientRect();
+    const l = Math.max(b.left, 0), r = Math.min(b.right, window.innerWidth);
+    const t = Math.max(b.top, 0), btm = Math.min(b.bottom, window.innerHeight);
+    if (r <= l || btm <= t) return false;
+    const hit = document.elementFromPoint((l + r) / 2, (t + btm) / 2);
+    return !!hit && modal.contains(hit);
+  }
+  // The arrow keys, while the album view itself has the keyboard — not from a
+  // text field, and not with a sheet or dialog open over the card: the album
+  // would change underneath something that was opened about it.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (!albumStepping()) return;
+    const t = e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (t && t !== document && t !== document.body && !modal.contains(t)) return;
+    if (!albumViewOnTop()) return;
+    if (stepAlbum(e.key === "ArrowRight" ? +1 : -1)) e.preventDefault();
+  });
+  // The swipe. Passive listeners, so vertical scrolling of the card is never
+  // held up: the gesture is only claimed once it has gone clearly sideways,
+  // and then only followed (a third of the distance, as a cue), never
+  // prevented. Not from the screen's edges (the system's own back gestures
+  // start there), not from a control that drags (a slider), and not from
+  // inside something that scrolls sideways itself.
+  if (modalBodyEl) {
+    const EDGE = 24;
+    let sx = 0, sy = 0, axis = null, tracking = false;
+    const scrollsSideways = (el) => {
+      for (; el && el !== modalBodyEl; el = el.parentElement) {
+        if (el.scrollWidth > el.clientWidth + 1) {
+          const ox = getComputedStyle(el).overflowX;
+          if (ox === "auto" || ox === "scroll") return true;
+        }
+      }
+      return false;
+    };
+    const springBack = () => {
+      const from = modalBodyEl.style.transform;
+      if (!from) return;
+      const fromOpacity = modalBodyEl.style.opacity || "1";
+      // Cleared first: the animation draws over the inline style while it
+      // runs, and when it ends (or is cut short) the card is where it belongs.
+      clearAlbumDrag();
+      animateCard([{ transform: from, opacity: fromOpacity },
+                   { transform: "translateX(0px)", opacity: 1 }], 160);
+    };
+    modalBodyEl.addEventListener("touchstart", (e) => {
+      // A second finger ends the swipe: put back a card the first one moved.
+      if (tracking) springBack();
+      tracking = false;
+      if (e.touches.length !== 1 || !albumStepping()) return;
+      const t = e.touches[0];
+      if (t.clientX < EDGE || t.clientX > window.innerWidth - EDGE) return;
+      const tag = e.target && e.target.tagName;
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test(tag || "") || scrollsSideways(e.target)) return;
+      sx = t.clientX; sy = t.clientY; axis = null; tracking = true;
+    }, { passive: true });
+    modalBodyEl.addEventListener("touchmove", (e) => {
+      if (!tracking || e.touches.length !== 1) return;
+      const t = e.touches[0], dx = t.clientX - sx, dy = t.clientY - sy;
+      if (!axis && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
+        axis = Math.abs(dx) > Math.abs(dy) * 1.3 ? "x" : "y";
+      }
+      if (axis !== "x") return;
+      // Followed only towards a neighbour that exists: dragging at an end of the
+      // list does nothing, which says so as plainly as a bounce would.
+      if (!albumNeighbour(dx < 0 ? +1 : -1)) { clearAlbumDrag(); return; }
+      modalBodyEl.style.transform = "translateX(" + Math.round(dx / 3) + "px)";
+      modalBodyEl.style.opacity = String(Math.max(0.55, 1 - Math.abs(dx) / 700));
+    }, { passive: true });
+    modalBodyEl.addEventListener("touchend", (e) => {
+      if (!tracking) return;
+      tracking = false;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - sx, dy = t.clientY - sy;
+      const far = Math.abs(dx) > Math.max(60, window.innerWidth * 0.18) && Math.abs(dx) > Math.abs(dy) * 1.3;
+      if (axis === "x" && far && stepAlbum(dx < 0 ? +1 : -1)) return;
+      springBack();
+    }, { passive: true });
+    modalBodyEl.addEventListener("touchcancel", () => {
+      if (!tracking) return;
+      tracking = false;
+      springBack();
+    }, { passive: true });
+  }
   // np-mode's top-left Home button (the × is hidden there): close the modal
   // and land on the Home screen, leaving any labels/artist view behind.
   const modalHomeBtn = document.getElementById("modal-home-btn");
@@ -6997,6 +7232,7 @@
     // the row expanded under a set of circles reads as both at once.
     modalTracks.querySelectorAll(".t-row.is-open").forEach(closeTrackRow);
     updateTrackSelection();
+    paintAlbumSteps();   // no stepping away from a selection being made
   }
 
   function exitTrackSelectMode() {
@@ -7012,6 +7248,7 @@
       });
     }
     refreshSelectMenu("tracks", 0);
+    paintAlbumSteps();
   }
 
   function toggleTrackSelected(li, track, index) {
@@ -8578,6 +8815,134 @@
     }
   };
 
+  // ===========================================================================
+  // WALL DISPLAY ⇄ REMOTE (v1.8.66).
+  //
+  // Asked for on the Roon forum by someone running both pages on one iPad in a
+  // kiosk browser: a way to flip between the remote and the wall display, and a
+  // timer that goes back to the display once the remote has been left alone —
+  // the display as the remote's screensaver.
+  //
+  // Both ways are an ordinary navigation in the same tab: "Wall display" in the
+  // side menu here, "Remote" on the display (shown when it is tapped). Going TO
+  // the display pushes a history entry and marks the tab (sessionStorage), and
+  // the display's way back is then history.back(): the remote comes back as it
+  // was left when the browser has kept the page, the browser's own Back agrees
+  // with the button, and flipping a hundred times leaves two entries rather
+  // than two hundred. A display opened any other way (a kiosk's start page, a
+  // bookmark) has no remote behind it, so it loads one.
+  //
+  // The display is sent THIS remote's zone: it is this remote's screen, and a
+  // display left to find "the first zone playing" can show a room the remote
+  // is not controlling.
+  //
+  // The timer is PER DEVICE and off unless chosen — the wall iPad wants it, the
+  // phone in a pocket does not. It never throws work away: it waits while
+  // Settings, a sheet, the label tools or a selection is open. And it does
+  // nothing while the wall display is switched off, because the page it would
+  // open says only that.
+  // ===========================================================================
+  const DISPLAY_IDLE_KEY = "rra-display-idle";        // minutes, this device; absent = never
+  const DISPLAY_FROM_KEY = "rra-display-from-remote"; // sessionStorage; display.js reads it
+  const DISPLAY_IDLE_CHOICES = [0, 1, 2, 5, 10, 15, 30, 60];
+  // The server's switch as last read. __applyFeatureMenu keeps it: at boot, and
+  // whenever the settings revision moves, since any device may flip it.
+  let wallDisplayOn = false;
+  let displayIdleMins = 0;
+  try {
+    const v = parseInt(localStorage.getItem(DISPLAY_IDLE_KEY) || "0", 10);
+    if (DISPLAY_IDLE_CHOICES.indexOf(v) > -1) displayIdleMins = v;
+  } catch (e) { /* private browsing — never, the default */ }
+  let displayIdleAt = Date.now();     // when anyone last touched this page
+  let displayIdleTimer = null;
+
+  function openWallDisplay() {
+    clearTimeout(displayIdleTimer);
+    displayIdleTimer = null;
+    try { sessionStorage.setItem(DISPLAY_FROM_KEY, "1"); }
+    catch (e) { /* the display then loads a fresh remote rather than going back — still a way back */ }
+    location.assign("/display" + (selectedZoneId ? "?zone=" + encodeURIComponent(selectedZoneId) : ""));
+  }
+  window.__openWallDisplay = openWallDisplay;
+
+  // Open work the timer must not throw away: picks being made, a sheet (an
+  // import's result, a playlist being named), Settings, the label tools.
+  function displayIdleHeld() {
+    if (albumSelectMode || trackSelectMode || historySelectMode) return true;
+    if (document.querySelector(".lib-sheet-backdrop")) return true;
+    for (const id of ["settings-overlay", "label-merge-bar", "label-unmerge-sheet", "logo-url-sheet"]) {
+      const el = document.getElementById(id);
+      if (el && !el.classList.contains("hidden")) return true;
+    }
+    return false;
+  }
+  function armDisplayIdle(wait) {
+    clearTimeout(displayIdleTimer);
+    displayIdleTimer = null;
+    if (!displayIdleMins || document.hidden) return;
+    const due = wait != null ? wait : displayIdleAt + displayIdleMins * 60000 - Date.now();
+    displayIdleTimer = setTimeout(checkDisplayIdle, Math.max(1000, due));
+  }
+  function checkDisplayIdle() {
+    displayIdleTimer = null;
+    if (!displayIdleMins || document.hidden) return;   // re-armed when shown again
+    if (Date.now() - displayIdleAt < displayIdleMins * 60000) { armDisplayIdle(); return; }
+    // Held, or the display is off: look again shortly rather than starting the
+    // count over. The page HAS been left alone all this time, so it goes soon
+    // after the sheet closes or the switch is turned on.
+    if (!wallDisplayOn || displayIdleHeld()) { armDisplayIdle(15000); return; }
+    openWallDisplay();
+  }
+  {
+    const touched = () => { displayIdleAt = Date.now(); };
+    // Every way a person can be at this page. Not `scroll`: the app scrolls
+    // itself (a revealed tile, a list put back), and a person who scrolls has
+    // touched, wheeled or pressed a key to do it.
+    for (const ev of ["pointerdown", "keydown", "wheel", "touchstart"]) {
+      document.addEventListener(ev, touched, { capture: true, passive: true });
+    }
+    // A mouse that MOVED. Browsers send moves of their own when the page
+    // changes under a resting pointer, and the progress bar changes it four
+    // times a second — counted, those would keep a desktop awake for ever.
+    let mx = null, my = null;
+    document.addEventListener("pointermove", (e) => {
+      if (mx !== null && Math.abs(e.clientX - mx) + Math.abs(e.clientY - my) < 4) return;
+      mx = e.clientX; my = e.clientY;
+      touched();
+    }, { capture: true, passive: true });
+    window.addEventListener("focus", touched);
+    // A hidden page has nobody to hand over from, and coming back is a touch.
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) { clearTimeout(displayIdleTimer); displayIdleTimer = null; return; }
+      touched();
+      armDisplayIdle();
+    });
+    // Arriving — a load, or back from the display. The tab's mark is spent, and
+    // a page the browser kept comes back with the clock it left with, which
+    // would read as however long the display was up and send it straight back.
+    const arrived = () => {
+      try { sessionStorage.removeItem(DISPLAY_FROM_KEY); }
+      catch (e) { /* nothing could have been stored, then */ }
+      touched();
+      armDisplayIdle();
+    };
+    window.addEventListener("pageshow", (e) => { if (e.persisted) arrived(); });
+    arrived();
+
+    const sel = document.getElementById("display-idle-select");
+    if (sel) {
+      sel.value = String(displayIdleMins);
+      sel.addEventListener("change", () => {
+        const v = parseInt(sel.value, 10);
+        displayIdleMins = DISPLAY_IDLE_CHOICES.indexOf(v) > -1 ? v : 0;
+        try { localStorage.setItem(DISPLAY_IDLE_KEY, String(displayIdleMins)); }
+        catch (e) { /* holds for this session, which beats not at all */ }
+        touched();
+        armDisplayIdle();
+      });
+    }
+  }
+
   // Reflect the opt-in features into the side menu.
   //
   // A menu entry for a feature that is switched off leads to a screen that can
@@ -8605,6 +8970,12 @@
     if (discoverItem && typeof state.discover === "boolean") {
       discoverItem.classList.toggle("hidden", !state.discover);
     }
+    // The wall display: its menu entry, and whether the idle timer may open it.
+    if (typeof state.display === "boolean") {
+      wallDisplayOn = state.display;
+      const displayItem = document.getElementById("menu-item-display");
+      if (displayItem) displayItem.classList.toggle("hidden", !state.display);
+    }
   };
 
   // Ask at boot. Two independent calls, so an older server or a transient
@@ -8626,6 +8997,13 @@
       // Left as the markup has it, which for Discover is HIDDEN — unlike the
       // two above it is off for everyone until asked for, so a failed lookup
       // must not offer a menu entry that leads to an empty screen.
+    }
+    try {
+      const r = await fetch("/api/settings/display");
+      if (r.ok) state.display = !!(await r.json()).enabled;
+    } catch (e) {
+      // Hidden, as the markup has it, and the idle timer stays put: with the
+      // switch unknown, /display may only say "turned off".
     }
     window.__applyFeatureMenu(state);
   }
@@ -11415,6 +11793,7 @@
       const r = await fetch("/api/settings/display");
       const j = await r.json();
       if (displayToggle) displayToggle.checked = !!j.enabled;
+      if (window.__applyFeatureMenu) window.__applyFeatureMenu({ display: !!j.enabled });
       if (displaySeconds && Number.isFinite(parseInt(j.seconds, 10))) {
         displaySeconds.value = j.seconds;
         if (displaySecsValue) displaySecsValue.textContent = j.seconds + "s";
@@ -11434,6 +11813,11 @@
       });
       const j = await r.json();
       if (!j.ok) showToast("Display settings didn't persist — check the data volume", "error");
+      // What the server holds now, saved or not: the display page follows it,
+      // so the menu entry and the idle timer here must too.
+      if (typeof j.enabled === "boolean" && window.__applyFeatureMenu) {
+        window.__applyFeatureMenu({ display: j.enabled });
+      }
     } catch (e) {
       showToast("Failed: " + e.message, "error");
     }
@@ -14233,6 +14617,10 @@ initServiceBrowser({
       }
       if (action === "rescan-library") {
         rescanLibrary();
+        return;
+      }
+      if (action === "wall-display") {
+        if (window.__openWallDisplay) window.__openWallDisplay();
         return;
       }
       if (action === "smart-picks") {

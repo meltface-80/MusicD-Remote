@@ -2,6 +2,125 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.66] — 2026-10-02
+
+Three requests from one post on the Roon forum, from someone running the remote
+and the wall display on an older iPad in Kiosker (a kiosk browser built on
+Safari).
+
+### Fixed — tile text ran into the next tile on an older iPad
+
+In "Recently played", "Send in the Clowns (Pablo)" ran on one line into the next
+tile's title and "Sarah Vaughan & the Count Basie Orchestra" across the next
+tile's artist; "Random albums" did the same with "Muhal Richard Abrams/Eddie
+Allen". The same albums on an iPhone were fine.
+
+An album tile is a `<button>` laid out as a flex column, cover over text. Older
+WebKit's own stylesheet gives every button `align-items: flex-start`, so the
+text block was not stretched to the tile but sized to its widest line — and the
+artist line never wraps (one line, ellipsis, by design). A long artist made the
+block wider than the tile, the title then had room not to wrap, and the
+ellipsis never came because nothing was cut off. Current Chrome and Safari no
+longer carry the rule, which is why a phone — and the test harness — showed the
+tiles correctly. Class of error: a layout that depended on a user-agent default
+without saying so.
+
+- `button { align-items: normal }` in style.css: what every engine this app is
+  tested on already computes, now said outright, for every button in the app.
+- A tile's text block is capped at the tile's width, which holds even on an
+  engine too old to know `normal` (it drops that declaration and the old rule
+  stands).
+- `test/dom/tile-text-webkit.test.js` puts the old rule back ahead of style.css,
+  as a user-agent rule would sit, and measures where the text ends up on Home's
+  rows and the Library wall; a second pass makes the old rule unbeatable to
+  stand in for the oldest engines. An audit of every button on Home, the walls,
+  the album view, the transport, Now playing, the queue, the menu and Settings
+  under the old rule found the album tiles and nothing else. The reset changes
+  nothing on a current engine: Chromium's own default for a button is already
+  `normal`, and all 150 buttons on those screens lay out identically with and
+  without it.
+
+### Added — previous / next album from the album view
+
+"When looking at a detail card, I'd love to be able to swipe left or right to
+see previous/next."
+
+- **Swipe** the card sideways, tap the **chevrons** on the cover's edges, or use
+  the **arrow keys**. Previous and next are the album tiles either side of the
+  one the card was opened from — the Home row, the wall, the artist or label
+  page — so a swipe walks the list that was on screen.
+- **A step clicks that tile**, rather than opening the album some other way,
+  because each screen opens its albums its own way (Home's tiles use
+  full-library offsets, a genre wall resolves inside the genre) and the tile is
+  the one place that knows which. The tests check the request each step makes,
+  not only the title: the right title through the wrong list plays the wrong
+  album.
+- The list behind the card follows the walk, so closing the card lands on the
+  album being looked at. The chevrons show only when there is an album that way,
+  and follow the row when a live re-read changes it under an open card.
+- Not on Now playing (the zone, not a list), not during a track selection, not
+  from the screen's edges (the system's back gestures start there), not from
+  inside anything that scrolls sideways, and not with a sheet or dialog open
+  over the card. Passive listeners, so vertical scrolling is never held up.
+
+### Added — flip between the remote and the wall display, and a screensaver timer
+
+"I'd love to have a gesture and/or control so I could flip back and forth
+between them … and if there were a way to set a timer within the application so
+that after a certain time it went back to the display, well, that would be cool
+too."
+
+- **Menu → Wall display** opens `/display` in the same tab, for this remote's
+  zone. Shown only while the wall display is switched on (with it off, the page
+  says only that), and it appears or goes on every device when the switch is
+  flipped anywhere.
+- **Remote** on the display, revealed by a tap with the mode chips, goes back.
+  When the remote opened the display it is literally Back — the remote returns
+  as it was left, the browser's own Back agrees with the button, and flipping a
+  hundred times leaves two history entries rather than two hundred. A display
+  opened any other way (a kiosk's start page, a bookmark) loads the remote.
+  Hidden, the button takes no taps, so the tap that reveals it cannot also
+  leave. On a phone-width screen the mode chips drop below it.
+- **Settings → Wall display → Switch to the wall display**: after 1, 2, 5, 10,
+  15, 30 or 60 minutes untouched, the remote goes to the display — a
+  screensaver. Per device and off unless chosen (the wall iPad wants it; the
+  phone in a pocket does not). It counts from the last touch, key, wheel or
+  mouse movement — not the browser's own moves under a resting pointer, which
+  the progress bar causes four times a second — and starts again on coming
+  back. It waits while Settings, a sheet, the label tools or a selection is
+  open, so nothing in progress is thrown away, and does nothing while the wall
+  display is off.
+- The Wall display pane's subtitle said "Always-on screen & video"; the video
+  went in v1.7.70.
+
+### Review
+
+Done inline — every review agent hit the account's rate limit. It found four
+defects in the new code before it shipped, each now pinned by a test that fails
+without its fix:
+
+- the arrow keys stepped the album **underneath** a sheet or dialog opened over
+  it (an Add to playlist, an import); the card now has to be what is on top;
+- the chevrons described the row as it was when the album opened, after a live
+  re-read had changed it; the row painter repaints them;
+- the album a step landed on could be revealed under the top bar:
+  `--topbar-h` is published on the shell, not on `<html>`, so the bar read as
+  0px tall;
+- a second finger landing mid-swipe left the card shifted sideways.
+
+### Fixed — a test that failed one run in two under load
+
+`test/dom/share-sheet-chrome.test.js` failed as "the share sheet never finished
+building" — 12 of 24 runs with eight at once, never alone. The card's blob is
+turned into a data: URL by FileReader, which reads it over the browser's blob
+IPC in REAL time, while every wait in the DOM harness is VIRTUAL time, which
+fast-forwards whenever the page is idle; on a busy machine the wait ran out
+first. Every other share test already answers that read on the virtual clock,
+and this one now does too: 0 of 24 under the same load. Class of error: a wait
+measured on one clock for work done on another.
+
+1380 unit / 732 DOM / 120 static.
+
 ## [1.8.65] — 2026-09-28
 
 ### Fixed — the Home "Library" row showed an order the Library wall had left behind

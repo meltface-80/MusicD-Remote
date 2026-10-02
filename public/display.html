@@ -41,8 +41,16 @@
     <div class="idle-sub">Enable “Wall display” in MusicD Settings</div>
   </div>
 
+  <!-- Back to the remote (v1.8.66): revealed with the mode controls. Goes
+       back in history when the remote opened this page, else loads it. -->
+  <button id="to-remote" class="to-remote" type="button" aria-label="Back to MusicD Remote">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+    <span>Remote</span>
+  </button>
+
   <!-- Mode controls: revealed by tap/mouse, auto-hide. Auto = rotate; any
-       other chip pins that screen; Video plays the clip through in full. -->
+       other chip pins that screen. -->
   <div id="controls" class="controls" aria-label="Display mode"></div>
 
   <!-- Tap-to-play panel for the library grids: pick Play now / Queue -->
