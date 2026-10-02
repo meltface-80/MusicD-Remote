@@ -347,7 +347,7 @@
      <a href="https://roon.app">Roon</a> — random-album browsing, instant whole-library
      search, rich label &amp; artist pages, and seamless playback with Roon Server at the heart.</p>
   <div class="badges">
-    <span class="badge" id="ver-badge">v1.8.70</span>
+    <span class="badge" id="ver-badge">v1.8.71</span>
     <span class="badge plain">Docker</span>
     <span class="badge plain">MIT licence</span>
     <span class="badge plain">Pairs with your Roon Core over the network</span>
@@ -361,6 +361,12 @@
        API — the app never touches your library files (except an optional read-only mount for
        label-tag scanning).</p>
     <div class="grid">
+      <div class="card is-new"><h3><span class="em">🐳</span>A ready-made image<span class="new">New</span></h3>
+        <p>Install with one <code>docker run</code> — nothing to download or build — from
+           <b>ghcr.io/meltface-80/musicd-remote</b>, built for x86 and 64-bit ARM: PCs and NAS boxes, a
+           Raspberry Pi 4 or 5 on a 64-bit OS, Apple Silicon Macs. Updates stay <b>one tap</b> in the
+           app, and switching an existing install needs no reinstall: remove the old container and run
+           the image with the same volume, and your Roon pairing and history carry over.</p></div>
       <div class="card is-new"><h3><span class="em">🍊</span>Mandarin, the new default look<span class="new">New</span></h3>
         <p>MusicD Server's graphite-and-brass colour scheme, and the look every device opens in until
            you choose another: a graphite ground, off-white text and a brass accent, with brass buttons
@@ -476,7 +482,8 @@
       <div class="card"><h3><span class="em">▶</span>Playback integration</h3>
         <p>Play or queue albums and tracks, multi-select, zone switching, and automatic continue-playback when the queue ends.</p></div>
       <div class="card"><h3><span class="em">🔄</span>Automatic updates</h3>
-        <p>Built-in update checker with one-click updates straight from GitHub releases.</p></div>
+        <p>Built-in update checker with one-tap updates straight from GitHub releases — on every
+           install, the ready-made Docker image included.</p></div>
     </div>
   </div>
 </section>
@@ -586,35 +593,35 @@
           </div>
           <div class="codebox">
             <button class="copy-btn" id="copy" type="button">Copy</button>
-            <pre id="cmd">sudo mkdir -p /opt/musicd-remote
-cd /opt/musicd-remote
-sudo wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.70/MusicD-Remote-v1.8.70.tar.gz
-sudo tar -xzf MusicD-Remote-v1.8.70.tar.gz
-docker build -t musicd-remote:1.8.70 .
-
-# Run it
+            <pre id="cmd"># Run it — --pull always fetches the current release every time this runs
 docker run -d \
   --name musicd-remote \
+  --pull always \
   --restart unless-stopped \
   --network host \
   -e TZ=Etc/UTC \
   -v musicd-remote-data:/app/data \
   -v "/your/path/to/Music:/music:ro" \
-  musicd-remote:1.8.70</pre>
+  ghcr.io/meltface-80/musicd-remote:latest</pre>
           </div>
           <noscript><p class="after-note">JavaScript is off, so the configurator can't rebuild this
              command — what's shown is the standard Linux install. The macOS and streaming-only
              variants are in the <a href="https://github.com/meltface-80/MusicD-Remote#install-docker">README</a>.</p></noscript>
           <p class="after-note" id="after-note"></p>
-          <p class="after-note">Installing <b id="ver-line">v1.8.70</b> <span id="ver-note">(checking for the latest release…)</span>.
+          <p class="after-note">Installing <b id="ver-line">v1.8.71</b> <span id="ver-note">(checking for the latest release…)</span>.
              If your user isn't in the <code>docker</code> group, prefix the <code>docker</code>
-             commands with <code>sudo</code>.</p>
+             commands with <code>sudo</code>. Needs Docker 20.10 or later, the first whose
+             <code>docker run</code> takes <code>--pull</code>.</p>
           <div class="note"><b>One volume to rule them all.</b> The <code>musicd-remote-data</code>
              volume holds your Roon pairing, play history and label cache — <b>never rename it once
              created</b>. A different name silently starts empty (Roon asks you to authorize again
              and your history is gone). Upgrading from v1.6.31 or earlier? Move your data once with
              the copy step in the
              <a href="https://github.com/meltface-80/MusicD-Remote#updating">Updating guide</a>.</div>
+          <div class="note"><b>Already running MusicD Remote?</b> Nothing to uninstall and nothing to
+             re-pair: <code>docker stop musicd-remote &amp;&amp; docker rm musicd-remote</code>, then run the
+             command above with the same volume. Your Roon pairing, history and settings carry over.
+             From then on, updates are one tap in the app.</div>
         </div>
       </div>
     </div>
@@ -703,9 +710,10 @@ docker run -d \
 (function () {
   "use strict";
 
-  var IMAGE = "musicd-remote";
+  var NAME  = "musicd-remote";                              // the container's name
+  var IMAGE = "ghcr.io/meltface-80/musicd-remote:latest";   // the release marked Latest
   var REPO  = "meltface-80/MusicD-Remote";
-  var FALLBACK_VERSION = "1.8.70";   // latest published release when this page was built
+  var FALLBACK_VERSION = "1.8.71";   // latest published release when this page was built
 
   var els = {
     modes:      document.getElementById("modes"),
@@ -881,34 +889,27 @@ docker run -d \
   };
 
   // ---- command builders --------------------------------------------------
+  // The published image (since v1.8.71's promotion): nothing to download or
+  // build. --pull always makes every run fetch the release marked Latest, so a
+  // re-created container can never quietly start an older copy left on disk —
+  // the in-app update lives inside the container, and a re-create starts afresh.
   function buildRun() {
-    var v = state.version;
-    var tarball = "MusicD-Remote-v" + v + ".tar.gz";
-    var url = "https://github.com/" + REPO + "/releases/download/v" + v + "/" + tarball;
     var mac = state.mode === "macos";
     var out = [];
 
-    out.push({ t: "# Download the release and build the image", c: "c" });
-    if (mac) {
-      out.push({ t: "mkdir -p ~/musicd-remote\ncd ~/musicd-remote\ncurl -L -o " + tarball + " \\\n  " + url +
-                    "\ntar -xzf " + tarball + "\ndocker build -t " + IMAGE + ":" + v + " .", c: "" });
-    } else {
-      out.push({ t: "sudo mkdir -p /opt/musicd-remote\ncd /opt/musicd-remote\nsudo wget " + url +
-                    "\nsudo tar -xzf " + tarball + "\ndocker build -t " + IMAGE + ":" + v + " .", c: "" });
-    }
     var env = envBlock();
     if (env) {
-      out.push({ t: "", c: "" });
       out.push({ t: "# API keys, in a file rather than on the command line — a key passed with -e\n" +
                     "# lands in your shell history and in `docker inspect`", c: "c" });
       out.push({ t: env, c: "" });
+      out.push({ t: "", c: "" });
     }
 
-    out.push({ t: "", c: "" });
-    out.push({ t: "# Run it", c: "c" });
+    out.push({ t: "# Run it — --pull always fetches the current release every time this runs", c: "c" });
 
     var cmd = ["docker run -d \\"];
-    cmd.push("  --name " + IMAGE + " \\");
+    cmd.push("  --name " + NAME + " \\");
+    cmd.push("  --pull always \\");
     cmd.push("  --restart unless-stopped \\");
     if (mac) {
       cmd.push("  -p " + portVal() + ":3399 \\");
@@ -929,14 +930,13 @@ docker run -d \
         cmd.push("  -v " + shq(m.host + ":" + m.guest + ":ro") + " \\");
       });
     }
-    cmd.push("  " + IMAGE + ":" + v);
+    cmd.push("  " + IMAGE);
 
     out.push({ t: cmd.join("\n"), c: "" });
     return out;
   }
 
   function buildCompose() {
-    var v = state.version;
     var mac = state.mode === "macos";
     var env = envBlock();
     var out = [];
@@ -950,14 +950,13 @@ docker run -d \
     // Emit a paste-safe command: bare YAML pasted into a shell makes bash try
     // to run every line ("services:: command not found"), so wrap the file
     // contents in a heredoc and chain the up command.
-    y.push("# one paste: writes docker-compose.yml, then builds straight from");
-    y.push("# the GitHub release tag — no download step needed");
+    y.push("# one paste: writes docker-compose.yml, then pulls the image and starts it");
     y.push("cat > docker-compose.yml <<'EOF'");
     y.push("services:");
     y.push("  musicd-remote:");
-    y.push("    build: https://github.com/" + REPO + ".git#v" + v);
-    y.push("    image: " + IMAGE + ":" + v);
-    y.push("    container_name: " + IMAGE);
+    y.push("    image: " + IMAGE);
+    y.push("    pull_policy: always   # every up fetches the current release");
+    y.push("    container_name: " + NAME);
     y.push("    restart: unless-stopped");
     if (mac) {
       y.push("    ports:");
