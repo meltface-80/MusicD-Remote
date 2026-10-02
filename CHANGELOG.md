@@ -2,6 +2,87 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.71] — 2026-10-02
+
+"I want users to still have a one tap update function." v1.8.70 took the
+in-app Update button away from the published image and put the `docker pull`
+command in its place. This puts the button back, on every install.
+
+### Changed — the image keeps its one-tap update
+
+- On the published image, the update toast, Settings → System and Roon's own
+  Settings page offer **Update** again, and it works exactly as it does on a
+  container built from a tarball: the release is unpacked in place and the
+  app restarts. The API no longer refuses it either.
+- The pull command stays as an **alternative**: under the release notes in
+  Settings → System, and beside the switch on Roon's Settings page. It never
+  replaces the button and never appears in the update toast. It is offered
+  only for a release that exists as an image (v1.8.70 on), so nothing tells
+  you to pull an image that was never published. Such a release is still one
+  tap away, because every release carries its tarball.
+- The "Switch to Docker" banner's `docker run` now carries `--pull always`.
+  An in-app update lives inside the container, so without it the next
+  recreate would start whatever stale `:latest` is on the machine and quietly
+  put you back on an older version. With it, a recreate fetches the current
+  release. The banner also pulls the image FIRST, so a pull that fails leaves
+  the native install running rather than stopped with nothing to replace it.
+  It runs its docker commands with `sudo`, like the line that stops the
+  service, and says it needs Docker 20.10 or later, the first version whose
+  `docker run` takes `--pull`. The README, the install builder and `docker-compose.yml` get the
+  same flag (Compose: `pull_policy: always`) when they switch to the image at
+  this release's promotion. They do not switch at v1.8.70's, because that
+  image has no Update button.
+
+### Unchanged
+
+- Native installs, and containers built locally from a tarball, behave
+  exactly as before: one-tap update, and no pull command.
+
+### Tests
+
+- `test/unit/updater-image.test.js`, rewritten for the one-tap rule:
+  - `apply()` on the image reaches the download exactly as a native install
+    does (stubbed GitHub, temporary install folder);
+  - the pull command appears only once a check finds a release from v1.8.70
+    on, and never for a bare tag or a native install;
+  - Roon's Settings page keeps its switch, with the pull line beside it;
+  - the status line points at the one-tap install;
+  - the apply route has no image branch.
+- `test/dom/update-image.test.js`, rewritten:
+  - Update is in the toast on the image, which shows the notes and no pull;
+  - Settings installs on the second tap, with the pull underneath;
+  - a release from before the images is one tap away, with no pull;
+  - the way back is offered both ways;
+  - a locally built container is unchanged;
+  - the banner pulls first and carries `--pull always`.
+- `test/static/images.test.js`: every release still builds and attaches the
+  tarball. Images did not replace it, because the one-tap update on every
+  install, the image included, installs from it.
+- Every guard was mutated and each mutation fails a test. The one survivor is
+  equivalent: a native install's pull command is already null, so the
+  `pullable` guard's image check is a second lock on the same door. Removing
+  both locks is caught.
+
+### Review
+
+- One review agent covered all eight angles. It found no defect in the code,
+  and four gaps in the tests, all fixed here:
+  - An unguarded pull line reads "Or pull the image itself: null … docker
+    compose pull …", which the no-pull assertions (`/docker pull/`) could
+    not see. On Roon's Settings page that mutation survived outright. Both
+    pages now assert that no pull line and no `null` appear.
+  - The apply-route test banned three spellings of an image check, so a
+    fourth (`st.image`) passed. The route never needs the word, so any
+    `image` in it fails, and it may refuse only once.
+  - The revert had dropped the assertion that `index.js` reads
+    `MUSICD_IMAGE`, the same name the Dockerfile sets. Renaming it would have
+    silently removed the pull option from every image install. It is
+    restored.
+  - The static count missed the tarball pin.
+- The banner's Docker 20.10 requirement came from the same review.
+
+1452 unit / 807 DOM / 132 static.
+
 ## [1.8.70] — 2026-10-02
 
 "Next, I want to change this to a typical docker install pulling the latest

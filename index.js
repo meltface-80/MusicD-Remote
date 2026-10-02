@@ -148,11 +148,10 @@ const REPO = (() => {
            : { owner: "meltface-80", repo: "MusicD-Remote" };
 })();
 const UPDATE_CHECK_MS = 168 * 60 * 60 * 1000; // re-check GitHub every 7 days
-// The published image (v1.8.70) names itself: the release workflow builds it
-// with MUSICD_IMAGE=ghcr.io/<owner>/<name>. Set, this install updates by
-// `docker pull`, never by unpacking a release over the running container —
-// see lib/updater.js. Unset: a native install, or one built locally from a
-// tarball, and both update in place exactly as before.
+// The published image (v1.8.70) names itself: the workflows build it with
+// MUSICD_IMAGE=ghcr.io/<owner>/<name>. Every install keeps the one-tap update
+// (v1.8.71); set, this one is also shown how to pull its image instead — see
+// lib/updater.js. Unset: a native install, or one built locally from a tarball.
 const PUBLISHED_IMAGE = (process.env.MUSICD_IMAGE || "").trim();
 const updater = createUpdater({
   owner: REPO.owner, repo: REPO.repo,
@@ -414,7 +413,6 @@ function pushStatus() {
   let extra = "";
   if (st.apply.phase === "downloading" || st.apply.phase === "extracting") extra = "  \u2022  Updating\u2026";
   else if (st.apply.phase === "restarting") extra = "  \u2022  Restarting to update\u2026";
-  else if (st.available && !st.canApply) extra = `  \u2022  Update available: v${st.latest} \u2014 ${st.pull}, then recreate the container from it`;
   else if (st.available) extra = `  \u2022  Update available: v${st.latest} \u2014 install from the web app or this Settings page`;
   try { svc_status.set_status(_statusPair + _statusSync + extra, _statusPairErr); } catch (e) {} // svc_status may be null before Roon pairs
 }
@@ -458,15 +456,6 @@ function makeSettingsLayout() {
     layout.push({ type: "label", title: "Checking GitHub for updates\u2026" });
   } else if (st.error) {
     layout.push({ type: "label", title: "Update check problem: " + st.error });
-  } else if (st.available && !st.canApply) {
-    // The published image updates by pulling it — there is nothing for this
-    // page to install, so it says how instead of offering a switch that
-    // could only fail (v1.8.70).
-    layout.push({ type: "label", title: "An update is available: v" + st.latest + "." });
-    if (st.notes) layout.push({ type: "label", title: "Notes: " + st.notes.slice(0, 280) });
-    layout.push({ type: "label", title: "This install runs the published image. Update it with " +
-      st.pull + ", then recreate the container from that image (with Compose: docker compose pull && " +
-      "docker compose up -d). The data volume carries over." });
   } else if (st.available) {
     layout.push({ type: "label", title: "An update is available: v" + st.latest + "." });
     if (st.notes) layout.push({ type: "label", title: "Notes: " + st.notes.slice(0, 280) });
@@ -477,6 +466,10 @@ function makeSettingsLayout() {
         { title: "Install v" + st.latest + " now (restarts the extension)", value: "yes" }
       ]
     });
+    // The published image can be pulled instead (v1.8.71) — offered beside
+    // the switch, never in place of it.
+    if (st.pull) layout.push({ type: "label", title: "Or pull the image itself: " + st.pull +
+      ", then recreate the container from it (with Compose: docker compose pull && docker compose up -d)." });
   } else {
     layout.push({ type: "label", title: "You're on the latest version." });
     layout.push({
@@ -17208,13 +17201,6 @@ app.post("/api/update/check", async (req, res) => {
 
 app.post("/api/update/apply", async (req, res) => {
   let st = updater.getStatus();
-  // The published image is updated by pulling it (v1.8.70). Refused here as
-  // well as in apply() so the answer is a 409 with the command, not a
-  // started-then-failed update.
-  if (!st.canApply) {
-    return res.status(409).json({ error: "This install runs the published image — update it with " +
-                                         st.pull, pull: st.pull, status: st });
-  }
   if (!st.available) {
     st = await updater.checkNow();
     if (!st.available) return res.status(409).json({ error: "No update available", status: st });

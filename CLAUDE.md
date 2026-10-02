@@ -242,16 +242,19 @@ Do not commit with known CONFIRMED or PLAUSIBLE bugs. Fix them all in the same v
     `docker-compose.yml` is on that list because it was NOT, and sat at v1.7.73 through
     twenty releases: nothing generates it (the docs-site builder writes its own, per user), so
     it only ever changes when someone remembers.
-  - **ONE-TIME, at the first promotion of v1.8.70 or later:** switch every install command —
+  - **ONE-TIME, at the first promotion of v1.8.71 or later:** switch every install command —
     README (Linux, macOS, Updating, Migrating), the docs-site builder (its commands AND the
     compose file it writes), and `docker-compose.yml` (`image: ghcr.io/…:latest`, no `build:`)
-    — from download-and-build to pulling the image. Not before: until a release has been marked
-    Latest there is no `:latest` to pull, and instructions that 404 are worse than old ones.
-    Updating becomes `docker pull` + recreate (or `docker compose pull && docker compose up -d`);
-    switching an existing install is stop + rm + run with the SAME volume — no reinstall, no
-    re-pairing. Migrating's closing line is wrong and goes in the same pass: a native install's
-    data is NOT in a Docker volume, it is in `/opt/roon-random-albums/data` (the service is
-    `roon-random-albums`, never `musicd-remote`). Remove this bullet once done.
+    — from download-and-build to pulling the image, with **`--pull always`** on every
+    `docker run` (Compose: `pull_policy: always`; see "Images" for why). NOT at v1.8.70's
+    promotion, although v1.8.70 was the first Latest image: its image install has no Update
+    button (pull-only, reversed in v1.8.71), so sending new users to it would take the one-tap
+    update away from them. Updating stays one tap in the app, with `docker pull` + recreate (or
+    `docker compose pull && docker compose up -d`) as the alternative; switching an existing
+    install is stop + rm + run with the SAME volume — no reinstall, no re-pairing. Migrating's
+    closing line is wrong and goes in the same pass: a native install's data is NOT in a Docker
+    volume, it is in `/opt/roon-random-albums/data` (the service is `roon-random-albums`, never
+    `musicd-remote`). Remove this bullet once done.
   - After every merge, VERIFY the release actually appeared (`list_releases` / `git
     ls-remote --tags`). The workflow failing silently is how v1.6.52-v1.6.55 shipped with
     no tag and no release at all.
@@ -300,13 +303,20 @@ Everything is published to **`ghcr.io/meltface-80/musicd-remote`**, for `linux/a
 | `release.yml` → `image` job | every merge to `main` that creates a new version | `<version>` |
 | `latest.yml` | a release marked Latest (`released`/`edited`), or run by hand with a version | `latest` → `<version>` (built from the tag first if missing) |
 
-- The published image is built with `MUSICD_IMAGE=ghcr.io/…`. The app reads it and updates by
-  **telling you the pull command** — never by unpacking a release over the running container,
-  which the next recreate would undo. Locally built containers (`docker build .`) and native
-  installs keep the in-place updater, so nothing already installed changes behaviour.
+- **Every install keeps the one-tap in-app update, the image included — a user requirement
+  (2026-10-02).** v1.8.70 replaced it on the image with the pull command; the user rejected
+  that and v1.8.71 restored it. Do not reintroduce a pull-only image.
+- An in-app update unpacks the release INSIDE the container, so it lasts until the container is
+  recreated. That is why every install command carries `--pull always` (Compose:
+  `pull_policy: always`): a recreate then fetches the current `:latest` rather than restarting
+  the stale local copy, which would quietly put the user back on an older version.
+- The published image is built with `MUSICD_IMAGE=ghcr.io/…`. The app reads it to offer
+  `docker pull …:latest` BESIDE the Update button (Settings → System, Roon's Settings page) —
+  only for a release that exists as an image (`FIRST_IMAGE` = 1.8.70 in `lib/updater.js`).
 - The image keeps the paths, port and (root) user it always had: an existing `musicd-remote-data`
   volume must keep working when a tarball install switches to the image.
-- The release still carries a tarball asset — native installs update from it.
+- The release still carries a tarball asset, and must keep it: EVERY one-tap update installs from
+  it — native, locally built container and published image alike.
 - The package is PUBLIC: it took the public repository's visibility on its first push
   (v1.8.70's test image), verified by pulling the manifest with an anonymous token — no
   `docker login` is needed. If a pull ever answers `denied`, check GitHub → Packages →
