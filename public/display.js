@@ -563,6 +563,32 @@
   document.addEventListener("pointerdown", showUI);
   document.addEventListener("pointermove", showUI);
 
+  // ---- Back to the remote (v1.8.66) ---------------------------------------
+  // The remote marks the tab when it opens this page (sessionStorage) and is
+  // then the page right behind this one, so going BACK returns it as it was
+  // left — and keeps the history at two entries however often the two are
+  // flipped. Opened any other way (a kiosk's start page, a bookmark) there is
+  // no remote behind this page, so it loads one. The timer catches a back that
+  // goes nowhere: a browser that dropped the entry, a kiosk that blocks it.
+  const toRemote = $("to-remote");
+  let backTimer = null;
+  function goRemote() {
+    let fromRemote = false;
+    try { fromRemote = sessionStorage.getItem("rra-display-from-remote") === "1"; }
+    catch (e) { /* storage blocked — load the remote, which always works */ }
+    if (fromRemote && history.length > 1) {
+      clearTimeout(backTimer);
+      backTimer = setTimeout(() => location.assign("/"), 3000);
+      history.back();
+      return;
+    }
+    location.assign("/");
+  }
+  if (toRemote) toRemote.addEventListener("click", (e) => { e.stopPropagation(); goRemote(); });
+  // Gone by any route: a page the browser keeps would otherwise fire the
+  // fallback the moment it was shown again.
+  window.addEventListener("pagehide", () => { clearTimeout(backTimer); backTimer = null; });
+
   // ---- Tap-to-play panel (library grids) ----------------------------------
   const playPanel = $("playpanel");
   const ppTitle   = $("pp-title");

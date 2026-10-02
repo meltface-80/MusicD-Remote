@@ -416,6 +416,12 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/></svg>
           <span>Random albums</span>
         </button>
+        <!-- The wall display, in this tab (v1.8.66). Hidden unless it is
+             switched on in Settings: with it off, /display says only that. -->
+        <button class="menu-item hidden" type="button" data-action="wall-display" id="menu-item-display">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          <span>Wall display</span>
+        </button>
         <div class="menu-sep"></div>
         <button class="menu-item" type="button" data-target="labels-toggle" id="menu-item-labels">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
@@ -563,6 +569,24 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
         <div class="modal-art">
           <img id="modal-img" alt="">
           <span id="modal-quality" class="album-quality hidden"></span>
+          <!-- Previous / next album in the list this one was opened from
+               (v1.8.66). A quiet hint on the cover's edges for what a swipe
+               on the card does; shown only when there IS a neighbour that
+               way, and never on Now playing. -->
+          <button class="modal-step modal-step-prev hidden" id="modal-prev" type="button"
+                  aria-label="Previous album" title="Previous album">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="15 18 9 12 15 6"/>
+            </svg>
+          </button>
+          <button class="modal-step modal-step-next hidden" id="modal-next" type="button"
+                  aria-label="Next album" title="Next album">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="9 18 15 12 9 6"/>
+            </svg>
+          </button>
         </div>
         <div class="modal-info">
           <h2 id="modal-title">—</h2>
@@ -1340,11 +1364,11 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
           </button>
           <h2>Wall display</h2>
         </div>
-        <p class="settings-pane-desc">Always-on screen &amp; video</p>
+        <p class="settings-pane-desc">Always-on screen &amp; screensaver</p>
 
         <div class="settings-block">
           <div class="settings-row">
-            <span class="settings-label">Wall display <button class="settings-info-btn" data-info="A Roon-style always-on screen at http://<server-ip>:3399/display — point any tablet or TV browser at it. Rotates between album art, artist photos, an album review, artist bios and grids from your library, with a progress bar for the playing zone. When off, the page shows a notice and nothing is fetched." aria-label="Info">ⓘ</button></span>
+            <span class="settings-label">Wall display <button class="settings-info-btn" data-info="A Roon-style always-on screen at http://<server-ip>:3399/display — point any tablet or TV browser at it, or open it from the menu. Rotates between album art, artist photos, an album review, artist bios and grids from your library, with a progress bar for the playing zone. Tap it and choose Remote to come back. When off, the page shows a notice and nothing is fetched." aria-label="Info">ⓘ</button></span>
             <label class="switch">
               <input type="checkbox" id="display-toggle" aria-label="Wall display">
               <span class="switch-track"><span class="switch-thumb"></span></span>
@@ -1355,6 +1379,36 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
             <input type="range" id="display-seconds" class="settings-range" min="5" max="60" step="1" value="10"
                    aria-label="Display rotation interval in seconds">
           </div>
+        </div>
+
+        <!-- Per device (localStorage), unlike everything above it: the wall
+             tablet wants a screensaver and the phone in a pocket does not. -->
+        <div class="settings-block">
+          <h3 class="settings-block-title">This device</h3>
+          <div class="settings-row settings-row-top">
+            <span class="settings-label">Switch to the wall display <button class="settings-info-btn" data-info="After this long with nobody touching this device, it switches from the remote to the wall display — a screensaver. Tap the display and choose Remote to come straight back. Set on this device only." aria-label="Info">&#9432;</button></span>
+            <div class="settings-select-wrap">
+              <select id="display-idle-select" class="settings-select" aria-label="Switch to the wall display after">
+                <option value="0">Never</option>
+                <option value="1">After 1 minute</option>
+                <option value="2">After 2 minutes</option>
+                <option value="5">After 5 minutes</option>
+                <option value="10">After 10 minutes</option>
+                <option value="15">After 15 minutes</option>
+                <option value="30">After 30 minutes</option>
+                <option value="60">After 1 hour</option>
+              </select>
+              <svg class="settings-caret" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </div>
+          </div>
+          <p class="settings-note">
+            Only while the wall display is switched on. It waits while Settings,
+            a sheet or a selection is open, so nothing you are in the middle of
+            is thrown away.
+          </p>
         </div>
       </div>
 

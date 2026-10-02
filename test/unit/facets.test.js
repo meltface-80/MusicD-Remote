@@ -82,7 +82,7 @@ function build(opts) {
       // libFacetDefs publishes "Record label" only when Labels is on.
       labelsEnabled: true,
       albumSeenCache: new Map(Object.entries(opts.seen || {})),
-      libraryMetaVersion: 0, libraryDateVersion: 0,
+      libraryMetaVersion: 0, libraryDateVersion: 0, playsVersion: 0,
       libraryViewCache: new Map(),
       LIBRARY_VIEW_CACHE_MAX: 8,
       LIB_SORTS: new Set(["album", "artist", "year", "added", "plays", "lastplayed", "random"]),

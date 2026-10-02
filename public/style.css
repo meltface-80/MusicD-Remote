@@ -219,7 +219,16 @@ input, textarea, [contenteditable] {
   -webkit-user-select: text;
   user-select: text;
 }
-button { font-family: inherit; }
+/* `align-items: normal` said outright (v1.8.66). Older WebKit's own stylesheet
+   gives every <button> `align-items: flex-start`; current Chrome and Safari no
+   longer carry that rule, and every engine this app is built and tested on
+   computes `normal`. On an older iPad (reported from Kiosker) it left the text
+   under each album tile — a <button> laid out as a flex column — sized to its
+   widest line instead of to the tile: a long artist line, one line with an
+   ellipsis by design, made the block wider than the tile, the title then had
+   room not to wrap, and both ran into the next tile. A type selector, so a
+   button whose own class sets an alignment keeps it. */
+button { font-family: inherit; align-items: normal; }
 
 /* Fixed full-screen shell: header pinned top, <main> scrolls, transport pinned
    bottom (as a fixed sibling). Because the page body never scrolls, the bars
@@ -755,7 +764,12 @@ main { padding-top: calc(var(--topbar-h) + 14px); }
   color: var(--text); font-size: 14px; font-family: inherit;
 }
 .logo-url-input:focus { outline: none; border-color: var(--accent); }
-.album-meta { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* max-width: whatever sizes this block, it is never wider than its tile — the
+   title wraps inside it and the artist line ends in an ellipsis inside it,
+   rather than either reaching the next tile. The `button` rule near the top
+   puts the alignment back; this holds even on an engine too old to know
+   `normal`, where that declaration is dropped and old WebKit's rule stands. */
+.album-meta { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; min-width: 0; max-width: 100%; }
 .album-title {
   font-size: 14px; font-weight: 500; color: var(--text); line-height: 1.3;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
@@ -942,6 +956,26 @@ main { padding-top: calc(var(--topbar-h) + 14px); }
   flex-shrink: 0;
 }
 .modal-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* Previous / next album (v1.8.66): a quiet hint on the cover's edges for what
+   a sideways swipe on the card does, and the way to do it without a touch
+   screen. A dark disc under a light chevron reads on any cover, pale or dark,
+   and at partial opacity it stays a hint rather than a control competing with
+   the artwork. Never on Now playing: that screen is the zone, not a list. */
+.modal-step {
+  position: absolute; top: 50%; z-index: 2;
+  transform: translateY(-50%);
+  width: 38px; height: 38px; padding: 0; margin: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 50%;
+  background: rgba(0, 0, 0, .32); color: #fff;
+  opacity: .6; cursor: pointer;
+  transition: opacity .15s ease;
+}
+.modal-step:hover, .modal-step:focus-visible { opacity: 1; }
+.modal-step-prev { left: 10px; }
+.modal-step-next { right: 10px; }
+.modal.np-mode .modal-step { display: none; }
 
 /* ── The album-art hero (v1.7.84) ─────────────────────────────────────
    The album view used to lead with a 280px square floating in the middle of a

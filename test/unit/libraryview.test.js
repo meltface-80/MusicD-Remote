@@ -80,7 +80,7 @@ function build(opts) {
       albumGenreCache: opts.genres || new Map(),
       albumFileCache:  opts.files  || new Map(),
       albumIndex,
-      libraryMetaVersion: 0, libraryDateVersion: 0,
+      libraryMetaVersion: 0, libraryDateVersion: 0, playsVersion: 0,
       // A fresh cache per build, so memoisation can never leak an ordering
       // from one test case into the next.
       libraryViewCache: new Map(),

@@ -147,6 +147,7 @@ test("opt-in means the work does not run, not that the row is hidden",
         buildSmartPicks: () => Promise.resolve(),
         bgRun: (name, fn) => { ran.push(name); return Promise.resolve().then(fn); },
         _smartBuilding: null,
+        picksVersion: 0,   // v1.8.65: a finished build moves the live revision
       });
       return { F, ran };
     }
