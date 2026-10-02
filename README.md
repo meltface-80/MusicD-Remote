@@ -4,7 +4,7 @@
 
 </div>
 
-# MusicD Remote (for Roon) - v1.8.67
+# MusicD Remote (for Roon) - v1.8.70
 
 **📖 Install guide & command builder: [meltface-80.github.io/MusicD-Remote](https://meltface-80.github.io/MusicD-Remote/)**
 
@@ -13,6 +13,36 @@ MusicD Remote is for Roon and is a feature-rich music discovery companion for Ro
 ---
 
 ## Features
+
+🍊 Mandarin, the new default look — *new in v1.8.68*
+
+MusicD Server's graphite-and-brass colour scheme, and the look every device opens in until you choose another.
+
+* **Graphite ground, off-white text, brass accent** — with brass buttons on the top bar and the album view, and MusicD Server's earth-toned genre cards
+* **Colours only** — fonts and layout are unchanged
+* **Readable everywhere** — every text colour clears the AA contrast standard; one is lifted slightly from MusicD Server's to get there
+* A device that has already chosen a theme keeps it — pick **Mandarin** under Settings → Appearance → Theme to switch
+
+⸻
+
+🔄 Your Roon library, followed in seconds — *new in v1.8.68*
+
+Add albums in Roon and they are in the app within about a minute, with no rescan.
+
+* While the app or the wall display is open it checks Roon every 30 seconds (every 3 minutes when nobody is looking), with three tiny calls that cost the Core almost nothing
+* A change is followed until Roon settles, then the library is read once — a big import costs one pass, not one per album
+* An album opened while a change is still settling fixes itself as soon as the new library lands, instead of leaving a "your Roon library changed" note behind
+* The side menu says when the library was last checked — "12,963 albums · checked just now"
+
+⸻
+
+⚙️ Settings, redesigned — *new in v1.8.69*
+
+* **A compact list**, the way Mandarin lays out its Settings — an icon and a title per row, in place of the grid of large buttons
+* **Every page opens full screen**, however much is on it, with its title and back arrow pinned at the top while a long page scrolls
+* **The side menu in Mandarin's order** — Listen later now sits right under Home
+
+⸻
 
 🕒 Listen later — *new in v1.8.67*
 
@@ -290,7 +320,7 @@ Designed specifically for large music libraries.
 * Mobile friendly
 * Desktop friendly
 * TV friendly
-* Dark/light themes
+* Five themes — Mandarin (the default), Dark, Light, Copper dark and Brass light
 * Clean album-first design
   
 ---
@@ -329,9 +359,9 @@ FanArt.tv provides high-quality label logos for labels that have a MusicBrainz M
 ```bash
 sudo mkdir -p /opt/musicd-remote
 cd /opt/musicd-remote
-wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.67/MusicD-Remote-v1.8.67.tar.gz
-tar -xzf MusicD-Remote-v1.8.67.tar.gz
-docker build -t musicd-remote:1.8.67 .
+wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.70/MusicD-Remote-v1.8.70.tar.gz
+tar -xzf MusicD-Remote-v1.8.70.tar.gz
+docker build -t musicd-remote:1.8.70 .
 docker run -d \
   --name musicd-remote \
   --restart unless-stopped \
@@ -340,7 +370,7 @@ docker run -d \
   -v musicd-remote-data:/app/data \
 # remove the below line (and this line) if you only use Qobuz/Tidal
   -v /your/path/to/Music:/music:ro \
-  musicd-remote:1.8.67
+  musicd-remote:1.8.70
 ```
 
 > **The `musicd-remote-data` volume holds your Roon pairing, play history, and label cache — never rename it once created.** Point every future `docker run` at the same name and everything carries over; a different name makes Docker silently create a fresh empty volume (new pairing, lost history). **Upgrading from v1.6.31 or earlier?** Your data lives in the old `roon-random-albums-data` volume — move it once with the copy step in [Updating](#updating) below before using this command.
@@ -415,11 +445,11 @@ sudo systemctl disable roon-random-albums
 # 2. Create the build directory and download the tarball
 sudo mkdir -p /opt/musicd-remote
 cd /opt/musicd-remote
-wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.67/MusicD-Remote-v1.8.67.tar.gz
-tar -xzf MusicD-Remote-v1.8.67.tar.gz
+wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.70/MusicD-Remote-v1.8.70.tar.gz
+tar -xzf MusicD-Remote-v1.8.70.tar.gz
 
 # 3. Build and run
-docker build -t musicd-remote:1.8.67 .
+docker build -t musicd-remote:1.8.70 .
 docker run -d \
   --name musicd-remote \
   --restart unless-stopped \
@@ -428,7 +458,7 @@ docker run -d \
   -v musicd-remote-data:/app/data \
 # remove the below line (and this line) if you only use Qobuz/Tidal
   -v /your/path/to/Music:/music:ro \
-  musicd-remote:1.8.67
+  musicd-remote:1.8.70
 ```
 
 Confirm the extension appears in **Roon → Settings → Extensions** before removing the old install.
@@ -475,10 +505,10 @@ Open Terminal and run:
 ```
 mkdir -p ~/musicd-remote
 cd ~/musicd-remote
-curl -L -o MusicD-Remote-v1.8.67.tar.gz \
-https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.67/MusicD-Remote-v1.8.67.tar.gz
-tar -xzf MusicD-Remote-v1.8.67.tar.gz
-docker build -t musicd-remote:1.8.67 .
+curl -L -o MusicD-Remote-v1.8.70.tar.gz \
+https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.70/MusicD-Remote-v1.8.70.tar.gz
+tar -xzf MusicD-Remote-v1.8.70.tar.gz
+docker build -t musicd-remote:1.8.70 .
 ```
 
 ## 3. Run the container
@@ -493,7 +523,7 @@ docker run -d \
   -e TZ=Europe/London \
   -v musicd-remote-data:/app/data \
   -v /Users/yourusername/Music:/music:ro \
-  musicd-remote:1.8.67
+  musicd-remote:1.8.70
 ```
 
 Or if you only use Qobuz or TIDAL
@@ -506,7 +536,7 @@ docker run -d \
   -e ROON_CORE_IP=<IP_OF_YOUR_ROON_CORE> \
   -e TZ=Europe/London \
   -v musicd-remote-data:/app/data \
-  musicd-remote:1.8.67
+  musicd-remote:1.8.70
 ```
 
 ## 4. Open the extension
@@ -545,7 +575,7 @@ docker run --rm -v musicd-remote-data:/data alpine tar -czf - -C /data logs > mu
 Pass extra env vars with `-e` in the `docker run` command:
 
 ```bash
-docker run -d ... -e RRA_DEBUG=1 musicd-remote:1.8.67
+docker run -d ... -e RRA_DEBUG=1 musicd-remote:1.8.70
 ```
 
 ### Album metadata sources

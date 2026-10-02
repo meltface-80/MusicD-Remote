@@ -273,10 +273,11 @@
   <main>
   <div id="docker-migration-banner" class="docker-banner hidden" role="alert">
     <div class="docker-banner-body">
-      <strong>Switch to Docker</strong> — Updates are now Docker-only. Stop this install first, then
-      run the published image — nothing to download or build:
-      <pre class="docker-banner-pre">sudo systemctl stop roon-random-albums && sudo systemctl disable roon-random-albums
-docker run -d --name musicd-remote --restart unless-stopped --network host -v musicd-remote-data:/app/data ghcr.io/meltface-80/musicd-remote:latest</pre>
+      <strong>Switch to Docker</strong> — Updates are now Docker-only. Fetch the published image, stop
+      this install, then run the image — nothing to download or build (Docker 20.10 or later):
+      <pre class="docker-banner-pre">sudo docker pull ghcr.io/meltface-80/musicd-remote:latest
+sudo systemctl stop roon-random-albums && sudo systemctl disable roon-random-albums
+sudo docker run -d --pull always --name musicd-remote --restart unless-stopped --network host -v musicd-remote-data:/app/data ghcr.io/meltface-80/musicd-remote:latest</pre>
       <button id="docker-migration-dismiss" class="docker-banner-dismiss" type="button">Got it</button>
     </div>
   </div>

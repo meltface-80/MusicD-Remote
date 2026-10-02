@@ -9,8 +9,8 @@
 //     Latest. A merge — still a pre-release — must never reach anyone pulling
 //     latest, and nobody would notice until an untested build did.
 //   * Every image is built for both x86 and 64-bit ARM, and carries
-//     MUSICD_IMAGE, which is what tells the app to update by pulling rather
-//     than by unpacking a release over the running container.
+//     MUSICD_IMAGE, which is how the app knows to offer pulling the image
+//     beside its one-tap update (v1.8.71).
 //   * The image keeps the paths, port and user of the containers people already
 //     run, so an existing data volume works when they switch.
 // ---------------------------------------------------------------------------
@@ -53,8 +53,8 @@ test("the image workflows (v1.8.70)", async (t) => {
     assert.equal(steps.length, 3, "expected one image build in each of the three workflows, found " + steps.length);
     for (const [step] of steps) {
       assert.match(step, /platforms:\s*linux\/amd64,linux\/arm64/, "an image build lost a platform:\n" + step);
-      assert.match(step, /MUSICD_IMAGE=/, "an image build does not set MUSICD_IMAGE — the app would unpack " +
-        "releases over the running container:\n" + step);
+      assert.match(step, /MUSICD_IMAGE=/, "an image build does not set MUSICD_IMAGE — the app could not " +
+        "offer pulling the image it runs:\n" + step);
       assert.match(step, /push:\s*true/);
     }
   });
@@ -67,6 +67,13 @@ test("the image workflows (v1.8.70)", async (t) => {
     assert.match(testImg, /"\*\*\/\*\.md"/);
     assert.match(testImg, /"docker-compose\.yml"/, "a docs-only promotion (which edits docker-compose.yml) builds a test image");
     assert.match(testImg, /:\$\{\{ steps\.v\.outputs\.version \}\}-test/, "the pinned <version>-test tag is gone");
+  });
+
+  await t.test("every release still carries the tarball the one-tap update installs from (v1.8.71)", () => {
+    // Images did not replace it: the in-app update on EVERY install — the
+    // published image included — downloads this asset and unpacks it in place.
+    assert.match(release, /tar -czf "\$TARBALL"/, "release.yml no longer builds the release tarball");
+    assert.match(release, /gh release create "\$TAG" "\$TARBALL"/, "release.yml no longer attaches the tarball");
   });
 
   await t.test("the workflows that push can push, and nothing else asks for more", () => {

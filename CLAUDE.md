@@ -242,16 +242,19 @@ Do not commit with known CONFIRMED or PLAUSIBLE bugs. Fix them all in the same v
     `docker-compose.yml` is on that list because it was NOT, and sat at v1.7.73 through
     twenty releases: nothing generates it (the docs-site builder writes its own, per user), so
     it only ever changes when someone remembers.
-  - **ONE-TIME, at the first promotion of v1.8.70 or later:** switch every install command —
+  - **ONE-TIME, at the first promotion of v1.8.71 or later:** switch every install command —
     README (Linux, macOS, Updating, Migrating), the docs-site builder (its commands AND the
     compose file it writes), and `docker-compose.yml` (`image: ghcr.io/…:latest`, no `build:`)
-    — from download-and-build to pulling the image. Not before: until a release has been marked
-    Latest there is no `:latest` to pull, and instructions that 404 are worse than old ones.
-    Updating becomes `docker pull` + recreate (or `docker compose pull && docker compose up -d`);
-    switching an existing install is stop + rm + run with the SAME volume — no reinstall, no
-    re-pairing. Migrating's closing line is wrong and goes in the same pass: a native install's
-    data is NOT in a Docker volume, it is in `/opt/roon-random-albums/data` (the service is
-    `roon-random-albums`, never `musicd-remote`). Remove this bullet once done.
+    — from download-and-build to pulling the image, with **`--pull always`** on every
+    `docker run` (Compose: `pull_policy: always`; see "Images" for why). NOT at v1.8.70's
+    promotion, although v1.8.70 was the first Latest image: its image install has no Update
+    button (pull-only, reversed in v1.8.71), so sending new users to it would take the one-tap
+    update away from them. Updating stays one tap in the app, with `docker pull` + recreate (or
+    `docker compose pull && docker compose up -d`) as the alternative; switching an existing
+    install is stop + rm + run with the SAME volume — no reinstall, no re-pairing. Migrating's
+    closing line is wrong and goes in the same pass: a native install's data is NOT in a Docker
+    volume, it is in `/opt/roon-random-albums/data` (the service is `roon-random-albums`, never
+    `musicd-remote`). Remove this bullet once done.
   - After every merge, VERIFY the release actually appeared (`list_releases` / `git
     ls-remote --tags`). The workflow failing silently is how v1.6.52-v1.6.55 shipped with
     no tag and no release at all.
@@ -300,13 +303,20 @@ Everything is published to **`ghcr.io/meltface-80/musicd-remote`**, for `linux/a
 | `release.yml` → `image` job | every merge to `main` that creates a new version | `<version>` |
 | `latest.yml` | a release marked Latest (`released`/`edited`), or run by hand with a version | `latest` → `<version>` (built from the tag first if missing) |
 
-- The published image is built with `MUSICD_IMAGE=ghcr.io/…`. The app reads it and updates by
-  **telling you the pull command** — never by unpacking a release over the running container,
-  which the next recreate would undo. Locally built containers (`docker build .`) and native
-  installs keep the in-place updater, so nothing already installed changes behaviour.
+- **Every install keeps the one-tap in-app update, the image included — a user requirement
+  (2026-10-02).** v1.8.70 replaced it on the image with the pull command; the user rejected
+  that and v1.8.71 restored it. Do not reintroduce a pull-only image.
+- An in-app update unpacks the release INSIDE the container, so it lasts until the container is
+  recreated. That is why every install command carries `--pull always` (Compose:
+  `pull_policy: always`): a recreate then fetches the current `:latest` rather than restarting
+  the stale local copy, which would quietly put the user back on an older version.
+- The published image is built with `MUSICD_IMAGE=ghcr.io/…`. The app reads it to offer
+  `docker pull …:latest` BESIDE the Update button (Settings → System, Roon's Settings page) —
+  only for a release that exists as an image (`FIRST_IMAGE` = 1.8.70 in `lib/updater.js`).
 - The image keeps the paths, port and (root) user it always had: an existing `musicd-remote-data`
   volume must keep working when a tarball install switches to the image.
-- The release still carries a tarball asset — native installs update from it.
+- The release still carries a tarball asset, and must keep it: EVERY one-tap update installs from
+  it — native, locally built container and published image alike.
 - The package is PUBLIC: it took the public repository's visibility on its first push
   (v1.8.70's test image), verified by pulling the manifest with an anonymous token — no
   `docker login` is needed. If a pull ever answers `denied`, check GitHub → Packages →
@@ -331,7 +341,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
   image tags once the one-time switch above is done).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
-- Current stable version in the README: **v1.8.67** (until the user says otherwise).
+- Current stable version in the README: **v1.8.70** (until the user says otherwise).
 - The extension is being renamed **MusicD Remote** ("for Roon" is descriptive, not part of the name). The Roon `extension_id` must NEVER change — it would force every user to re-authorize.
 
 ---
@@ -546,4 +556,7 @@ unused image on the machine, not just this app's. Removing an image never touche
 | v1.8.64 | stable (superseded) | **One tag statement per album per walk** — v1.8.63's review fixes, pushed minutes after that release was merged and so missing from it. The walk wrote each FOLDER's date as it went while the harvest restated the first folder's, so an album found twice (a CD rip tagged "1977", a hi-res copy tagged "1977-02-04") was stated two ways on every walk, and a MusicBrainz day found in between was destroyed; an album sharing its identity with another ("Rumours" beside "Rumours (Deluxe Edition)") still refused a corrected tag, because the join skips it and the per-folder write was its only writer; and a walk that broke off published what it had read. The walk collects one date per album now — first folder wins, a later folder may refine it — and writes nothing itself. Class of error: one source making two statements about one album in one pass. **Also the release where restarting the branch needed a force push, which was refused**: `main` was MERGED into the branch instead, so no pushed history was rewritten. 1352 unit / 633 DOM / 120 static — README points here |
 | v1.8.65 | stable (superseded) | **Live state** — every screen shows what the server holds now: `/api/live` reports one revision per kind of data (snapshot, library, dates, plays, settings, labels, picks, discover, day), the app polls it every few seconds and re-reads only the screens whose revisions moved. Also the Home "Library" row stopped showing an order the Library wall had left behind |
 | v1.8.66 | stable (superseded) | From one Roon-forum post (older iPad in a kiosk browser): tile text no longer runs into the next tile (older WebKit's `align-items: flex-start` on buttons — `button { align-items: normal }` said outright), previous/next album by swipe from the album view, and a Wall display ⇄ Remote switch with a screensaver timer |
-| v1.8.67 | **Latest (stable)** | **Listen later**, ported from Mandarin (Roon's own is unreachable from an extension): a server-side list keyed by album identity, a Home row with a Settings → Home Screen switch, a full screen, the album ⋯ menu, multi-select, and "＋ Listen later" on Smart Picks; an entry leaves once every track has been played through since it was added (only for albums whose track list the extension has recorded — never on a guess). Smart Picks' auto-add switch became a destination: Library / Listen later / Nowhere, upgrades unchanged. The 8-angle review caught a first-match lookup over a shared edition-stripped key ("Rumours" resolving to "Rumours (Deluxe Edition)") and a played-through check scanning every play in JS inside the zone handler. 1403 unit / 746 DOM / 120 static — README points here |
+| v1.8.67 | stable (superseded) | **Listen later**, ported from Mandarin (Roon's own is unreachable from an extension): a server-side list keyed by album identity, a Home row with a Settings → Home Screen switch, a full screen, the album ⋯ menu, multi-select, and "＋ Listen later" on Smart Picks; an entry leaves once every track has been played through since it was added (only for albums whose track list the extension has recorded — never on a guess). Smart Picks' auto-add switch became a destination: Library / Listen later / Nowhere, upgrades unchanged. The 8-angle review caught a first-match lookup over a shared edition-stripped key ("Rumours" resolving to "Rumours (Deluxe Edition)") and a played-through check scanning every play in JS inside the zone handler. 1403 unit / 746 DOM / 120 static — README points here |
+| v1.8.68 | superseded (pre-release, never marked Latest) | **Mandarin**, MusicD Server's graphite and brass, as a fifth theme and the DEFAULT for any device that has not chosen one — colours only, its faint text lifted `#7a7d83` → `#8d9096` because the suite's contrast floors refused the original (4.27:1). **The library watch**: Roon publishes no change event, so the extension asks — three `count:1` looks every 30 s while someone is watching (3 min otherwise), a change followed every 20 s until it has held 20 s, then ONE diff-aware re-read; a short read never replaces a complete snapshot, and the jobs built on the snapshot run once per burst of change. Class of error it replaced: a snapshot refreshed on a timetable rather than on the change |
+| v1.8.69 | superseded (never released on its own — in the v1.8.70 release) | Settings like Mandarin's: one column of flat 48px rows instead of v1.8.27's two-column grid of icon cards, and EVERY page full screen (it rose only as far as its content, to 86%), with pinned heads — on a phone the × and a pane's back arrow are the only ways out, so neither may scroll away (v1.7.80's class again). The page's own ground, because a full-screen panel's colour is what iOS fills the status bar with. The side menu in Mandarin's order: Listen later under Home, nothing else touched |
+| v1.8.70 | **Latest (stable)** | **Published images**: `ghcr.io/meltface-80/musicd-remote` for amd64 + arm64 — `:<version>-test` on every branch push (no more committed tarballs), `:<version>` on merge, `:latest` only when a release is marked Latest (checked against GitHub's own latest). All three verified end to end on the day, and the package is public. Its image install was PULL-ONLY (no Update button), which the user rejected — reversed in v1.8.71, so the README's switch to image installs waits for v1.8.71's promotion and this one moved the tarball commands only. Also: the native banner stopped `musicd-remote`, a unit that never existed (the rename reached the command, not the unit), and started the container before stopping the old install. 1455 unit / 806 DOM / 131 static — README points here |

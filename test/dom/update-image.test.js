@@ -1,8 +1,9 @@
 "use strict";
 // ---------------------------------------------------------------------------
-// v1.8.70: on the published image, the app says how to update — it never
-// offers a button that would unpack a release over the running container.
-// (The rule itself, and Roon's own Settings page, are in
+// v1.8.71: the published image keeps the one-tap update. The Update button is
+// there on every install; on the image the pull command is offered BESIDE it,
+// in Settings → System, and only for a release that exists as an image.
+// (The updater itself, Roon's Settings page and the API are in
 // test/unit/updater-image.test.js.)
 // ---------------------------------------------------------------------------
 
@@ -11,12 +12,13 @@ const assert = require("node:assert/strict");
 const harness = require("./harness");
 
 const PULL = "docker pull ghcr.io/meltface-80/musicd-remote:latest";
+const IMAGE = "ghcr.io/meltface-80/musicd-remote";
 
 function stub(status) {
   return `
 window.__applyCalls = 0; window.__checkCalls = 0;
 window.__installFetch(function (u, init) {
-  if (u.indexOf("/api/update/apply") > -1) { window.__applyCalls++; return window.__json({ error: "refused" }, 409); }
+  if (u.indexOf("/api/update/apply") > -1) { window.__applyCalls++; return window.__json({ ok: true, status: ${JSON.stringify(status)} }); }
   if (u.indexOf("/api/update/check") > -1) { window.__checkCalls++; return window.__json({}); }
   if (u.indexOf("/api/update/status") > -1) return window.__json(${JSON.stringify(status)});
   if (u.indexOf("/api/status") > -1) return window.__json({ paired: true });
@@ -31,12 +33,13 @@ const DRIVER = `
   var now = document.getElementById("update-now");
   T("toast", { open: toast.classList.contains("open"),
                text: document.getElementById("update-text").textContent,
+               button: now.querySelector("span").textContent,
                button_shown: !now.classList.contains("hidden") && getComputedStyle(now).display !== "none",
                notes: document.getElementById("update-notes").textContent });
   var banner = document.getElementById("docker-migration-banner");
   T("banner", { shown: !banner.classList.contains("hidden"), text: banner.textContent });
 
-  // Settings → System → Check for updates, twice.
+  // Settings → System → Check for updates, then the second tap that installs.
   var st = document.createElement("style"); st.textContent = ".settings-sheet { animation: none !important; }";
   document.head.appendChild(st);
   document.getElementById("settings-toggle").click();
@@ -50,35 +53,35 @@ const DRIVER = `
   T("settings", { label: btn.textContent, notes: notes.classList.contains("hidden") ? "" : notes.textContent });
   btn.click();
   await window.__sleep(600);
-  T("after_second", { label: btn.textContent, applies: window.__applyCalls, checks: window.__checkCalls });
+  T("after_second", { applies: window.__applyCalls, checks: window.__checkCalls });
 `;
 
 const BASE = { current: "1.8.70", latest: "1.8.71", latestTag: "v1.8.71", available: true,
                isDowngrade: false, notes: "Fixes and polish.", checking: false, error: null,
                apply: { phase: "idle", error: null, version: null } };
 
-test("an image install is told to pull, never offered an in-place update (v1.8.70)", async (t) => {
-  const r = harness.renderPage({ name: "update-image", windowSize: "390x844", budgetMs: 20000, driver: DRIVER,
-    stub: stub(Object.assign({}, BASE, { canApply: false, pull: PULL, image: "ghcr.io/meltface-80/musicd-remote",
-                                         is_docker: true })) });
+const render = (name, status) => harness.renderPage({ name, windowSize: "390x844", budgetMs: 20000,
+  driver: DRIVER, stub: stub(Object.assign({}, BASE, status)) });
+
+test("an image install keeps its one-tap update, with the pull beside it (v1.8.71)", async (t) => {
+  const r = render("update-image", { image: IMAGE, pull: PULL, is_docker: true });
   harness.assertNoPageError(assert, r);
 
-  await t.test("THE one: the toast says how, and has no Update button", () => {
+  await t.test("THE one: the toast offers Update on the image", () => {
     assert.equal(r.toast.open, true, "no update toast at all");
     assert.match(r.toast.text, /v1\.8\.71 available \(you have v1\.8\.70\)/);
-    assert.equal(r.toast.button_shown, false,
-      "the toast offers Update on the image — it would unpack a release the next recreate undoes");
-    assert.ok(r.toast.notes.includes(PULL), "the toast does not give the pull command: " + r.toast.notes);
-    assert.ok(r.toast.notes.includes("recreate the container from that image"),
-      "the toast sends a test or pinned install back to its usual command, which names another tag");
-    assert.ok(r.toast.notes.includes("Fixes and polish."), "the release notes went missing");
+    assert.equal(r.toast.button_shown, true, "the image install lost its one-tap update");
+    assert.equal(r.toast.button, "Update");
+    assert.equal(r.toast.notes, "Fixes and polish.", "the toast carries more than the release notes");
   });
 
-  await t.test("Settings → System says the same, and its button stays a check", () => {
-    assert.equal(r.settings.label, "v1.8.71 available");
-    assert.ok(r.settings.notes.includes(PULL), "Settings does not give the pull command: " + r.settings.notes);
-    assert.equal(r.after_second.applies, 0, "an update was started on the image");
-    assert.equal(r.after_second.checks, 2, "the second tap did not check again");
+  await t.test("Settings → System installs on the second tap, and offers the pull as well", () => {
+    assert.equal(r.settings.label, "Update to v1.8.71");
+    assert.ok(r.settings.notes.startsWith("Fixes and polish."), "the release notes went missing: " + r.settings.notes);
+    assert.ok(r.settings.notes.includes("Or pull the image itself:\n" + PULL),
+      "the pull alternative is missing on the image: " + r.settings.notes);
+    assert.equal(r.after_second.applies, 1, "the second tap did not start the one-tap update");
+    assert.equal(r.after_second.checks, 1);
   });
 
   await t.test("a Docker install is not shown the native-install banner", () => {
@@ -86,29 +89,60 @@ test("an image install is told to pull, never offered an in-place update (v1.8.7
   });
 });
 
-test("everything else keeps the in-place updater (v1.8.70)", async (t) => {
-  const r = harness.renderPage({ name: "update-local-docker", windowSize: "390x844", budgetMs: 20000, driver: DRIVER,
-    stub: stub(Object.assign({}, BASE, { canApply: true, pull: null, image: null, is_docker: true })) });
+test("no pull is suggested for a release that was never an image (v1.8.71)", async (t) => {
+  // v1.8.67 was Latest when v1.8.70 was cut, and was never pushed to ghcr.io.
+  const r = render("update-image-preimage", { latest: "1.8.67", latestTag: "v1.8.67", isDowngrade: true,
+                                              image: IMAGE, pull: null, is_docker: true });
   harness.assertNoPageError(assert, r);
-  await t.test("a locally built container still gets its Update button", () => {
-    assert.equal(r.toast.open, true);
-    assert.equal(r.toast.button_shown, true, "the in-place updater went missing from a locally built install");
-    assert.ok(!r.toast.notes.includes("docker pull"), "a locally built install was told to pull");
+  await t.test("the rollback is still one tap", () => {
+    assert.match(r.toast.text, /Rollback to v1\.8\.67 available \(you have v1\.8\.70\)/);
+    assert.equal(r.toast.button_shown, true);
+    assert.equal(r.toast.button, "Roll back");
+    assert.equal(r.settings.label, "Roll back to v1.8.67");
+    assert.equal(r.after_second.applies, 1);
   });
-  await t.test("…and Settings turns its button into the install action as before", () => {
-    assert.equal(r.settings.label, "Update to v1.8.71");
+  await t.test("…and nothing tells it to pull", () => {
+    // Not /docker pull/ alone: an unguarded line reads "…pulling the image:
+    // null …docker compose pull…", which that pattern never sees.
+    for (const notes of [r.settings.notes, r.toast.notes]) {
+      assert.doesNotMatch(notes, /docker pull|Or pull|pulling the image|null/, "told to pull: " + notes);
+    }
   });
 });
 
-test("a native install's banner points at the image, not a tarball (v1.8.70)", async (t) => {
-  const r = harness.renderPage({ name: "update-native", windowSize: "390x844", budgetMs: 20000, driver: DRIVER,
-    stub: stub(Object.assign({}, BASE, { available: false, canApply: true, pull: null, is_docker: false })) });
+test("an image install ahead of an image release is offered the way back both ways (v1.8.71)", async (t) => {
+  const r = render("update-image-back", { current: "1.8.72", isDowngrade: true, image: IMAGE, pull: PULL,
+                                          is_docker: true });
+  harness.assertNoPageError(assert, r);
+  await t.test("Roll back by tap, or go back by pulling", () => {
+    assert.equal(r.settings.label, "Roll back to v1.8.71");
+    assert.ok(r.settings.notes.includes("Or go back by pulling the image:\n" + PULL), r.settings.notes);
+    assert.doesNotMatch(r.settings.notes, /Or pull the image itself/);
+  });
+});
+
+test("a locally built container is exactly as it was (v1.8.71)", async (t) => {
+  const r = render("update-local-docker", { image: null, pull: null, is_docker: true });
+  harness.assertNoPageError(assert, r);
+  await t.test("one-tap update, no pull anywhere", () => {
+    assert.equal(r.toast.button_shown, true);
+    assert.equal(r.settings.label, "Update to v1.8.71");
+    assert.equal(r.settings.notes, "Fixes and polish.");
+    assert.equal(r.after_second.applies, 1);
+  });
+});
+
+test("a native install's banner runs the image, and keeps it current on recreate (v1.8.71)", async (t) => {
+  const r = render("update-native", { available: false, image: null, pull: null, is_docker: false });
   harness.assertNoPageError(assert, r);
   await t.test("the Switch to Docker banner runs the published image", () => {
     assert.equal(r.banner.shown, true, "precondition: the banner did not show for a native install");
     assert.ok(r.banner.text.includes("ghcr.io/meltface-80/musicd-remote:latest"),
       "the banner does not run the published image");
     assert.ok(!/docker build|\.tar\.gz/.test(r.banner.text), "the banner still downloads and builds a tarball");
+    // The one-tap update lives in the container; without --pull always, the
+    // next recreate restarts whatever stale :latest is on the machine.
+    assert.match(r.banner.text, /docker run -d --pull always /, "the banner's docker run does not pull on recreate");
     // A native install is the systemd unit INSTALL.md created, which kept its
     // name through the rename: there never was a musicd-remote.service.
     assert.ok(r.banner.text.includes("systemctl stop roon-random-albums"),
@@ -116,26 +150,11 @@ test("a native install's banner points at the image, not a tarball (v1.8.70)", a
     assert.ok(!r.banner.text.includes("systemctl stop musicd-remote"), "the banner stops a unit that never existed");
     assert.ok(r.banner.text.indexOf("systemctl stop") < r.banner.text.indexOf("docker run"),
       "the banner starts the container before stopping the native install — two copies of the extension at once");
-  });
-});
-
-test("an image install AHEAD of the Latest release is told how to go back (v1.8.70)", async (t) => {
-  // A test image, or a version image pulled before it is promoted: the server
-  // only offers this when the Latest release exists as an image (FIRST_IMAGE).
-  const r = harness.renderPage({ name: "update-image-back", windowSize: "390x844", budgetMs: 20000, driver: DRIVER,
-    stub: stub(Object.assign({}, BASE, { current: "1.8.72", latest: "1.8.71", isDowngrade: true, canApply: false,
-                                         pull: PULL, image: "ghcr.io/meltface-80/musicd-remote", is_docker: true })) });
-  harness.assertNoPageError(assert, r);
-  await t.test("the toast says go back, not update — and still has no button", () => {
-    assert.match(r.toast.text, /Rollback to v1\.8\.71 available \(you have v1\.8\.72\)/);
-    assert.equal(r.toast.button_shown, false);
-    assert.ok(r.toast.notes.includes("To go back to v1.8.71, pull it:"), "the toast calls a rollback an update: " + r.toast.notes);
-    assert.ok(!r.toast.notes.includes("Update it with"), "the toast calls a rollback an update");
-    assert.ok(r.toast.notes.includes("recreate the container from that image"));
-  });
-  await t.test("Settings names the Latest release and installs nothing", () => {
-    assert.equal(r.settings.label, "Latest release: v1.8.71");
-    assert.ok(r.settings.notes.includes("To go back to v1.8.71, pull it:"));
-    assert.equal(r.after_second.applies, 0);
+    // Pulled FIRST: a pull that fails leaves the native install running,
+    // instead of stopped with nothing to replace it.
+    const pullAt = r.banner.text.indexOf("docker pull ghcr.io/meltface-80/musicd-remote:latest");
+    assert.ok(pullAt > -1 && pullAt < r.banner.text.indexOf("systemctl stop"),
+      "the banner stops the native install before it knows the image can be fetched");
+    assert.match(r.banner.text, /Docker 20\.10 or later/, "--pull needs Docker 20.10+, and the banner does not say so");
   });
 });

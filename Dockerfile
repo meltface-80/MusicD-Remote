@@ -25,11 +25,10 @@ EXPOSE 3399
 ENV PORT=3399
 ENV DOCKER=1
 
-# The published image names itself (v1.8.70): the release workflow builds with
-# --build-arg MUSICD_IMAGE=ghcr.io/<owner>/<name>, and the app then updates by
-# telling you to pull that image rather than by unpacking a release over the
-# running container, which the next recreate would undo. A local
-# `docker build .` leaves it empty and keeps the in-place updater it always had.
+# The published image names itself (v1.8.70): the workflows build with
+# --build-arg MUSICD_IMAGE=ghcr.io/<owner>/<name>, and the app then offers
+# `docker pull` of that image as well as its one-tap update (v1.8.71). A local
+# `docker build .` leaves it empty and offers the one-tap update alone.
 # Last, so a change to it never invalidates the npm install layer above.
 ARG MUSICD_IMAGE=""
 ENV MUSICD_IMAGE=$MUSICD_IMAGE
