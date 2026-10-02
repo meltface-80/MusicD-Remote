@@ -347,7 +347,7 @@
      <a href="https://roon.app">Roon</a> — random-album browsing, instant whole-library
      search, rich label &amp; artist pages, and seamless playback with Roon Server at the heart.</p>
   <div class="badges">
-    <span class="badge" id="ver-badge">v1.8.71</span>
+    <span class="badge" id="ver-badge">v1.8.72</span>
     <span class="badge plain">Docker</span>
     <span class="badge plain">MIT licence</span>
     <span class="badge plain">Pairs with your Roon Core over the network</span>
@@ -608,7 +608,7 @@ docker run -d \
              command — what's shown is the standard Linux install. The macOS and streaming-only
              variants are in the <a href="https://github.com/meltface-80/MusicD-Remote#install-docker">README</a>.</p></noscript>
           <p class="after-note" id="after-note"></p>
-          <p class="after-note">Installing <b id="ver-line">v1.8.71</b> <span id="ver-note">(checking for the latest release…)</span>.
+          <p class="after-note">Installing <b id="ver-line">v1.8.72</b> <span id="ver-note">(checking for the latest release…)</span>.
              If your user isn't in the <code>docker</code> group, prefix the <code>docker</code>
              commands with <code>sudo</code>. Needs Docker 20.10 or later, the first whose
              <code>docker run</code> takes <code>--pull</code>.</p>
@@ -713,7 +713,7 @@ docker run -d \
   var NAME  = "musicd-remote";                              // the container's name
   var IMAGE = "ghcr.io/meltface-80/musicd-remote:latest";   // the release marked Latest
   var REPO  = "meltface-80/MusicD-Remote";
-  var FALLBACK_VERSION = "1.8.71";   // latest published release when this page was built
+  var FALLBACK_VERSION = "1.8.72";   // latest published release when this page was built
 
   var els = {
     modes:      document.getElementById("modes"),
@@ -889,7 +889,7 @@ docker run -d \
   };
 
   // ---- command builders --------------------------------------------------
-  // The published image (since v1.8.71's promotion): nothing to download or
+  // The published image (since v1.8.72's promotion): nothing to download or
   // build. --pull always makes every run fetch the release marked Latest, so a
   // re-created container can never quietly start an older copy left on disk —
   // the in-app update lives inside the container, and a re-create starts afresh.
