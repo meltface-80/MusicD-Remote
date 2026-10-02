@@ -347,7 +347,7 @@
      <a href="https://roon.app">Roon</a> — random-album browsing, instant whole-library
      search, rich label &amp; artist pages, and seamless playback with Roon Server at the heart.</p>
   <div class="badges">
-    <span class="badge" id="ver-badge">v1.8.67</span>
+    <span class="badge" id="ver-badge">v1.8.70</span>
     <span class="badge plain">Docker</span>
     <span class="badge plain">MIT licence</span>
     <span class="badge plain">Pairs with your Roon Core over the network</span>
@@ -361,7 +361,27 @@
        API — the app never touches your library files (except an optional read-only mount for
        label-tag scanning).</p>
     <div class="grid">
-      <div class="card is-new"><h3><span class="em">🕒</span>Listen later<span class="new">New</span></h3>
+      <div class="card is-new"><h3><span class="em">🍊</span>Mandarin, the new default look<span class="new">New</span></h3>
+        <p>MusicD Server's graphite-and-brass colour scheme, and the look every device opens in until
+           you choose another: a graphite ground, off-white text and a brass accent, with brass buttons
+           on the top bar and the album view and MusicD Server's earth-toned genre cards. Colours only —
+           fonts and layout are unchanged — and every text colour clears the AA contrast standard. A
+           device that has already chosen a theme keeps it; Mandarin is first under
+           Settings&nbsp;→ Appearance&nbsp;→ Theme, beside Dark, Light, Copper dark and Brass light.</p></div>
+      <div class="card is-new"><h3><span class="em">🔄</span>Your library, followed in seconds<span class="new">New</span></h3>
+        <p>Add albums in Roon and they are in the app within about a minute, with no rescan. While the
+           app or the wall display is open it checks Roon every 30 seconds (every 3 minutes when nobody
+           is looking) with three tiny calls that cost the Core almost nothing, follows a change until
+           Roon settles, then reads the library once — so a big import costs one pass, not one per
+           album. An album opened mid-change fixes itself when the new library lands, instead of
+           leaving a “your Roon library changed” note behind, and the side menu says when the library
+           was last checked.</p></div>
+      <div class="card is-new"><h3><span class="em">⚙️</span>Settings, redesigned<span class="new">New</span></h3>
+        <p>A compact list, the way Mandarin lays out its Settings — an icon and a title per row, in
+           place of the grid of large buttons. Every page opens full screen, however much is on it,
+           with its title and back arrow pinned at the top while a long page scrolls. And the side
+           menu follows Mandarin's order, with Listen later right under Home.</p></div>
+      <div class="card"><h3><span class="em">🕒</span>Listen later</h3>
         <p>Put an album aside to play another time — from its ⋯ menu, from a selection of albums on
            any wall, or with <b>＋ Listen later</b> on a Smart Pick. Roon's own Listen later can't be
            reached from an extension, so this is the app's own list: kept on the server, the same on
@@ -373,19 +393,19 @@
            <b>Smart Picks can go here instead of your library</b> — Settings&nbsp;→ Smart Picks lets you
            send each day's picks to your Library, to Listen later (your streaming library is left alone),
            or nowhere.</p></div>
-      <div class="card is-new"><h3><span class="em">↔️</span>Previous &amp; next album<span class="new">New</span></h3>
+      <div class="card"><h3><span class="em">↔️</span>Previous &amp; next album</h3>
         <p>Swipe the album card sideways, tap the chevrons on the cover's edges, or use the arrow keys
            to step to the albums either side — on the screen you opened it from, whether that's a Home
            row, the Library wall, or an artist or label page. Close the card and you land on the album
            you stepped to.</p></div>
-      <div class="card is-new"><h3><span class="em">📺</span>Remote ⇄ wall display<span class="new">New</span></h3>
+      <div class="card"><h3><span class="em">📺</span>Remote ⇄ wall display</h3>
         <p>Menu&nbsp;→ Wall display turns the remote into the wall display for its zone, and
            <b>Remote</b> on the display brings it back exactly as you left it. A <b>screensaver
            timer</b> in Settings&nbsp;→ Wall display switches to the display after 1 to 60 minutes
            untouched — per device and off unless you choose it, so a wall tablet drifts into the
            display while the phone in your pocket doesn't. It waits while Settings, a sheet or a
            selection is open.</p></div>
-      <div class="card is-new"><h3><span class="em">📡</span>Live screens<span class="new">New</span></h3>
+      <div class="card"><h3><span class="em">📡</span>Live screens</h3>
         <p>Every screen keeps itself up to date. Home, the Library and Not played walls, the Queue,
            the album, artist and label pages, Smart Picks and Discover refresh themselves when
            something changes — a play, a release date found, a setting changed on another device. In
@@ -568,9 +588,9 @@
             <button class="copy-btn" id="copy" type="button">Copy</button>
             <pre id="cmd">sudo mkdir -p /opt/musicd-remote
 cd /opt/musicd-remote
-sudo wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.67/MusicD-Remote-v1.8.67.tar.gz
-sudo tar -xzf MusicD-Remote-v1.8.67.tar.gz
-docker build -t musicd-remote:1.8.67 .
+sudo wget https://github.com/meltface-80/MusicD-Remote/releases/download/v1.8.70/MusicD-Remote-v1.8.70.tar.gz
+sudo tar -xzf MusicD-Remote-v1.8.70.tar.gz
+docker build -t musicd-remote:1.8.70 .
 
 # Run it
 docker run -d \
@@ -580,13 +600,13 @@ docker run -d \
   -e TZ=Etc/UTC \
   -v musicd-remote-data:/app/data \
   -v "/your/path/to/Music:/music:ro" \
-  musicd-remote:1.8.67</pre>
+  musicd-remote:1.8.70</pre>
           </div>
           <noscript><p class="after-note">JavaScript is off, so the configurator can't rebuild this
              command — what's shown is the standard Linux install. The macOS and streaming-only
              variants are in the <a href="https://github.com/meltface-80/MusicD-Remote#install-docker">README</a>.</p></noscript>
           <p class="after-note" id="after-note"></p>
-          <p class="after-note">Installing <b id="ver-line">v1.8.67</b> <span id="ver-note">(checking for the latest release…)</span>.
+          <p class="after-note">Installing <b id="ver-line">v1.8.70</b> <span id="ver-note">(checking for the latest release…)</span>.
              If your user isn't in the <code>docker</code> group, prefix the <code>docker</code>
              commands with <code>sudo</code>.</p>
           <div class="note"><b>One volume to rule them all.</b> The <code>musicd-remote-data</code>
@@ -685,7 +705,7 @@ docker run -d \
 
   var IMAGE = "musicd-remote";
   var REPO  = "meltface-80/MusicD-Remote";
-  var FALLBACK_VERSION = "1.8.67";   // latest published release when this page was built
+  var FALLBACK_VERSION = "1.8.70";   // latest published release when this page was built
 
   var els = {
     modes:      document.getElementById("modes"),
