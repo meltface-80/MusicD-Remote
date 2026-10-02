@@ -2,6 +2,53 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.72] — 2026-10-02
+
+"Not acceptable. I was on v1.8.70. I want to update with one tap. My Mandarin
+repo updates with one tap."
+
+### Fixed — a new release is offered within hours, not a week
+
+- The app looked for updates when it started and then once every 7 days. So a
+  release marked Latest could go unoffered for a week, unless someone opened
+  Settings → System → Check for updates. It now looks twice a day, as Mandarin
+  does. The update banner, with its one-tap **Update** button, appears within
+  12 hours of a release, or at once after a restart or a Check for updates.
+- Mandarin's updater was taken from this one, and the two now match. Both
+  check twice a day, update in place with one tap (the image included, since
+  v1.8.71), and pick up the image itself (Node, ffmpeg) when it is pulled.
+
+### On v1.8.70's published image? One manual update, then one tap
+
+- v1.8.70's image has no Update button. It told an image install to update
+  by `docker pull` only, the mistake v1.8.71 reversed. Code that is already
+  running can't be changed from outside, so that one install needs one manual
+  update, as Mandarin's own README says of its older containers:
+
+  ```
+  sudo docker pull ghcr.io/meltface-80/musicd-remote:latest
+  sudo docker stop musicd-remote && sudo docker rm musicd-remote
+  ```
+
+  Then run your `docker run` command again, naming
+  `ghcr.io/meltface-80/musicd-remote:latest` and adding `--pull always`. The
+  data volume carries everything over. From then on every update is one tap.
+- Native installs, and containers built from a tarball, never lost the
+  button and need nothing.
+
+### Tests
+
+- `test/unit/updater-image.test.js` pins the interval to at most 12 hours.
+  It also must be at least an hour, because GitHub allows 60 requests an hour.
+  The test further pins the periodic timer to that interval and keeps the
+  check at startup. Each mutated fails it.
+
+### Review
+
+- Done inline: one constant and the test that pins it, mutation-checked.
+
+1453 unit / 807 DOM / 132 static.
+
 ## [1.8.71] — 2026-10-02
 
 "I want users to still have a one tap update function." v1.8.70 took the
