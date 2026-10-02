@@ -147,12 +147,10 @@ const REPO = (() => {
   return m ? { owner: m[1], repo: m[2] }
            : { owner: "meltface-80", repo: "MusicD-Remote" };
 })();
-// Re-check GitHub twice a day, as Mandarin does (v1.8.72). It was every 7 days
-// (v1.5.39), so a release marked Latest could go unoffered for a week unless
-// someone pressed Check for updates — and the one-tap update is only one tap
-// if the app has noticed there is something to tap. Two requests a day are
-// nothing against GitHub's 60 an hour; the startup check is unchanged.
-const UPDATE_CHECK_MS = 12 * 60 * 60 * 1000;
+// Re-check GitHub every 7 days, plus once at startup — the user's call. v1.8.72
+// moved this to twice a day and the user put it back (v1.8.73): do not change it
+// again unless asked. Settings → System → Check for updates looks at once.
+const UPDATE_CHECK_MS = 168 * 60 * 60 * 1000;
 // The published image (v1.8.70) names itself: the workflows build it with
 // MUSICD_IMAGE=ghcr.io/<owner>/<name>. Every install keeps the one-tap update
 // (v1.8.71); set, this one is also shown how to pull its image instead — see

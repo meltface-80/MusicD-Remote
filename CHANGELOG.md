@@ -2,6 +2,52 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.73] — 2026-10-02
+
+"No, keep the 7 day interval check. I manually installed v1.8.69 and it can
+update with one tap to v1.8.71. So will a one tap work to v1.8.72?"
+
+### Changed back — the update check runs every 7 days again
+
+- v1.8.72 moved it to twice a day, and the user put it back. The app looks
+  for a new release when it starts and then every 7 days.
+  **Settings → System → Check for updates** looks at once.
+
+### One tap to this release
+
+- Every install that has the **Update** button updates to this release in
+  one tap, once it is marked Latest. That covers a container built from a
+  tarball (as the v1.8.69 that updated to v1.8.71 was), a native install,
+  and the published image from v1.8.71 on.
+- Nothing between v1.8.71 and this release changes a dependency, so the
+  in-place install needs no `npm install`.
+- The app offers only the release marked Latest on GitHub. While an older
+  release is marked Latest, a newer install is offered **Roll back** instead,
+  and that button goes backwards.
+
+### On v1.8.70's published image? One manual update, then one tap
+
+- v1.8.70's image has no Update button. It told an image install to update
+  by `docker pull` only, the mistake v1.8.71 reversed. Code that is already
+  running can't be changed from outside, so that one install needs one
+  manual update:
+
+  ```
+  sudo docker pull ghcr.io/meltface-80/musicd-remote:latest
+  sudo docker stop musicd-remote && sudo docker rm musicd-remote
+  ```
+
+  Then run your `docker run` command again, naming
+  `ghcr.io/meltface-80/musicd-remote:latest` and adding `--pull always`. The
+  data volume carries everything over. From then on every update is one tap.
+
+### Tests
+
+- The interval is pinned at exactly 7 days, along with its timer and the
+  check at startup. Each mutated fails the test.
+
+1453 unit / 807 DOM / 132 static.
+
 ## [1.8.72] — 2026-10-02
 
 "Not acceptable. I was on v1.8.70. I want to update with one tap. My Mandarin
