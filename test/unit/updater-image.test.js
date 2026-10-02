@@ -202,19 +202,17 @@ test("the API never refuses an update because of the image (v1.8.71)", () => {
     "index.js reads a different variable from the one the image sets");
 });
 
-test("updates are looked for twice a day, as Mandarin does (v1.8.72)", () => {
-  // The one-tap update is only one tap if the app has noticed there is
-  // something to tap. Every 7 days (v1.5.39–v1.8.71) left a release marked
-  // Latest unoffered for up to a week unless someone pressed Check for updates.
+test("updates are looked for every 7 days and at startup — the user's call (v1.8.73)", () => {
+  // v1.8.72 moved the check to twice a day; the user put it back to 7 days.
+  // Pinned exactly, so it cannot drift again without someone deciding to.
   const src = indexSource();
   const m = src.match(/^const UPDATE_CHECK_MS = ([\d\s*]+);/m);
   assert.ok(m, "UPDATE_CHECK_MS is no longer a plain product of numbers");
   const ms = m[1].split("*").reduce((a, n) => a * Number(n.trim()), 1);
   const HOUR = 60 * 60 * 1000;
-  assert.ok(ms <= 12 * HOUR, "updates are looked for less often than twice a day: every " + ms / HOUR + " h");
-  assert.ok(ms >= HOUR, "updates are looked for more than once an hour — GitHub allows 60 an hour in all");
+  assert.equal(ms, 7 * 24 * HOUR, "the update check is no longer every 7 days: every " + ms / HOUR + " h");
   assert.match(src, /setInterval\(\(\) => \{ updateCheckTick\(\);[^}]*\}, UPDATE_CHECK_MS\)/,
     "the periodic update check no longer runs on UPDATE_CHECK_MS");
   assert.match(src, /\n\/\/ Begin background update checks[^\n]*\nupdateCheckTick\(\);/,
-    "the check at startup is gone");
+    "the check at startup is gone — a freshly started install would not offer an update for a week");
 });
