@@ -37,9 +37,10 @@ window.__installFetch(function (url) {
 const LONG =
   "Couldn't play from here: Roon offered no playback options for this album. " +
   "Your Roon library changed after this list was built — normally because albums " +
-  "are being added or identified. The extension re-checks every 10 minutes and " +
-  "refreshes itself once Roon settles, so this usually clears on its own. If it " +
-  "hasn't, open the side menu and tap Rescan library.";
+  "are being added or identified. The extension is already re-reading it, checking " +
+  "Roon every 20 seconds until it settles, and this screen refreshes itself once it " +
+  "has, so this usually clears on its own. If it hasn't, open the side menu and tap " +
+  "Rescan library.";
 
 const DRIVER = `
   await window.__sleep(400);

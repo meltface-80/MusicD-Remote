@@ -14,8 +14,9 @@
 // build is not proof the server is what built the one on screen.
 //
 // The two branches wait on different clocks, and the test pins that too. When
-// library_moved is set, the server has already armed the recheck chain — five
-// minutes. When it is not, the next look is the background watch — ten.
+// library_moved is set, the server has already asked the library watch to look,
+// and it follows Roon every 20 seconds until it settles (v1.8.68). When it is
+// not, the next look is the watch's own turn — 30 seconds while the app is open.
 // ---------------------------------------------------------------------------
 
 const test = require("node:test");
@@ -84,21 +85,21 @@ test("the album view's no-playback line explains itself", { concurrency: 1 }, as
   });
 
   await t.test("each branch quotes the clock it is actually waiting on", () => {
-    // Not cosmetic. A proven change has a recheck armed at 5 minutes; an
-    // unproven one waits for the 10-minute background watch. One number for
+    // Not cosmetic. A proven change has the watch following Roon every 20 s;
+    // an unproven one waits for the watch's own 30-second turn. One number for
     // both is wrong in one of the two cases.
     const moved = errText(Object.assign({ library_moved: true }, NO_ACTIONS), "album-noplay-moved");
-    assert.match(moved, /already scheduled/,
-      "a proven change does not say a check is already on its way: " + JSON.stringify(moved));
-    assert.match(moved, /about 5 minutes/,
-      "a proven change quotes the wrong wait — the recheck chain runs at 5 minutes");
+    assert.match(moved, /already re-reading/,
+      "a proven change does not say the re-read is already on its way: " + JSON.stringify(moved));
+    assert.match(moved, /every 20 seconds until it settles/,
+      "a proven change quotes the wrong wait — the watch follows a seen change every 20 seconds");
 
     const plain = errText(Object.assign({ library_moved: false }, NO_ACTIONS), "album-noplay-watch");
-    assert.match(plain, /every 10 minutes/,
-      "an unproven cause quotes the wrong wait — nothing was armed, so the next " +
-      "look is the 10-minute watch");
-    assert.ok(!/about 5 minutes/.test(plain),
-      "an unproven cause promises a 5-minute recheck that was never scheduled");
+    assert.match(plain, /every 30 seconds while the app is open/,
+      "an unproven cause quotes the wrong wait — nothing was asked, so the next " +
+      "look is the watch's own 30-second turn");
+    assert.ok(!/already re-reading/.test(plain),
+      "an unproven cause promises a re-read that nothing asked for");
   });
 
   await t.test("a proven change is stated, an unproven one is hedged", () => {

@@ -58,9 +58,14 @@ const NP_DETAIL = {
   tracks: [{ title: "Sunday", subtitle: "David Bowie" }],
 };
 
-const STUB = `
+// The classic look this file describes — outlined Play Now and Queue — is the
+// "dark" theme's. Since v1.8.68 a device with no choice starts on Mandarin,
+// whose pills are FILLED in brass by design, so the theme is named here rather
+// than left to the default; Mandarin's row has its own test at the end.
+const STUB_FOR = (theme) => `
 window.__zone = ${JSON.stringify(ZONE)};
-try { localStorage.setItem("rra-zone", "z1"); } catch (e) { /* storage optional: the zone falls back to the first */ }
+try { localStorage.setItem("rra-zone", "z1"); localStorage.setItem("rra-theme-v2", "${theme}"); }
+catch (e) { /* storage optional: the zone falls back to the first */ }
 window.__installFetch(function (u) {
   if (u.indexOf("/api/user-playlists") > -1) return window.__json({ playlists: [] });
   if (u.indexOf("/api/album/now-playing") > -1) return window.__json(${JSON.stringify(NP_DETAIL)});
@@ -78,6 +83,7 @@ window.__installFetch(function (u) {
   return undefined;
 });
 `;
+const STUB = STUB_FOR("dark");
 
 const DRIVER = `
   function boxOf(el) {
@@ -216,3 +222,30 @@ for (const size of ["390x844", "360x780", "1280x900"]) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// v1.8.68: the same row in Mandarin, the default. Play Now and Queue are both
+// brass — MusicD Server's "Play now and Queue alike in the gold; the rest of
+// the row stays outlined" — so the overflow button keeps its outline beside
+// them. What every theme shares is what the v1.8.60 report was about: one
+// height, one centre line, a round button.
+// ---------------------------------------------------------------------------
+test("album view in Mandarin: brass pills, the overflow button still matches them", async (t) => {
+  if (!harness.available) { t.skip("no chromium binary available"); return; }
+  const r = harness.renderPage({ name: "album-actions-mandarin", windowSize: "390x844",
+                                 stub: STUB_FOR("mandarin"), driver: DRIVER });
+  harness.assertNoPageError(assert, r);
+  await t.test("the row's geometry is the same in every theme", () => {
+    assert.equal(r.pill_count, 2);
+    assert.equal(r.has_more, true);
+    const [h0, h1] = r.pill_h;
+    assert.ok(Math.abs(h0 - h1) < 0.5, "Play Now and Queue differ in height: " + r.pill_h);
+    assert.ok(Math.abs(r.more_h - h0) < 0.5, "the overflow button is " + r.more_h + "px against " + h0);
+    assert.ok(Math.abs(r.more_mid - r.pill_mid) < 0.5, "the overflow button is off the row's centre line");
+    assert.ok(Math.abs(r.more_w - r.more_h) < 0.5, "the overflow button is not round");
+  });
+  await t.test("Play Now and Queue are filled brass; the overflow button stays outlined", () => {
+    assert.equal(r.finish.queue_bg, "rgb(201, 164, 92)", "Queue is not the brass fill");
+    assert.equal(r.pill_outlined, false);
+    assert.equal(r.more_outlined, true, "the overflow button lost its outline beside the brass pills");
+  });
+});

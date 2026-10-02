@@ -217,6 +217,12 @@
   let albumNavParent = null;
   let albumNavKey = null;
   let pendingNavTile = null;
+  // The open album's detail is out of date — an error line, or a "your Roon
+  // library changed" note — and is asked for again when the library watch
+  // republishes the snapshot (v1.8.68). albumDetailAskedAt is the snapshot
+  // revision that answer was asked for under.
+  let albumDetailHeal = false;
+  let albumDetailAskedAt = "";
   // The filter that the currently-open album modal belongs to. Usually the
   // active genre/tag filter, but a per-open override is used for label albums
   // so detail + play resolve offsets against the right list.
@@ -473,10 +479,10 @@
   if (!document.hidden) startLive();
 
   // ----- Themes -----
-  // Four themes, expressed as TWO attributes rather than four values of one:
+  // Five themes, expressed as TWO attributes rather than five values of one:
   //
-  //   data-theme   = dark | light   — the FAMILY
-  //   data-palette = classic | copper — the COLOURS
+  //   data-theme   = dark | light              — the FAMILY
+  //   data-palette = mandarin | classic | copper — the COLOURS
   //
   // The split exists because thirteen rules in style.css are keyed on
   // `[data-theme="light"] .something` — white text on an accent fill, the
@@ -487,6 +493,10 @@
   // light background. Keying palettes on their own attribute means the
   // existing themes are untouched and the new ones inherit all thirteen.
   const THEMES = [
+    // The default since v1.8.68: MusicD Server's own colours. First, so the
+    // picker leads with what a new device starts on.
+    { id: "mandarin",     label: "Mandarin",     note: "Graphite and brass, from MusicD Server",
+      theme: "dark",  palette: "mandarin" },
     { id: "dark",         label: "Dark",         note: "The original — cool grey and cyan",
       theme: "dark",  palette: "classic" },
     { id: "light",        label: "Light",        note: "The original — bright and neutral",
@@ -497,7 +507,9 @@
       theme: "light", palette: "copper" },
   ];
   const THEME_KEY = "rra-theme-v2";
-  const DEFAULT_THEME = "dark";
+  // What a device that has never chosen gets. index.html starts <html> on the
+  // same palette, so the first paint before this file runs is already it.
+  const DEFAULT_THEME = "mandarin";
   const themeById = (id) => THEMES.find(t => t.id === id) || null;
 
   function applyTheme(id) {
@@ -543,9 +555,11 @@
         return old;
       }
     } catch (e) { /* private browsing */ }
-    // No stored choice: follow the OS, as before. Read once at boot, with no
-    // change listener — same behaviour the single toggle had.
-    if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) return "light";
+    // No stored choice: the default. This used to follow the OS (Light on a
+    // device set to light mode), but the default is now a palette with no
+    // light counterpart, and "the default" means the same thing on every
+    // device. A stored choice — the picker's Apply, or a v1 key above — is
+    // never overridden.
     return DEFAULT_THEME;
   }
 
@@ -2150,17 +2164,20 @@
   //
   // `moved` is the server's library_moved flag, and it picks the TIMING as well
   // as the wording — the two cases wait on different clocks. When the change is
-  // proven the server has already armed the recheck chain (5 minutes); when it
-  // is only the likeliest explanation, the next look is the background watch
-  // (10 minutes). One number for both would be wrong exactly when it is read.
+  // proven the server has already asked the library watch to look, and it
+  // follows Roon every 20 seconds until it settles; when it is only the
+  // likeliest explanation, the next look is the watch's own turn (30 seconds
+  // while the app is open). The numbers are the server's librarySettleMs() and
+  // libraryWatchActiveMs(): test/unit/librarychange.test.js runs both copies
+  // and fails if they say anything different.
   function libraryChangingAdvice(moved) {
     return (moved
       ? " Your Roon library changed after this list was built"
       : " This usually means your Roon library changed after this list was built") +
       " — normally because albums are being added or identified. " +
-      (moved ? "A re-check is already scheduled — about 5 minutes"
-             : "The extension re-checks every 10 minutes") +
-      " — and it refreshes itself once Roon settles, so this usually clears on " +
+      (moved ? "The extension is already re-reading it, checking Roon every 20 seconds until it settles"
+             : "The extension checks Roon every 30 seconds while the app is open") +
+      ", and this screen refreshes itself once it has, so this usually clears on " +
       "its own. If it hasn't, open the side menu and tap Rescan library.";
   }
 
@@ -6591,7 +6608,10 @@
       if (typeof window.__refreshTransport === "function") window.__refreshTransport();
     } else {
       fetchAlbumDetail(album).catch(err => {
+        // Another album may be open by now; this error is not about it.
+        if (album !== currentAlbum) return;
         modalActs.innerHTML = `<div class="modal-error">${escapeHtml(err.message)}</div>`;
+        markAlbumForHeal();
       });
       fetchAlbumExtras(album).catch(() => { /* extras are non-critical — modal still opens */ });
     }
@@ -7162,6 +7182,7 @@
     // would arm the next album's rows with someone else's picks.
     exitTrackSelectMode();
     albumNavTile = albumNavParent = albumNavKey = null;
+    albumDetailHeal = false;
     modal.classList.add("hidden");
     modal.classList.remove("np-mode", "tab-album", "tab-queue");
     document.body.style.overflow = "";
@@ -7391,7 +7412,39 @@
     if (e.key === "Escape" && !modal.classList.contains("hidden")) closeModal();
   });
 
+  // The album view heals itself (v1.8.68). An error line or a "your Roon
+  // library changed" note says the list this album was opened from has gone out
+  // of date. When the library watch re-reads the library the snapshot revision
+  // moves, and the album is asked for again — the server finds it by identity
+  // in the fresh snapshot — rather than waiting for someone to close and reopen
+  // it, which is what the note used to have to tell them to do.
+  function healAlbumDetail() {
+    liveWhenIdle("album-heal", () => {
+      if (!albumDetailHeal || !currentAlbum || !modal ||
+          modal.classList.contains("hidden") || modal.classList.contains("np-mode")) return;
+      const album = currentAlbum;
+      fetchAlbumDetail(album).catch(err => {
+        if (album !== currentAlbum) return;
+        modalActs.innerHTML = `<div class="modal-error">${escapeHtml(err.message)}</div>`;
+        markAlbumForHeal();
+      });
+    });
+  }
+  onLive((changed) => {
+    if (albumDetailHeal && changed.has("snapshot")) healAlbumDetail();
+  });
+  // The answer on screen is out of date. If the library was re-read while it
+  // was on its way, the revision moved before this flag went up — the listener
+  // above heard it with nothing to heal, and will not hear it again until the
+  // NEXT library change. So compare against the revision it was asked under.
+  function markAlbumForHeal() {
+    albumDetailHeal = true;
+    if (liveStamp(["snapshot"]) !== albumDetailAskedAt) healAlbumDetail();
+  }
+
   async function fetchAlbumDetail(album) {
+    albumDetailHeal = false;   // set again below if this answer is out of date too
+    albumDetailAskedAt = liveStamp(["snapshot"]);
     // Send the album's identity so the server can detect a stale offset
     // (library changed since the tile rendered) and relocate — or 409 —
     // instead of returning whatever album now sits at that position.
@@ -7500,6 +7553,7 @@
       err.textContent = "Roon offered no playback options for this album." +
                         libraryChangingAdvice(!!j.library_moved);
       modalActs.appendChild(err);
+      markAlbumForHeal();
     }
 
     // Tracks — each row is tappable and reveals Play now / Queue for that
@@ -7519,6 +7573,7 @@
         : "Roon sent an incomplete track list.") +
         libraryChangingAdvice(!!j.library_moved);
       modalActs.appendChild(note);
+      markAlbumForHeal();
     }
     if (trackList.length === 0) {
       if (!j.partial && j.library_moved) {
@@ -7527,6 +7582,7 @@
         note.textContent = "Roon returned no tracks for this album." +
                            libraryChangingAdvice(!!j.library_moved);
         modalActs.appendChild(note);
+        markAlbumForHeal();
       }
       trackWrap.classList.add("hidden");
     } else {
@@ -14961,8 +15017,11 @@ initServiceBrowser({
         el.textContent = albums + " · Roon was importing at the last check — refresh paused";
       } else if (j.library_recheck_pending) {
         el.textContent = albums + " · the library moved, checking again shortly";
-      } else if (j.index_built_at) {
-        el.textContent = albums + " · checked " + libraryAgeText(j.index_built_at);
+      } else if (j.library_checked_at || j.index_built_at) {
+        // When the library watch last LOOKED (v1.8.68), not when the snapshot
+        // last changed: an untouched library confirmed a minute ago is not
+        // "checked 3 days ago".
+        el.textContent = albums + " · checked " + libraryAgeText(j.library_checked_at || j.index_built_at);
       } else {
         el.textContent = "No snapshot yet";
       }

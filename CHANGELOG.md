@@ -2,6 +2,125 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.68] — 2026-10-02
+
+Two requests: MusicD Server's colour scheme as a fifth theme, and the default;
+and the extension following the Roon library closely enough that albums added
+to Roon stop leaving "your Roon library changed" notes on the album view —
+"as close to a live reflection of Roon as possible without detriment to RAM use
+due to API calls".
+
+### Added — the Mandarin colour scheme, now the default
+
+- **Mandarin** ("Graphite and brass, from MusicD Server") joins Settings →
+  Appearance → Theme, first in the list: MusicD Server's graphite ground
+  (`#17191c`, cards `#1f2226` / `#262a2f`), off-white text and brass accent
+  (`#c9a45c`). With it come brass discs on the top-bar buttons, the album
+  view's round buttons and play/pause, brass icons and volume controls, white
+  titles on the album view, and MusicD Server's six earth-toned genre cards.
+- **Colours only.** Fonts and layout stay this app's own, and the now-playing
+  pill keeps the one surface every piece of chrome here shares (v1.7.86) rather
+  than MusicD Server's solid bar.
+- **One colour is not MusicD Server's.** Its faint text, `#7a7d83`, measures
+  4.27:1 on its ground, 3.87 on a card and 3.50 on a raised card — under AA
+  (4.5:1) on all three — and the suite's contrast floors refused it. Lifted to
+  `#8d9096`: 5.50 / 4.99 / 4.51. Every other pair clears AA as shipped (text
+  12.1–14.8:1, dim text 5.3–6.4, brass text 7.0–8.6, text on brass 7.5).
+- **The default.** A device that has never chosen a theme opens in Mandarin.
+  Until now such a device followed the OS light/dark setting; it no longer does —
+  the default is one scheme. A device that HAS chosen a theme keeps its choice,
+  so one that picked another theme before needs to pick Mandarin to see it.
+- Three tests assumed the original dark palette was the default. The pill
+  material, the album action row and the waveform tests now name the palette
+  they measure, and the action row has a Mandarin variant. The waveform's bar
+  detector matched the grey faint text against the brass accent ±60 and was
+  given a saturation test — a false positive in the detector, not in the
+  drawing: the thumb rows are identical in both palettes.
+
+### Changed — the library watch: Roon followed in seconds, not minutes
+
+Roon publishes no "library changed" event anywhere an extension can subscribe,
+so the only way to follow it is to ask. Until now the extension asked every
+ten minutes, then re-checked every five while a change settled — so an album
+added to Roon left every album after it at the wrong position, and opened with
+the note, for up to a quarter of an hour. Class of error: a snapshot refreshed
+on a timetable rather than on the change.
+
+- **A look** is three `count:1` calls on a pooled browse session (the Core keeps
+  no new state for it): the album count and the first and last albums. Every
+  30 seconds while the app or the wall display is open, every 3 minutes when
+  nobody is, and at once when someone arrives after a quiet spell. Its debug
+  trace is quiet — a line every 30 seconds would bury the log — and a failure
+  is still logged.
+- **A change is followed every 20 seconds until the same picture has held for
+  20 seconds**, then the list is re-read. Held means measured from when it last
+  changed: a look pulled forward — by an album open, say — can never end the
+  wait early. An import that runs on is followed every 60 seconds once it has
+  run 10 minutes, counted across its batches and the re-reads between them, and
+  starts over only after 10 minutes with nothing new.
+- **The re-read is diff-aware.** One that finds the list the snapshot already
+  holds publishes nothing: no screen re-reads, no cache is dropped. One that
+  comes back short never replaces a complete snapshot — a holed one cannot see a
+  same-count change at all — so it is refused and asked again; the Rescan button
+  still takes what it gets, because a person asked.
+- **The jobs built on the snapshot** — source badges, genres, file tags, labels,
+  art — run once per burst of change, 2 minutes after it goes quiet and never
+  more than 30 minutes after the first: an import of two hundred albums costs one
+  pass, not two hundred. A Rescan that rebuilds takes an owed pass with it.
+- **What a look cannot see** — an album re-identified in the middle of the list,
+  which moves rows without moving the count or either end — is caught two ways:
+  an album open that the snapshot cannot place where Roon has it asks for a
+  re-read (at most one a minute, and not while a change is settling, whose
+  re-read covers it), and while someone is looking the whole list is re-read
+  every 30 minutes.
+- **The album view heals itself.** A "your Roon library changed" note, or an
+  album that failed to open because it moved, is asked for again when the watch
+  publishes a new snapshot — including a re-read that lands while the album's
+  request is still on its way — instead of waiting for someone to close and
+  reopen it. The notes now say what is really happening ("already re-reading it,
+  checking Roon every 20 seconds until it settles"), and the album view's copy
+  of that sentence is asserted equal to the server's.
+- **The side menu** says when the library was last *checked* ("12,963 albums ·
+  checked just now"), not when the snapshot last changed — an untouched library
+  confirmed a minute ago is not "3 days ago".
+- **Cost.** Watched: six calls a minute. Settling: nine a minute, three once an
+  import has run 10 minutes. Unwatched: one look every 3 minutes. A re-read is
+  one call per 500 albums (26 for 13,000), made only when Roon has settled, on
+  evidence, or every half hour while watched. No browse session is ever minted
+  for any of it, and a re-read that finds nothing new is discarded on the spot.
+
+### Review
+
+One agent read the watch line by line and for removed behaviour; the other
+angles were done inline. Ten defects were found in the new code before it
+shipped, each pinned by a test that fails without its fix:
+
+- a change could be called settled on two looks a second apart — every album
+  open during an import pulled a look forward — and walked mid-import, the one
+  thing the settling exists to prevent. Class of error: a rule about time
+  ("20 seconds apart") that nothing measured;
+- a look asked for while one was running started a second one alongside it;
+- each re-read reset the backoff, so a batched import got a full walk about once
+  a minute for as long as it ran;
+- with the Core gone past the follow-up pass's deadline, its timer re-armed
+  every millisecond until a re-pair;
+- a short walk could replace a complete snapshot;
+- every restart walked the library twice: the first build did not count as one;
+- a tile from before the last re-read asked for a whole-list walk of a snapshot
+  that was already current;
+- a walk asked for on evidence forgot the evidence when it failed;
+- the album view's heal missed a re-read that landed while its request was in
+  flight; and pinning that showed a heal with nothing to compare against
+  re-requests the album in a loop — 218,878 requests in one test run — which
+  the heal tests now assert cannot happen;
+- a Rescan ran the owed follow-up pass's jobs a second time.
+
+Comments that still described the ten-minute check, the five-minute recheck
+chain or a twelve-hour refresh were rewritten (the v1.8.57 lesson: a comment
+that confidently describes code that is not there reads as the authority).
+
+1439 unit / 774 DOM / 120 static.
+
 ## [1.8.67] — 2026-10-02
 
 Asked for by a user: "is there any way for Smart Picks to be added to Listen

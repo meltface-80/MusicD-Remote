@@ -22,7 +22,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const harness = require("./harness");
 
-const THEMES = ["dark", "light", "copper-dark", "brass-light"];
+const THEMES = ["mandarin", "dark", "light", "copper-dark", "brass-light"];
 
 const STUB = `
 window.__installFetch(function (url) {
@@ -122,6 +122,8 @@ function tokensFor(themeId) {
 // are held to the real bar. If someone ever fixes the originals, these floors
 // are what tells them the fix worked.
 const FLOORS = {
+  // v1.8.68, the default: MusicD Server's palette, held to the full bar.
+  "mandarin":    { text: 4.5, dim: 4.5, faint: 4.5, accentText: 4.5, onAccent: 4.5, danger: 4.5 },
   "dark":        { text: 4.5, dim: 4.5, faint: 2.6, accentText: 4.5, onAccent: 4.5, danger: 4.5 },
   "light":       { text: 4.5, dim: 4.5, faint: 2.8, accentText: 3.0, onAccent: 3.0, danger: 4.5 },
   "copper-dark": { text: 4.5, dim: 4.5, faint: 4.5, accentText: 4.5, onAccent: 4.5, danger: 4.5 },
@@ -141,7 +143,7 @@ for (const id of THEMES) {
 
     await t.test("the stored id resolves to a family and a palette", () => {
       assert.ok(["dark", "light"].includes(r.theme_attr), `data-theme=${r.theme_attr}`);
-      assert.ok(["classic", "copper"].includes(r.palette_attr), `data-palette=${r.palette_attr}`);
+      assert.ok(["classic", "copper", "mandarin"].includes(r.palette_attr), `data-palette=${r.palette_attr}`);
     });
 
     await t.test("every token this theme needs is defined", () => {
@@ -300,19 +302,19 @@ test("the theme picker selects, then applies (v1.6.63)", { concurrency: 1 }, asy
   });
   harness.assertNoPageError(assert, r);
 
-  await t.test("all four themes are offered, with the current one marked", () => {
-    assert.equal(r.row_count, 4);
+  await t.test("all five themes are offered, with the current one marked", () => {
+    assert.equal(r.row_count, 5);
     assert.match(r.selected_at_open, /in use/);
     assert.equal(r.apply_disabled_at_open, true,
       "Apply is live before anything has been chosen — it should mean something");
   });
 
   await t.test("each swatch previews its own palette", () => {
-    // Four themes, four different backgrounds. If the swatches inherited the
+    // Five themes, five different backgrounds. If the swatches inherited the
     // applied theme they would all be identical, and the picker would give the
     // user nothing to choose by.
-    assert.equal(new Set(r.swatch_bgs).size, 4,
-      `swatches rendered ${new Set(r.swatch_bgs).size} distinct backgrounds, expected 4 — ` +
+    assert.equal(new Set(r.swatch_bgs).size, 5,
+      `swatches rendered ${new Set(r.swatch_bgs).size} distinct backgrounds, expected 5 — ` +
       "they are inheriting the applied theme instead of declaring their own");
   });
 
@@ -360,4 +362,68 @@ test("a v1 saved theme migrates to the new key", { concurrency: 1 }, async (t) =
       assert.equal(r.migrated, old, "the migrated value was not written to the new key");
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// v1.8.68: Mandarin is the default.
+//
+// "The default" is what a device that has never chosen starts on — and only
+// that. A choice made in the picker, or carried over from the v1 key, is the
+// user's and is never overridden by a new default.
+//
+// It used to follow the OS (Light on a device in light mode). The default is
+// now a palette with no light counterpart, so a device in light mode gets it
+// too: that case is the one the stub below forces.
+// ---------------------------------------------------------------------------
+test("a device that has never chosen starts on Mandarin (v1.8.68)", { concurrency: 1 }, async (t) => {
+  if (!harness.available) {
+    t.skip("no chromium binary found — set CHROMIUM_BIN to run DOM tests");
+    return;
+  }
+  const lightOS = `
+    var __mm = window.matchMedia;
+    window.matchMedia = function (q) {
+      if (/prefers-color-scheme:\s*light/.test(q)) return { matches: true, media: q,
+        addListener: function () {}, removeListener: function () {},
+        addEventListener: function () {}, removeEventListener: function () {} };
+      return __mm.call(window, q);
+    };`;
+  const driver = `
+    T("before_app", window.__htmlPaletteAtParse);
+    await window.__sleep(500);
+    T("theme", document.documentElement.getAttribute("data-theme"));
+    T("palette", document.documentElement.getAttribute("data-palette"));
+    T("stored", (function () { try { return localStorage.getItem("rra-theme-v2"); } catch (e) { return null; } })());
+    T("bg", getComputedStyle(document.documentElement).getPropertyValue("--bg").trim());
+    T("meta", document.querySelector('meta[name="theme-color"]').getAttribute("content"));`;
+  // What <html> says before app.js has run: the first paint.
+  const atParse = `window.__htmlPaletteAtParse = document.documentElement.getAttribute("data-palette");\n`;
+
+  const fresh = harness.renderPage({
+    stub: atParse + lightOS + STUB + `try { localStorage.removeItem("rra-theme-v2"); localStorage.removeItem("rra-theme"); } catch (e) {}\n`,
+    driver, name: "theme-default", windowSize: "390x844",
+  });
+  harness.assertNoPageError(assert, fresh);
+
+  const chose = harness.renderPage({
+    stub: lightOS + STUB + `try { localStorage.setItem("rra-theme-v2", "copper-dark"); } catch (e) {}\n`,
+    driver, name: "theme-default-chosen", windowSize: "390x844",
+  });
+  harness.assertNoPageError(assert, chose);
+
+  await t.test("no stored choice — even on a device in light mode — is Mandarin", () => {
+    assert.equal(fresh.theme, "dark");
+    assert.equal(fresh.palette, "mandarin");
+    assert.equal(fresh.bg, "#17191c", "the Mandarin ground did not apply");
+    assert.equal(fresh.meta.toLowerCase(), "#17191c", "the status bar colour did not follow the default");
+    assert.equal(fresh.stored, null,
+      "the default was WRITTEN as a choice — a later change of default would then never reach this device");
+  });
+  await t.test("the page starts on it before the script runs, so nothing flashes", () => {
+    assert.equal(fresh.before_app, "mandarin",
+      "<html> starts on another palette, so the first paint is that one until app.js runs");
+  });
+  await t.test("a choice already made is kept", () => {
+    assert.equal(chose.palette, "copper", "a stored theme was overridden by the new default");
+  });
 });

@@ -198,6 +198,46 @@
   --shadow-modal: 0 24px 64px rgba(58,44,26,.20);
 }
 
+/* Mandarin — the default since v1.8.68. MusicD Server's own palette
+   ("Late-Night Hi-Fi", graphite and brass), its token values verbatim: a warm
+   charcoal ground, flat, one elevated tone for cards and panels, and the brass
+   as the one accent. A dark-family palette, so every [data-theme="dark"] rule
+   applies as it does for the other two dark themes.
+
+   Measured by test/dom/themes.test.js and held to the full AA floor on every
+   tier: text 12.1–14.8:1, --text-dim 5.3–6.4, --text-faint 4.5–5.5, the brass
+   as text 7.0–8.6, and --on-accent on the brass fill 7.5. The colour rules
+   that go with it —
+   the brass discs, glyphs and buttons — are at the end of this file, because
+   several of the rules they override sit at the same specificity further down
+   than here. */
+[data-theme="dark"][data-palette="mandarin"] {
+  --bg:           #17191c;
+  --bg-elev:      #1f2226;
+  --bg-elev-2:    #262a2f;
+  --border:       #30353b;
+  --text:         #ecebe6;
+  --text-dim:     #9a9ca1;
+  /* The one value NOT taken verbatim. MusicD Server's #7a7d83 measures 4.27:1
+     on the ground and 3.50:1 on --bg-elev-2 — below AA everywhere, although
+     that stylesheet's own note claims 5.1–6.3. This is the smallest lift along
+     the same grey that clears 4.5:1 on every surface (5.50 / 4.99 / 4.51), and
+     it stays a tier below --text-dim. */
+  --text-faint:   #8d9096;
+  /* The brass for fills, a lighter brass for text — the same split the copper
+     theme makes, for the same reason. */
+  --accent:       #c9a45c;
+  --accent-text:  #d4b06a;
+  --accent-soft:  rgba(201,164,92,.15);
+  --on-accent:    #17191c;
+  --bg-veil:      rgba(23,25,28,.88);
+  --glass-edge:   rgba(201,164,92,.22);
+  --danger:       #e8836b;
+  --panel-hairline: rgba(236,235,230,.08);
+  --shadow-card:  0 2px 6px rgba(0,0,0,.45), 0 12px 28px rgba(0,0,0,.4);
+  --shadow-modal: 0 24px 64px rgba(0,0,0,.65);
+}
+
 * { box-sizing: border-box; }
 html, body {
   margin: 0; padding: 0;
@@ -4841,3 +4881,115 @@ body.show-quality .album-quality { display: block; }
 }
 .has-art .share-similar-rec { white-space: normal; }
 .discover-list .share-similar-act.has-art { align-items: center; padding: 10px; }
+
+/* ================================================================== */
+/*  Mandarin — the colour rules that go with the palette (v1.8.68).    */
+/*  Ported from MusicD Server, COLOURS ONLY: its serif titles, its     */
+/*  card sizes and radii, the Home greeting and the segmented level-   */
+/*  meter progress bar are its typography and layout, not its colour   */
+/*  scheme, and are left out — the meter especially, because the seek  */
+/*  bar under it is pinned to the pixel by the waveform tests. Its     */
+/*  search-focus glow was a leftover purple from that app's retired    */
+/*  plum palette (139,111,176); the brass tint replaces it.            */
+/*  Last in the file on purpose: several rules overridden here (the    */
+/*  album view's primary button, for one) share these selectors'       */
+/*  specificity and would otherwise win by coming later.               */
+/* ================================================================== */
+/* The top bar's rule, faint and warm. */
+[data-palette="mandarin"] .topbar { border-bottom-color: rgba(201,164,92,.12); }
+/* Buttons with a disc — the top bar's menu, search and settings, the album
+   view's back, home and share: a brass disc, the glyph in the charcoal. */
+[data-palette="mandarin"] .topbar .icon-btn,
+[data-palette="mandarin"] .modal .modal-close,
+[data-palette="mandarin"] .modal .modal-home,
+[data-palette="mandarin"] .modal .modal-share {
+  border-radius: 50%; border-color: var(--accent); background: var(--accent); color: var(--on-accent);
+}
+[data-palette="mandarin"] .topbar .icon-btn:hover,
+[data-palette="mandarin"] .modal .modal-close:hover,
+[data-palette="mandarin"] .modal .modal-home:hover,
+[data-palette="mandarin"] .modal .modal-share:hover {
+  background: var(--accent); color: var(--on-accent); filter: brightness(1.08);
+}
+/* The search box, open: a brass edge, the glass in brass. */
+[data-palette="mandarin"] .search-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+[data-palette="mandarin"] .search-ico { color: var(--accent); }
+/* The side menu's icons, and Settings' list of panes. */
+[data-palette="mandarin"] .menu-item svg,
+[data-palette="mandarin"] .settings-nav-ico { color: var(--accent); }
+/* Volume, on Now playing and above the mini player: the speaker, the number,
+   the 0 and 100, the − and + and the thumb, in the brass. */
+[data-palette="mandarin"] .vol-readout .vol-icon,
+[data-palette="mandarin"] .vol-readout .vol-value,
+[data-palette="mandarin"] .vol-scale { color: var(--accent); }
+[data-palette="mandarin"] .vol-step { color: var(--accent); border-color: var(--accent); }
+[data-palette="mandarin"] input.vol-range::-webkit-slider-thumb { background: var(--accent); }
+[data-palette="mandarin"] input.vol-range::-moz-range-thumb { background: var(--accent); }
+/* Glyphs on their own — the mini player's zone and volume, Now playing's
+   device and volume, previous and next — in the brass. A mode that is on
+   (shuffle, repeat, radio) in the lighter brass; one that is off stays dim. */
+[data-palette="mandarin"] .mt-btn,
+[data-palette="mandarin"] .np-mini-btn,
+[data-palette="mandarin"] .np-btn { color: var(--accent); }
+[data-palette="mandarin"] .np-mode-btn { color: var(--text-dim); }
+[data-palette="mandarin"] .np-mode-btn.is-on,
+[data-palette="mandarin"] .np-mini-btn.is-on { color: var(--accent-text); }
+[data-palette="mandarin"] .mt-btn:disabled,
+[data-palette="mandarin"] .np-btn:disabled,
+[data-palette="mandarin"] .np-mini-btn:disabled { color: var(--text-faint); }
+/* Play/pause, in the mini player and on Now playing: a brass disc, the glyph
+   in the charcoal. */
+[data-palette="mandarin"] .mt-playpause,
+[data-palette="mandarin"] .np-playpause {
+  background: var(--accent); color: var(--on-accent); border: 1px solid transparent;
+}
+@media (hover: hover) and (pointer: fine) {
+  [data-palette="mandarin"] .mt-playpause:hover,
+  [data-palette="mandarin"] .np-playpause:hover { background: var(--accent); color: var(--on-accent); filter: brightness(1.1); }
+}
+/* NOT ported: MusicD Server gives its mini player a body of its own,
+   rgba(31,34,38,.97). Here every floating piece of chrome — the pill, both
+   volume sheets, the top bar — is ONE material (v1.7.86), and the suite holds
+   them to it; the palette's own --bg-veil and its brass --glass-edge already
+   give the pill Mandarin's colours without breaking that. */
+/* The album view: its text in white rather than the cream, which reads washed
+   out over the cover's own colours; Play now and Queue alike in the brass. */
+[data-theme="dark"][data-palette="mandarin"] .modal { --text: #ffffff; }
+[data-theme="dark"][data-palette="mandarin"] .modal .track-list li,
+[data-theme="dark"][data-palette="mandarin"] .modal .t-title { color: #ffffff; }
+[data-palette="mandarin"] .modal-actions .action-btn {
+  background: var(--accent); color: var(--on-accent); border-color: transparent; font-weight: 700;
+}
+[data-palette="mandarin"] .modal-actions .action-btn:hover { background: var(--accent); filter: brightness(1.08); }
+/* "Play something unheard": a dashed brass sleeve. */
+[data-palette="mandarin"] .unheard-art {
+  background: var(--bg-elev); border: 1px dashed rgba(201,164,92,.6); box-shadow: none;
+}
+@media (hover: hover) and (pointer: fine) {
+  [data-palette="mandarin"] .home-unheard-tile:hover .unheard-art { background: var(--accent-soft); }
+  [data-palette="mandarin"] .home-unheard-tile:hover .unheard-glyph { color: var(--accent-text); }
+}
+/* Browse by genre: six earthy tones in turn, each with a soft disc in its
+   corner, the name in the cream. The card is its own stacking context and the
+   disc sits at -1 inside it: above the card's fill, BELOW the name — a
+   positioned pseudo-element otherwise paints over in-flow text, and a long
+   genre name would run under a half-opaque disc. */
+[data-palette="mandarin"] .home-genre-card {
+  position: relative; overflow: hidden; isolation: isolate;
+  background: #3b2a22; border-color: rgba(239,230,212,.10); color: #ecebe6;
+}
+[data-palette="mandarin"] .home-genre-card::after {
+  content: ""; position: absolute; right: -18px; top: -18px; width: 64px; height: 64px;
+  border-radius: 50%; background: #c97b5a; opacity: .5; pointer-events: none; z-index: -1;
+}
+[data-palette="mandarin"] .home-genre-card:nth-child(6n+2) { background: #26382f; }
+[data-palette="mandarin"] .home-genre-card:nth-child(6n+2)::after { background: #7fa38a; }
+[data-palette="mandarin"] .home-genre-card:nth-child(6n+3) { background: #3a3324; }
+[data-palette="mandarin"] .home-genre-card:nth-child(6n+3)::after { background: #c9a45c; }
+[data-palette="mandarin"] .home-genre-card:nth-child(6n+4) { background: #2a3140; }
+[data-palette="mandarin"] .home-genre-card:nth-child(6n+4)::after { background: #7d8fb3; }
+[data-palette="mandarin"] .home-genre-card:nth-child(6n+5) { background: #402a2c; }
+[data-palette="mandarin"] .home-genre-card:nth-child(6n+5)::after { background: #b87a86; }
+[data-palette="mandarin"] .home-genre-card:nth-child(6n) { background: #2f3a27; }
+[data-palette="mandarin"] .home-genre-card:nth-child(6n)::after { background: #9fae6b; }
+[data-palette="mandarin"] .home-genre-card:hover { border-color: rgba(201,164,92,.5); filter: brightness(1.08); }

@@ -31,13 +31,25 @@
 // replacing a vague truth.
 // ---------------------------------------------------------------------------
 
+//
+// v1.8.68 replaced the ten-minute watch and the five-minute recheck chain with
+// the LIBRARY WATCH: looks every 30 s while someone has the app open, every 3
+// minutes otherwise, every 20 s while a change settles, a diff-aware re-read
+// once two looks agree, and the dependants coalesced. The tests for the chain
+// it replaced went with it; the invariants they pinned that still apply —
+// nothing stacks, nothing is abandoned, nothing is hammered, the wording
+// quotes the clock it is really waiting on — are re-pinned against the watch.
+// ---------------------------------------------------------------------------
+
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { loadIndexFunctions, indexSource } = require("../lib/extract");
+const { loadIndexFunctions, indexSource, extractNestedFunction } = require("../lib/extract");
+
+// The functions libraryChangingAdvice reads its clocks from.
+const ADVICE_CLOCKS = ["librarySettleMs", "libraryWatchActiveMs"];
 
 test("Roon's own words are surfaced, not discarded", async (t) => {
-  const F = loadIndexFunctions(["roonBrowseError", "libraryChangingAdvice",
-                                 "libraryRecheckMs", "libraryCheckMs"], {});
+  const F = loadIndexFunctions(["roonBrowseError", "libraryChangingAdvice", ...ADVICE_CLOCKS], {});
 
   await t.test("THE one: a message response carries Roon's text to the user", () => {
     const e = F.roonBrowseError(
@@ -78,61 +90,88 @@ test("Roon's own words are surfaced, not discarded", async (t) => {
   });
 });
 
-test("the recheck closes the twelve-hour gap without hammering the Core", async (t) => {
-  const F = loadIndexFunctions(["libraryRecheckMs", "libraryRecheckMax"], {});
+test("the watch follows Roon closely without hammering it (v1.8.68)", async (t) => {
+  const F = loadIndexFunctions([
+    "libraryWatchActiveMs", "libraryWatchIdleMs", "librarySettleMs", "librarySettleSlowMs",
+    "librarySettleBackoffMs", "libraryClientWindowMs", "libraryVerifyMs", "libraryEvidenceGapMs",
+    "libraryDependantsQuietMs", "libraryDependantsMaxWaitMs"], {});
+  const CALLS_PER_LOOK = 3;   // browse + head + tail, count:1 each (libraryLook)
 
-  await t.test("minutes, not hours — and not seconds", () => {
-    // Each recheck costs a 2-3 call probe, and if it proceeds a further read
-    // with a five-second settle. Tight polling would put that on the Core for
-    // the whole duration of an import.
-    assert.ok(F.libraryRecheckMs() >= 60 * 1000,
-      "the recheck polls faster than once a minute — that is a probe storm " +
-      "against a Core that is already busy importing");
-    assert.ok(F.libraryRecheckMs() <= 15 * 60 * 1000,
-      "the recheck is slower than a quarter hour — the whole point is that a " +
-      "finished import is noticed in minutes rather than half a day");
+  await t.test("THE one: with the app open, a change is noticed in seconds, not minutes", () => {
+    assert.ok(F.libraryWatchActiveMs() <= 60 * 1000,
+      "the watch looks every " + F.libraryWatchActiveMs() / 1000 + " s while someone is using the " +
+      "app — albums added in Roon stay at the wrong offsets that long, and every one of them " +
+      "is an album that opens with 'your library changed' under it");
   });
 
-  await t.test("chained rechecks are capped", () => {
-    // A library that never settles would otherwise re-arm this forever.
-    assert.ok(F.libraryRecheckMax() >= 2 && F.libraryRecheckMax() <= 200);
+  await t.test("…and the Core is not hammered for it", () => {
+    // Watched: a few count:1 calls a minute, against the hundreds a Roon remote
+    // makes scrolling one screen of albums.
+    const perMin = CALLS_PER_LOOK * 60000 / F.libraryWatchActiveMs();
+    assert.ok(F.libraryWatchActiveMs() >= 15 * 1000 && perMin <= 12,
+      "a watched minute costs " + perMin + " Core calls — that is a probe storm");
+    // Following an import: tighter, but still bounded, and it slows down.
+    const settlePerMin = CALLS_PER_LOOK * 60000 / F.librarySettleMs();
+    assert.ok(F.librarySettleMs() >= 10 * 1000 && settlePerMin <= 18,
+      "following an import costs " + settlePerMin + " calls a minute against a Core that is " +
+      "already busy importing");
+    assert.ok(F.librarySettleMs() <= F.libraryWatchActiveMs(),
+      "a change being followed is looked at LESS often than an unchanged library");
+    assert.ok(F.librarySettleSlowMs() >= 60 * 1000 && F.librarySettleBackoffMs() <= 30 * 60 * 1000,
+      "an import that runs for hours is probed at the settling pace for ever");
   });
 
-  await t.test("the cap still covers a long import", () => {
-    // The two numbers are a budget, and a budget that expires during an
-    // ordinary large import would strand the snapshot exactly as before.
-    const coverMs = F.libraryRecheckMs() * F.libraryRecheckMax();
-    assert.ok(coverMs >= 60 * 60 * 1000,
-      "the recheck budget runs out after " + Math.round(coverMs / 60000) +
-      " minutes — a big streaming import outlasts that and the snapshot is " +
-      "stranded again");
+  await t.test("nobody looking: slower, but still minutes rather than hours", () => {
+    assert.ok(F.libraryWatchIdleMs() >= 60 * 1000 && F.libraryWatchIdleMs() <= 10 * 60 * 1000,
+      "the unwatched look runs every " + F.libraryWatchIdleMs() / 60000 + " min");
+  });
+
+  await t.test("'someone is looking' outlasts the polls that say so", () => {
+    // The app asks /api/live every 3 s; the wall display polls its zone every 2.
+    assert.ok(F.libraryClientWindowMs() >= 10 * 1000 && F.libraryClientWindowMs() <= 5 * 60 * 1000);
+  });
+
+  await t.test("the dependants wait for quiet, and not for ever", () => {
+    assert.ok(F.libraryDependantsQuietMs() >= F.librarySettleMs(),
+      "the badge/genre/tag pass runs before a settling import can have settled");
+    assert.ok(F.libraryDependantsMaxWaitMs() > F.libraryDependantsQuietMs() &&
+              F.libraryDependantsMaxWaitMs() <= 60 * 60 * 1000,
+      "an import that never stops never gets its badges");
+  });
+
+  await t.test("the whole-list re-read is occasional", () => {
+    assert.ok(F.libraryVerifyMs() >= 10 * 60 * 1000 && F.libraryVerifyMs() <= 2 * 60 * 60 * 1000);
+    assert.ok(F.libraryEvidenceGapMs() >= 30 * 1000,
+      "a burst of album opens on a stale snapshot would re-walk the library back to back");
   });
 });
 
-test("the import branch actually schedules the recheck", async (t) => {
-  // Not reachable from a unit test — checkAndMaybeRebuild is async I/O against
-  // a live Core — so this is asserted on the source, like the Labels gate.
+test("everything that sees the library move hands it to the watch", async (t) => {
+  // Not reachable from a unit test — these sites are async I/O against a live
+  // Core — so they are asserted on the source.
   const src = indexSource();
 
-  await t.test("declining to rebuild during an import arms a recheck", () => {
+  await t.test("declining to rebuild during an import asks the watch to follow it", () => {
     const branch = src.indexOf('return { status: "importing" };');
     assert.ok(branch > 0, "the importing branch moved");
     const window = src.slice(Math.max(0, branch - 900), branch);
-    assert.ok(window.includes("scheduleLibraryRecheck("),
-      "the importing branch returns without scheduling anything — the snapshot " +
-      "then stays stale until the next twelve-hour tick, which is the whole bug");
+    assert.ok(/requestLibraryLook\([^;]*librarySettleMs\(\)\)/.test(window),
+      "the importing branch returns without handing the import to the watch — the snapshot " +
+      "then stays stale until the next routine look, which is the v1.7.49 bug");
   });
 
-  await t.test("an album open that sees the library move arms one too", () => {
-    assert.ok(src.includes("if (libraryMoved) scheduleLibraryRecheck("),
-      "the free live-count signal at album-open time is not being acted on");
+  await t.test("an album open that sees the count move asks for a look now", () => {
+    assert.ok(/if \(libraryMoved\) requestLibraryLook\([^;]*, 0\);/.test(src),
+      "the free live-count signal at album-open time is not being acted on at once");
   });
 
-  await t.test("only one recheck is ever pending", () => {
-    const fn = src.slice(src.indexOf("function scheduleLibraryRecheck("));
-    assert.ok(/if \(_libraryRecheckTimer\) return;/.test(fn.slice(0, 400)),
-      "scheduleLibraryRecheck can stack timers — every album open during an " +
-      "import would arm another");
+  await t.test("the open app and the wall display both count as someone looking", () => {
+    for (const route of ['app.get("/api/live"', 'app.get("/api/zone-state"']) {
+      const at = src.indexOf(route);
+      assert.ok(at > 0, route + " moved");
+      assert.ok(src.slice(at, at + 600).includes("noteLibraryClient()"),
+        route + " does not tell the watch a client is there");
+    }
   });
 });
 
@@ -144,8 +183,7 @@ test("the wording claims only what can be proved", async (t) => {
     // is running now — that costs four Core calls and a five-second sleep to
     // establish, which is not available on a play path. Saying "Roon is
     // importing" here would be a confident guess replacing an honest one.
-    const F = loadIndexFunctions(["libraryChangingAdvice", "libraryRecheckMs",
-                                  "libraryCheckMs"], {});
+    const F = loadIndexFunctions(["libraryChangingAdvice", ...ADVICE_CLOCKS], {});
     for (const sure of [true, false]) {
       const say = F.libraryChangingAdvice(sure);
       assert.match(say, /library changed after this list was built/,
@@ -168,8 +206,7 @@ test("the wording claims only what can be proved", async (t) => {
   // v1.7.57: the symptom was all the user ever got.
   await t.test("every message on this path says why, what next, and the way out", () => {
     const F = loadIndexFunctions(
-      ["libraryChangingAdvice", "roonBrowseError", "noActionError",
-       "libraryRecheckMs", "libraryCheckMs"], {});
+      ["libraryChangingAdvice", "roonBrowseError", "noActionError", ...ADVICE_CLOCKS], {});
 
     const shouldAdvise = [
       ["no playback options at all", F.noActionError("play", [], "this album").message],
@@ -178,7 +215,7 @@ test("the wording claims only what can be proved", async (t) => {
     ];
     for (const [label, msg] of shouldAdvise) {
       assert.match(msg, /added or identified/,   label + ": does not say WHY");
-      assert.match(msg, /minutes/,               label + ": does not say what happens NEXT");
+      assert.match(msg, /every \d+ seconds/,     label + ": does not say what happens NEXT");
       assert.match(msg, /Rescan library/,
         label + ": leaves the user with no way out if the automatic check does not clear it");
     }
@@ -207,200 +244,674 @@ test("the wording claims only what can be proved", async (t) => {
 });
 
 // ---------------------------------------------------------------------------
-// v1.7.54: the recheck EPISODE, driven rather than grepped.
+// v1.8.68: the WATCH, driven rather than grepped.
 //
-// Everything above this line about scheduling is a substring search against
-// index.js. That was enough to prove the v1.7.49 call site exists; it proved
-// nothing about the loop it starts, which is the part that decides whether the
-// feature still works on day thirty.
-//
-// It did not. `_libraryRecheckCount` was refilled ONLY by a recheck returning
-// "fresh" — and once the count reached the cap, `scheduleLibraryRecheck`
-// returned before arming anything, so no recheck could fire, so no "fresh"
-// could ever arrive to refill it. The budget was global and was not refunded
-// on "rebuilt" either, so roughly two dozen ordinary imports were enough to
-// spend it. After that the fast path was dead for the lifetime of the
-// container, silently: the twelve-hour tick kept running, so the only visible
-// symptom was the original v1.7.49 complaint coming back.
-//
-// The fix is that an idle gap ends an episode. These tests drive the real
-// function with a fake clock and a fake setTimeout, so every branch of the
-// status dispatch is executed rather than matched as text.
+// The loop that replaced the recheck chain is executed here with a fake clock
+// and fake timers, so every branch of every step runs for real. The chain's own
+// lessons are kept as assertions: one look pending ever (an album open during
+// an import must not stack probes), an unanswered look asked again (not
+// abandoned until the next routine look), and the import followed but not
+// probed to death.
 // ---------------------------------------------------------------------------
-function recheckHarness(opts) {
+const settleMicrotasks = () => new Promise(r => setImmediate(r));
+
+function watchHarness(opts) {
   opts = opts || {};
-  const fired = [];          // pending timer callbacks, in order
-  const chained = [];        // results handed to kickPostRebuildChain
-  const state = { clock: opts.now || 1_000_000, next: "busy" };
+  const state = {
+    clock: 10_000_000, timers: [], looks: [], walks: [],
+    look: { changed: false, sig: "10|A|Z", total: 10 },
+    walkStatus: "fresh", lookThrows: false,
+    hold: null,          // a promise: the look stays in flight until it resolves
+  };
   const F = loadIndexFunctions(
-    ["scheduleLibraryRecheck", "libraryRecheckIdleMs"],
+    ["libraryWatchTick", "libraryWatchStep", "armLibraryWatch", "requestLibraryLook",
+     "libraryClientActive", "noteLibraryClient", "libraryWatchCadence",
+     "libraryWatchActiveMs", "libraryWatchIdleMs", "librarySettleMs", "librarySettleSlowMs",
+     "librarySettleBackoffMs", "libraryClientWindowMs", "libraryVerifyMs", "libraryEvidenceGapMs",
+     "walkedWholeList"],
     {
-      _libraryRecheckTimer: null,
-      _libraryRecheckCount: 0,
-      _libraryRecheckLast: 0,
-      libraryRecheckMs: () => 1,
-      // Small on purpose: the real 24 is range-checked above, and three makes
-      // exhaustion legible here.
-      libraryRecheckMax: () => 3,
+      core: opts.unpaired ? null : {},
+      albumIndex: { building: !!opts.building, count: 10, declared: 10 },
+      _rebuildInFlight: !!opts.rebuilding,
+      _watchTimer: null, _watchDueAt: 0, _watchPending: null, _watchLastLookAt: 0,
+      _watchStepping: false, _watchAgainMs: -1, _watchEpisodeAt: 0, _watchLastChangeAt: 0,
+      // A walk happened just now unless the test says otherwise, so the routine
+      // re-read stays out of tests that are not about it.
+      _watchLastWalkAt: opts.lastWalkAt !== undefined ? opts.lastWalkAt : 10_000_000,
+      _watchWalkWanted: "",
+      _libraryClientAt: opts.watched ? 10_000_000 : 0,
+      _statusSync: "", pushStatus: () => {},
+      DEBUG: false, console: { log() {}, error() {} },
       Date: { now: () => state.clock },
-      setTimeout: (fn) => { fired.push(fn); return { unref() {} }; },
-      console: { log() {}, error() {} },
-      checkAndMaybeRebuild: async () => ({ status: state.next }),
-      kickPostRebuildChain: (r) => chained.push(r && r.status),
+      setTimeout: (fn, ms) => {
+        const t = { fn, ms, at: state.clock + ms, unref() {} };
+        state.timers.push(t);
+        return t;
+      },
+      clearTimeout: (t) => { const i = state.timers.indexOf(t); if (i >= 0) state.timers.splice(i, 1); },
+      libraryLook: async (o) => {
+        state.looks.push(o);
+        if (state.hold) await state.hold;
+        if (state.lookThrows) throw new Error("probe blip");
+        return state.look;
+      },
+      libraryWalk: async (why) => { state.walks.push(why); return { status: state.walkStatus }; },
     });
-  return {
-    fired, chained, state, idleMs: F.libraryRecheckIdleMs(),
-    arm: (why) => F.scheduleLibraryRecheck(why || "test"),
+  const h = {
+    F, state,
+    pending: () => state.timers.length,
+    nextMs: () => (state.timers.length ? state.timers[0].ms : null),
+    // Run the pending look at its due time, and let everything it awaits settle.
+    step: async () => {
+      assert.equal(state.timers.length, 1, "expected exactly one pending look");
+      const t = state.timers.shift();
+      state.clock = Math.max(state.clock, t.at);
+      t.fn();
+      for (let i = 0; i < 5; i++) await settleMicrotasks();
+    },
     advance: (ms) => { state.clock += ms; },
-    // Run the oldest pending callback and let its .then settle.
-    fire: async (status) => {
-      state.next = status;
-      const fn = fired.shift();
-      assert.ok(fn, "expected a pending recheck to fire, there was none");
-      fn();
-      await new Promise(r => setImmediate(r));
+    // Keep the client "there", the way the app's 3-second /api/live poll does.
+    watched: () => F.noteLibraryClient(),
+  };
+  F.armLibraryWatch(1000);   // as startIndexMaintenance does
+  return h;
+}
+
+test("the watch keeps asking at the right pace, and acts only on a settled change",
+  async (t) => {
+    const W = loadIndexFunctions(["libraryWatchActiveMs", "libraryWatchIdleMs",
+      "librarySettleMs", "librarySettleSlowMs", "librarySettleBackoffMs"], {});
+
+    await t.test("unchanged: the watched pace with someone there, the idle pace without", async () => {
+      const on = watchHarness({ watched: true });
+      await on.step();
+      assert.equal(on.state.looks.length, 1);
+      assert.deepEqual(on.state.looks[0], { full: true, quiet: true },
+        "the watch's look is not the full, quiet one — no settle signature, or a trace line every 30 s");
+      assert.equal(on.nextMs(), W.libraryWatchActiveMs());
+      const off = watchHarness();
+      await off.step();
+      assert.equal(off.nextMs(), W.libraryWatchIdleMs());
+      assert.equal(off.state.walks.length + on.state.walks.length, 0, "an unchanged library was re-read");
+    });
+
+    await t.test("THE one: a change is re-read once two looks agree — not on first sight", async () => {
+      const h = watchHarness({ watched: true });
+      h.state.look = { changed: true, sig: "11|A|Z", total: 11 };
+      await h.step();
+      assert.equal(h.state.walks.length, 0,
+        "the library was re-walked the moment it moved — mid-import, that walk is stale before it finishes");
+      assert.equal(h.nextMs(), W.librarySettleMs(), "a seen change is not followed closely");
+      await h.step();
+      assert.deepEqual(h.state.walks, ["Roon's library settled"],
+        "two agreeing looks did not lead to a re-read — the snapshot stays stale after Roon settles");
+      assert.equal(h.nextMs(), W.libraryWatchActiveMs(), "after the re-read the watch did not return to its pace");
+    });
+
+    await t.test("THE other one: a look brought forward cannot settle a change by itself", async () => {
+      // Two looks a second apart agree about everything, mid-import included.
+      const h = watchHarness({ watched: true });
+      h.state.look = { changed: true, sig: "11|A|Z", total: 11 };
+      await h.step();
+      h.F.armLibraryWatch(1000);                      // something pulled the next look in
+      await h.step();
+      assert.equal(h.state.walks.length, 0,
+        "a change was called settled on two looks one second apart — the list was walked mid-import");
+      assert.equal(h.nextMs(), W.librarySettleMs() - 1000, "the wait was not finished, or was restarted");
+      await h.step();
+      assert.deepEqual(h.state.walks, ["Roon's library settled"],
+        "a picture held for the whole settle time was never acted on");
+    });
+
+    await t.test("the hold counts from the last CHANGE, not from the first", async () => {
+      const h = watchHarness({ watched: true });
+      h.state.look = { changed: true, sig: "11|A|Z", total: 11 };
+      await h.step();
+      h.state.look = { changed: true, sig: "12|A|Z", total: 12 };
+      await h.step();                                 // still moving
+      h.F.armLibraryWatch(1000);
+      await h.step();                                 // the same picture as one second ago
+      assert.equal(h.state.walks.length, 0,
+        "a picture one second old was called settled because the change BEGAN long enough ago");
+    });
+
+    await t.test("album opens during a settling change add no looks", async () => {
+      const h = watchHarness({ watched: true });
+      h.state.look = { changed: true, sig: "11|A|Z", total: 11 };
+      await h.step();
+      for (let i = 0; i < 3; i++) h.F.requestLibraryLook("album open saw 11 albums", 0);
+      assert.equal(h.pending(), 1);
+      assert.equal(h.nextMs(), W.librarySettleMs(),
+        "each album opened during an import pulled a look forward — a Core round trip per open, " +
+        "telling the watch nothing it was not about to learn");
+    });
+
+    await t.test("a library still moving is followed, never re-read", async () => {
+      const h = watchHarness({ watched: true });
+      for (const n of [11, 12, 13, 14]) {
+        h.state.look = { changed: true, sig: n + "|A|Z", total: n };
+        await h.step();
+        assert.equal(h.nextMs(), W.librarySettleMs());
+      }
+      assert.equal(h.state.walks.length, 0, "a still-moving library was re-walked");
+    });
+
+    await t.test("an import that runs on is followed less often, but never dropped", async () => {
+      const h = watchHarness({ watched: true });
+      let n = 11;
+      const start = h.state.clock;
+      while (h.state.clock - start <= W.librarySettleBackoffMs()) {
+        h.state.look = { changed: true, sig: (n++) + "|A|Z", total: n };
+        await h.step();
+        h.watched();
+      }
+      assert.equal(h.nextMs(), W.librarySettleSlowMs(),
+        "after " + W.librarySettleBackoffMs() / 60000 + " min of change the watch still probes every " +
+        W.librarySettleMs() / 1000 + " s");
+      assert.equal(h.pending(), 1, "a long import stopped being followed");
+      assert.equal(h.state.walks.length, 0, "a library that never held still was walked");
+    });
+
+    await t.test("THE backoff outlives the walks an import is followed with", async () => {
+      // An import in batches: each one settles, is walked, and the next one
+      // arrives. Each walk used to start the next batch over at the fast pace,
+      // so the backoff never engaged: a full walk — and every open screen
+      // re-reading — about once a minute for as long as the import ran.
+      const h = watchHarness({ watched: true });
+      let n = 11;
+      const start = h.state.clock;
+      while (h.state.clock - start < W.librarySettleBackoffMs()) {
+        h.state.look = { changed: true, sig: (n++) + "|A|Z", total: n };
+        await h.step();                    // a new batch: followed
+        await h.step();                    // it held: settled, walked
+        h.watched();
+      }
+      assert.ok(h.state.walks.length >= 5, "precondition: the import was walked as it went");
+      h.state.look = { changed: true, sig: (n++) + "|A|Z", total: n };
+      await h.step();
+      assert.equal(h.nextMs(), W.librarySettleSlowMs(),
+        "ten minutes into an import, a new batch is still followed at the fast pace — the walks reset it");
+      h.F.armLibraryWatch(W.librarySettleMs());
+      await h.step();
+      const walks = h.state.walks.length;
+      assert.equal(h.nextMs(), W.librarySettleSlowMs() - W.librarySettleMs(),
+        "the slow pace sets how often the watch LOOKS but not how long a picture must hold — a long " +
+        "import is walked as often as ever");
+      await h.step();
+      assert.equal(h.state.walks.length, walks + 1);
+    });
+
+    await t.test("an import that has been quiet for the backoff starts over at the fast pace", async () => {
+      const h = watchHarness({ watched: true });
+      let n = 11;
+      const start = h.state.clock;
+      while (h.state.clock - start <= W.librarySettleBackoffMs()) {
+        h.state.look = { changed: true, sig: (n++) + "|A|Z", total: n };
+        await h.step();
+        h.watched();
+      }
+      assert.equal(h.nextMs(), W.librarySettleSlowMs(), "precondition: the backoff engaged");
+      await h.step();                      // the same picture: held, walked
+      h.state.look = { changed: false, sig: (n - 1) + "|A|Z", total: n - 1 };
+      h.advance(W.librarySettleBackoffMs());
+      h.watched();
+      await h.step();                      // quiet for the whole backoff
+      h.state.look = { changed: true, sig: (n++) + "|A|Z", total: n };
+      h.watched();
+      await h.step();
+      assert.equal(h.nextMs(), W.librarySettleMs(),
+        "an album added hours after an import is followed at the slow pace the import earned");
+    });
+
+    await t.test("a look that fails is asked again soon, not abandoned", async () => {
+      const h = watchHarness({ watched: true });
+      h.state.lookThrows = true;
+      await h.step();
+      assert.equal(h.pending(), 1, "a failed look ended the watch");
+      assert.equal(h.nextMs(), W.librarySettleMs());
+    });
+
+    await t.test("a failed re-read is retried by the next looks", async () => {
+      // libraryWalk reports "error" and leaves the old snapshot — so the next
+      // look still sees the change, waits for agreement, and walks again.
+      const h = watchHarness({ watched: true });
+      h.state.look = { changed: true, sig: "11|A|Z", total: 11 };
+      h.state.walkStatus = "error";
+      await h.step(); await h.step();
+      assert.equal(h.state.walks.length, 1);
+      await h.step(); await h.step();
+      assert.equal(h.state.walks.length, 2, "a re-read that failed was never tried again");
+    });
+
+    await t.test("it stands down while somebody else owns the library", async () => {
+      for (const [label, opts] of [["a rebuild is in flight", { rebuilding: true }],
+                                   ["the first build is running", { building: true }]]) {
+        const h = watchHarness(Object.assign({ watched: true }, opts));
+        await h.step();
+        assert.equal(h.state.looks.length, 0, "the watch probed while " + label);
+        assert.equal(h.nextMs(), W.librarySettleMs(), "the watch gave up while " + label);
+      }
+    });
+
+    await t.test("unpaired, nothing runs and nothing re-arms", async () => {
+      const h = watchHarness({ unpaired: true });
+      await h.step();
+      assert.equal(h.state.looks.length, 0);
+      assert.equal(h.pending(), 0, "the watch re-armed itself without a Core");
+    });
+  });
+
+test("only one look is ever pending, and asking can only bring it forward", async (t) => {
+  await t.test("THE one: a look asked for while one is RUNNING waits for it", async () => {
+    // The tick clears its timer before it awaits the look, so for the length of
+    // the look nothing was pending — and a request then armed a second step
+    // that ran alongside the first, both setting the same state.
+    const h = watchHarness({ watched: true });
+    let release;
+    h.state.hold = new Promise(r => { release = r; });
+    const first = h.state.timers.shift();
+    h.state.clock = first.at;
+    first.fn();
+    await settleMicrotasks();
+    h.F.requestLibraryLook("album open saw 11 albums", 0);
+    h.F.requestLibraryLook("evidence", 0, true);
+    assert.equal(h.pending(), 0, "a second look was armed while the first was still running");
+    release();
+    for (let i = 0; i < 5; i++) await settleMicrotasks();
+    assert.equal(h.state.looks.length, 1, "two looks ran at once");
+    assert.equal(h.pending(), 1);
+    assert.equal(h.nextMs(), 0, "the look asked for meanwhile was dropped instead of taken next");
+  });
+
+  await t.test("…but not ahead of a change that look found settling", async () => {
+    const W = loadIndexFunctions(["librarySettleMs"], {});
+    const h = watchHarness({ watched: true });
+    h.state.look = { changed: true, sig: "11|A|Z", total: 11 };
+    let release;
+    h.state.hold = new Promise(r => { release = r; });
+    const first = h.state.timers.shift();
+    h.state.clock = first.at;
+    first.fn();
+    await settleMicrotasks();
+    h.F.requestLibraryLook("album open saw 11 albums", 0);
+    release();
+    for (let i = 0; i < 5; i++) await settleMicrotasks();
+    assert.equal(h.nextMs(), W.librarySettleMs());
+  });
+
+  await t.test("requests never stack", async () => {
+    const h = watchHarness({ watched: true });
+    h.F.requestLibraryLook("album open", 0);
+    h.F.requestLibraryLook("album open", 0);
+    h.F.requestLibraryLook("album open", 2000);
+    assert.equal(h.pending(), 1, "every album open during an import armed another probe");
+    assert.equal(h.nextMs(), 0);
+  });
+
+  await t.test("a later request never pushes an earlier look back", async () => {
+    const h = watchHarness();          // pending at 1000 ms
+    h.F.requestLibraryLook("re-pair", 5000);
+    assert.equal(h.nextMs(), 1000, "a request delayed the look that was already due");
+  });
+
+  await t.test("a client arriving after a quiet spell is looked at at once — once", async () => {
+    const h = watchHarness();
+    h.F.armLibraryWatch(180000);
+    h.F.noteLibraryClient();
+    assert.ok(h.nextMs() <= 1000, "opening the app after a quiet spell waits for the idle look");
+    h.F.armLibraryWatch(30000);
+    h.F.noteLibraryClient();          // the next poll, 3 s later: not quiet any more
+    assert.equal(h.nextMs(), 30000, "every poll from an open app pulled the look forward");
+  });
+});
+
+test("what a look cannot see is re-read on evidence, and routinely", async (t) => {
+  const W = loadIndexFunctions(["libraryVerifyMs", "libraryEvidenceGapMs", "libraryWatchActiveMs"], {});
+
+  await t.test("THE one: a drifted offset gets a whole-list re-read even when the look says unchanged", async () => {
+    const h = watchHarness({ watched: true, lastWalkAt: 0 });
+    h.F.requestLibraryLook("album open found another record at offset 7", 0, true);
+    await h.step();
+    assert.equal(h.state.walks.length, 1,
+      "a mid-list re-identification was reported and the list was not re-read — the head/tail " +
+      "look can never see it");
+    assert.equal(h.state.looks.length, 0);
+  });
+
+  await t.test("evidence cannot re-walk the library back to back", async () => {
+    const h = watchHarness({ watched: true });        // walked just now
+    h.F.requestLibraryLook("drift", 0, true);
+    await h.step();
+    assert.equal(h.state.walks.length, 0, "a second walk ran inside the evidence gap");
+    h.advance(W.libraryEvidenceGapMs());
+    h.watched();
+    await h.step();
+    assert.equal(h.state.walks.length, 1, "the evidence was dropped instead of waiting its turn");
+  });
+
+  await t.test("an evidence re-read that fails is kept and tried again, not dropped", async () => {
+    // The settle path retries by itself — the next look still sees the count.
+    // This one cannot: a mid-list change is invisible to a look, so a failed
+    // walk that forgot its evidence would leave the change in the list until
+    // somebody happened to open that album again.
+    const h = watchHarness({ watched: true, lastWalkAt: 0 });
+    h.state.walkStatus = "error";
+    h.F.requestLibraryLook("album open found another record at offset 7", 0, true);
+    await h.step();
+    assert.equal(h.state.walks.length, 1);
+    h.state.walkStatus = "fresh";
+    await h.step();
+    assert.deepEqual(h.state.walks, ["album open found another record at offset 7",
+                                     "album open found another record at offset 7"],
+      "the re-read failed and its evidence was forgotten — nothing else will ever ask again");
+  });
+
+  await t.test("evidence waits for a change that is already settling — that walk covers it", async () => {
+    // lastWalkAt 0: the evidence gap is long past, so only the settling can
+    // be what holds the evidence back.
+    const h = watchHarness({ watched: true, lastWalkAt: 0 });
+    h.state.look = { changed: true, sig: "11|A|Z", total: 11 };
+    await h.step();                                   // a change seen: settling
+    h.F.requestLibraryLook("album open found another record at offset 7", 0, true);
+    await h.step();                                   // agrees: the settle walk
+    assert.deepEqual(h.state.walks, ["Roon's library settled"],
+      "evidence walked the list while Roon's count was still settling — a walk mid-import");
+    h.state.look = { changed: false, sig: "11|A|Z", total: 11 };
+    // A minute on, nobody watching (so no routine re-read): only evidence
+    // that outlived the walk could walk again.
+    h.advance(W.libraryEvidenceGapMs());
+    await h.step();
+    assert.equal(h.state.walks.length, 1,
+      "the settle walk read the whole list and the evidence asked for it again anyway");
+  });
+
+  await t.test("while someone is looking, the list is re-read every libraryVerifyMs()", async () => {
+    const h = watchHarness({ watched: true, lastWalkAt: 10_000_000 - W.libraryVerifyMs() });
+    await h.step();
+    assert.deepEqual(h.state.walks, ["routine check of the whole list"]);
+    const idle = watchHarness({ lastWalkAt: 10_000_000 - W.libraryVerifyMs() });
+    await idle.step();
+    assert.equal(idle.state.walks.length, 0, "nobody is looking, and the library was walked anyway");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.8.68: an album open is the only thing that can see a mid-list change —
+// the look compares the count and both ends, and an album re-identified in the
+// middle moves neither. But a drifted offset is evidence about the SNAPSHOT
+// only when the snapshot cannot place the album either; a tile left over from
+// before the last re-read drifts too, and is not. Driven through the real
+// loadAlbumSession up to the point it has decided, then stopped.
+// ---------------------------------------------------------------------------
+function openHarness(o) {
+  const asked = [];
+  const STOP = new Error("stop: past the drift handling");
+  const X = { title: "Blue Lines", subtitle: "Massive Attack" };
+  const OTHER = { title: "Bossanova", subtitle: "Pixies" };
+  const F = loadIndexFunctions(["loadAlbumSession", "albumIdentityMatches", "normalize"], {
+    navigateToAlbumList: async () => ({ hierarchy: "albums", total: o.total !== undefined ? o.total : 100 }),
+    albumIndex: { count: 100, declared: 100 },
+    // Roon has X at o.roonHas, and something else at every other offset.
+    load: async (q) => ({ items: [q.offset === o.roonHas ? X : OTHER] }),
+    // Where the SNAPSHOT puts X (-1: nowhere).
+    relocateAlbumOffset: () => o.snapshotHas,
+    findAlbumViaSearch: async () => (o.searchFinds ? { item: X, hierarchy: "browse" } : null),
+    requestLibraryLook: (why, ms, walk) => asked.push({ why, ms, walk: !!walk }),
+    browse: async () => { throw STOP; },
+    roonBrowseError: () => STOP,
+    DEBUG: false, console: { log() {}, warn() {}, error() {} },
+  });
+  return {
+    asked,
+    walks: () => asked.filter(a => a.walk),
+    open: async (offset) => {
+      try { await F.loadAlbumSession("sk", offset, null, X, "z1"); }
+      catch (e) { if (e !== STOP && !e.stale) throw e; }
     },
   };
 }
 
-test("the recheck episode keeps asking, and stops asking, and starts again",
-  async (t) => {
-    await t.test("only one recheck is pending no matter how many arm it", async () => {
-      // Every album open during an import calls this.
-      const h = recheckHarness();
-      h.arm(); h.arm(); h.arm();
-      assert.equal(h.fired.length, 1);
-    });
-
-    await t.test("a check that could not answer is asked again", async () => {
-      // "busy" means something else was already rebuilding; "error" means the
-      // probe failed. Neither is an answer, and abandoning the question is the
-      // v1.7.49 bug wearing a different hat.
-      const h = recheckHarness();
-      h.arm();
-      await h.fire("busy");
-      assert.equal(h.fired.length, 1, "a busy result ended the episode");
-      await h.fire("error");
-      assert.equal(h.fired.length, 1, "an error result ended the episode");
-    });
-
-    await t.test("the cap actually engages", async () => {
-      const h = recheckHarness();
-      h.arm();
-      await h.fire("busy");    // 2nd armed
-      await h.fire("busy");    // 3rd armed — budget of 3 now spent
-      await h.fire("busy");
-      assert.equal(h.fired.length, 0,
-        "a library that never settles re-armed past the cap — that is a probe " +
-        "every five minutes forever against a Core that is already struggling");
-    });
-
-    await t.test("a rebuild does NOT refill the budget", async () => {
-      // Refilling on "rebuilt" is how the cap was made unreachable once before.
-      const h = recheckHarness();
-      h.arm();                 // 1 of 3
-      await h.fire("rebuilt"); // episode ends here, but the unit stays spent
-      h.arm();                 // 2 of 3
-      await h.fire("busy");    // 3 of 3 — the budget is now gone
-      await h.fire("busy");
-      assert.equal(h.fired.length, 0,
-        "a rebuild refunded a budget unit — with that refund the cap can never " +
-        "engage, because any library whose count keeps moving rebuilds each " +
-        "time and re-walks itself every five minutes forever");
-    });
-
-    await t.test("a settled library refills it", async () => {
-      const h = recheckHarness();
-      h.arm();
-      await h.fire("fresh");
-      // A full budget again: three more arm.
-      h.arm();
-      await h.fire("busy");
-      await h.fire("busy");
-      assert.equal(h.fired.length, 1, "'fresh' did not end the episode cleanly");
-    });
-
-    await t.test("THE one: an exhausted budget recovers on its own", async () => {
-      // The permanent-death bug. Spend the budget, then come back after an
-      // idle gap the way a real second import does, hours later.
-      const h = recheckHarness();
-      h.arm();
-      await h.fire("busy");
-      await h.fire("busy");
-      await h.fire("busy");
-      assert.equal(h.fired.length, 0, "precondition: the budget should be spent");
-
-      h.advance(h.idleMs - 1);
-      h.arm("still inside the episode");
-      assert.equal(h.fired.length, 0,
-        "the budget refilled while the episode was still running — the cap can " +
-        "never engage if a gap shorter than the chain itself resets it");
-
-      h.advance(2);
-      h.arm("a new import, hours later");
-      assert.equal(h.fired.length, 1,
-        "the recheck budget never refilled. Once spent, scheduleLibraryRecheck " +
-        "returns before arming anything, so no recheck can fire, so no 'fresh' " +
-        "can arrive to refill it — the automatic rescan is dead for the life of " +
-        "the container and every later import waits for the twelve-hour tick");
-    });
-
-    await t.test("the idle gap is longer than the chain it must not interrupt", () => {
-      const F = loadIndexFunctions(["libraryRecheckMs", "libraryRecheckIdleMs"], {});
-      assert.ok(F.libraryRecheckIdleMs() > F.libraryRecheckMs() * 2,
-        "an episode re-arms every " + Math.round(F.libraryRecheckMs() / 60000) +
-        " min but is considered over after " + Math.round(F.libraryRecheckIdleMs() / 60000) +
-        " min of idle — a running episode would refill its own budget");
-    });
-
-    await t.test("a background rebuild drags its dependants with it", async () => {
-      // Source badges, the Genre facet and the decade/quality data all sit on
-      // top of the snapshot. Rebuilding the snapshot alone gives the user the
-      // new albums wearing the old metadata, which reads as nothing happening.
-      const h = recheckHarness();
-      h.arm();
-      await h.fire("rebuilt");
-      assert.deepEqual(h.chained, ["rebuilt"],
-        "the automatic rebuild stopped at the album snapshot — the streaming " +
-        "favourites, genres and file tags were left stale until somebody " +
-        "pressed Rescan by hand");
-    });
-
-    await t.test("and it kicks it WITHOUT force", async () => {
-      // `force` means "a human insisted" in both scans the chain runs: it buys
-      // past the libraryIsImporting() gate and turns the genre walk into a full
-      // sweep. Carried onto the automatic path it would skip the import check
-      // at the one moment Roon is most likely to still be identifying.
-      const calls = [];
-      const F = loadIndexFunctions(["kickPostRebuildChain"], {
-        rescanChain: async (r, reason, force) => { calls.push({ reason, force }); },
-        console: { error() {} },
-      });
-      F.kickPostRebuildChain({ status: "rebuilt" });
-      assert.equal(calls.length, 1);
-      assert.equal(calls[0].force, false,
-        "the automatic post-import chain forces the genre sweep and the label " +
-        "scan — both then skip the importing check and the genre walk re-walks " +
-        "the whole library every time an import settles");
-      assert.equal(calls[0].reason, "auto rescan",
-        "the automatic run is indistinguishable from a button press in the log");
-
-      calls.length = 0;
-      for (const st of ["fresh", "busy", "error", "importing", undefined]) {
-        F.kickPostRebuildChain(st ? { status: st } : null);
-      }
-      assert.equal(calls.length, 0, "a non-rebuild kicked a full rescan chain");
-    });
-
-    await t.test("nothing but a rebuild kicks that chain", async () => {
-      for (const st of ["fresh", "busy", "error", "importing"]) {
-        const h = recheckHarness();
-        h.arm();
-        await h.fire(st);
-        assert.deepEqual(h.chained, [], st + " kicked a full rescan chain");
-      }
-    });
+test("only an album the SNAPSHOT cannot place asks for the list to be re-read", async (t) => {
+  await t.test("THE one: a mid-list change — the snapshot and Roon disagree, count unmoved", async () => {
+    // The tile and the snapshot both say offset 40; Roon has moved X to 41.
+    const h = openHarness({ roonHas: 41, snapshotHas: 40, searchFinds: true });
+    await h.open(40);
+    assert.equal(h.walks().length, 1,
+      "a change only an album open can see was not reported — no look will ever find it");
   });
+
+  await t.test("a stale TILE is not evidence: the snapshot already knows where the album went", async () => {
+    // The tile is from before the last re-read (offset 40); the snapshot has
+    // X at 41, and so does Roon. The snapshot is right — nothing to re-read.
+    const h = openHarness({ roonHas: 41, snapshotHas: 41, searchFinds: true });
+    await h.open(40);
+    assert.deepEqual(h.walks(), [],
+      "every stale tile after a library change asked for a full re-read of a snapshot that was " +
+      "already current");
+  });
+
+  await t.test("not while the count is moving: the look follows that, and walks once it settles", async () => {
+    const h = openHarness({ roonHas: 41, snapshotHas: 40, searchFinds: true, total: 103 });
+    await h.open(40);
+    assert.deepEqual(h.walks(), [], "an album open walked the list in the middle of an import");
+    assert.equal(h.asked.length, 1, "the moved count was not handed to the watch at all");
+    assert.equal(h.asked[0].ms, 0);
+  });
+
+  await t.test("an album the snapshot has but Roon no longer finds is evidence too", async () => {
+    const h = openHarness({ roonHas: -1, snapshotHas: 40, searchFinds: false });
+    await h.open(40);
+    assert.equal(h.walks().length, 1, "the snapshot holds a removed album and nothing asked to re-read it");
+  });
+
+  await t.test("an album gone from Roon AND from the snapshot is not — they agree", async () => {
+    const h = openHarness({ roonHas: -1, snapshotHas: -1, searchFinds: false });
+    await h.open(40);
+    assert.deepEqual(h.walks(), []);
+  });
+
+  await t.test("an album open where nothing moved asks for nothing", async () => {
+    const h = openHarness({ roonHas: 40, snapshotHas: 40, searchFinds: true });
+    await h.open(40);
+    assert.deepEqual(h.asked, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.8.68: the re-read is diff-aware. Every walk the watch makes would
+// otherwise move builtAt — and with it every live revision, so every open
+// screen re-reads itself, and every per-snapshot cache is thrown away — for a
+// library nobody touched.
+// ---------------------------------------------------------------------------
+function buildHarness(live, current, chainOpts) {
+  const calls = { chain: 0, years: 0, ambiguous: 0, firstSeen: 0, credits: 0 };
+  const reads = [];
+  const albumIndex = Object.assign(
+    { albums: [], count: 0, declared: 0, builtAt: 1000, progress: 0, building: null }, current);
+  const F = loadIndexFunctions(["buildAlbumIndex", "sameAlbumList"], {
+    albumIndex, SEARCH_PAGE: 2, DEBUG: false, console: { log() {}, error() {} },
+    noteLibraryRead: (whole) => reads.push(whole),
+    withBrowseSession: async (fn) => fn("k"),
+    browse: async () => ({}),
+    // `live.declared` lets a test have Roon declare more albums than it sends.
+    load: async (o) => ({ list: { count: live.declared || live.length },
+                          items: live.slice(o.offset, o.offset + o.count) }),
+    indexRecord: (it, off) => ({ offset: off, title: it.title, subtitle: it.subtitle,
+                                 image_key: it.image_key || null }),
+    rebuildAmbiguousAlbumKeys: () => { calls.ambiguous++; },
+    recordFirstSeenAlbums: () => { calls.firstSeen++; },
+    rebuildCreditIdentities: () => { calls.credits++; },
+    harvestAlbumYears: () => { calls.years++; },
+    syncChain: async () => { calls.chain++; },
+    Date: { now: () => 5000 },
+  });
+  return { F, albumIndex, calls, reads };
+}
+const rec = (i, t, a, k) => ({ offset: i, title: t, subtitle: a, image_key: k || null });
+
+test("a re-read that finds nothing new publishes nothing", async (t) => {
+  const LIVE = [{ title: "A", subtitle: "x" }, { title: "B", subtitle: "y" }, { title: "C", subtitle: "z" }];
+  const SNAP = { albums: [rec(0, "A", "x"), rec(1, "B", "y"), rec(2, "C", "z")], count: 3, declared: 3 };
+
+  await t.test("THE one: the same list leaves builtAt, and everything downstream, alone", async () => {
+    const h = buildHarness(LIVE, SNAP);
+    await h.F.buildAlbumIndex({ diff: true, chain: false });
+    assert.equal(h.albumIndex.builtAt, 1000,
+      "an unchanged library was republished — every open screen re-reads itself for nothing");
+    assert.deepEqual(h.calls, { chain: 0, years: 0, ambiguous: 0, firstSeen: 0, credits: 0 });
+  });
+
+  await t.test("a new album, a renamed one, a moved row, a new cover: all published", async () => {
+    const variants = {
+      added:   LIVE.concat([{ title: "D", subtitle: "w" }]),
+      renamed: [LIVE[0], { title: "B (Deluxe)", subtitle: "y" }, LIVE[2]],
+      moved:   [LIVE[1], LIVE[0], LIVE[2]],
+      cover:   [LIVE[0], Object.assign({ image_key: "new" }, LIVE[1]), LIVE[2]],
+    };
+    for (const [what, live] of Object.entries(variants)) {
+      const h = buildHarness(live, SNAP);
+      await h.F.buildAlbumIndex({ diff: true, chain: false });
+      assert.equal(h.albumIndex.builtAt, 5000, "a " + what + " album was not published");
+      assert.equal(h.calls.chain, 0, "chain:false still kicked the sync chain (" + what + ")");
+      assert.equal(h.calls.years, 1, "the release years were not joined onto the new snapshot");
+    }
+  });
+
+  await t.test("without diff — the manual Rescan — it always publishes and chains", async () => {
+    const h = buildHarness(LIVE, SNAP);
+    await h.F.buildAlbumIndex();
+    assert.equal(h.albumIndex.builtAt, 5000);
+    assert.equal(h.calls.chain, 1, "the manual path lost its sync chain");
+  });
+
+  await t.test("THE one: a short walk never replaces a complete snapshot on the watch's say-so", async () => {
+    // Roon declares four albums and sends two pages' worth less: a holed
+    // snapshot cannot see a same-count change, so publishing it would leave
+    // the library blind until somebody pressed Rescan.
+    const short = LIVE.slice(0, 2);
+    short.declared = 4;
+    const h = buildHarness(short, SNAP);
+    await assert.rejects(h.F.buildAlbumIndex({ diff: true, chain: false }), /short read/);
+    assert.equal(h.albumIndex.builtAt, 1000, "the short walk was published");
+    assert.equal(h.albumIndex.count, 3, "the complete snapshot was replaced by a holed one");
+    assert.deepEqual(h.reads, [], "a walk that failed was counted as a read of the library");
+  });
+
+  await t.test("a short walk still beats a snapshot that was holed already, and the Rescan's", async () => {
+    const short = LIVE.slice(0, 2);
+    short.declared = 4;
+    const holed = buildHarness(short, { albums: [rec(0, "A", "x")], count: 1, declared: 3 });
+    await holed.F.buildAlbumIndex({ diff: true, chain: false });
+    assert.equal(holed.albumIndex.count, 2);
+    const manual = buildHarness(short, SNAP);
+    await manual.F.buildAlbumIndex();
+    assert.equal(manual.albumIndex.count, 2, "a person pressed Rescan and got nothing");
+  });
+
+  await t.test("every walk that worked counts as one — the first build included", async () => {
+    // The routine re-read runs libraryVerifyMs() after the last whole-list
+    // walk. The first build is one; not counting it walked the library twice
+    // on every restart.
+    const same = buildHarness(LIVE, SNAP);
+    await same.F.buildAlbumIndex({ diff: true, chain: false });
+    const first = buildHarness(LIVE, { albums: [], count: 0, declared: 0 });
+    await first.F.buildAlbumIndex();
+    assert.deepEqual([same.reads, first.reads], [[true], [true]]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v1.8.68: the dependants run ONCE per burst of change.
+// ---------------------------------------------------------------------------
+function dependantsHarness(opts) {
+  opts = opts || {};
+  // Not 0: the code reads a zero timestamp as "never", so a clock starting
+  // there gives every first change a deadline of "unset" and hides whatever
+  // depends on it having passed.
+  const state = { clock: 1_000_000, timers: [], runs: [] };
+  const F = loadIndexFunctions(
+    ["scheduleLibraryDependants", "armLibraryDependants", "cancelLibraryDependants",
+     "libraryDependantsQuietMs", "libraryDependantsMaxWaitMs"], {
+      _dependantsTimer: null, _dependantsFirstAt: 0, core: opts.unpaired ? null : {},
+      Date: { now: () => state.clock },
+      setTimeout: (fn, ms) => { const t = { fn, ms, at: state.clock + ms, unref() {} }; state.timers.push(t); return t; },
+      clearTimeout: (t) => { const i = state.timers.indexOf(t); if (i >= 0) state.timers.splice(i, 1); },
+      runLibraryDependants: async (why) => { state.runs.push(why); },
+      console: { error() {} },
+    });
+  return {
+    F, state,
+    fireDue: () => {
+      const due = state.timers.filter(t => t.at <= state.clock);
+      for (const t of due) { state.timers.splice(state.timers.indexOf(t), 1); t.fn(); }
+    },
+  };
+}
+
+test("the jobs built on the snapshot follow a change once, after it goes quiet", async (t) => {
+  const D = loadIndexFunctions(["libraryDependantsQuietMs", "libraryDependantsMaxWaitMs"], {});
+
+  await t.test("THE one: a burst of re-reads costs one pass", () => {
+    const h = dependantsHarness();
+    for (let i = 0; i < 5; i++) { h.F.scheduleLibraryDependants("settled"); h.state.clock += 30000; h.fireDue(); }
+    assert.equal(h.state.runs.length, 0, "the badges/genres/file-tags pass ran in the middle of a burst");
+    assert.equal(h.state.timers.length, 1, "the pass was armed more than once");
+    h.state.clock += D.libraryDependantsQuietMs();
+    h.fireDue();
+    assert.deepEqual(h.state.runs, ["auto rescan"],
+      "five re-reads cost " + h.state.runs.length + " passes — a /music walk each");
+  });
+
+  await t.test("a library that never goes quiet still gets its pass", () => {
+    const h = dependantsHarness();
+    const stepMs = Math.floor(D.libraryDependantsQuietMs() / 2);
+    for (let t0 = 0; t0 <= D.libraryDependantsMaxWaitMs(); t0 += stepMs) {
+      h.F.scheduleLibraryDependants("settled");
+      h.state.clock += stepMs;
+      h.fireDue();
+    }
+    assert.ok(h.state.runs.length >= 1,
+      "an import that keeps re-settling postponed the pass for ever — new albums never get badges");
+  });
+
+  await t.test("with no Core it waits for one rather than running", () => {
+    const h = dependantsHarness({ unpaired: true });
+    h.F.scheduleLibraryDependants("settled");
+    h.state.clock += D.libraryDependantsQuietMs();
+    h.fireDue();
+    assert.equal(h.state.runs.length, 0);
+    assert.equal(h.state.timers.length, 1, "owed work was dropped on an unpair");
+  });
+
+  await t.test("THE one: a Core gone past the deadline is waited for, not spun on", async () => {
+    // The deadline is fixed at the first change. Re-arming on it once it had
+    // passed was a 0 ms timer, firing about every millisecond until a re-pair.
+    const h = dependantsHarness({ unpaired: true });
+    h.F.scheduleLibraryDependants("settled");
+    h.state.clock += D.libraryDependantsMaxWaitMs() + 60000;
+    for (let i = 0; i < 5; i++) h.fireDue();
+    assert.equal(h.state.timers.length, 1);
+    assert.ok(h.state.timers[0].ms >= D.libraryDependantsQuietMs(),
+      "with the Core gone past the deadline the pass re-armed every " + h.state.timers[0].ms + " ms");
+  });
+
+  await t.test("a manual Rescan that rebuilt takes the owed pass with it", () => {
+    const h = dependantsHarness();
+    h.F.scheduleLibraryDependants("settled");
+    h.F.cancelLibraryDependants();
+    h.state.clock += D.libraryDependantsMaxWaitMs();
+    h.fireDue();
+    assert.deepEqual(h.state.runs, []);
+    h.F.scheduleLibraryDependants("settled");         // a fresh burst gets a fresh deadline
+    h.state.clock += D.libraryDependantsQuietMs();
+    h.fireDue();
+    assert.deepEqual(h.state.runs, ["auto rescan"]);
+    const src = indexSource();
+    const route = src.slice(src.indexOf('app.post("/api/library/rescan"'));
+    assert.ok(/if \(r\.status === "rebuilt"\) cancelLibraryDependants\(\);/.test(route.slice(0, 1500)),
+      "the Rescan button no longer stands the watch's pass down — the /music walk runs twice");
+  });
+});
 
 // ---------------------------------------------------------------------------
 // v1.7.54: "Roon has finished" is inferred, and the inference got two things
@@ -443,9 +954,14 @@ test("the import probe watches for identification, not just for growth", async (
     assert.equal(F.browseItemIdentity({ title: "Rumours" }), "Rumours||",
       "a missing artist must still produce a comparable value, not undefined");
     assert.equal(F.browseItemIdentity(null), "");
+    // libraryChangedSince is a yes/no over libraryLook since v1.8.68, so the
+    // identity it compares is libraryLook's.
+    const look = src.slice(src.indexOf("async function libraryLook("));
+    assert.ok(/browseItemIdentity/.test(look.slice(0, look.indexOf("\n}\n"))),
+      "the change probe spells identity its own way again");
     const changed = src.slice(src.indexOf("async function libraryChangedSince("));
-    assert.ok(/browseItemIdentity/.test(changed.slice(0, changed.indexOf("\n}\n"))),
-      "libraryChangedSince spells identity its own way again");
+    assert.ok(/libraryLook\(/.test(changed.slice(0, changed.indexOf("\n}\n"))),
+      "libraryChangedSince no longer goes through libraryLook — two probes, two ideas of identity");
   });
 });
 
@@ -464,7 +980,7 @@ test("a failed rebuild is reported as a failure", async (t) => {
     // The flag must track the SNAPSHOT and nothing else. Chaining the labels
     // map into the same promise as buildAlbumIndex makes a throw from
     // rebuildLabelsMap report a perfectly rebuilt snapshot as "error" — which
-    // stops kickPostRebuildChain firing and leaves every dependant stale, the
+    // stops the dependants running and leaves every one of them stale, the
     // exact failure this version exists to fix.
     const build = body.indexOf("await buildAlbumIndex()");
     const labels = body.indexOf("rebuildLabelsMap()", build);
@@ -481,173 +997,54 @@ test("a failed rebuild is reported as a failure", async (t) => {
       "the success return comes first, so a failed build still reports rebuilt");
   });
 
-  await t.test("'error' is one of the statuses that re-arms the chain", async () => {
-    // Otherwise reporting the failure honestly would just end the episode
-    // quietly instead of loudly, which is no better.
-    const h = recheckHarness();
-    h.arm();
-    await h.fire("error");
-    assert.equal(h.fired.length, 1);
-  });
+  // "error" re-arming the old chain is now "a failed re-read is retried by
+  // the next looks", driven against the watch above.
 });
 
 // ---------------------------------------------------------------------------
-// v1.7.54: an unpair clears the pending recheck. A re-pair has to put one back.
+// v1.7.54: an unpair clears whatever was pending. A re-pair has to look again.
+// (v1.8.68: driven against startIndexMaintenance, with the watch it starts.)
 // ---------------------------------------------------------------------------
-test("re-pairing with an existing snapshot asks again", async (t) => {
-  const src = indexSource();
-  const fn = src.slice(src.indexOf("function startIndexMaintenance("));
-  const body = fn.slice(0, fn.indexOf("\n}\n") + 3);
+function startHarness(built) {
+  const seen = { looks: [], arms: [], builds: 0 };
+  const F = loadIndexFunctions(["startIndexMaintenance"], {
+    stopIndexMaintenance: () => {},
+    _statusSync: "",
+    isIndexBuilt: () => built,
+    buildAlbumIndex: async () => { seen.builds++; },
+    runFileMetadataScan: async () => {},
+    seedLabelsFromCache: () => {},
+    labelsEnabled: false, DEBUG: false, console: { log() {}, error() {} },
+    _watchTimer: null,
+    requestLibraryLook: (why, ms) => seen.looks.push({ why, ms }),
+    armLibraryWatch: (ms) => seen.arms.push(ms),
+    libraryWatchCadence: () => 30000,
+  });
+  F.startIndexMaintenance();
+  return seen;
+}
 
-  await t.test("the else branch arms a recheck", () => {
-    assert.ok(/\} else \{[\s\S]*scheduleLibraryRecheck\(/.test(body),
-      "a re-pair with a snapshot already in memory schedules nothing. " +
-      "stopIndexMaintenance() clears any pending recheck on unpair, and a " +
-      "websocket flap is most likely during the very import that recheck was " +
-      "waiting on — so the refresh silently drops back to the 12-hour tick");
+test("re-pairing with an existing snapshot looks again at once", async (t) => {
+  await t.test("THE one: a re-pair asks within seconds", () => {
+    const seen = startHarness(true);
+    assert.equal(seen.looks.length, 1,
+      "a re-pair with a snapshot already in memory asks nothing — an unpair dropped whatever the " +
+      "watch was following, and a websocket flap is most likely during exactly that import");
+    assert.ok(seen.looks[0].ms <= 10000, "the re-pair look waits " + seen.looks[0].ms + " ms");
+    assert.equal(seen.builds, 0, "a re-pair re-walked the library instead of looking");
+  });
+
+  await t.test("a first pair builds, and the watch is started either way", () => {
+    const first = startHarness(false);
+    assert.equal(first.builds, 1);
+    assert.equal(first.looks.length, 0, "a first pair asked for a look at a snapshot that does not exist yet");
+    assert.ok(first.arms.length === 1 && startHarness(true).arms.length === 1,
+      "startIndexMaintenance did not start the watch");
   });
 
   await t.test("the comment no longer claims a probe that does not exist", () => {
-    assert.ok(!/re-verifies it on\s*\n?\s*\/\/\s*re-pair with a cheap 2-call probe/.test(src),
+    assert.ok(!/re-verifies it on\s*\n?\s*\/\/\s*re-pair with a cheap 2-call probe/.test(indexSource()),
       "the unpair comment still describes a re-pair probe that was never written");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// v1.7.55: something has to NOTICE.
-//
-// v1.7.54 repaired the recheck chain — the loop that keeps asking once the
-// library is known to have moved. It did not fix the thing in front of it. The
-// only detector that fires within minutes is opportunistic: it rides along on
-// `nav.total` when a user opens an album. On a box sitting idle, or one used
-// only from Home and Now playing, it never fires at all, and the sole remaining
-// detector was a TWELVE-HOUR interval.
-//
-// So "I added albums to Roon and the extension did nothing" was not an edge
-// case, it was the normal experience, and every fix in v1.7.54 was downstream
-// of a question nobody was asking. The periodic check is now ten minutes.
-//
-// The tick body lives inside a setInterval in startIndexMaintenance, so the
-// test injects setInterval and captures the callback rather than asserting on
-// the source text.
-// ---------------------------------------------------------------------------
-function watchHarness(opts) {
-  opts = opts || {};
-  const checks = [];        // {reason, force} handed to checkAndMaybeRebuild
-  const armed = [];         // reasons handed to scheduleLibraryRecheck
-  const chained = [];       // statuses handed to kickPostRebuildChain
-  const timers = [];        // {fn, ms} handed to setInterval
-  const state = { next: opts.status || "fresh" };
-  const F = loadIndexFunctions(
-    ["startIndexMaintenance", "libraryCheckMs"],
-    {
-      stopIndexMaintenance: () => {},
-      _statusSync: "",
-      isIndexBuilt: () => opts.built !== false,
-      buildAlbumIndex: async () => {},
-      runFileMetadataScan: async () => {},
-      seedLabelsFromCache: () => {},
-      labelsEnabled: false,
-      DEBUG: false,
-      console: { log() {}, error() {} },
-      indexMaintTimer: null,
-      // The three guards, each settable per harness so the skip can be tested.
-      _libraryRecheckTimer: opts.recheckPending ? {} : null,
-      _rebuildInFlight: !!opts.rebuilding,
-      albumIndex: { building: !!opts.building, count: 10, builtAt: 1 },
-      scheduleLibraryRecheck: (why) => armed.push(why),
-      kickPostRebuildChain: (r) => chained.push(r && r.status),
-      checkAndMaybeRebuild: async (reason, force) => {
-        checks.push({ reason, force });
-        return { status: state.next };
-      },
-      setInterval: (fn, ms) => { timers.push({ fn, ms }); return { unref() {} }; },
-    });
-  F.startIndexMaintenance();
-  return {
-    checks, armed, chained, timers, everyMs: F.libraryCheckMs(),
-    tick: async () => {
-      assert.equal(timers.length, 1, "expected exactly one maintenance timer");
-      timers[0].fn();
-      await new Promise(r => setImmediate(r));
-    },
-  };
-}
-
-test("something asks Roon on its own, often enough to matter", async (t) => {
-  await t.test("THE one: the periodic check is minutes, not hours", () => {
-    const F = loadIndexFunctions(["libraryCheckMs"], {});
-    assert.ok(F.libraryCheckMs() <= 15 * 60 * 1000,
-      "the only detector that needs no user interaction runs every " +
-      Math.round(F.libraryCheckMs() / 60000) + " minutes. Adding albums to Roon " +
-      "and having the extension notice cannot depend on somebody happening to " +
-      "open an album — on an idle box that never happens, and this interval is " +
-      "the whole detection time");
-    assert.ok(F.libraryCheckMs() >= 2 * 60 * 1000,
-      "polling the Core faster than every couple of minutes is a probe storm");
-  });
-
-  await t.test("the timer is armed at that interval", () => {
-    const h = watchHarness();
-    assert.equal(h.timers.length, 1);
-    assert.equal(h.timers[0].ms, h.everyMs,
-      "the maintenance timer does not run at libraryCheckMs — the constant and " +
-      "the timer have drifted apart");
-  });
-
-  await t.test("a tick asks the real question", async () => {
-    const h = watchHarness({ status: "fresh" });
-    await h.tick();
-    assert.equal(h.checks.length, 1, "the tick never checked anything");
-    assert.equal(h.checks[0].force, false,
-      "the periodic check FORCES a rebuild — it would re-walk the whole library " +
-      "every ten minutes whether or not anything changed");
-  });
-
-  await t.test("a rebuild it causes drags its dependants with it", async () => {
-    const h = watchHarness({ status: "rebuilt" });
-    await h.tick();
-    assert.deepEqual(h.chained, ["rebuilt"]);
-  });
-
-  await t.test("arming on start is the re-pair recheck, not the tick", () => {
-    // Measured here so the hand-off test below can count the DELTA. With a
-    // snapshot already in memory, startIndexMaintenance arms one recheck
-    // because an unpair cleared any that was pending.
-    const h = watchHarness();
-    assert.deepEqual(h.armed, ["re-paired with an existing snapshot"]);
-    const first = watchHarness({ built: false });
-    assert.deepEqual(first.armed, [],
-      "a FIRST pair armed a recheck — there is no snapshot to re-verify, the " +
-      "initial build is already running");
-  });
-
-  await t.test("an unanswered check hands off instead of waiting a full tick", async () => {
-    for (const st of ["busy", "error"]) {
-      const h = watchHarness({ status: st });
-      const before = h.armed.length;
-      await h.tick();
-      assert.equal(h.armed.length - before, 1,
-        "a '" + st + "' tick lost the observation until the next tick");
-    }
-    const ok = watchHarness({ status: "fresh" });
-    const before = ok.armed.length;
-    await ok.tick();
-    assert.equal(ok.armed.length - before, 0, "a settled check armed a pointless recheck");
-  });
-
-  await t.test("it stands down while somebody else owns the library", async () => {
-    // Each of these means the question is already being asked, or answered.
-    // Probing underneath only adds Roon calls to a Core that is working.
-    for (const [label, opts] of [
-      ["a recheck is pending", { recheckPending: true }],
-      ["a rebuild is in flight", { rebuilding: true }],
-      ["the index is building",  { building: true }],
-    ]) {
-      const h = watchHarness(opts);
-      await h.tick();
-      assert.equal(h.checks.length, 0, "the tick probed while " + label);
-    }
   });
 });
 
@@ -672,7 +1069,9 @@ test("something asks Roon on its own, often enough to matter", async (t) => {
 // ---------------------------------------------------------------------------
 function probeHarness(live, snapshot) {
   const loads = [];
-  const F = loadIndexFunctions(["libraryChangedSince", "browseItemIdentity"], {
+  const reads = [];
+  const F = loadIndexFunctions(["libraryChangedSince", "libraryLook", "browseItemIdentity"], {
+    noteLibraryRead: (whole) => reads.push(whole),
     withBrowseSession: async (fn) => fn("k"),
     browse: async () => ({}),
     load: async (opts) => {
@@ -682,7 +1081,7 @@ function probeHarness(live, snapshot) {
     },
     albumIndex: snapshot,
   });
-  return { F, loads };
+  return { F, loads, reads };
 }
 const al = (t, a) => ({ title: t, subtitle: a });
 
@@ -762,37 +1161,31 @@ test("the change probe does not cry wolf at ten-minute intervals", async (t) => 
 // v1.7.58: the message quoted ONE interval, and there are two.
 //
 // They are different clocks and the difference is not cosmetic. A proven
-// library change means the site that proved it has just armed the recheck
-// chain — libraryRecheckMs(), five minutes. An unproven one armed nothing, so
-// the next look is the background watch — libraryCheckMs(), ten minutes.
-//
-// Quoting ten for both is wrong precisely in the case the user is most likely
-// reading it, and tells somebody staring at a red line to wait twice as long
-// as they need to.
+// library change means the site that proved it has just asked the watch to
+// look, and the watch then follows Roon every librarySettleMs() until it
+// settles (v1.8.68; it was the five-minute recheck chain). An unproven one
+// asked nothing, so the next look is the watch's own turn —
+// libraryWatchActiveMs(), since someone reading the message has the app open.
 // ---------------------------------------------------------------------------
 test("the message quotes the clock it is actually waiting on", async (t) => {
-  const F = loadIndexFunctions(
-    ["libraryChangingAdvice", "libraryRecheckMs", "libraryCheckMs"], {});
+  const F = loadIndexFunctions(["libraryChangingAdvice", ...ADVICE_CLOCKS], {});
 
-  await t.test("a proven change quotes the recheck that was just armed", () => {
-    const mins = Math.round(F.libraryRecheckMs() / 60000);
-    assert.match(F.libraryChangingAdvice(true), new RegExp("about " + mins + " minutes"),
-      "a proven library change arms the recheck chain at " + mins + " minutes, and " +
-      "the message names a different number");
-    assert.match(F.libraryChangingAdvice(true), /already scheduled/,
-      "the message does not say that a check is already on its way");
+  await t.test("a proven change says the re-read is under way, at the settling pace", () => {
+    const secs = Math.round(F.librarySettleMs() / 1000);
+    assert.match(F.libraryChangingAdvice(true), new RegExp("every " + secs + " seconds until it settles"),
+      "a proven library change sets the watch following Roon every " + secs + " s, and the " +
+      "message names a different number");
+    assert.match(F.libraryChangingAdvice(true), /already re-reading/,
+      "the message does not say the re-read is already on its way");
   });
 
-  await t.test("an unproven one quotes the background watch", () => {
-    const mins = Math.round(F.libraryCheckMs() / 60000);
-    assert.match(F.libraryChangingAdvice(false), new RegExp("every " + mins + " minutes"));
+  await t.test("an unproven one quotes the watch's own pace", () => {
+    const secs = Math.round(F.libraryWatchActiveMs() / 1000);
+    assert.match(F.libraryChangingAdvice(false), new RegExp("every " + secs + " seconds while the app is open"));
   });
 
   await t.test("THE one: they are not the same number", () => {
-    // If they ever converge this test is noise, but while they differ, one
-    // hardcoded figure is wrong in one of the two cases — which is how it
-    // shipped.
-    assert.notEqual(F.libraryRecheckMs(), F.libraryCheckMs(),
+    assert.notEqual(F.librarySettleMs(), F.libraryWatchActiveMs(),
       "the two intervals are equal, so this distinction can be collapsed");
     assert.notEqual(F.libraryChangingAdvice(true), F.libraryChangingAdvice(false),
       "both cases quote the same wait — one of them is wrong");
@@ -804,8 +1197,57 @@ test("the message quotes the clock it is actually waiting on", async (t) => {
     const src = indexSource();
     const fn = src.slice(src.indexOf("function libraryChangingAdvice("));
     const body = fn.slice(0, fn.indexOf("\n}\n") + 3);
-    assert.ok(/libraryRecheckMs\(\)/.test(body) && /libraryCheckMs\(\)/.test(body),
+    assert.ok(/librarySettleMs\(\)/.test(body) && /libraryWatchActiveMs\(\)/.test(body),
       "the intervals are written into the sentence as literals, so retuning " +
       "either constant silently makes the message lie");
+  });
+
+  await t.test("the client's copy says exactly what the server says", () => {
+    // The album view composes three of these notes itself, from a copy of this
+    // function that cannot read the server's constants — so it carries the
+    // numbers as literals, and this is what keeps them true.
+    const client = extractNestedFunction("public/app.js", "libraryChangingAdvice");
+    for (const sure of [true, false]) {
+      assert.equal(client(sure), F.libraryChangingAdvice(sure),
+        "public/app.js and index.js no longer agree (sure=" + sure + ") — the album view " +
+        "quotes a clock the server is not running");
+    }
+  });
+});
+
+test("the watch's look reads the whole signature", async (t) => {
+  await t.test("THE one: full reads the last album even when the count has moved", async () => {
+    // Without the tail, two looks agreeing on count and first album would call
+    // the library settled while Roon is still re-identifying its end.
+    const live = { total: 4, albums: [al("A", "x"), al("B", "y"), al("C", "z"), al("D", "w")] };
+    const h = probeHarness(live, { count: 3, declared: 3, albums: live.albums.slice(0, 3) });
+    const look = await h.F.libraryLook({ full: true });
+    assert.equal(look.changed, true);
+    assert.deepEqual(h.loads, [0, 3], "the watch's look skipped the last album");
+    assert.equal(look.sig, "4|A||x|D||w");
+  });
+
+  await t.test("the yes/no form still stops at what answers it", async () => {
+    const live = { total: 4, albums: [al("A", "x"), al("B", "y"), al("C", "z"), al("D", "w")] };
+    const h = probeHarness(live, { count: 3, declared: 3, albums: live.albums.slice(0, 3) });
+    assert.equal(await h.F.libraryChangedSince(), true);
+    assert.deepEqual(h.loads, [0]);
+  });
+
+  await t.test("every answered look counts as a check — the manual one too", async () => {
+    // "checked … ago" in the side menu reads the last answered look. The
+    // Rescan button's check is a look like any other, and confirms as much.
+    const live = { total: 3, albums: [al("A", "x"), al("B", "y"), al("C", "z")] };
+    const h = probeHarness(live, { count: 3, declared: 3, albums: live.albums });
+    await h.F.libraryChangedSince();
+    await h.F.libraryLook({ full: true });
+    assert.deepEqual(h.reads, [false, false], "a look at Roon's list did not note that it looked");
+  });
+
+  await t.test("a changed FIRST album answers without the last", async () => {
+    const live = { total: 3, albums: [al("NEW", "x"), al("B", "y"), al("C", "z")] };
+    const h = probeHarness(live, { count: 3, declared: 3, albums: [al("A", "x"), al("B", "y"), al("C", "z")] });
+    assert.equal(await h.F.libraryChangedSince(), true);
+    assert.deepEqual(h.loads, [0], "the last album was read after the first had already answered");
   });
 });
