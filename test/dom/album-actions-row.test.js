@@ -203,7 +203,8 @@ for (const size of ["390x844", "360x780", "1280x900"]) {
     assert.ok(r.more_right <= r.row_right + 0.5, "the overflow button overflows its row");
 
     assert.equal(r.menu_open, true, "the overflow button no longer opens its menu");
-    assert.deepEqual(r.menu_items, ["Next", "Shuffle", "Radio"]);
+    // v1.8.67: Listen later sits under the same ⋯, after the playback actions.
+    assert.deepEqual(r.menu_items, ["Next", "Shuffle", "Radio", "Listen later"]);
 
     assert.equal(r.tile_badge, true,
       "the grid tile lost its source badge — only the album view's artwork was to lose it");

@@ -2,6 +2,70 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.67] — 2026-10-02
+
+Asked for by a user: "is there any way for Smart Picks to be added to Listen
+Later rather than the library (or have this as an option)?" Roon's own Listen
+later cannot be reached from an extension, so this is the extension's own,
+ported from Mandarin (which grew out of this extension and has had one since
+its v0.5.28).
+
+### Added — Listen later
+
+- **A list of albums put aside to play another time**, kept on the server by
+  album identity (never by offset), so it survives a rescan and every device
+  sees the same list. New table `listen_later`; `GET`/`POST /api/listen-later`
+  (`on` is the state asked for, not a toggle, so two devices tapping at once both
+  end where they meant to); a `later` live revision, so the row and the screen
+  follow changes made on another device.
+- **Put an album aside** from its ⋯ menu in the album view ("Listen later" /
+  "Remove from Listen later"), from a multi-selection on any album wall, or from
+  a Smart Pick's new "＋ Listen later" button.
+- **A Home row**, newest first and hidden while the list is empty, with a switch
+  and a place in the order under Settings → Home Screen like every other row.
+  Existing installs get it at the end of their stored order, switched on. The
+  shelf shows at most 30; the header opens the whole list.
+- **A Listen later screen** (the row's header, or the side menu). An album Roon
+  has offers Play; a Smart Pick Roon does not have yet offers Add to library
+  (the same one-way favourite the Smart Picks screen uses) and Open in
+  Qobuz/TIDAL, so it can be heard before deciding. Every entry has Remove.
+- **Leaves by itself once played through**: every track of the album completed,
+  on any zone and from any app, after it was put aside — Mandarin's rule. "Every
+  track" comes from the track list the extension recorded when the album was
+  opened; an album it has never opened stays until it is removed by hand rather
+  than leaving on a guess.
+
+### Changed — where Smart Picks go
+
+- Settings → Smart Picks: the "Add picks automatically" switch is now **Send
+  each day's picks to: Library / Listen later / Nowhere — ask me**. Listen later
+  puts the day's picks on the list WITHOUT favouriting them, so the streaming
+  library stays as the user built it. Upgrading changes nothing: the old switch
+  on reads as Library, off as Nowhere. The old value is still written beside the
+  new one, so a downgrade keeps the choice where it can be expressed.
+- "Not for me" also takes that artist's Smart Pick entries off Listen later
+  (albums put aside from the album view stay); "Rebuild today's picks" with
+  picks going to Listen later takes the discarded set's entries with it, rather
+  than stacking five more on top at every press.
+
+### Fixed before release (8-angle review)
+
+- The played-through check ran a JS scan of every play since the entry was
+  added, inside the zone-event handler, on every counted track; it is narrowed
+  to the album in SQL now.
+- An entry resolved through the tolerant album match alone could land on
+  another edition sharing a stripped title ("Rumours" → "Rumours (Deluxe
+  Edition)"); an exact identity match is tried first. Class of error: a
+  first-match lookup over a key two records share.
+- The Home row no longer waits on a streaming service's favourites, which only
+  the screen shows; entries carry the same source/quality badges as every other
+  row; a settings write validates every field before applying any.
+
+Tests: `test/unit/listen-later.test.js` (storage against the real schema,
+matching, the played-through rule, the live revision), `test/dom/listen-later.test.js`
+(the row, the screen, the Smart Picks button, the Settings choice), and the
+Smart Picks build now proves the Listen later destination favourites nothing.
+
 ## [1.8.66] — 2026-10-02
 
 Three requests from one post on the Roon forum, from someone running the remote

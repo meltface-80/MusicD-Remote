@@ -1991,9 +1991,22 @@ function makeTtlCache(ttlMs) {
 // queue — so it wants to run when nothing else does. Default 04:00 local.
 let smartPicksHour    = Number.isFinite(_persisted.smartPicksHour)
   ? Math.min(23, Math.max(0, Math.trunc(_persisted.smartPicksHour))) : 4;
-// Whether the picks are favourited automatically at build time, so Roon has
-// all night to import them and they are playable by morning.
-let smartPicksAutoAdd = _persisted.smartPicksAutoAdd !== false;
+// Where each day's picks are sent at build time (v1.8.67):
+//
+//   "library"  favourited on the streaming service, so Roon has all night to
+//              import them and they are playable by morning. What the old
+//              "Add picks automatically" switch did when on.
+//   "later"    put on the Listen later list and NOT favourited — the library
+//              stays exactly as the user built it, and a pick worth keeping is
+//              added from there with one tap.
+//   "ask"      nowhere; every pick asks. What the old switch did when off.
+//
+// Installs from before v1.8.67 stored only that boolean, so a missing value is
+// read from it — upgrading must not change where anybody's picks go.
+function smartPicksDests() { return ["library", "later", "ask"]; }
+let smartPicksDest = smartPicksDests().indexOf(_persisted.smartPicksDest) !== -1
+  ? _persisted.smartPicksDest
+  : (_persisted.smartPicksAutoAdd !== false ? "library" : "ask");
 
 // ---------------------------------------------------------------------------
 // Opt-in features. Both reach the network on their own schedule — Smart Picks
@@ -2292,6 +2305,7 @@ let libraryDateVersion = 0;
 let playsVersion = 0;      // a play was recorded, or old plays were pruned
 let picksVersion = 0;      // today's Smart Picks were built, rebuilt or pruned
 let discoverVersion = 0;   // a Discover build finished
+let laterVersion = 0;      // an album went on or came off the Listen later list
 const libraryViewCache = new Map();      // sig -> ordered album array
 const LIBRARY_VIEW_CACHE_MAX = 8;
 // The two genre lists that are cached against the Core. Declared HERE, above
@@ -2532,6 +2546,23 @@ function openLabelsDb() {
         genre    TEXT,
         ts       INTEGER NOT NULL,
         PRIMARY KEY (day, kind, rank)
+      );
+      -- Listen later (v1.8.67): albums put aside to play another time. Keyed
+      -- by album IDENTITY (albumKey), never by offset — offsets reshuffle on
+      -- every library change, and this list has to survive a rescan. An entry
+      -- may name an album Roon does not have yet (a Smart Pick sent here
+      -- rather than to the streaming library): service + album_id say where
+      -- it can be added from, and it resolves to the library record the
+      -- moment Roon imports it. Read back newest first.
+      CREATE TABLE IF NOT EXISTS listen_later (
+        key      TEXT PRIMARY KEY,
+        title    TEXT NOT NULL,
+        artist   TEXT NOT NULL,
+        service  TEXT,
+        album_id TEXT,
+        image    TEXT,
+        source   TEXT NOT NULL,
+        ts       INTEGER NOT NULL
       );
       -- Artists already shown, so the set turns over instead of repeating.
       CREATE TABLE IF NOT EXISTS smart_pick_seen (
@@ -8218,6 +8249,8 @@ app.get("/api/status", (req, res) => {
 //   settings  any settings write, from any device.
 //   labels    the label index (Label of the week, the label screens).
 //   picks / discover   those features' daily builds, and their edits.
+//   later     the Listen later list: an album put aside, taken off by hand,
+//             or played through.
 //   day       the server's date: Album of the day and the daily builds turn
 //             over at midnight whether or not anything else moved.
 //
@@ -8233,6 +8266,7 @@ function liveRevisions() {
     labels:   (labelsEnabled ? "1" : "0") + "." + (labelsIndex.builtAt || 0) + "." + labelsIndex.map.size,
     picks:    String(picksVersion),
     discover: String(discoverVersion),
+    later:    String(laterVersion),
     day:      smartDayKey(),
   };
 }
@@ -11933,7 +11967,10 @@ app.get("/api/album", async (req, res) => {
       offset: r.offset,  // corrected when the stale-offset defense relocated
       // Library-validated split of the credit into individually linkable
       // artist names (single-element array when the credit stays whole).
-      artists: splitCreditIntoArtists(r.album.subtitle)
+      artists: splitCreditIntoArtists(r.album.subtitle),
+      // On the Listen later list (v1.8.67) — the album view's menu says
+      // "Listen later" or "Remove from Listen later" from this.
+      listen_later: listenLaterHas(r.album.title, r.album.subtitle)
     });
   } catch (e) {
     res.status(e.stale ? 409 : 500).json({ error: e.message });
@@ -13441,10 +13478,21 @@ async function buildSmartPicks(day) {
       const album = await resolveSmartAlbum(c.name);
       if (!album) continue;      // nothing addable — a pick nobody can act on
       used.add(c.canon);
-      // The picks go into the streaming library now, so Roon can import them
-      // before anybody looks at the screen — that is what makes them playable
-      // by morning rather than a button somebody has to press.
-      const added = smartPicksAutoAdd ? await autoAddSmartAlbum(album) : false;
+      // With the destination "library" the picks go into the streaming
+      // library now, so Roon can import them before anybody looks at the
+      // screen — that is what makes them playable by morning rather than a
+      // button somebody has to press.
+      const added = smartPicksDest === "library" ? await autoAddSmartAlbum(album) : false;
+      // Listen later instead: put aside, not favourited. A local write, so it
+      // costs the streaming account nothing and cannot rate-limit the build.
+      if (smartPicksDest === "later") {
+        // The PICK's artist, not the service's credit: it is what the card's
+        // own "＋ Listen later" and "Not for me" are keyed on, and TIDAL's
+        // first album can carry a different lead credit.
+        listenLaterAdd({ title: album.title, artist: c.name,
+                         service: album.service, album_id: String(album.id),
+                         image: album.image || "", source: "picks" });
+      }
       picks.push({
         kind: "adjacent", mbid: c.mbid, artist: c.name, canon: c.canon,
         seedNames: c.seedNames, album, genre: "", autoAdded: added
@@ -13577,7 +13625,7 @@ function startSmartPicksMaintenance() {
 //
 // `offset` is present once Roon has actually imported the album, and it is what
 // lets the card offer Play instead of Add.
-function smartPickJson(row, favs) {
+function smartPickJson(row, favs, laterRows) {
   const id  = row.album_id || "";
   const set = row.service === "qobuz" ? favs.qobuz
             : row.service === "tidal" ? favs.tidal : null;
@@ -13599,7 +13647,9 @@ function smartPickJson(row, favs) {
     offset:      rec ? rec.offset : null,
     library_title:    rec ? rec.title : "",
     library_subtitle: rec ? rec.subtitle : "",
-    image_key:        rec ? (rec.image_key || null) : null
+    image_key:        rec ? (rec.image_key || null) : null,
+    // On the Listen later list (v1.8.67), so the card can say so.
+    later:            listenLaterMatches(row.album || "", row.artist, laterRows).length > 0
   };
 }
 
@@ -13633,7 +13683,8 @@ app.get("/api/smart-picks", async (req, res) => {
   // the user had switched off, frozen at the day it stopped.
   if (!smartPicksEnabled) {
     return res.json({ day: smartDayKey(), enabled: false, service_ready: false,
-                      auto_add: false, hour: smartPicksHour, building: false, picks: [] });
+                      auto_add: false, dest: smartPicksDest, hour: smartPicksHour,
+                      building: false, picks: [] });
   }
   try {
     const day  = smartDayKey();
@@ -13644,14 +13695,337 @@ app.get("/api/smart-picks", async (req, res) => {
     res.json({
       day,
       service_ready: smartPicksServiceReady(),
-      auto_add: smartPicksAutoAdd,
+      auto_add: smartPicksDest === "library",
+      dest: smartPicksDest,
       hour: smartPicksHour,
       building: !rows.length && !!_smartBuilding,
-      picks: rows.map(r => smartPickJson(r, favs))
+      // The list read once for the whole set, not once per pick.
+      picks: (() => { const later = listenLaterRows(); return rows.map(r => smartPickJson(r, favs, later)); })()
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Listen later (v1.8.67) — albums put aside to play another time.
+//
+// Ported from Mandarin, which grew out of this extension and has had it since
+// its v0.5.28. Roon's own Listen later is not reachable through the extension
+// API, so this is the extension's own list, kept on the data volume.
+//
+// WHAT AN ENTRY IS. An album identity (albumKey) plus the strings it was put
+// aside under — never an offset, which is a position in a list that reshuffles
+// on every library change. Resolved against the snapshot at READ time
+// (smartLibraryRecord, the same tolerant albumKeys match the Smart Picks use),
+// so an entry follows its album through a rescan, and an entry for an album
+// Roon does not have yet — a Smart Pick sent here instead of to the streaming
+// library — becomes playable the moment Roon imports it, with nothing written.
+//
+// HOW AN ENTRY LEAVES. By hand, or once every track of the album has been
+// played through since it was put aside, on any zone, from any app — the rule
+// Mandarin uses. "Every track" is read from album_tracks, which only knows an
+// album this extension has opened; for one it never has, the list cannot tell
+// a played-through album from a sampled one, so the entry stays until it is
+// taken off by hand rather than leaving on a guess.
+// ---------------------------------------------------------------------------
+
+function listenLaterServices() { return ["qobuz", "tidal"]; }
+function listenLaterSources()  { return ["album", "picks"]; }
+
+function listenLaterRows() {
+  if (!labelsDb) return [];
+  try {
+    return labelsDb.prepare("SELECT * FROM listen_later ORDER BY ts DESC").all();
+  } catch (e) {
+    console.error("[later] read failed: " + e.message);
+    return [];
+  }
+}
+
+// The library album `title`/`artist` names right now, or null.
+//
+// EXACT IDENTITY FIRST. smartLibraryRecord matches through every albumKeys
+// variant and keeps the first album filed under each, and the edition-stripped
+// variant is shared: with "Rumours" and "Rumours (Deluxe Edition)" both in the
+// library, a plain "Rumours" can come back as the deluxe record — whose album
+// view would then say "Remove from Listen later" for the other edition. So an
+// album whose own title and credit are exactly these wins, and the tolerant
+// match is only the fallback (a service spelling Roon has cleaned up).
+let _laterExactIndex = { builtAt: -1, map: null };
+function listenLaterLibraryRecord(title, artist) {
+  if (!title) return null;
+  if (_laterExactIndex.builtAt !== albumIndex.builtAt || !_laterExactIndex.map) {
+    const map = new Map();
+    for (const al of (albumIndex.albums || [])) {
+      const k = albumKey(al.title, al.subtitle);
+      if (k && !map.has(k)) map.set(k, al);
+    }
+    _laterExactIndex = { builtAt: albumIndex.builtAt, map };
+  }
+  const exact = _laterExactIndex.map.get(albumKey(title, artist || ""));
+  return exact || smartLibraryRecord(title, artist);
+}
+
+// The library record an entry stands for right now, or null.
+function listenLaterRecord(row) {
+  return listenLaterLibraryRecord(row.title, row.artist);
+}
+
+// Every key that names the same album as `title`/`artist`: its own identity
+// and, when it resolves to a library record, that record's identity — so an
+// entry stored under a service's spelling ("Album (Deluxe)") is found from
+// Roon's ("Album"), and the other way round.
+function listenLaterKeysFor(title, artist) {
+  const keys = new Set();
+  const own = albumKey(title, artist);
+  if (own) keys.add(own);
+  const rec = listenLaterLibraryRecord(title, artist);
+  if (rec) {
+    const k = albumKey(rec.title, rec.subtitle);
+    if (k) keys.add(k);
+  }
+  return keys;
+}
+
+// The rows that name the album `title`/`artist`, compared in BOTH directions
+// (see listenLaterKeysFor).
+function listenLaterMatches(title, artist, rows) {
+  const want = listenLaterKeysFor(title, artist);
+  if (!want.size) return [];
+  return (rows || listenLaterRows()).filter(r => {
+    if (want.has(r.key)) return true;
+    const rec = listenLaterRecord(r);
+    return !!(rec && want.has(albumKey(rec.title, rec.subtitle)));
+  });
+}
+
+function listenLaterHas(title, artist) {
+  return listenLaterMatches(title, artist).length > 0;
+}
+
+// Put an album aside. Returns true when it is on the list afterwards (whether
+// or not it already was), false when it could not be stored. Adding an album
+// already on the list keeps its original date: "newest first" means when it
+// was first put aside, and a second tap must not move it to the front.
+function listenLaterAdd(entry) {
+  if (!labelsDb || !entry) return false;
+  const title  = String(entry.title || "").trim().slice(0, 300);
+  const artist = String(entry.artist || "").trim().slice(0, 300);
+  const key = albumKey(title, artist);
+  if (!key) return false;
+  if (listenLaterMatches(title, artist).length) return true;
+  const service = listenLaterServices().indexOf(entry.service) !== -1 ? entry.service : null;
+  const albumId = service && entry.album_id ? String(entry.album_id).slice(0, 64) : null;
+  // A cover URL is shown in an <img>, so only a plain http(s) address is kept.
+  const image = /^https?:\/\//i.test(String(entry.image || "")) ? String(entry.image).slice(0, 1000) : null;
+  const source = listenLaterSources().indexOf(entry.source) !== -1 ? entry.source : "album";
+  try {
+    const info = labelsDb.prepare(
+      "INSERT OR IGNORE INTO listen_later (key, title, artist, service, album_id, image, source, ts) " +
+      "VALUES (?,?,?,?,?,?,?,?)").run(key, title, artist, service, albumId, image, source, Date.now());
+    // Only a row actually written moves the revision: a spurious move makes
+    // every device re-read the row and both screens for nothing.
+    if (info.changes) laterVersion++;
+    return true;
+  } catch (e) {
+    console.error("[later] could not add " + JSON.stringify(title) + ": " + e.message);
+    return false;
+  }
+}
+
+// Take an album off the list — every row that names it, so an album put aside
+// twice under two spellings does not survive its own removal. Returns how many
+// rows went.
+function listenLaterRemove(title, artist) {
+  if (!labelsDb) return 0;
+  const rows = listenLaterMatches(title, artist);
+  if (!rows.length) return 0;
+  try {
+    const del = labelsDb.prepare("DELETE FROM listen_later WHERE key = ?");
+    labelsDb.transaction(() => { for (const r of rows) del.run(r.key); })();
+    laterVersion++;
+    return rows.length;
+  } catch (e) {
+    console.error("[later] could not remove " + JSON.stringify(title) + ": " + e.message);
+    return 0;
+  }
+}
+
+// "Not for me" on a Smart Pick means the artist, everywhere: every entry that
+// came from Smart Picks for them goes too — whether the build sent it here or
+// the pick's own "＋ Listen later" did, since both are the recommender's
+// suggestion. An album put aside from the album view (source "album") stays:
+// that was the user's own find, not a pick.
+function listenLaterForgetPickArtist(canon) {
+  if (!labelsDb || !canon) return 0;
+  let n = 0;
+  try {
+    const del = labelsDb.prepare("DELETE FROM listen_later WHERE key = ?");
+    for (const r of listenLaterRows()) {
+      if (r.source !== "picks") continue;
+      // The entry carries the SERVICE's credit, which can name the blocked act
+      // alongside others ("Khruangbin & Leon Bridges") — so any credited act
+      // counts, split the way albumKeys splits a credit.
+      const acts = [r.artist].concat(String(r.artist || "").split(/ \/ |\/| feat\.? | featuring | ft\.? |, | & | \+ /i));
+      if (acts.some(a => canonArtist(a) === canon) && del.run(r.key).changes) n++;
+    }
+    if (n) laterVersion++;
+  } catch (e) {
+    console.error("[later] could not drop picks by a blocked artist: " + e.message);
+  }
+  return n;
+}
+
+// The entries a day's Smart Picks put here, by the service album each names.
+// Called when that day's set is discarded and rebuilt.
+function listenLaterForgetPicksOfDay(day) {
+  if (!labelsDb) return 0;
+  try {
+    const info = labelsDb.prepare(
+      "DELETE FROM listen_later WHERE source = 'picks' AND album_id IS NOT NULL AND " +
+      "EXISTS (SELECT 1 FROM smart_picks p WHERE p.day = ? AND p.service = listen_later.service " +
+      "AND p.album_id = listen_later.album_id)").run(day);
+    if (info.changes) laterVersion++;
+    return info.changes;
+  } catch (e) {
+    console.error("[later] could not drop the discarded day's picks: " + e.message);
+    return 0;
+  }
+}
+
+// Has every track of the album filed under `akey` been played through, on an
+// album titled `albumTitle`, since `since`? False whenever it cannot be shown
+// to be true — including an album whose track list was never recorded.
+function listenLaterPlayedThrough(akey, albumTitle, since) {
+  if (!labelsDb || !akey) return false;
+  const tracks = labelsDb.prepare("SELECT n, tkey FROM album_tracks WHERE akey = ?").all(akey);
+  if (!tracks.length) return false;
+  const need = new Set(tracks.map(r => r.n));
+  const byKey = new Map();
+  for (const r of tracks) {
+    if (!byKey.has(r.tkey)) byKey.set(r.tkey, []);
+    byKey.get(r.tkey).push(r.n);
+  }
+  const wantAlbum = canonText(albumTitle);
+  // Narrowed in SQL to plays of this album title — Roon's own string on both
+  // sides (plays.album is the zone's line3, albumTitle is the snapshot's), so
+  // the exact comparison is the right one. This runs inside the zone handler,
+  // and without it every counted track would pull every play since the entry
+  // was added into JS. canonText below stays as the confirmation.
+  const plays = labelsDb.prepare(
+    "SELECT DISTINCT track, album FROM plays WHERE ts >= ? AND completed = 1 " +
+    "AND lower(trim(album)) = lower(trim(?))").all(since, String(albumTitle || ""));
+  for (const p of plays) {
+    if (canonText(p.album) !== wantAlbum) continue;
+    for (const k of trackTitleKeys(p.track)) {
+      for (const n of (byKey.get(k) || [])) need.delete(n);
+    }
+    if (!need.size) return true;
+  }
+  return false;
+}
+
+// Called when a play is counted. Only an album on the list whose title is the
+// one just played is examined, so the plays query runs only when it could
+// possibly end in a removal — not on every track of every evening.
+function listenLaterNoticePlay(albumTitle) {
+  if (!labelsDb) return;
+  const want = canonText(albumTitle);
+  if (!want) return;
+  try {
+    const del = labelsDb.prepare("DELETE FROM listen_later WHERE key = ?");
+    for (const row of listenLaterRows()) {
+      const rec = listenLaterRecord(row);
+      const title = rec ? rec.title : row.title;
+      if (canonText(title) !== want) continue;
+      const akey = albumKey(title, rec ? rec.subtitle : row.artist);
+      if (!listenLaterPlayedThrough(akey, title, row.ts)) continue;
+      if (!del.run(row.key).changes) continue;
+      laterVersion++;
+      console.log("[later] " + JSON.stringify(title) + " played through — off the Listen later list");
+    }
+  } catch (e) {
+    // Logged, not thrown: this runs inside the zone-event handler, and a
+    // failure here must cost the list its tidy-up, never playback tracking.
+    console.error("[later] play check failed: " + e.message);
+  }
+}
+
+// Where a service-only entry can be opened, for listening before deciding.
+function listenLaterServiceUrl(service, albumId) {
+  if (!albumId) return null;
+  if (service === "qobuz") return qobuzDeep.deepLink(albumId);
+  if (service === "tidal") return "https://tidal.com/browse/album/" + encodeURIComponent(albumId);
+  return null;
+}
+
+// One entry as the client sees it. `offset` (and Roon's own strings for the
+// album) are present when Roon has it — what makes it playable; `added` says
+// whether a service-only entry is already favourited, null when the service
+// could not be asked.
+function listenLaterJson(row, favs) {
+  const rec = listenLaterRecord(row);
+  const set = row.service === "qobuz" ? (favs && favs.qobuz)
+            : row.service === "tidal" ? (favs && favs.tidal) : null;
+  return {
+    key:      row.key,
+    title:    row.title,
+    artist:   row.artist,
+    service:  row.service || "",
+    album_id: row.album_id || "",
+    image:    row.image || "",
+    source:   row.source,
+    added_at: row.ts,
+    added:    set && row.album_id ? set.has(String(row.album_id)) : null,
+    service_url: listenLaterServiceUrl(row.service, row.album_id),
+    offset:           rec ? rec.offset : null,
+    library_title:    rec ? rec.title : "",
+    library_subtitle: rec ? rec.subtitle : "",
+    image_key:        rec ? (rec.image_key || null) : null,
+    // The album as every other Home row sends it, source and quality badges
+    // included (withSource) — the same record must not wear a badge in
+    // Recently played and none here.
+    album: rec ? withSource({ offset: rec.offset, title: rec.title, subtitle: rec.subtitle,
+                              image_key: rec.image_key || null }, rec) : null
+  };
+}
+
+// GET /api/listen-later — the list, newest first.
+app.get("/api/listen-later", async (req, res) => {
+  try {
+    const rows = listenLaterRows();
+    // The favourites are read only when an entry needs them: one that Roon
+    // does not have and that names a service album it could be added from —
+    // and never for the Home row (?favs=0), which does not show them and must
+    // not wait on a streaming service to paint.
+    const needFavs = req.query.favs !== "0" && rows.some(r => r.album_id && !listenLaterRecord(r));
+    const favs = needFavs ? await smartPickFavourites() : { qobuz: null, tidal: null };
+    res.json({ albums: rows.map(r => listenLaterJson(r, favs)) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/listen-later { title, artist, on, service?, album_id?, image?, source? }
+// `on` is the state ASKED FOR, not a toggle: two devices tapping at once must
+// both end where they meant to, which a toggle cannot promise.
+app.post("/api/listen-later", (req, res) => {
+  const body = req.body || {};
+  const title  = String(body.title || "").trim();
+  const artist = String(body.artist || "").trim();
+  if (!title) return res.status(400).json({ error: "title required" });
+  if (typeof body.on !== "boolean") return res.status(400).json({ error: "on must be true or false" });
+  if (!albumKey(title, artist)) return res.status(400).json({ error: "unrecognisable album title" });
+  if (!labelsDb) return res.status(503).json({ error: "History database unavailable" });
+  if (body.on) {
+    const ok = listenLaterAdd({ title, artist, service: body.service, album_id: body.album_id,
+                                image: body.image, source: body.source });
+    if (!ok) return res.status(500).json({ error: "Couldn't save that" });
+    return res.json({ ok: true, on: true });
+  }
+  listenLaterRemove(title, artist);
+  res.json({ ok: true, on: false });
 });
 
 /*
@@ -13942,11 +14316,17 @@ app.post("/api/settings/share-links", (req, res) => {
 // adjacent picks are added automatically.
 app.get("/api/settings/smart-picks", (req, res) => {
   res.json({ enabled: smartPicksEnabled, hour: smartPicksHour,
-             auto_add: smartPicksAutoAdd,
+             dest: smartPicksDest, dests: smartPicksDests(),
+             auto_add: smartPicksDest === "library",
              service_ready: smartPicksServiceReady() });
 });
 app.post("/api/settings/smart-picks", (req, res) => {
   const body = req.body || {};
+  // Every field is validated before ANY is applied, so a refused request
+  // changes nothing — not a new hour left live in memory and unsaved.
+  if (body.dest !== undefined && smartPicksDests().indexOf(body.dest) === -1) {
+    return res.status(400).json({ error: "dest must be one of " + smartPicksDests().join(", ") });
+  }
   if (body.hour !== undefined) {
     const h = Number(body.hour);
     if (!Number.isFinite(h) || h < 0 || h > 23) {
@@ -13954,7 +14334,13 @@ app.post("/api/settings/smart-picks", (req, res) => {
     }
     smartPicksHour = Math.trunc(h);
   }
-  if (body.auto_add !== undefined) smartPicksAutoAdd = !!body.auto_add;
+  if (body.dest !== undefined) {
+    smartPicksDest = body.dest;
+  } else if (body.auto_add !== undefined) {
+    // The pre-v1.8.67 switch, still honoured for a page loaded before the
+    // upgrade: on was "library", off was "ask".
+    smartPicksDest = body.auto_add ? "library" : "ask";
+  }
   if (body.enabled !== undefined) {
     smartPicksEnabled = !!body.enabled;
     // Start or stop the timer here, so switching the feature on takes effect
@@ -13963,9 +14349,13 @@ app.post("/api/settings/smart-picks", (req, res) => {
     if (smartPicksEnabled) startSmartPicksMaintenance();
     else stopSmartPicksMaintenance();
   }
-  savePersistedSettings({ smartPicksEnabled, smartPicksHour, smartPicksAutoAdd });
+  // smartPicksAutoAdd is still written, kept in step with the destination, so
+  // a downgrade to a build that knows only the boolean keeps the user's choice
+  // as near as it can be expressed ("later" had no equivalent: it asks).
+  savePersistedSettings({ smartPicksEnabled, smartPicksHour, smartPicksDest,
+                          smartPicksAutoAdd: smartPicksDest === "library" });
   res.json({ ok: true, enabled: smartPicksEnabled, hour: smartPicksHour,
-             auto_add: smartPicksAutoAdd });
+             dest: smartPicksDest, auto_add: smartPicksDest === "library" });
 });
 
 // ---------------------------------------------------------------------------
@@ -14547,7 +14937,7 @@ app.post("/api/settings/discover", (req, res) => {
 // is how they end up contradicting each other.
 // ---------------------------------------------------------------------------
 function homeRowIds() {
-  return ["unplayed", "history", "picks", "random", "library", "lotw", "genres"];
+  return ["unplayed", "history", "later", "picks", "random", "library", "lotw", "genres"];
 }
 // The order and enablement a fresh install gets. History is on — it is the row
 // people expect to exist — and sits second, right after the discovery row.
@@ -16338,6 +16728,10 @@ app.post("/api/smart-picks/rebuild", (req, res) => {
   const day = smartDayKey();
   try {
     if (labelsDb) {
+      // With picks sent to Listen later, the set being discarded was put there
+      // too; leaving it would stack a fresh five on top at every Rebuild, with
+      // the old ones no longer on the Smart Picks screen to say "Not for me" to.
+      if (smartPicksDest === "later") listenLaterForgetPicksOfDay(day);
       labelsDb.prepare("DELETE FROM smart_picks WHERE day = ?").run(day);
       labelsDb.prepare("DELETE FROM smart_cache WHERE key = ?").run(smartAttemptKey(day));
       picksVersion++;   // the day's set is gone until the rebuild lands
@@ -16369,6 +16763,7 @@ app.post("/api/smart-picks/block", (req, res) => {
     // sitting there until tomorrow's build.
     labelsDb.prepare("DELETE FROM smart_picks WHERE canon = ?").run(canon);
     picksVersion++;   // gone from the Home row on every device, not just this one
+    listenLaterForgetPickArtist(canon);   // and the picks of theirs sent to Listen later
     res.json({ ok: true, artist });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -16894,6 +17289,7 @@ function scrobbleUpdate(z) {
       // New track — complete previous if it qualifies
       if (dbOn && prev && prev.playId && playCounted(prev)) {
         try { stmtCompletePlay.run(prev.playId); } catch (e) {} // scrobble DB optional — playback continues regardless
+        listenLaterNoticePlay(prev.album);   // played through? off the Listen later list
       }
       // Insert new play record
       let playId = null;
@@ -16929,6 +17325,7 @@ function scrobbleUpdate(z) {
     // is in the branch above.
     if (dbOn && playCounted(prev)) {
       try { stmtCompletePlay.run(prev.playId); } catch (e) {} // scrobble DB optional — playback continues regardless
+      listenLaterNoticePlay(prev.album);   // played through? off the Listen later list
     }
     scrobbleState.delete(zid);
   }

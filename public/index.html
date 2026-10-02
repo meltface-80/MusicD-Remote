@@ -230,6 +230,7 @@
           <button class="sel-menu-item" type="button" role="menuitem" data-sel-act="play_now">Play now</button>
           <button class="sel-menu-item" type="button" role="menuitem" data-sel-act="queue">Add to end of queue</button>
           <button class="sel-menu-item" type="button" role="menuitem" data-sel-act="add">Add to playlist…</button>
+          <button class="sel-menu-item" type="button" role="menuitem" data-sel-act="later">Listen later</button>
           <button class="sel-menu-item" type="button" role="menuitem" data-sel-act="clear">Clear selection</button>
         </div>
       </div>
@@ -356,6 +357,14 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
           <h2 class="home-section-title" id="home-history-title">Recently played</h2>
           <div id="home-history" class="home-carousel"></div>
         </div>
+        <!-- Listen later (v1.8.67): albums put aside to play another time,
+             newest first. Hidden until something is on the list. Tapping the
+             header opens the full list, where entries are played, added or
+             removed. -->
+        <div class="home-section home-section-later hidden" data-row="later">
+          <h2 class="home-section-title home-section-link" id="home-later-title" role="button" tabindex="0">Listen later</h2>
+          <div id="home-later" class="home-carousel home-carousel-1row"></div>
+        </div>
         <!-- Smart Picks: five albums a day by artists NOT in the library. Hidden
              until the first set builds, so a fresh install never shows an empty
              row. Tapping the header opens the full screen with the reasons. -->
@@ -442,6 +451,10 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
         <button class="menu-item hidden" type="button" data-action="discover" id="menu-item-discover">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></svg>
           <span>Discover</span>
+        </button>
+        <button class="menu-item" type="button" data-action="listen-later" id="menu-item-later">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          <span>Listen later</span>
         </button>
         <button class="menu-item" type="button" data-action="smart-picks" id="menu-item-picks">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4.5-4.5"/><path d="M11 8v6"/><path d="M8 11h6"/></svg>
@@ -1523,7 +1536,7 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
 
         <div class="settings-block">
           <div class="settings-row">
-            <span class="settings-label">Build the day's picks at <button class="settings-info-btn" data-info="The hour the daily build runs, in this server's local time. It analyses your library, asks ListenBrainz and MusicBrainz for artists you don't own, and adds the picks to your streaming library so Roon can import them. Early morning keeps all of that away from Roon's own work and gives Roon the rest of the night to import. If the extension is off at that hour, the build runs the next time it starts." aria-label="Info">ⓘ</button></span>
+            <span class="settings-label">Build the day's picks at <button class="settings-info-btn" data-info="The hour the daily build runs, in this server's local time. It analyses your library, asks ListenBrainz and MusicBrainz for artists you don't own, and sends the picks where you choose below. Early morning keeps all of that away from Roon's own work, and when they go to your library it gives Roon the rest of the night to import them. If the extension is off at that hour, the build runs the next time it starts." aria-label="Info">ⓘ</button></span>
             <select id="picks-hour" class="settings-select" aria-label="Smart Picks build hour"></select>
           </div>
           <div class="settings-note">Nothing here touches your Roon Core — the analysis reads the library snapshot the extension already keeps.</div>
@@ -1531,11 +1544,12 @@ sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
 
         <div class="settings-block">
           <div class="settings-row">
-            <span class="settings-label">Add picks automatically <button class="settings-info-btn" data-info="Favourites the day's picks in your Qobuz or TIDAL library as soon as they are chosen, so Roon imports them overnight and they are ready to play by morning. Turn this off and each pick becomes Add / Not for me instead." aria-label="Info">ⓘ</button></span>
-            <label class="switch">
-              <input type="checkbox" id="picks-autoadd" aria-label="Add picks automatically">
-              <span class="switch-track"><span class="switch-thumb"></span></span>
-            </label>
+            <span class="settings-label">Send each day's picks to <button class="settings-info-btn" data-info="Library favourites the day's picks in your Qobuz or TIDAL library as soon as they are chosen, so Roon imports them overnight and they are ready to play by morning. Listen later puts them on your Listen later list instead and leaves your library alone — add the ones you like from there with one tap. Nowhere leaves every pick as Add / Listen later / Not for me on the Smart Picks screen." aria-label="Info">ⓘ</button></span>
+            <select id="picks-dest" class="settings-select" aria-label="Where Smart Picks go">
+              <option value="library">Library</option>
+              <option value="later">Listen later</option>
+              <option value="ask">Nowhere — ask me</option>
+            </select>
           </div>
           <div class="settings-note" id="picks-service-note"></div>
         </div>
