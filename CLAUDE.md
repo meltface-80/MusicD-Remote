@@ -222,19 +222,36 @@ Do not commit with known CONFIRMED or PLAUSIBLE bugs. Fix them all in the same v
 ## Repository — branch + PR workflow
 
 - Develop on a **feature branch** of `meltface-80/MusicD-Remote` (e.g. `claude/<topic>`). Never commit directly to `main`.
-- For each change: commit to the branch, build and **commit the tarball to the branch** (see below), push, and give the user the docker install command for the branch build. The user tests the branch build, then opens and merges the PR themselves.
+- For each change: commit to the branch and push. CI builds the **test image**
+  `ghcr.io/meltface-80/musicd-remote:<version>-test` from the push (`test-image.yml`); once
+  that run has finished green, give the user the docker command for it (see below). The user
+  tests the branch build, then opens and merges the PR themselves. **No tarball is committed**
+  (since v1.8.70 — see "Images" below).
 - **Never open or merge a pull request yourself** unless the user explicitly asks. The user merges.
 - **Two-phase release handshake (revised 2026-07-28 — supersedes the earlier rule).**
   - **"merged"** = the user tested the branch build and merged it. This is the nod to
     **cut the release**: confirm the tag `vX.Y.Z` and a **pre-release** exist for it, and
-    create them if the workflow didn't. Do NOT touch README / docs-site versions yet.
-  - **"marked/moved to latest"** = the user is happy and has promoted the release. NOW run
+    create them if the workflow didn't. Also confirm the version IMAGE
+    `ghcr.io/meltface-80/musicd-remote:X.Y.Z` was pushed (release.yml's `image` job — check
+    its run). Do NOT touch README / docs-site versions yet.
+  - **"marked/moved to latest"** = the user is happy and has promoted the release. `latest.yml`
+    then points `ghcr.io/…:latest` at it by itself — confirm that run went green. NOW run
     the full promotion pass: every README version reference, the docs-site fallback
-    version/examples, **`docker-compose.yml`'s pinned tag and image**, and this file's
-    current-stable note + version-history table, as a docs-only commit on the freshly-restarted
-    branch. `docker-compose.yml` is on that list because it was NOT, and sat at v1.7.73 through
+    version/examples, **`docker-compose.yml`**, and this file's current-stable note +
+    version-history table, as a docs-only commit on the freshly-restarted branch.
+    `docker-compose.yml` is on that list because it was NOT, and sat at v1.7.73 through
     twenty releases: nothing generates it (the docs-site builder writes its own, per user), so
-    it only ever changes when someone remembers. It is a version reference like the README's.
+    it only ever changes when someone remembers.
+  - **ONE-TIME, at the first promotion of v1.8.70 or later:** switch every install command —
+    README (Linux, macOS, Updating, Migrating), the docs-site builder (its commands AND the
+    compose file it writes), and `docker-compose.yml` (`image: ghcr.io/…:latest`, no `build:`)
+    — from download-and-build to pulling the image. Not before: until a release has been marked
+    Latest there is no `:latest` to pull, and instructions that 404 are worse than old ones.
+    Updating becomes `docker pull` + recreate (or `docker compose pull && docker compose up -d`);
+    switching an existing install is stop + rm + run with the SAME volume — no reinstall, no
+    re-pairing. Migrating's closing line is wrong and goes in the same pass: a native install's
+    data is NOT in a Docker volume, it is in `/opt/roon-random-albums/data` (the service is
+    `roon-random-albums`, never `musicd-remote`). Remove this bullet once done.
   - After every merge, VERIFY the release actually appeared (`list_releases` / `git
     ls-remote --tags`). The workflow failing silently is how v1.6.52-v1.6.55 shipped with
     no tag and no release at all.
@@ -250,11 +267,11 @@ Do not commit with known CONFIRMED or PLAUSIBLE bugs. Fix them all in the same v
 
 **Docs-only exception:** a change that touches only `docs/` (the GitHub Pages site) and/or
 repo documentation (`README.md`, `CHANGELOG.md`, `CLAUDE.md`, `docker-compose.yml`) is NOT a
-build. `docker-compose.yml` counts because it can only ever pin an ALREADY-PUBLISHED tag —
-bumping it inside the release it names is impossible, so it is a post-release edit by nature,
-exactly like the README's install commands. It skips the
-version bump, the CHANGELOG entry, the tarball rebuild, and the docker install command —
-`docs/` is excluded from the tarball and is never part of the running extension. Pre-flight
+build. `docker-compose.yml` counts because it can only ever name an ALREADY-PUBLISHED image —
+so it is a post-release edit by nature, exactly like the README's install commands. It skips
+the version bump, the CHANGELOG entry and the docker install command, and builds no test image
+(`test-image.yml` ignores pushes that touch only `docs/**`, `*.md` and `docker-compose.yml`) — `docs/` is never part
+of the running extension. Pre-flight
 steps 1–2 still run (they are cheap and index.js must stay untouched), and the change still
 gets a normal review before commit. The v1.6.36 bump for the original docs page was reverted
 for exactly this reason — do not repeat it.
@@ -263,39 +280,37 @@ for exactly this reason — do not repeat it.
 2. Bump `package.json` version
 3. Add a CHANGELOG.md entry (see format below)
 4. Run pre-flight checks (see above)
-5. Build the tarball and place it at the repo root, replacing the previous version's tarball (`git rm` the old one, `git add` the new one)
-6. Commit in a single commit: code + `package.json` + `CHANGELOG.md` + the new tarball
-7. Push to the feature branch
-8. Give the user the docker install command for the branch build (see template below)
-
-**Commit the tarball to the branch.** Downloading it from GitHub (raw) is byte-exact; routing it through Dropbox/cloud storage corrupted the archive. Keep only the current version's tarball in the repo — replace it each build.
+5. Commit in a single commit: code + `package.json` + `CHANGELOG.md`
+6. Push to the feature branch
+7. Wait for that commit's **Test image** run (`test-image.yml`) to finish green — check it via
+   the GitHub API (`actions_list` workflow runs for the branch, matching the pushed SHA). A
+   failed or cancelled run means there is nothing to test yet: fix it, don't hand out the command.
+8. Give the user the docker command for `:<version>-test` (see template below)
 
 ---
 
-## Building and delivering the tarball
+## Images (since v1.8.70)
 
-Build the tarball to `/tmp` first (so `tar` doesn't include the output file mid-write), then copy
-it to the repo root and commit it to the branch. **Do not send it through Dropbox/cloud storage —
-that corrupted the archive.** The user downloads it byte-exact from GitHub raw.
+Everything is published to **`ghcr.io/meltface-80/musicd-remote`**, for `linux/amd64` and
+`linux/arm64`, by three workflows:
 
-```bash
-VERSION=$(node -p "require('./package.json').version")
-TARBALL="MusicD-Remote-v${VERSION}.tar.gz"
-tar -czf "/tmp/${TARBALL}" \
-  --exclude='./.git' \
-  --exclude='./node_modules' \
-  --exclude='./old' \
-  --exclude='./data' \
-  --exclude='./docs' \
-  --exclude='./*.tar.gz' \
-  .
-cp "/tmp/${TARBALL}" "./${TARBALL}"
-git rm -q MusicD-Remote-v<PREVIOUS>.tar.gz   # drop the old branch tarball
-git add "${TARBALL}"
-```
+| Workflow | When | Tags |
+|----------|------|------|
+| `test-image.yml` | every push to a non-`main` branch (not docs-only) | `<version>-test` (pinned — use this one) and `test` (last test build, any branch) |
+| `release.yml` → `image` job | every merge to `main` that creates a new version | `<version>` |
+| `latest.yml` | a release marked Latest (`released`/`edited`), or run by hand with a version | `latest` → `<version>` (built from the tag first if missing) |
 
-Commit the tarball with the rest of the change, push the branch, then give the user the docker
-install command (see template below) using the GitHub **raw** URL for the tarball on the branch.
+- The published image is built with `MUSICD_IMAGE=ghcr.io/…`. The app reads it and updates by
+  **telling you the pull command** — never by unpacking a release over the running container,
+  which the next recreate would undo. Locally built containers (`docker build .`) and native
+  installs keep the in-place updater, so nothing already installed changes behaviour.
+- The image keeps the paths, port and (root) user it always had: an existing `musicd-remote-data`
+  volume must keep working when a tarball install switches to the image.
+- The release still carries a tarball asset — native installs update from it.
+- A brand-new package on ghcr.io is PRIVATE until its owner makes it public (GitHub → Packages →
+  musicd-remote → Package settings → Change visibility). Until then a pull needs
+  `docker login ghcr.io`.
+- No tarballs are committed to the repo any more.
 
 ---
 
@@ -304,15 +319,15 @@ install command (see template below) using the GitHub **raw** URL for the tarbal
 The user manually publishes releases on GitHub when they are satisfied with testing.
 
 - **Never create a GitHub release yourself.**
-- **Never change the latest/pre-release status yourself.**
-- The GitHub Actions workflow (`.github/workflows/release.yml`) still exists but is not
-  relied upon for the build/test cycle.
+- **Never change the latest/pre-release status yourself.** Marking a release Latest is also
+  what moves the `:latest` image — that is the user's call, every time.
 
 ---
 
 ## README.md — frozen until told otherwise
 
-- The README contains version references (install commands, tarball URLs, `docker build` tags).
+- The README contains version references (install commands, tarball URLs, `docker build` tags —
+  image tags once the one-time switch above is done).
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
 - Current stable version in the README: **v1.8.67** (until the user says otherwise).
@@ -335,33 +350,32 @@ Add a new section at the top, above the previous version:
 
 ## After each build — docker install command template
 
-After pushing the branch, give this command with the version and branch filled in. It downloads
-the tarball byte-exact from GitHub raw (no Dropbox). Drop the `/music` mount line when the user
-is testing a Qobuz/Tidal streaming-only scenario.
+Once the test image's run is green, give this command with the version filled in. It pulls
+FIRST, so a failed pull leaves the running container untouched. Drop the `/music` mount line
+when the user is testing a Qobuz/Tidal streaming-only scenario.
 
 ```bash
+sudo docker pull ghcr.io/meltface-80/musicd-remote:NEW-test
 sudo docker stop musicd-remote
 sudo docker rm musicd-remote
-sudo rm -f /opt/musicd-remote/MusicD-Remote-vPREVIOUS.tar.gz
-cd /opt/musicd-remote
-wget -O MusicD-Remote-vNEW.tar.gz \
-  "https://raw.githubusercontent.com/meltface-80/MusicD-Remote/refs/heads/<BRANCH>/MusicD-Remote-vNEW.tar.gz"
-file MusicD-Remote-vNEW.tar.gz   # expect: gzip compressed data
-tar -xzf MusicD-Remote-vNEW.tar.gz
-docker build -t musicd-remote:NEW .
-docker run -d \
+sudo docker run -d \
   --name musicd-remote \
   --restart unless-stopped \
   --network host \
   -v musicd-remote-data:/app/data \
   -v /mnt/dietpi_userdata/4tb/Music:/music:ro \
-  musicd-remote:NEW
+  ghcr.io/meltface-80/musicd-remote:NEW-test
 # NOTE: the volume holds the Roon pairing + history. New installs (and the
 # user's box, after the one-time v1.6.32 copy migration) use
 # musicd-remote-data; pre-v1.6.32 installs must copy roon-random-albums-data
 # into it once (see README Updating) — a wrong/renamed volume silently
 # starts empty (re-pairing, lost history).
 ```
+
+Old locally built images (`musicd-remote:<version>`, from the tarball days) can be removed once
+the switch is made: `sudo docker images musicd-remote` lists them, `sudo docker image rm
+musicd-remote:<version>` removes one. Never suggest `docker image prune -a` — it takes every
+unused image on the machine, not just this app's. Removing an image never touches a volume.
 
 ---
 

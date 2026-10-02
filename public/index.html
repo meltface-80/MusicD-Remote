@@ -273,15 +273,10 @@
   <main>
   <div id="docker-migration-banner" class="docker-banner hidden" role="alert">
     <div class="docker-banner-body">
-      <strong>Switch to Docker</strong> — Updates are now Docker-only. Download the latest release from
-      <a href="https://github.com/meltface-80/MusicD-Remote/releases/latest" target="_blank" rel="noopener noreferrer">github.com/meltface-80/MusicD-Remote/releases/latest</a>,
-      then run (replacing VERSION with the release you downloaded):
-      <pre class="docker-banner-pre">sudo mkdir -p /opt/musicd-remote && cd /opt/musicd-remote
-wget https://github.com/meltface-80/MusicD-Remote/releases/download/vVERSION/MusicD-Remote-vVERSION.tar.gz
-tar -xzf MusicD-Remote-vVERSION.tar.gz
-docker build -t musicd-remote:VERSION .
-docker run -d --name musicd-remote --restart unless-stopped --network host -v musicd-remote-data:/app/data musicd-remote:VERSION
-sudo systemctl stop musicd-remote && sudo systemctl disable musicd-remote</pre>
+      <strong>Switch to Docker</strong> — Updates are now Docker-only. Stop this install first, then
+      run the published image — nothing to download or build:
+      <pre class="docker-banner-pre">sudo systemctl stop roon-random-albums && sudo systemctl disable roon-random-albums
+docker run -d --name musicd-remote --restart unless-stopped --network host -v musicd-remote-data:/app/data ghcr.io/meltface-80/musicd-remote:latest</pre>
       <button id="docker-migration-dismiss" class="docker-banner-dismiss" type="button">Got it</button>
     </div>
   </div>

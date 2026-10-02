@@ -2,6 +2,131 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.70] — 2026-10-02
+
+"Next, I want to change this to a typical docker install pulling the latest
+rather than tarballs. Can this be done without having to uninstall current
+installs?" — Yes; see "Switching" below.
+
+### Added — published images
+
+- **`ghcr.io/meltface-80/musicd-remote`**, for x86 (`amd64`) and 64-bit ARM
+  (`arm64`): PCs and Intel/AMD NAS boxes, a Raspberry Pi 4 or 5 on a 64-bit
+  OS, and Apple Silicon Macs under Docker Desktop.
+  - **`:<version>`**: built on every merge to `main`, next to the release. The
+    release still carries its tarball, which native installs update from.
+  - **`:latest`**: moves ONLY when a release is marked Latest on GitHub — the
+    same release the in-app updater and the README follow. A merge is still a
+    pre-release, so it never reaches anyone pulling `latest`. If the version's
+    image is missing when its release is promoted, it is built from the
+    release's tag first.
+  - **`:<version>-test`** and **`:test`**: built on every push to a working
+    branch, for testing before a merge. These replace the tarball committed to
+    the branch with each build.
+- **Switching an existing install needs no uninstall.** Everything that
+  matters lives in the `musicd-remote-data` volume: the Roon pairing, play
+  history, Listen later, waveforms and the art cache. Removing a container
+  never removes a volume. Stop and remove the container, then run the image
+  with the SAME volume and your usual flags. Roon sees the same extension
+  with the same pairing, so there is no re-authorising. The image keeps the
+  paths, port and (root) user a tarball build had, so the volume's files stay
+  writable.
+- The README, the docs-site install builder and `docker-compose.yml` move to
+  the image when this release is marked Latest — not before, because until
+  then there is no `:latest` to pull, and instructions that fail are worse
+  than old ones.
+
+### Changed — an image install updates by pulling
+
+- The in-app updater still checks for updates on an image install. But the
+  update toast, Settings → System, and Roon's own Settings page and status
+  line now give the command instead of an Update button:
+  `docker pull ghcr.io/meltface-80/musicd-remote:latest`, then recreate the
+  container from that image (with Compose: `docker compose pull && docker
+  compose up -d`). The wording is "from that image", not "with your usual
+  command": a test or pinned install's usual command names another tag, and
+  recreating from it changes nothing.
+  Unpacking a release over the files of a running container lasts only until
+  that container is next recreated, and until then the app reports one
+  version while its image names another. The API refuses it too: a 409 that
+  carries the command.
+- **An image install is only offered a release that exists as an image.**
+  `latest` only ever names a release marked Latest from v1.8.70 on
+  (`FIRST_IMAGE`), so an older release, or a bare tag, has nothing that pull
+  could fetch. Without this, every test image would be told to "roll back"
+  to v1.8.67 with `docker pull …:latest` — a tag that does not exist until
+  the first image release is promoted. A rollback the image CAN reach is
+  worded as one: "To go back to vX, pull it". Native installs keep every
+  offer they had, the tags fallback included.
+- Native installs, and containers built locally from a tarball, keep the
+  in-place updater exactly as before. The published image identifies itself
+  with `MUSICD_IMAGE`, which CI sets at build time; a local `docker build`
+  leaves it empty.
+- The "Switch to Docker" banner a native install shows now runs the
+  published image instead of downloading and building a tarball, and stops
+  the old service BEFORE starting the container rather than after.
+- **Fixed: the banner stopped a service that never existed.** It said
+  `systemctl stop musicd-remote`, but a native install is the
+  `roon-random-albums` unit INSTALL.md created, which kept its name through
+  the rename — the blanket rename reached the banner's command and not the
+  unit it names. The stop failed, the `&&` skipped the disable, and the
+  native install went on running beside the container. Class of error: a
+  rename applied to a name this project does not own.
+
+### Removed
+
+- Tarballs are no longer committed to the branch. The v1.8.69 test tarball is
+  gone from it; this version's test image includes everything in v1.8.69.
+
+### Workflows
+
+- `latest.yml` runs one at a time (promoting fires both `released` and
+  `edited`, and two runs moving `latest` at once could finish in either
+  order), and asks GitHub which release is Latest three times, 10 s apart,
+  before deciding the promoted one is not it.
+- A build cache that fails to save no longer fails the image it was saving
+  (`ignore-error=true`).
+- A push that only edits `docker-compose.yml` builds no test image — it is
+  docs-only by the project's own rule, since it can only name an image that
+  is already published.
+
+### Review
+
+- Done inline: the review agent hit its session limit before it reported.
+  Seven findings, all fixed above or here. The three not described above:
+  the updater's header comment had the in-place restart paragraph running on
+  from the image one; `.dockerignore` claimed the tarball leaves out `docs/`
+  and `.github/` (it never did — they rode along unused); and an `install`
+  field added to `/api/update/status` that nothing read was removed.
+
+### Tests
+
+- `test/unit/updater-image.test.js` covers the image install end to end.
+  `apply()` refuses before any network call, Roon's Settings page offers no
+  install switch and gives the pull command, and Roon's status line says how
+  to update. The API refuses before anything starts. A native or locally built
+  install keeps its updater. Against a stubbed GitHub, an image install is not
+  offered a pre-image release or a bare tag, is offered a newer release and a
+  rollback to an image release (the floor inclusive), and a native install's
+  offers are unchanged.
+- `test/dom/update-image.test.js`: on the image, the toast's Update button is
+  gone and the command is shown in its place. Settings → System's button
+  stays a check and never starts an update. A locally built container keeps
+  both as they were. An install ahead of the Latest release is told how to
+  go back, not to update. The native banner stops `roon-random-albums`, and
+  does so before it runs the image.
+- `test/static/images.test.js` pins the workflows and the Dockerfile:
+  - only `latest.yml` tags `latest`, and only for the release marked Latest;
+  - every image build is `amd64` + `arm64` and sets `MUSICD_IMAGE`;
+  - a version's image is built once, and test images never come from `main`
+    or a docs-only push (`docker-compose.yml` included);
+  - `latest.yml` runs queue rather than overlap or cancel;
+  - the Dockerfile keeps its working directory, volume, port and root user,
+    with the build arg after `npm install`, and `.dockerignore` leaves out
+    `node_modules`, `.git`, `data` and `docs`.
+
+1455 unit / 806 DOM / 131 static.
+
 ## [1.8.69] — 2026-10-02
 
 "Using my software Mandarin I want the settings page to be like Mandarin's. Not

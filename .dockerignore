@@ -6,3 +6,10 @@ config.json
 *.tar.gz
 *.md
 .dockerignore
+# Never read at run time (v1.8.70): the docs site, the two historical
+# tarballs and the CI workflows. CI builds the image from a git checkout, so
+# without these lines all three would ship in it — old/ was never in a release
+# tarball, and docs/ and .github/ only ever rode along unused.
+docs
+old
+.github
