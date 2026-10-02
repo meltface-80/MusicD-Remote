@@ -307,9 +307,10 @@ Everything is published to **`ghcr.io/meltface-80/musicd-remote`**, for `linux/a
 - The image keeps the paths, port and (root) user it always had: an existing `musicd-remote-data`
   volume must keep working when a tarball install switches to the image.
 - The release still carries a tarball asset — native installs update from it.
-- A brand-new package on ghcr.io is PRIVATE until its owner makes it public (GitHub → Packages →
-  musicd-remote → Package settings → Change visibility). Until then a pull needs
-  `docker login ghcr.io`.
+- The package is PUBLIC: it took the public repository's visibility on its first push
+  (v1.8.70's test image), verified by pulling the manifest with an anonymous token — no
+  `docker login` is needed. If a pull ever answers `denied`, check GitHub → Packages →
+  musicd-remote → Package settings before anything else.
 - No tarballs are committed to the repo any more.
 
 ---
