@@ -2,6 +2,68 @@
 
 All notable changes to Rouen (formerly MusicD Remote, and before that Roon Random Albums) are documented here.
 
+## [1.8.75] — 2026-10-03
+
+UI stragglers from testing v1.8.74 on a TV and a tablet.
+
+### Changed — the album view on desktop and landscape tablets
+
+- **It closes with an ×.** From 720px up the album view is a card hovering
+  over the page, so its corner button is an × rather than the back chevron
+  of the full-screen phone layout. Same button and same job — only the glyph
+  and its label ("Close") follow the layout. Phones held upright keep the ‹.
+- **The artwork starts below the corner buttons.** It started 28px down the
+  card, so the × sat on the cover's corner. The prev/next chevrons are placed
+  inside the cover and stay on its centre line.
+
+### Fixed — a way back from Now playing
+
+- Now playing is the same panel as the album view, so tapping the mini player
+  with an album open REPLACED that album — and the only way out was the Home
+  button, which went Home. It now returns to the album that was open, or
+  simply closes Now playing when nothing was. Different screens, different
+  mind sets: on a **desktop** (a large screen driven by a mouse) the button
+  is an **×**, full size or reduced, because you are closing the screen; on
+  **phones and tablets**, landscape iPads included, it is a **‹**, because
+  you are going back. Width alone cannot tell a landscape tablet from a
+  laptop, so the pointer decides. Escape, and a click outside the reduced card, do the
+  same. The album comes back as it was: scrolled where it was, and still
+  stepping to its neighbours with the chevrons, a swipe or the arrow keys.
+  Class of error: one panel serving two screens, with nothing remembering
+  which one it had been.
+
+### Added — Now playing, reduced (large screens)
+
+- On a screen 1200×700 or larger, a button beside Back shrinks Now playing to
+  the album view's card size (960px wide), and turns into a **Full size**
+  button. The reduced card is dragged by its top strip (marked with a grip)
+  and kept wholly on screen. The choice is remembered on the device; each
+  opening starts centred.
+
+### Changed — Random Album and Album of the day under the greeting
+
+- Both now sit directly under the greeting, in a row of their own with no
+  heading, on every screen. They are no longer part of "Not played in 6
+  months".
+- **"Not played in 6 months" is hidden until it has albums.** For its first
+  six months it has nothing to show, so it does not show; it appears by
+  itself once unplayed albums do (unless it is switched off under Settings →
+  Home Screen). It holds unplayed albums and nothing else.
+- Album of the day keeps its own live updates (00:01, and gone everywhere
+  once played) whether or not that row is switched on.
+
+### Changed — the share card's ×
+
+- A brass disc, like every other corner button.
+
+### Docs site
+
+- "Rouen" appears once: the logo (a duck in headphones beside four bars, in
+  graphite, cream and brass) replaces the large wordmark, which was standing
+  in for an external logo image that could fail, and a small one replaces the
+  name in the top bar. The site's copper palette moved to the app's graphite
+  and brass.
+
 ## [1.8.74] — 2026-10-03
 
 Tweaks and changes, with Mandarin as the reference — and a new name.

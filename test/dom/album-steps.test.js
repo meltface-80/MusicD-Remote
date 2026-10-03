@@ -254,12 +254,17 @@ test("only albums are stepped to, and never from Now playing", async (t) => {
     driver: `
       ${HELPERS}
       await window.__sleep(900);
-      // Not played: "Play something unheard", then Album of the day, then albums.
-      tileIn("home-unplayed", "Today").click();
+      // The strip under the greeting (v1.8.75): Random Album, then Album of
+      // the day, and nothing else — so Album of the day has no neighbour.
+      tileIn("home-today", "Today").click();
       await window.__sleep(500);
       T("aotd_hints", [shown("modal-prev"), shown("modal-next")]);
-      document.getElementById("modal-next").click();
-      await window.__sleep(700);
+      document.querySelector("#album-modal [data-close]").click();
+      await window.__sleep(300);
+      // The Not-played row holds albums only: its first steps to its second.
+      tileIn("home-unplayed", "Alpha").click();
+      await window.__sleep(500);
+      T("alpha_hints", [shown("modal-prev"), shown("modal-next")]);
       T("after_aotd", title());
       // A sheet over the card (an import, an add-to-playlist): the keys are its.
       window.__openImportSheet();
@@ -302,8 +307,9 @@ test("only albums are stepped to, and never from Now playing", async (t) => {
     `,
   });
   harness.assertNoPageError(assert, r);
-  await t.test("the 'Play something unheard' tile is not an album to step back to", () => {
-    assert.deepEqual(r.aotd_hints, [false, true]);
+  await t.test("the Random Album tile is not an album to step to", () => {
+    assert.deepEqual(r.aotd_hints, [false, false]);
+    assert.deepEqual(r.alpha_hints, [false, true]);
     assert.equal(r.after_aotd, "Alpha");
   });
   await t.test("no step while a track selection is being made", () => {

@@ -76,12 +76,15 @@ window.__installFetch(function (url, opts) {
 const DRIVER = `
   await window.__sleep(900);
 
-  // --- Home: the unheard tile leads the Not-played row ---
-  var row = document.getElementById("home-unplayed");
+  // --- Home: Random Album leads the strip under the greeting (v1.8.75) ---
+  var row = document.getElementById("home-today");
   var first = row ? row.firstElementChild : null;
   T("first_tile_id", first ? first.id : null);
   T("first_tile_label", first ? (first.querySelector(".album-title") || {}).textContent || "" : "");
-  T("row_tiles", row ? row.querySelectorAll(".album").length : 0);
+  T("strip_has_heading", !!(row && row.previousElementSibling && row.previousElementSibling.matches(".home-section-title")));
+  var unplayed = document.getElementById("home-unplayed");
+  T("row_tiles", unplayed ? unplayed.querySelectorAll(".album").length : 0);
+  T("unheard_in_row", !!(unplayed && unplayed.querySelector("#home-unheard-tile")));
   T("tile_subtitle", first ? !!first.querySelector(".album-artist") : null);
   // The disc turns all the time (v1.8.74), and a tap speeds THAT animation up.
   var disc = first ? first.querySelector(".unheard-disc") : null;
@@ -126,12 +129,17 @@ test("one playlist screen, a shorter menu, unheard on Home (v1.7.25)",
   });
   harness.assertNoPageError(assert, r);
 
-  await t.test("Random Album leads the Not-played row (v1.8.74)", () => {
+  await t.test("Random Album leads the strip under the greeting, with no heading (v1.8.75)", () => {
     assert.equal(r.first_tile_id, "home-unheard-tile",
-      "the action must be the FIRST thing in the row, not buried after the albums");
+      "the action must be the FIRST thing in the strip");
     assert.equal(r.first_tile_label, "Random Album");
     assert.equal(r.tile_subtitle, false, "the 'Surprise me' line is still under it");
-    assert.equal(r.row_tiles, 2, "the row still shows its albums alongside the action");
+    assert.equal(r.strip_has_heading, false);
+  });
+
+  await t.test("the Not-played row holds its albums and nothing else", () => {
+    assert.equal(r.unheard_in_row, false, "Random Album is still in the Not-played row");
+    assert.equal(r.row_tiles, 1, "the row should hold just the one unplayed album");
   });
 
   await t.test("pressing it spins that tile and makes the request", () => {

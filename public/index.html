@@ -342,6 +342,14 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
         <h1 class="home-greeting-text" id="home-greeting-text"></h1>
       </div>
       <div id="home-sections">
+        <!-- Random Album and Album of the day, under the greeting with no heading
+             (v1.8.75). Not a Home row: always there, and not in the reorderable
+             list — the "Not played" row they used to lead now holds only
+             unplayed albums. Inside #home-sections so search hides it with the
+             rows and it takes the rows' gutter; applyHomeLayout APPENDS the
+             rows, so this stays first. -->
+        <div id="home-today" class="home-carousel home-carousel-1row home-today" aria-label="Random album and album of the day"></div>
+
         <!-- data-row is the row's identity. The Home Screen settings page and
              the loader both read it from the HOME_ROWS table in app.js, so the
              list you reorder and the rows that render cannot drift apart.
@@ -544,22 +552,51 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
            top of the panel so each album tints its own detail view (decorative
            only — hidden from AT, never intercepts taps). -->
       <img id="modal-ambient" class="modal-ambient hidden" alt="" aria-hidden="true">
-      <!-- A back chevron rather than an ×: this panel is somewhere you came
-           FROM the grid, so leaving it goes back rather than dismissing
-           something. It still closes the modal — data-close is unchanged. -->
-      <button class="modal-close icon-btn" data-close aria-label="Back" title="Back">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      <!-- Full screen (a phone held upright) this is a back chevron: the panel
+           is somewhere you came FROM the grid. From 720px up the album view is
+           a card hovering over the page, and a card closes with an × (v1.8.75).
+           Same button, same data-close — only the glyph (CSS) and the label
+           (app.js) follow the layout. -->
+      <button class="modal-close icon-btn" id="modal-close-btn" data-close aria-label="Back" title="Back">
+        <svg class="ico-back" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <polyline points="15 18 9 12 15 6"/>
         </svg>
-      </button>
-      <!-- Now-playing mode only (CSS-gated): top-left Home button — Back is
-           hidden there, so Home takes the corner it holds elsewhere. -->
-      <button class="modal-home icon-btn" id="modal-home-btn" aria-label="Go to Home screen" title="Home">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        <svg class="ico-close" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M3 10.5 12 3l9 7.5"/>
-          <path d="M5 9.5V21h5v-6h4v6h5V9.5"/>
+          <path d="M18 6 6 18M6 6l12 12"/>
+        </svg>
+      </button>
+      <!-- Now-playing mode only (CSS-gated): top-left Back (v1.8.75 — it was a
+           Home button, which was the only way out and always went Home). It
+           returns to the screen before the mini player was tapped: the album
+           that was open, or the screen underneath. -->
+      <button class="modal-home icon-btn" id="modal-home-btn" aria-label="Back" title="Back">
+        <svg class="ico-back" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="15 18 9 12 15 6"/>
+        </svg>
+        <!-- A desktop (a mouse, a large screen) CLOSES Now playing; a phone or
+             tablet goes back. Same action — only the glyph and label differ. -->
+        <svg class="ico-close" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M18 6 6 18M6 6l12 12"/>
+        </svg>
+      </button>
+      <!-- Now-playing mode, large screens only (CSS-gated): shrink the screen to
+           the album view's card size and back. The card can then be dragged by
+           its top strip. -->
+      <button class="modal-np-size icon-btn" id="modal-np-size-btn" type="button"
+              aria-label="Reduce size" title="Reduce size" aria-pressed="false">
+        <svg class="ico-shrink" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/>
+          <line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/>
+        </svg>
+        <svg class="ico-grow" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/>
+          <line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>
         </svg>
       </button>
       <button class="modal-share icon-btn" id="modal-share-btn" aria-label="Share card">

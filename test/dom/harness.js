@@ -181,9 +181,13 @@ function buildHtml({ stub, driver, page }) {
  *                                   Layout tests need this — Chromium's default
  *                                   800x600 is neither phone nor desktop, and
  *                                   vh/dvh-sized panels behave differently.
+ * @param {string[]} [opts.chromeArgs] extra Chromium flags — e.g. the blink
+ *                                   settings that present a mouse, since a
+ *                                   headless browser reports no hover and no
+ *                                   fine pointer by default.
  * @returns {object} the reported results; `__error` / `__pageErrors` if the page failed.
  */
-function renderPage({ stub, driver, budgetMs = 20000, name = "page", windowSize, page, screenshot }) {
+function renderPage({ stub, driver, budgetMs = 20000, name = "page", windowSize, page, screenshot, chromeArgs }) {
   if (!available) throw new Error("no chromium binary found — set CHROMIUM_BIN");
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "musicd-dom-"));
@@ -201,6 +205,7 @@ function renderPage({ stub, driver, budgetMs = 20000, name = "page", windowSize,
       "--disable-dev-shm-usage",
       "--allow-file-access-from-files",
       ...(windowSize ? [`--window-size=${windowSize.replace("x", ",")}`] : []),
+      ...(chromeArgs || []),
       `--virtual-time-budget=${budgetMs}`,
       // --screenshot and --dump-dom coexist: the shot is taken when the virtual
       // time budget expires, i.e. after the driver has finished.
@@ -263,4 +268,8 @@ function assertNoPageError(assert, results) {
   }
 }
 
-module.exports = { available, CHROMIUM, renderPage, assertNoPageError, PUBLIC_DIR };
+// A desktop: a mouse, so (hover: hover) and (pointer: fine) match.
+const MOUSE = ["--blink-settings=primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2"];
+
+module.exports = {
+  MOUSE, available, CHROMIUM, renderPage, assertNoPageError, PUBLIC_DIR };
