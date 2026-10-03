@@ -7,16 +7,18 @@
 <meta name="description" content="Rouen — a music-discovery companion and wall display for Roon. Docker install configurator, API key setup and docs.">
 <style>
   :root {
-    --bg:        #1b1d1f;   /* charcoal */
-    --bg-deep:   #141618;
-    --panel:     #232628;
-    --panel-2:   #2a2d30;
-    --line:      #35393d;
-    --text:      #e8e6e3;
-    --muted:     #a8a49e;
-    --copper:    #c47f4a;   /* subtle copper accent */
-    --copper-hi: #d99a66;
-    --copper-dim:#8a5a35;
+    /* Graphite and brass — the app's own default theme. (The names still say
+       copper from the site's first palette; the values are brass.) */
+    --bg:        #17191c;   /* graphite */
+    --bg-deep:   #121417;
+    --panel:     #1f2226;
+    --panel-2:   #262a2f;
+    --line:      #30353b;
+    --text:      #ecebe6;
+    --muted:     #a3a5aa;
+    --copper:    #c9a45c;   /* brass */
+    --copper-hi: #d4b06a;
+    --copper-dim:#8a7140;
     --good:      #7fb47f;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -38,7 +40,7 @@
   /* ---------- top nav ---------- */
   nav.topnav {
     position: sticky; top: 0; z-index: 50;
-    background: rgba(20,22,24,.92);
+    background: rgba(18,20,23,.92);
     backdrop-filter: blur(8px);
     border-bottom: 1px solid var(--line);
   }
@@ -51,7 +53,8 @@
   }
   nav.topnav a:hover { color: var(--copper-hi); text-decoration: none; }
   nav.topnav .brand { color: var(--text); font-weight: 700; letter-spacing: .02em; }
-  nav.topnav .brand span { color: var(--copper); }
+  nav.topnav .brand { display: inline-flex; align-items: center; flex: 0 0 auto; }
+  nav.topnav .brand img { display: block; width: 26px; height: auto; border-radius: 5px; }
   nav.topnav .gh { margin-left: auto; }
 
   /* ---------- hero ---------- */
@@ -59,20 +62,16 @@
     text-align: center;
     padding: 48px 20px 40px;
     background:
-      radial-gradient(ellipse 70% 55% at 50% -10%, rgba(196,127,74,.14), transparent 65%),
+      radial-gradient(ellipse 70% 55% at 50% -10%, rgba(201,164,92,.14), transparent 65%),
       var(--bg-deep);
     border-bottom: 1px solid var(--line);
   }
   header.hero img.logo {
-    max-width: min(560px, 88vw);
-    width: 100%; height: auto;
-    border-radius: 14px;
+    width: min(260px, 60vw); height: auto;
+    border-radius: 18px;
+    border: 1px solid rgba(201,164,92,.35);
     box-shadow: 0 10px 40px rgba(0,0,0,.45);
   }
-  header.hero .wordmark { display: none; font-size: 44px; font-weight: 800; letter-spacing: .03em; }
-  header.hero .wordmark span { color: var(--copper); }
-  header.hero.noimg img.logo { display: none; }
-  header.hero.noimg .wordmark { display: block; }
   header.hero h1 { font-size: 30px; margin-top: 26px; font-weight: 700; }
   header.hero p.tag { color: var(--muted); max-width: 640px; margin: 10px auto 0; font-size: 16px; }
   .badges { margin-top: 18px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
@@ -80,7 +79,7 @@
     display: inline-block; font-size: 12.5px; font-weight: 600;
     padding: 4px 12px; border-radius: 999px;
     border: 1px solid var(--copper-dim); color: var(--copper-hi);
-    background: rgba(196,127,74,.08);
+    background: rgba(201,164,92,.08);
   }
   .badge.plain { border-color: var(--line); color: var(--muted); background: transparent; }
 
@@ -114,7 +113,7 @@
     text-transform: uppercase;
     padding: 2px 7px; border-radius: 999px;
     border: 1px solid var(--copper-dim); color: var(--copper-hi);
-    background: rgba(196,127,74,.10);
+    background: rgba(201,164,92,.10);
   }
   .card.is-new { border-color: var(--copper-dim); }
   /* The ⓘ on each feature card: opens that feature's how-to in place. A real
@@ -186,7 +185,7 @@
     border-radius: 50%; border: 2px solid var(--muted);
   }
   .mode .m-sub { font-size: 12.5px; color: var(--muted); margin-top: 3px; padding-left: 22px; }
-  .mode.sel { border-color: var(--copper); background: rgba(196,127,74,.07); }
+  .mode.sel { border-color: var(--copper); background: rgba(201,164,92,.07); }
   .mode.sel .m-title::before { border-color: var(--copper); background: radial-gradient(circle at center, var(--copper) 0 45%, transparent 50%); }
 
   .fields { display: grid; gap: 14px; }
@@ -227,7 +226,7 @@
     border: 1px dashed var(--copper-dim); border-radius: 8px;
     padding: 7px 12px;
   }
-  .addbtn:hover { background: rgba(196,127,74,.08); }
+  .addbtn:hover { background: rgba(201,164,92,.08); }
   #extra-mounts { display: grid; gap: 8px; }
   #extra-mounts:empty { display: none; }
   .mrow { display: flex; gap: 8px; align-items: center; }
@@ -243,7 +242,7 @@
 
   .note {
     font-size: 13px; color: var(--muted);
-    background: rgba(196,127,74,.06);
+    background: rgba(201,164,92,.06);
     border: 1px solid var(--copper-dim);
     border-radius: 10px; padding: 12px 14px;
   }
@@ -263,7 +262,7 @@
     border: 1px solid var(--line); border-radius: 8px;
     padding: 7px 14px;
   }
-  .out-tabs button.sel { color: var(--copper-hi); border-color: var(--copper); background: rgba(196,127,74,.08); }
+  .out-tabs button.sel { color: var(--copper-hi); border-color: var(--copper); background: rgba(201,164,92,.08); }
   .codebox { position: relative; }
   .codebox pre {
     background: var(--bg-deep);
@@ -331,7 +330,6 @@
   @media (max-width: 600px) {
     header.hero { padding: 32px 16px 30px; }
     header.hero h1 { font-size: 24px; margin-top: 20px; }
-    header.hero .wordmark { font-size: 34px; }
     section { padding: 40px 0 6px; }
     section > .wrap > h2 { font-size: 21px; }
     .cfg-body { padding: 16px; gap: 18px; }
@@ -350,7 +348,7 @@
 
 <nav class="topnav">
   <div class="wrap">
-    <a class="brand" href="#top">Rou<span>en</span></a>
+    <a class="brand" href="#top" aria-label="Rouen — back to the top"><img src="rouen-logo.png" width="26" height="29" alt=""></a>
     <a href="#features">Features</a>
     <a href="#install">Install</a>
     <a href="#apikeys">API keys</a>
@@ -362,9 +360,10 @@
 </nav>
 
 <header class="hero" id="top">
-  <img class="logo" src="https://github.com/user-attachments/assets/fc1dd26e-db7f-4e27-8f66-b0ab74db89e3"
-       alt="Rouen logo" onerror="this.closest('.hero').classList.add('noimg')">
-  <div class="wordmark">Rou<span>en</span></div>
+  <!-- The logo, served from this site (it used to be an external attachment
+       that could fail, which is when a "Rouen" wordmark stood in for it and the
+       name showed twice). The name itself is the heading below, once. -->
+  <img class="logo" src="rouen-logo.png" width="650" height="720" alt="Rouen logo — a duck in headphones beside four bars">
   <h1>Rouen</h1>
   <p class="tag">A music-discovery companion and full-screen wall display for
      <a href="https://roon.app">Roon</a> — random-album browsing, instant whole-library

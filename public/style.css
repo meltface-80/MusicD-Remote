@@ -5026,3 +5026,68 @@ body.show-quality .album-quality { display: block; }
 [data-palette="graphite"] .home-genre-card:nth-child(6n) { background: #2f3a27; }
 [data-palette="graphite"] .home-genre-card:nth-child(6n)::after { background: #9fae6b; }
 [data-palette="graphite"] .home-genre-card:hover { border-color: rgba(201,164,92,.5); filter: brightness(1.08); }
+
+/* ================================================================== */
+/*  v1.8.75 — album view and Now playing chrome                        */
+/* ================================================================== */
+/* The share card's × is a brass disc like every other corner button. */
+[data-palette] .share-close {
+  border-radius: 50%; border-color: var(--accent); background: var(--accent); color: var(--on-accent);
+}
+[data-palette] .share-close:hover { background: var(--accent); color: var(--on-accent); filter: brightness(1.08); }
+
+/* The album view's corner button: a back chevron while it fills the screen,
+   an × from 720px up, where it is a card over the page. */
+.modal-close .ico-close { display: none; }
+@media (min-width: 720px) {
+  .modal:not(.np-mode) .modal-close .ico-back  { display: none; }
+  .modal:not(.np-mode) .modal-close .ico-close { display: block; }
+  /* THE ARTWORK STARTS BELOW THE CORNER BUTTONS. They sit 12px in and are
+     --ctl-h (40px) tall, so 64px of top padding keeps 12px clear under them;
+     at 28px the × sat on the cover's corner. The prev/next chevrons are
+     positioned inside .modal-art at 50%, so they move down with it and stay
+     on the cover's centre line. Same specificity as the two-column block it
+     overrides (three classes), and later in the file. */
+  .modal:not(.np-mode) .modal-body {
+    padding-top: calc(24px + var(--ctl-h) + env(safe-area-inset-top));
+  }
+}
+
+/* Now playing, reduced (large screens): the size button beside Back, and the
+   card the screen becomes — the album view's width, a fixed height so the art
+   still sizes from the space left, draggable by its top strip (app.js). */
+.modal-np-size .ico-grow { display: none; }
+.modal.np-reduced .modal-np-size .ico-shrink { display: none; }
+.modal.np-reduced .modal-np-size .ico-grow { display: block; }
+.modal-np-size { display: none; }
+@media (min-width: 1200px) and (min-height: 700px) {
+  .modal.np-mode .modal-np-size {
+    display: inline-flex;
+    position: absolute; top: calc(12px + env(safe-area-inset-top));
+    left: calc(20px + var(--ctl-h)); z-index: 2;
+  }
+  .modal.np-mode.np-reduced { padding: 24px; align-items: center; justify-content: center; }
+  .modal.np-mode.np-reduced .modal-panel {
+    /* No entrance animation on the reduced card: it animates transform, so
+       every time it restarted (when a drag ended and .is-dragging came off)
+       the card faded in back at the centre for .18s and then jumped to where
+       it had been dropped. */
+    animation: none;
+    width: min(960px, 100%);
+    height: min(760px, calc(100vh - 48px)); max-height: calc(100vh - 48px);
+    border-radius: 12px; border: 1px solid var(--border);
+  }
+  /* A grip on the top strip, so it reads as something to hold. */
+  .modal.np-mode.np-reduced .modal-panel::after {
+    content: ""; position: absolute; top: 6px; left: 50%; z-index: 3;
+    width: 44px; height: 4px; border-radius: 2px;
+    background: var(--border); transform: translateX(-50%); pointer-events: none;
+  }
+  .modal.np-mode.np-reduced .modal-panel.is-dragging {
+    cursor: grabbing; user-select: none; -webkit-user-select: none;
+  }
+}
+[data-palette] .modal .modal-np-size {
+  border-radius: 50%; border-color: var(--accent); background: var(--accent); color: var(--on-accent);
+}
+[data-palette] .modal .modal-np-size:hover { background: var(--accent); color: var(--on-accent); filter: brightness(1.08); }

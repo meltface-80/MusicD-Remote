@@ -2,6 +2,52 @@
 
 All notable changes to Rouen (formerly MusicD Remote, and before that Roon Random Albums) are documented here.
 
+## [1.8.75] — 2026-10-03
+
+UI stragglers from testing v1.8.74 on a TV and a tablet.
+
+### Changed — the album view on desktop and landscape tablets
+
+- **It closes with an ×.** From 720px up the album view is a card hovering
+  over the page, so its corner button is an × rather than the back chevron
+  of the full-screen phone layout. Same button and same job — only the glyph
+  and its label ("Close") follow the layout. Phones held upright keep the ‹.
+- **The artwork starts below the corner buttons.** It started 28px down the
+  card, so the × sat on the cover's corner. The prev/next chevrons are placed
+  inside the cover and stay on its centre line.
+
+### Fixed — a way back from Now playing
+
+- Now playing is the same panel as the album view, so tapping the mini player
+  with an album open REPLACED that album — and the only way out was the Home
+  button, which went Home. That button is a **‹ Back** now, on every screen
+  size: it returns to the album that was open, or simply closes Now playing
+  when nothing was. Escape, and a click outside the reduced card, do the
+  same. The album comes back as it was: scrolled where it was, and still
+  stepping to its neighbours with the chevrons, a swipe or the arrow keys.
+  Class of error: one panel serving two screens, with nothing remembering
+  which one it had been.
+
+### Added — Now playing, reduced (large screens)
+
+- On a screen 1200×700 or larger, a button beside Back shrinks Now playing to
+  the album view's card size (960px wide), and turns into a **Full size**
+  button. The reduced card is dragged by its top strip (marked with a grip)
+  and kept wholly on screen. The choice is remembered on the device; each
+  opening starts centred.
+
+### Changed — the share card's ×
+
+- A brass disc, like every other corner button.
+
+### Docs site
+
+- "Rouen" appears once: the logo (a duck in headphones beside four bars, in
+  graphite, cream and brass) replaces the large wordmark, which was standing
+  in for an external logo image that could fail, and a small one replaces the
+  name in the top bar. The site's copper palette moved to the app's graphite
+  and brass.
+
 ## [1.8.74] — 2026-10-03
 
 Tweaks and changes, with Mandarin as the reference — and a new name.

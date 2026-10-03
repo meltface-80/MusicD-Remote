@@ -6579,8 +6579,33 @@
   // transport IIFE, which has no access to closeModal or this renderer.
   window.__renderArtistLinks = renderArtistLinks;
 
+  // The screen Now playing was opened over (v1.8.75). Now playing is this same
+  // modal, so tapping the mini player while an album is open REPLACES that
+  // album — and the only way out was Home. Its Back puts back what it
+  // replaced: the album that was open, or (none) whatever screen is under the
+  // modal, which closing reveals as it was.
+  let npReturn = null;
+
   function openAlbum(album, opts) {
     opts = opts || {};
+    if (opts.source === "now-playing") {
+      const albumOpen = !modal.classList.contains("hidden") && !modal.classList.contains("np-mode");
+      // Re-opened while already on Now playing: keep what it is to go back to.
+      if (albumOpen) {
+        // Where the album was opened from (its prev/next) and how far down it
+        // was scrolled go with it, so Back puts back the screen as it was.
+        const bodyEl = modal.querySelector(".modal-body");
+        npReturn = currentAlbum
+          ? { album: currentAlbum, opts: { source: currentSource, zoneId: currentSourceZoneId, filter: currentDetailFilter },
+              navTile: albumNavTile, navParent: albumNavParent, navKey: albumNavKey,
+              scrollTop: bodyEl ? bodyEl.scrollTop : 0 }
+          : null;
+      } else if (modal.classList.contains("hidden")) {
+        npReturn = null;
+      }
+    } else {
+      npReturn = null;
+    }
     // Album select mode and track select mode both drive the one top-bar menu,
     // so they must never be live together. Opening an album ends the grid
     // selection rather than leaving a count behind that the menu would then
@@ -7232,7 +7257,11 @@
     if (typeof window.__refreshTransport === "function") window.__refreshTransport();
   }
   modal.addEventListener("click", (e) => {
-    if (e.target.closest && e.target.closest("[data-close]")) closeModal();
+    if (!(e.target.closest && e.target.closest("[data-close]"))) return;
+    // On Now playing a close — the backdrop round a reduced card, say — is the
+    // same as its Back: it returns to the album it replaced, if there was one.
+    if (modal.classList.contains("np-mode")) leaveNowPlaying();
+    else closeModal();
   });
 
   // ---------------------------------------------------------------------------
@@ -7441,16 +7470,156 @@
       springBack();
     }, { passive: true });
   }
-  // np-mode's top-left Home button (the × is hidden there): close the modal
-  // and land on the Home screen, leaving any labels/artist view behind.
-  const modalHomeBtn = document.getElementById("modal-home-btn");
-  if (modalHomeBtn) modalHomeBtn.addEventListener("click", () => {
+  // np-mode's top-left Back (v1.8.75; it was Home, which always went Home):
+  // back to the screen before the mini player was tapped — the album that was
+  // open, or the screen under the modal, which closing leaves exactly as it was.
+  function leaveNowPlaying() {
+    const back = npReturn;
+    npReturn = null;
     closeModal();
-    showHome();   // showHome resets labels/artist/search state itself
-  });
+    if (!back) return;
+    // Reopened as if from its tile, so previous / next, the swipe and the
+    // arrow keys still walk the list it came from.
+    pendingNavTile = back.navTile && back.navTile.isConnected ? back.navTile : null;
+    try { openAlbum(back.album, back.opts); }
+    finally { pendingNavTile = null; }
+    if (!albumNavTile && back.navParent) {
+      albumNavTile = back.navTile; albumNavParent = back.navParent; albumNavKey = back.navKey;
+      paintAlbumSteps();
+    }
+    // And scrolled back to where it was, once the track list is long enough
+    // to hold that position again (it loads after the panel opens).
+    const want = back.scrollTop || 0;
+    if (want > 0) {
+      const bodyEl = modal.querySelector(".modal-body");
+      let tries = 0;
+      const settle = () => {
+        // Stop if the panel was closed or something else was opened meanwhile.
+        if (!bodyEl || modal.classList.contains("hidden") || currentAlbum !== back.album) return;
+        if (bodyEl.scrollHeight - bodyEl.clientHeight >= want) { bodyEl.scrollTop = want; return; }
+        if (++tries < 20) setTimeout(settle, 100);
+      };
+      setTimeout(settle, 50);
+    }
+  }
+  const modalHomeBtn = document.getElementById("modal-home-btn");
+  if (modalHomeBtn) modalHomeBtn.addEventListener("click", leaveNowPlaying);
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !modal.classList.contains("hidden")) closeModal();
+    if (e.key !== "Escape" || modal.classList.contains("hidden")) return;
+    if (modal.classList.contains("np-mode")) leaveNowPlaying();
+    else closeModal();
   });
+
+  // The album view's corner button names what it does at each size: a back
+  // chevron while the album view fills the screen, an × from 720px up, where it
+  // is a card over the page (the glyph swaps in CSS at the same width).
+  {
+    const closeBtn = document.getElementById("modal-close-btn");
+    const card = window.matchMedia ? window.matchMedia("(min-width: 720px)") : null;
+    const label = () => {
+      if (!closeBtn) return;
+      const word = card && card.matches ? "Close" : "Back";
+      closeBtn.setAttribute("aria-label", word);
+      closeBtn.title = word;
+    };
+    label();
+    if (card) {
+      if (card.addEventListener) card.addEventListener("change", label);
+      else if (card.addListener) card.addListener(label);   // older Safari
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // NOW PLAYING, REDUCED (v1.8.75) — large screens only.
+  //
+  // On a big desktop the full-screen Now playing hides everything. Reduce size
+  // turns it into a card the size of the album view's; the same button then
+  // reads "Full size". The card is dragged by its top strip (not by its
+  // buttons, its tabs or anything inside the body). The choice is remembered
+  // on this device; the position is not — every opening starts centred.
+  // ---------------------------------------------------------------------------
+  {
+    const sizeBtn = document.getElementById("modal-np-size-btn");
+    const panel = modal.querySelector(".modal-panel");
+    const SIZE_KEY = "rra-np-reduced";
+    const large = window.matchMedia ? window.matchMedia("(min-width: 1200px) and (min-height: 700px)") : null;
+    let reduced = false;
+    try { reduced = localStorage.getItem(SIZE_KEY) === "1"; }
+    catch (e) { /* storage blocked — full size, the default */ }
+    let dx = 0, dy = 0;
+
+    const place = () => { if (panel) panel.style.transform = (dx || dy) ? "translate(" + dx + "px," + dy + "px)" : ""; };
+    function paintSize() {
+      const on = reduced && !!(large && large.matches) && modal.classList.contains("np-mode");
+      if (modal.classList.contains("np-reduced") !== on) modal.classList.toggle("np-reduced", on);
+      if (!on) { dx = 0; dy = 0; place(); }
+      if (sizeBtn) {
+        sizeBtn.setAttribute("aria-pressed", on ? "true" : "false");
+        sizeBtn.setAttribute("aria-label", on ? "Full size" : "Reduce size");
+        sizeBtn.title = on ? "Full size" : "Reduce size";
+      }
+    }
+    if (sizeBtn) sizeBtn.addEventListener("click", () => {
+      reduced = !modal.classList.contains("np-reduced");
+      try { localStorage.setItem(SIZE_KEY, reduced ? "1" : "0"); }
+      catch (e) { /* storage blocked — it still applies for this visit */ }
+      dx = 0; dy = 0;
+      paintSize();
+    });
+    if (large) {
+      if (large.addEventListener) large.addEventListener("change", paintSize);
+      else if (large.addListener) large.addListener(paintSize);
+    }
+    // Opening and closing come and go through the classes on the modal, so the
+    // state follows them: a fresh opening is centred.
+    // Every write below is guarded by a check that it CHANGES something:
+    // classList.remove() rewrites the class attribute even when the token is
+    // absent, and that write would wake this observer again, for ever.
+    new MutationObserver(() => {
+      if (modal.classList.contains("hidden") || !modal.classList.contains("np-mode")) {
+        if (modal.classList.contains("np-reduced")) modal.classList.remove("np-reduced");
+        if (dx || dy) { dx = 0; dy = 0; place(); }
+      } else if (reduced && !modal.classList.contains("np-reduced") && large && large.matches) {
+        paintSize();
+      }
+    }).observe(modal, { attributes: true, attributeFilter: ["class"] });
+
+    // Drag by the top strip: a press on the panel above its body's content —
+    // never on a button, a tab or anything that is itself interactive.
+    const STRIP = 56;
+    let drag = null;
+    if (panel) panel.addEventListener("pointerdown", (e) => {
+      if (!modal.classList.contains("np-reduced") || e.button !== 0) return;
+      if (e.target.closest("button, a, input, select, .modal-tabs, [role='button']")) return;
+      const box = panel.getBoundingClientRect();
+      if (e.clientY - box.top > STRIP) return;
+      drag = { id: e.pointerId, x: e.clientX - dx, y: e.clientY - dy,
+               baseLeft: box.left - dx, baseTop: box.top - dy, w: box.width, h: box.height };
+      panel.classList.add("is-dragging");
+      try { panel.setPointerCapture(e.pointerId); } catch (err) { /* capture is a nicety; the move handler still works */ }
+      e.preventDefault();
+    });
+    if (panel) panel.addEventListener("pointermove", (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      // Kept wholly on screen, so its corner buttons can never be dragged out
+      // of reach.
+      const minX = -drag.baseLeft, maxX = Math.max(minX, window.innerWidth - drag.baseLeft - drag.w);
+      const minY = -drag.baseTop,  maxY = Math.max(minY, window.innerHeight - drag.baseTop - drag.h);
+      dx = Math.max(minX, Math.min(maxX, e.clientX - drag.x));
+      dy = Math.max(minY, Math.min(maxY, e.clientY - drag.y));
+      place();
+    });
+    const endDrag = (e) => {
+      if (!drag || (e && e.pointerId !== drag.id)) return;
+      drag = null;
+      if (panel) panel.classList.remove("is-dragging");
+    };
+    if (panel) {
+      panel.addEventListener("pointerup", endDrag);
+      panel.addEventListener("pointercancel", endDrag);
+    }
+    paintSize();
+  }
 
   // The album view heals itself (v1.8.68). An error line or a "your Roon
   // library changed" note says the list this album was opened from has gone out
