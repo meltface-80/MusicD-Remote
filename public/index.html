@@ -342,6 +342,14 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
         <h1 class="home-greeting-text" id="home-greeting-text"></h1>
       </div>
       <div id="home-sections">
+        <!-- Random Album and Album of the day, under the greeting with no heading
+             (v1.8.75). Not a Home row: always there, and not in the reorderable
+             list — the "Not played" row they used to lead now holds only
+             unplayed albums. Inside #home-sections so search hides it with the
+             rows and it takes the rows' gutter; applyHomeLayout APPENDS the
+             rows, so this stays first. -->
+        <div id="home-today" class="home-carousel home-carousel-1row home-today" aria-label="Random album and album of the day"></div>
+
         <!-- data-row is the row's identity. The Home Screen settings page and
              the loader both read it from the HOME_ROWS table in app.js, so the
              list you reorder and the rows that render cannot drift apart.

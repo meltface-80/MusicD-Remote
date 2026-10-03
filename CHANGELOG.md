@@ -40,11 +40,17 @@ UI stragglers from testing v1.8.74 on a TV and a tablet.
   and kept wholly on screen. The choice is remembered on the device; each
   opening starts centred.
 
-### Changed — "Not played in 6 months" is one row until it has albums
+### Changed — Random Album and Album of the day under the greeting
 
-- For its first six months the row holds only Random Album and Album of the
-  day, and the two-row layout of larger screens stacked those two on top of
-  each other. It stays a single row until unplayed albums start appearing.
+- Both now sit directly under the greeting, in a row of their own with no
+  heading, on every screen. They are no longer part of "Not played in 6
+  months".
+- **"Not played in 6 months" is hidden until it has albums.** For its first
+  six months it has nothing to show, so it does not show; it appears by
+  itself once unplayed albums do (unless it is switched off under Settings →
+  Home Screen). It holds unplayed albums and nothing else.
+- Album of the day keeps its own live updates (00:01, and gone everywhere
+  once played) whether or not that row is switched on.
 
 ### Changed — the share card's ×
 

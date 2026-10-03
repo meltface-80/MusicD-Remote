@@ -78,10 +78,12 @@ const DRIVER = `
     document.body.appendChild(p); var c = getComputedStyle(p).color; p.remove(); return c;
   }
   await window.__sleep(700);
-  // No unplayed albums yet: the row is Random Album (and Album of the day)
-  // alone, and it stays ONE row rather than stacking them.
-  T("unplayed_1row", document.getElementById("home-unplayed").classList.contains("home-carousel-1row"));
-  T("unplayed_rows", getComputedStyle(document.getElementById("home-unplayed")).gridTemplateRows.split(" ").length);
+  // No unplayed albums yet: the Not-played row is hidden, and Random Album
+  // sits in the one-row strip under the greeting.
+  var upSec = document.getElementById("home-unplayed").closest(".home-section");
+  T("unplayed_hidden", upSec.classList.contains("hidden") || getComputedStyle(upSec).display === "none");
+  T("today_rows", getComputedStyle(document.getElementById("home-today")).gridTemplateRows.split(" ").length);
+  T("today_has_random", !!document.querySelector("#home-today #home-unheard-tile"));
   document.getElementById("menu-toggle").click();
   await window.__sleep(250);
   document.querySelector('.menu-item[data-action="shuffle"]').click();
@@ -186,9 +188,10 @@ test("album card ×, Now playing's Back and the reduced card (v1.8.75) — deskt
     }
   });
 
-  await t.test("Not played in 6 months is one row while it has no albums", () => {
-    assert.equal(r.unplayed_1row, true);
-    assert.equal(r.unplayed_rows, 1, "the row still lays out in " + r.unplayed_rows + " rows");
+  await t.test("Not played in 6 months is hidden until it has albums; Random Album is under the greeting", () => {
+    assert.equal(r.unplayed_hidden, true, "the empty Not-played row is showing");
+    assert.equal(r.today_has_random, true);
+    assert.equal(r.today_rows, 1, "the strip lays out in " + r.today_rows + " rows");
   });
 
   await t.test("on a desktop Now playing closes with an ×, and has a size button", () => {

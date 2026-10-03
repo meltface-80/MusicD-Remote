@@ -5101,3 +5101,7 @@ body.show-quality .album-quality { display: block; }
   .modal.np-mode .modal-home .ico-back  { display: none; }
   .modal.np-mode .modal-home .ico-close { display: block; }
 }
+
+/* Random Album and Album of the day, under the greeting with no heading
+   (v1.8.75). Laid out by .home-carousel like every row, one row always. */
+.home-today { margin-bottom: 30px; }

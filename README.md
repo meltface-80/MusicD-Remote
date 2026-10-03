@@ -179,7 +179,7 @@ Over time the database learns when you last listened to an album and offers up o
 
 <details><summary><b>ⓘ</b> How to set it up and use it</summary>
 
-All of these live on **Home**. The first row, **Not played in 6 months**, leads with the **Random Album** disc — tap it to play — and then **Album of the day** (marked ★ Today). Choose which rows show, and their order, under **Settings → Home Screen**. **☰ → Random albums** opens a full screen of random albums; the shuffle button draws again and **Filter** narrows it by genre, tag or decade. Set `TZ` in your install command so Album of the day turns at *your* 00:01, not UTC's.
+All of these live on **Home**. Under the greeting, with no heading, are the **Random Album** disc — tap it to play — and **Album of the day** (marked ★ Today). The **Not played in 6 months** row stays hidden until there are six months of your listening to work from, then appears by itself (unless you switch it off). Choose which rows show, and their order, under **Settings → Home Screen**. **☰ → Random albums** opens a full screen of random albums; the shuffle button draws again and **Filter** narrows it by genre, tag or decade. Set `TZ` in your install command so Album of the day turns at *your* 00:01, not UTC's.
 
 </details>
 

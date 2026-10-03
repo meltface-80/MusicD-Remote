@@ -612,6 +612,7 @@
   const homeView     = document.getElementById("home-view");
   const homeSections = document.getElementById("home-sections");
   const homeUnplayed = document.getElementById("home-unplayed");
+  const homeToday    = document.getElementById("home-today");
   const homeRandom   = document.getElementById("home-random");
   const homeLibrary  = document.getElementById("home-library");
   const homeLotw     = document.getElementById("home-lotw");
@@ -638,7 +639,10 @@
   function homeRowDeps(id) {
     switch (id) {
       // Album of the day turns over at midnight, and is withheld once played.
-      case "unplayed": return ["library", "plays", "day", "aotd"];
+      // Played albums drop out; the six-month window moves with the day.
+      case "unplayed": return ["library", "plays", "day"];
+      // Album of the day turns over at 00:01, and is withheld once played.
+      case "today":    return ["library", "plays", "aotd"];
       case "history":  return ["library", "plays"];
       case "picks":    return ["picks", "library", "day"];
       // An album put aside or taken off, and the library — an entry Roon has
@@ -742,6 +746,8 @@
   // showHome() calls it on every visit, and the live listener below whenever a
   // revision moves while Home is on screen.
   function refreshHomeRows() {
+    // The strip under the greeting is not a row and cannot be switched off.
+    if (homeToday && !homeRowFresh("today")) runHomeRow("today", loadHomeToday);
     for (const row of HOME_ROWS) {
       if (!homeRowOn(row.id)) continue;   // off means the work does not run
       if (row.isFresh()) continue;
@@ -780,7 +786,9 @@
   // fresh install has no history and no picks, and an empty labelled shelf
   // reads as a fault rather than an absence.
   function rowHidesWhenEmpty(id) {
-    return id === "history" || id === "picks" || id === "lotw" || id === "later";
+    // "unplayed" too since v1.8.75: it is empty for its first six months, and
+    // appears by itself once unplayed albums do.
+    return id === "unplayed" || id === "history" || id === "picks" || id === "lotw" || id === "later";
   }
   function rowHasAnyContent(sectionEl) {
     return !!(sectionEl && sectionEl.querySelector(".album, .pick-card, .home-genre-tile"));
@@ -1098,77 +1106,67 @@
   // Render helper shared by the live loader and the instant-open cache repaint.
   // Tiles are reused by key (paintRow), so a re-read that changes one album —
   // one just played dropping out — moves the others rather than rebuilding them.
-  function renderHomeUnplayed(aotd, albums) {
+  //
+  // Only unplayed albums since v1.8.75 — Random Album and Album of the day are
+  // the strip under the greeting (renderHomeToday). The row stays hidden while
+  // it has none, which is the whole of its first six months.
+  function renderHomeUnplayed(albums) {
     albums = albums || [];
     if (!homeUnplayed) return;
-    // Nothing to offer (the first six months, or Album of the day played):
-    // the row still leads with Random Album, which always has something.
-    // "Play something unheard" leads the row it belongs to: this carousel IS
-    // the unheard albums, so the action and the row mean the same thing, and
-    // it sits at the top of Home without needing a place of its own. Built as
-    // a tile so it inherits the carousel's sizing on every screen rather than
-    // carrying breakpoints of its own.
-    // One row until there are albums in it (v1.8.75). For its first six months
-    // the row holds only Random Album and Album of the day, and the two-row
-    // layout larger screens use stacked those two on top of each other.
-    homeUnplayed.classList.toggle("home-carousel-1row", !albums.length);
-    const entries = [{ key: "unheard", build: buildUnheardTile }];
-    if (aotd) entries.push({ key: "aotd:" + albumTileKey(aotd), build: () => buildAotdTile(aotd) });
-    for (const a of albums) entries.push({ key: albumTileKey(a), build: () => homeTile(a) });
-    paintRow(homeUnplayed, entries);
+    if (albums.length) paintRow(homeUnplayed, albums.map(a => ({ key: albumTileKey(a), build: () => homeTile(a) })));
+    else homeUnplayed.innerHTML = "";
+    const sec = homeUnplayed.closest(".home-section");
+    if (sec) sec.classList.toggle("hidden", !albums.length || !homeRowOn("unplayed"));
   }
 
   async function loadHomeUnplayed(isCurrent) {
     if (!homeUnplayed) return false;
-    // Don't flash "Loading…" over cached tiles the user is already looking at —
-    // only when the row is genuinely empty (first ever load).
-    if (!rowHasContent(homeUnplayed)) homeUnplayed.innerHTML = '<div class="home-carousel-empty">Loading…</div>';
     // The draw this row is showing. Asked for by seed, so a re-read after a play
     // returns the same albums less the one played (seededPick on the server).
     const seed = homeSeeds.unplayed;
-    // Album of the day (completely random; hidden once played today) sits
-    // first. Fetched in PARALLEL with the unplayed list — they're independent,
-    // and awaiting them in sequence added a full round-trip to every reload.
-    const aotdPromise = fetch("/api/home/album-of-the-day", { cache: "no-store" })
-      .then(ar => ar.json()).catch(() => null);
-    const unplayedPromise = fetch("/api/home/unplayed?months=6&count=30&seed=" + seed);
-    unplayedPromise.catch(() => {});   // handled at the await below — this just silences the pre-await rejection warning
-    const aj = await aotdPromise;
-    const aotd = (aj && aj.album) ? aj.album : null;   // non-fatal — just no album-of-the-day
-    const aotdDay = (aj && aj.day) || null;
     try {
-      const r = await unplayedPromise;
+      const r = await fetch("/api/home/unplayed?months=6&count=30&seed=" + seed);
       if (!isCurrent()) return false;
-      if (!r.ok) {
-        // 503 while the index builds, or a server error: keep any cached tiles
-        // and the saved copy untouched. Not painted, so the row is asked again
-        // on the next visit or the next change the live check hears about.
-        if (!rowHasContent(homeUnplayed)) {
-          homeUnplayed.innerHTML = '<div class="home-carousel-empty">' +
-            (r.status === 503 ? "Waiting for Roon Core…" : "Couldn’t load.") + '</div>';
-        }
-        return false;
-      }
+      // 503 while the index builds, or a server error: keep what is showing.
+      // Not painted, so the row is asked again on the next visit or change.
+      if (!r.ok) return false;
       const j = await r.json();
       if (!isCurrent()) return false;
       const albums = (j && j.albums) || [];
-      renderHomeUnplayed(aotd, albums);
-      // Persist only a non-empty row (mirrors random/genres) so a legitimately
-      // empty response can't be cached and shown as "Nothing here yet" next
-      // open. The draw's seed and time go with it, so a reopen within the TTL
-      // re-reads the same albums (see hydrateHomeFromCache).
-      if (albums.length || aotd) {
-        saveHomeCache({ unplayed: { aotd, albums, day: aotdDay }, unplayedAt: homeRowsRolledAt, unplayedSeed: seed });
-      } else {
-        // An empty row must not leave yesterday's Album of the day in the
-        // saved copy, or the next cold open paints an album already played.
-        saveHomeCache({ unplayed: null });
-      }
+      renderHomeUnplayed(albums);
+      // The draw's seed and time go with it, so a reopen within the TTL
+      // re-reads the same albums (see hydrateHomeFromCache). An empty row is
+      // saved as empty, so a cold open never shows albums the server no longer
+      // offers.
+      saveHomeCache({ unplayed: { albums }, unplayedAt: homeRowsRolledAt, unplayedSeed: seed });
       return true;
     } catch (e) {
+      return false;   // offline or restarting: what is showing stays
+    }
+  }
+
+  // The strip under the greeting: Random Album, then Album of the day when
+  // there is one (none once it has been played, until the next 00:01).
+  function renderHomeToday(aotd) {
+    if (!homeToday) return;
+    const entries = [{ key: "unheard", build: buildUnheardTile }];
+    if (aotd) entries.push({ key: "aotd:" + albumTileKey(aotd), build: () => buildAotdTile(aotd) });
+    paintRow(homeToday, entries);
+  }
+  async function loadHomeToday(isCurrent) {
+    if (!homeToday) return false;
+    if (!rowHasContent(homeToday)) renderHomeToday(null);   // Random Album needs no answer
+    try {
+      const r = await fetch("/api/home/album-of-the-day", { cache: "no-store" });
+      if (!isCurrent() || !r.ok) return false;
+      const aj = await r.json();
       if (!isCurrent()) return false;
-      if (!rowHasContent(homeUnplayed)) homeUnplayed.innerHTML = '<div class="home-carousel-empty">Couldn’t load.</div>';
-      return false;
+      const aotd = (aj && aj.album) ? aj.album : null;
+      renderHomeToday(aotd);
+      saveHomeCache({ today: { aotd, day: (aj && aj.day) || null } });
+      return true;
+    } catch (e) {
+      return false;   // offline or restarting: what is showing stays
     }
   }
 
@@ -5685,12 +5683,15 @@
     }
     rerollHomeRandomRowsIfDue();
     let painted = false;
-    if (c.unplayed && homeUnplayed) {
+    if (homeToday) {
       // A saved Album of the day is only painted on the day it was chosen for
       // (00:01 to 00:01) — never yesterday's on a cold open. The live re-read
       // that follows brings today's, or none if it has been played.
-      const aotd = c.unplayed.day && c.unplayed.day === aotdDayKeyLocal() ? c.unplayed.aotd : null;
-      renderHomeUnplayed(aotd, c.unplayed.albums);
+      const t = c.today || null;
+      renderHomeToday(t && t.day && t.day === aotdDayKeyLocal() ? t.aotd : null);
+    }
+    if (c.unplayed && homeUnplayed) {
+      renderHomeUnplayed(c.unplayed.albums);
       painted = rowHasContent(homeUnplayed) || painted;
     }
     if (c.random   && homeRandom)   { renderHomeRandom(c.random);                              painted = rowHasContent(homeRandom)   || painted; }

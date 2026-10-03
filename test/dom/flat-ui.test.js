@@ -82,7 +82,8 @@ function driverFor(theme) {
 
   // The section head (v1.8.74, Mandarin's): small brass capitals with no
   // rule under them, and the row left-aligned and bleeding past main's gutter.
-  var title = document.getElementById("home-unplayed-title");
+  // Random albums: the Not-played row is hidden until it has albums (v1.8.75).
+  var title = document.getElementById("home-random-title");
   var tcs = getComputedStyle(title);
   T("title_size", Math.round(parseFloat(tcs.fontSize)));
   T("title_weight", tcs.fontWeight);
@@ -102,7 +103,7 @@ function driverFor(theme) {
            main.getBoundingClientRect().width * 0.7;
   })());
 
-  var car = document.querySelector(".home-carousel");
+  var car = document.getElementById("home-random");
   var ccs = getComputedStyle(car);
   T("carousel_justify", ccs.justifyContent);
   T("carousel_bleeds", Math.round(parseFloat(ccs.marginLeft)));
