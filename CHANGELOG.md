@@ -1,6 +1,109 @@
 # Changelog
 
-All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
+All notable changes to Rouen (formerly MusicD Remote, and before that Roon Random Albums) are documented here.
+
+## [1.8.74] — 2026-10-03
+
+Tweaks and changes, with Mandarin as the reference — and a new name.
+
+### Changed — the extension is now called **Rouen**
+
+- A Rouen is a breed of duck (MusicD is short for Music Duck), and the name is
+  a play on Roon. It shows in Roon's Extensions list, the app's title, the side
+  menu, Settings → System, the installed app's name and the wall display.
+- **Nothing that would break an install changed**: the Roon `extension_id`
+  (so no re-authorising), the Docker image, container and volume names
+  (`musicd-remote`, `musicd-remote-data`), the log file names, the GitHub
+  repository and the update path are all exactly as they were. An existing
+  home-screen shortcut keeps its old name until it is re-added.
+
+### Changed — Album of the day, the same everywhere
+
+- One album for every device from **00:01** until it is played — on any
+  device, any zone or from Roon's own apps — then gone everywhere until the
+  next 00:01. It used to turn over at midnight.
+- **Chosen once and kept.** It was worked out afresh on every ask as
+  `hash(date) % album count`, so a scan that added or removed one album put a
+  different album there mid-day, and one already played came back as a "new"
+  one. The pick is now stored (as the album's identity, not its position) and
+  only a new day, or the album leaving the library, chooses again.
+- A new `aotd` live revision turns the Home row over at 00:01 on every open
+  device, and a play anywhere takes it off every other device within a poll.
+  A saved Home copy from another day no longer paints yesterday's album.
+
+### Changed — Random Album
+
+- "Play something unheard / Surprise me" is now **Random Album**, with no
+  subtitle. Its glyph is Mandarin's disc: it turns slowly all the time and
+  speeds up — from where it is, without a jump — while the album is chosen.
+
+### Fixed — "Not played in 6 months" waits for six months
+
+- The row filled from the first day, so every album the extension had not
+  YET seen played — including ones played every week before it was installed
+  — read as "not played in 6 months". It now offers nothing until the first
+  recorded play is six months old; the full wall says when it will start.
+  Random Album keeps working throughout. Class of error: a window measured
+  against history that did not exist yet.
+
+### Fixed — Back from an artist page
+
+- Tapping an artist in the album view and then Back went to Home. Back is now
+  the brass **‹** beside the menu, like every other screen (the old "← Back"
+  button in the count line is gone), and it returns to the **album you came
+  from**, over the screen that album was on.
+
+### Added — API key boxes say whether the key works
+
+- The Discogs and FanArt.tv boxes are checked against the service (Discogs'
+  identity call, one FanArt.tv lookup) and show a **✓** with "Checked and
+  working" once accepted, or **✕** if the service refused the key. No answer
+  from the service shows neither — a key is not wrong because a network was.
+
+### Changed — the look, from Mandarin
+
+- **Two themes**: *Graphite and Brass* (the default, formerly "Mandarin") and
+  *Brass light*. Dark, Light and Copper dark are gone; a device that chose one
+  of them opens in Graphite and Brass.
+- Mandarin's typography and layout, not only its colours: Manrope and Young
+  Serif (bundled — the share card no longer fetches Manrope from Google
+  Fonts), a greeting and the date at the top of Home, section titles in small
+  brass capitals, rounder covers, Mandarin's genre cards, and a mini player
+  with the zone in brass above the track and a segmented level meter along its
+  bottom.
+- **Toasts sit above the mini player**, never over it — measured from the
+  pill, so it holds on every screen size.
+- The wall display's **‹ Remote** button, its active mode chip and its
+  Play now button are brass.
+
+### Fixed — found along the way
+
+- The Now-playing waveform was drawn at the canvas width it had when drawn,
+  and nothing redrew it while a track was paused — so any reflow after the
+  draw (a web font arriving, a rotation) left the shape stretched a couple of
+  pixels off the playhead. It is redrawn whenever the canvas changes size.
+- The share card's font wait is bounded at two seconds.
+
+### Changed — tooltips and ⓘ notes
+
+- Corrected: Waveform and its note and toast (it said "local files only";
+  Qobuz and TIDAL have worked since v1.8.20), Qobuz waveforms (4,000 values,
+  not a thousand), TIDAL (it does stream, for waveforms), Record labels and
+  Force rescan (the real source list), Discogs and FanArt.tv (what each key is
+  for — FanArt.tv also supplies the wall display's photos), the wall display
+  (off by default; photos need the FanArt key), Smart Picks, the Share Card
+  services note (Qobuz links ARE looked up), the tile source badge ("Local
+  files" / "In your Qobuz library"), the logo picker.
+- Long visible notes moved behind ⓘ; each ⓘ is announced as "About <setting>"
+  rather than "Info", and stays up long enough to read.
+
+### Docs
+
+- README and the docs site: renamed, the Mandarin section removed, every
+  claim checked against the code (the Settings gear that no longer shows,
+  album duration, related artists, labels and the wall display being off by
+  default, the Discover version), and an ⓘ on every feature with how to set it
+  up and use it.
 
 ## [1.8.73] — 2026-10-02
 

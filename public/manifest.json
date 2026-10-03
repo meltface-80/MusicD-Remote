@@ -1,6 +1,6 @@
 {
-  "name": "MusicD Remote",
-  "short_name": "MusicD",
+  "name": "Rouen",
+  "short_name": "Rouen",
   "description": "A Roon remote for your whole library — random albums, search, playlists and Smart Picks.",
   "start_url": "/",
   "scope": "/",

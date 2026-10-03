@@ -40,10 +40,14 @@ window.__installFetch(function (url) {
 });
 `;
 
+// The two themes since v1.8.74: Graphite and Brass (dark) and Brass light.
+const PALETTE = { dark: "graphite", light: "brass" };
+
 function driverFor(theme) {
   return `
   await window.__sleep(400);
   document.documentElement.setAttribute("data-theme", ${JSON.stringify(theme)});
+  document.documentElement.setAttribute("data-palette", ${JSON.stringify(PALETTE[theme])});
   await window.__sleep(120);
 
   function probe(sel) {
@@ -76,14 +80,21 @@ function driverFor(theme) {
     T("home_" + s, probe(".home-section-" + s));
   }
 
-  // The section head: a hairline under a bold title, and the row left-aligned
-  // and bleeding past main's gutter.
+  // The section head (v1.8.74, Mandarin's): small brass capitals with no
+  // rule under them, and the row left-aligned and bleeding past main's gutter.
   var title = document.getElementById("home-unplayed-title");
   var tcs = getComputedStyle(title);
   T("title_size", Math.round(parseFloat(tcs.fontSize)));
   T("title_weight", tcs.fontWeight);
+  T("title_transform", tcs.textTransform);
+  T("title_colour", tcs.color);
+  T("accent_text", (function () {
+    var p = document.createElement("span");
+    p.style.color = "var(--accent-text)";
+    document.body.appendChild(p);
+    var c = getComputedStyle(p).color; p.remove(); return c;
+  })());
   T("title_rule_width", Math.round(parseFloat(tcs.borderBottomWidth)));
-  T("title_rule_style", tcs.borderBottomStyle);
   T("title_full_width", (function () {
     var main = document.querySelector("main");
     // The rule must span the content column, not shrink-wrap the words.
@@ -136,11 +147,12 @@ for (const theme of ["dark", "light"]) {
         }
       });
 
-      await t.test("each section is headed by a bold title over a hairline", () => {
-        assert.ok(r.title_size >= 19, `title is ${r.title_size}px — too small to head a section`);
-        assert.ok(Number(r.title_weight) >= 600, `title weight is ${r.title_weight}`);
-        assert.equal(r.title_rule_width, 1, "no hairline under the section title");
-        assert.equal(r.title_rule_style, "solid");
+      await t.test("each section is headed by small brass capitals (v1.8.74)", () => {
+        assert.equal(r.title_size, 12, `title is ${r.title_size}px — not the small capitals`);
+        assert.ok(Number(r.title_weight) >= 700, `title weight is ${r.title_weight}`);
+        assert.equal(r.title_transform, "uppercase");
+        assert.equal(r.title_colour, r.accent_text, "the section title is not in the brass");
+        assert.equal(r.title_rule_width, 0, "the old hairline is still under the section title");
         assert.equal(r.title_full_width, true,
           "the rule shrink-wrapped the title text instead of spanning the column — " +
           "the section-link display mode went back to inline-flex");
@@ -161,7 +173,8 @@ for (const theme of ["dark", "light"]) {
       // sizing or grid layout. This is that promise, in assertion form.
       await t.test("tile sizing and gap are untouched", () => {
         assert.equal(r.tile_width, "150px");
-        assert.equal(r.tile_gap, "12px");
+        // 16px since v1.8.74 — Mandarin's spacing between carousel tiles.
+        assert.equal(r.tile_gap, "16px");
       });
     });
 }

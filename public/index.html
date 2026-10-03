@@ -1,9 +1,9 @@
 <!doctype html>
 <!--
-  Roon Random Albums — Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
+  Rouen (a Roon extension) — Copyright (c) 2026 Lewis Menzies (Music Duck / MusicD)
   Released under the MIT License. See the LICENSE file for details.
 -->
-<html lang="en" data-theme="dark" data-palette="mandarin">
+<html lang="en" data-theme="dark" data-palette="graphite">
 <head>
   <meta charset="utf-8">
   <!-- THE SCALE LIMITS ARE GONE (v1.8.42), and viewport-fit=cover is untouched.
@@ -20,7 +20,7 @@
        belt-and-braces over a rule that was already doing the job. -->
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#0e1012">
-  <title>MusicD</title>
+  <title>Rouen</title>
 
   <!-- Installable app. Before this there was no manifest and no icons at all,
        so "Add to Home Screen" saved a screenshot of the page instead of an
@@ -49,7 +49,7 @@
        any transparency onto white — so it is pre-flattened onto the logo's
        own black. -->
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-  <meta name="apple-mobile-web-app-title" content="MusicD">
+  <meta name="apple-mobile-web-app-title" content="Rouen">
 
   <!-- DELIBERATELY ABSENT: apple-mobile-web-app-capable,
        mobile-web-app-capable, apple-mobile-web-app-status-bar-style.
@@ -174,7 +174,7 @@
           </svg>
         </button>
 
-        <button id="play-unheard-topbar" class="icon-btn" aria-label="Play something unheard">
+        <button id="play-unheard-topbar" class="icon-btn" aria-label="Random Album" title="Random Album">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="12" cy="12" r="10"/>
@@ -336,6 +336,11 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
     <!-- Home landing: sections of the library. The album wall (#album-grid)
          is one destination, reached from here or the side menu. -->
     <section id="home-view" class="home-view hidden" aria-label="Home">
+      <!-- Good morning / afternoon / evening, and the date (app.js keeps it current). -->
+      <div class="home-greeting" id="home-greeting" aria-live="off">
+        <div class="home-greeting-date" id="home-greeting-date"></div>
+        <h1 class="home-greeting-text" id="home-greeting-text"></h1>
+      </div>
       <div id="home-sections">
         <!-- data-row is the row's identity. The Home Screen settings page and
              the loader both read it from the HOME_ROWS table in app.js, so the
@@ -404,7 +409,7 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
     <div class="menu-backdrop" data-menu-close></div>
     <nav class="menu-drawer">
       <div class="menu-head">
-        <span class="menu-brand">MusicD Remote</span>
+        <span class="menu-brand">Rouen</span>
         <button class="icon-btn" type="button" aria-label="Close menu" data-menu-close>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -785,6 +790,8 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
            the cover of the thing you are listening to should get you to it. -->
       <img id="mt-art" class="mt-art" alt="" aria-hidden="true">
       <div class="mt-text">
+        <!-- The zone it is playing in, in small brass capitals above the track. -->
+        <div id="mt-kicker" class="mt-kicker"></div>
         <div id="mt-title"  class="mt-title">—</div>
         <div id="mt-artist" class="mt-artist">—</div>
       </div>
@@ -1094,7 +1101,7 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
         </nav>
 
         <div class="settings-foot">
-          <span class="settings-version" id="settings-version">MusicD Remote</span>
+          <span class="settings-version" id="settings-version">Rouen</span>
           <a class="settings-repo" id="settings-repo"
              href="https://github.com/meltface-80/MusicD-Remote"
              target="_blank" rel="noopener noreferrer">
@@ -1114,11 +1121,11 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
           </button>
           <h2>Playback</h2>
         </div>
-        <p class="settings-pane-desc">Output zone &amp; random album radio</p>
+        <p class="settings-pane-desc">Zone, waveform &amp; radio</p>
 
         <div class="settings-block">
           <div class="settings-row">
-            <span class="settings-label">Zone / output <button class="settings-info-btn" data-info="Choose which Roon zone the Play, Queue and transport controls target." aria-label="Info">ⓘ</button></span>
+            <span class="settings-label">Zone / output <button class="settings-info-btn" data-info="Which Roon zone Play, Queue, the transport and both radios act on. Chosen per device." aria-label="Info">ⓘ</button></span>
             <div class="settings-select-wrap">
               <select id="zone-select" class="settings-select" aria-label="Output zone"></select>
               <svg class="settings-caret" width="16" height="16" viewBox="0 0 24 24" fill="none"
@@ -1133,7 +1140,7 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
 
         <div class="settings-block">
           <div class="settings-row">
-            <span class="settings-label">Waveform <button class="settings-info-btn" data-info="Off by default. Draws the shape of the track on the Now playing progress bar and the wall display, read from the audio itself. LOCAL FILES ONLY: Roon streams Qobuz and TIDAL to the endpoint and never to an extension, so those tracks have no audio this app can see and keep the plain bar. The first play of a track decodes it (a second or two); the next track in the queue is prepared while the current one plays, and every result is stored so it is instant afterwards." aria-label="Info">&#9432;</button></span>
+            <span class="settings-label">Waveform <button class="settings-info-btn" data-info="Off by default. Draws the shape of the track — how loud it is, moment to moment — on the Now playing progress bar and the wall display. Local files are read from your /music mount; Qobuz and TIDAL tracks are fetched with the account you connected under Streaming accounts, analysed and thrown away. The first play of a track takes a second or two, the next track is prepared while this one plays, and every result is kept. A track that can&#x27;t be identified keeps the plain bar." aria-label="Info">&#9432;</button></span>
             <label class="switch">
               <input type="checkbox" id="waveform-enabled" aria-label="Waveform">
               <span class="switch-track"><span class="switch-thumb"></span></span>
@@ -1144,7 +1151,7 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
           <!-- Qobuz waveforms. Off until the user signs in, and the sign-in
                happens on qobuz.com — no password or key is typed in here. -->
           <div class="settings-row" style="margin-top:12px">
-            <span class="settings-label">Qobuz waveforms <button class="settings-info-btn" data-info="Waveforms for Qobuz tracks, which Roon streams straight to your endpoint and never to this extension. Uses the same Qobuz sign-in as the rest of the app — there is nothing extra to set up here. Each track is fetched from Qobuz with YOUR account, piped through ffmpeg into a thousand loudness values and discarded: no audio is written to disk, and Roon still handles all playback." aria-label="Info">ⓘ</button></span>
+            <span class="settings-label">Qobuz waveforms <button class="settings-info-btn" data-info="Waveforms for Qobuz tracks. Roon streams them straight to your endpoint, never to this extension, so the extension fetches the track itself with your Qobuz sign-in, reduces it to 4,000 loudness values and discards the audio. Needs Waveform switched on. TIDAL tracks work the same way through the TIDAL sign-in, with nothing to set here." aria-label="Info">ⓘ</button></span>
           </div>
           <div id="qobuz-secret-status" class="settings-token-status"></div>
         </div>
@@ -1179,11 +1186,11 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
           </button>
           <h2>Labels</h2>
         </div>
-        <p class="settings-pane-desc">Ordering, thresholds &amp; rescan</p>
+        <p class="settings-pane-desc">Label scan, ordering &amp; folders</p>
 
         <div class="settings-block">
           <div class="settings-row">
-            <span class="settings-label">Record labels <button class="settings-info-btn" data-info="Off by default. When on, the extension works out each album's record label — from your file tags first, then iTunes, Qobuz, TheAudioDB, MusicBrainz and Discogs — and fetches label logos. That is the only part of the app that talks to those services, and when this is off none of it runs. Your /music tags are still read either way: the Decade, Format, Sample rate, Bit depth and Channels filters and the local-files badge all come from that same pass." aria-label="Info">ⓘ</button></span>
+            <span class="settings-label">Record labels <button class="settings-info-btn" data-info="Off by default. When on, works out each album&#x27;s record label — file tags first, then Bandcamp, iTunes, TheAudioDB, MusicBrainz and Discogs (Qobuz for a streaming-only library) — fetches label logos, and turns on the Labels screen and the Label of the week row. When off, none of that runs. Your /music tags are still read either way, for the Format and sample-rate filters, release dates, waveforms and the local-files badge." aria-label="Info">ⓘ</button></span>
             <label class="switch">
               <input type="checkbox" id="labels-enabled" aria-label="Record labels">
               <span class="switch-track"><span class="switch-thumb"></span></span>
@@ -1230,7 +1237,7 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
 
         <div class="settings-block">
           <div class="settings-row">
-            <span class="settings-label">Label data <button class="settings-info-btn" data-info="Force a complete rescan of all label sources (iTunes, MusicBrainz, Discogs, file tags). Use this after importing new music or if label data looks wrong. This clears the label name cache — logos and MBIDs are kept." aria-label="Info">ⓘ</button></span>
+            <span class="settings-label">Label data <button class="settings-info-btn" data-info="Forgets every album&#x27;s label and looks them all up again from every source. Use it if label data looks wrong — new albums are picked up by the normal scan. Logos, MusicBrainz IDs and merges are kept." aria-label="Info">ⓘ</button></span>
             <button id="force-rescan-btn" class="settings-update-btn" type="button">Force rescan</button>
           </div>
           <div id="force-rescan-status" class="settings-release-notes hidden"></div>
@@ -1262,10 +1269,13 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
 
         <div class="settings-block">
           <div class="settings-row">
-            <span class="settings-label">Discogs token <button class="settings-info-btn" data-info="A personal access token from discogs.com/settings/developers. Enables logo fetching and searching for labels that the automatic scan can't find by name. Not required, but recommended." aria-label="Info">ⓘ</button></span>
+            <span class="settings-label">Discogs token <button class="settings-info-btn" data-info="A personal access token from discogs.com → Settings → Developers. Used for the Discogs label lookup, automatic label logos and the manual logo picker. Optional. A ✓ in the box means Discogs accepted it." aria-label="Info">ⓘ</button></span>
           </div>
           <div class="settings-token-row">
-            <input id="discogs-token-input" type="text" class="settings-token-input" placeholder="Paste personal access token…" autocomplete="off" spellcheck="false">
+            <span class="token-field">
+              <input id="discogs-token-input" type="text" class="settings-token-input" placeholder="Paste personal access token…" autocomplete="off" spellcheck="false">
+              <span id="discogs-token-check" class="token-check hidden" role="img"></span>
+            </span>
             <button id="discogs-token-save" class="settings-update-btn" type="button">Save</button>
           </div>
           <div id="discogs-token-status" class="settings-token-status"></div>
@@ -1275,10 +1285,13 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
 
         <div class="settings-block">
           <div class="settings-row">
-            <span class="settings-label">FanArt.tv key <button class="settings-info-btn" data-info="A free API key from fanart.tv. Used to fetch label logo images. Get one at fanart.tv/get-an-api-key — free registration required." aria-label="Info">ⓘ</button></span>
+            <span class="settings-label">FanArt.tv key <button class="settings-info-btn" data-info="A free personal API key from fanart.tv/get-an-api-key. Used for label logos and the wall display&#x27;s artist photos. Optional. A ✓ in the box means FanArt.tv accepted it." aria-label="Info">ⓘ</button></span>
           </div>
           <div class="settings-token-row">
-            <input id="fanart-key-input" type="text" class="settings-token-input" placeholder="Paste FanArt.tv API key…" autocomplete="off" spellcheck="false">
+            <span class="token-field">
+              <input id="fanart-key-input" type="text" class="settings-token-input" placeholder="Paste FanArt.tv API key…" autocomplete="off" spellcheck="false">
+              <span id="fanart-key-check" class="token-check hidden" role="img"></span>
+            </span>
             <button id="fanart-key-save" class="settings-update-btn" type="button">Save</button>
           </div>
           <div id="fanart-key-status" class="settings-token-status"></div>
@@ -1297,7 +1310,7 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
 
         <div class="settings-block">
           <div class="settings-row">
-            <span class="settings-label">Qobuz account <button class="settings-info-btn" data-info="Signs in on Qobuz&#39;s own page — your password is never typed into or seen by MusicD Remote. One sign-in covers everything: browsing and searching the Qobuz catalogue, adding albums to your Qobuz favourites, and waveforms for Qobuz tracks. Roon still handles all playback. This uses Qobuz&#39;s unofficial API, which is against their Terms of Service and may break at any time." aria-label="Info">ⓘ</button></span>
+            <span class="settings-label">Qobuz account <button class="settings-info-btn" data-info="Signs in on Qobuz&#x27;s own page — your password is never typed into or seen by this app. One sign-in covers browsing and searching Qobuz, your Qobuz favourites, source badges and sample rates, and Qobuz waveforms. If this device isn&#x27;t on your home network, paste the address you land on into the box and tap Finish. Uses an unofficial API, so it may break." aria-label="Info">ⓘ</button></span>
           </div>
           <div class="settings-token-row">
             <button id="qobuz-connect" class="settings-update-btn" type="button">Connect</button>
@@ -1317,7 +1330,7 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
 
         <div class="settings-block">
           <div class="settings-row">
-            <span class="settings-label">Tidal account <button class="settings-info-btn" data-info="Connects to Tidal via the unofficial API (the Lyrion/LMS Tidal plugin's client id). Used only to browse and search the Tidal catalogue and manage your Tidal favourites/library — no streaming or downloading (Roon streams). Against Tidal's Terms of Service and may break at any time. Login happens on Tidal's own device-authorization page — your password is never entered here; only tokens are stored." aria-label="Info">ⓘ</button></span>
+            <span class="settings-label">Tidal account <button class="settings-info-btn" data-info="Signs in on TIDAL&#x27;s own device page — your password is never typed here. Used to browse and search TIDAL, manage your TIDAL favourites, source badges and quality, and draw waveforms for TIDAL tracks (the audio is analysed, never kept). Roon still does all the playing. Uses an unofficial API (the Lyrion/LMS TIDAL plugin&#x27;s client id), against TIDAL&#x27;s terms, so it may break." aria-label="Info">ⓘ</button></span>
           </div>
           <button id="tidal-connect" class="settings-update-btn" type="button">Connect Tidal…</button>
           <div id="tidal-auth-pending" class="tidal-auth-pending hidden"></div>
@@ -1338,7 +1351,7 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
         <p class="settings-pane-desc">The links under the card</p>
 
         <div class="settings-block">
-          <h3 class="settings-block-title">Services</h3>
+          <h3 class="settings-block-title">Services <button class="settings-info-btn" data-info="Each link opens the album on that service — usually as a search. Qobuz links are looked up in advance so they open the album itself in the Qobuz app. A suggestion that is already in your Roon library is queued instead." aria-label="About Services">ⓘ</button></h3>
           <!-- Filled from /api/settings/share-links: the list of what CAN be
                linked to lives in lib/share-links.js, so this screen and the
                chips can never disagree about which services exist. -->
@@ -1353,20 +1366,11 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
               </svg>
             </div>
           </div>
-          <p class="settings-note" id="share-services-note">
-            Each one opens a search for the album on that service. Nothing is
-            looked up until you tap a link. A suggestion that IS in your library
-            queues it instead.
-          </p>
         </div>
 
         <div class="settings-block">
-          <h3 class="settings-block-title">Reviews</h3>
+          <h3 class="settings-block-title">Reviews <button class="settings-info-btn" data-info="Pitchfork and Wikipedia link to the actual page when it has already been found for the card, and to a search when it has not." aria-label="About Reviews">ⓘ</button></h3>
           <div id="share-reviews-list" class="share-toggle-list"></div>
-          <p class="settings-note">
-            Pitchfork and Wikipedia link to the actual page when it has already
-            been found for the card, and to a search when it has not.
-          </p>
         </div>
       </div>
 
@@ -1382,7 +1386,7 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
 
         <div class="settings-block">
           <div class="settings-row">
-            <span class="settings-label">Wall display <button class="settings-info-btn" data-info="A Roon-style always-on screen at http://<server-ip>:3399/display — point any tablet or TV browser at it, or open it from the menu. Rotates between album art, artist photos, an album review, artist bios and grids from your library, with a progress bar for the playing zone. Tap it and choose Remote to come back. When off, the page shows a notice and nothing is fetched." aria-label="Info">ⓘ</button></span>
+            <span class="settings-label">Wall display <button class="settings-info-btn" data-info="Off by default. An always-on screen at http://&lt;server-ip&gt;:3399/display — open it from the menu or point any tablet or TV browser at it. Rotates album art, artist photos (needs a FanArt.tv key), a review, artist bios and grids from your library you can tap to play, with a progress bar for the playing zone. Tap it and choose Remote to come back. When off, the page shows a notice and nothing is fetched." aria-label="Info">ⓘ</button></span>
             <label class="switch">
               <input type="checkbox" id="display-toggle" aria-label="Wall display">
               <span class="switch-track"><span class="switch-thumb"></span></span>
@@ -1400,7 +1404,7 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
         <div class="settings-block">
           <h3 class="settings-block-title">This device</h3>
           <div class="settings-row settings-row-top">
-            <span class="settings-label">Switch to the wall display <button class="settings-info-btn" data-info="After this long with nobody touching this device, it switches from the remote to the wall display — a screensaver. Tap the display and choose Remote to come straight back. Set on this device only." aria-label="Info">&#9432;</button></span>
+            <span class="settings-label">Switch to the wall display <button class="settings-info-btn" data-info="After this long with nobody touching this device, it switches from the remote to the wall display — a screensaver. Tap the display and choose Remote to come straight back. Set on this device only, and only while the wall display is switched on. It waits while Settings, a sheet or a selection is open, so nothing you are in the middle of is thrown away." aria-label="Info">&#9432;</button></span>
             <div class="settings-select-wrap">
               <select id="display-idle-select" class="settings-select" aria-label="Switch to the wall display after">
                 <option value="0">Never</option>
@@ -1418,11 +1422,6 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
               </svg>
             </div>
           </div>
-          <p class="settings-note">
-            Only while the wall display is switched on. It waits while Settings,
-            a sheet or a selection is open, so nothing you are in the middle of
-            is thrown away.
-          </p>
         </div>
       </div>
 
@@ -1471,7 +1470,7 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
         <p class="settings-pane-desc">Which rows show, and in what order</p>
 
         <div class="settings-block">
-          <div class="settings-note">Hold the handle to drag a row into a new position. A row switched off is not fetched at all — it does no work in the background.</div>
+          <div class="settings-note">Hold the handle to drag a row. <button class="settings-info-btn" data-info="Hold a row's handle and drag it to a new position; the order is shared by every device. A row switched off is not fetched at all — it does no work in the background." aria-label="About Home Screen rows">ⓘ</button></div>
           <ul class="home-rows-list" id="home-rows-list"></ul>
         </div>
       </div>
@@ -1526,7 +1525,7 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
 
         <div class="settings-block">
           <div class="settings-row">
-            <span class="settings-label">Smart Picks <button class="settings-info-btn" data-info="Off by default. When on, the extension analyses your library once a day and asks ListenBrainz and MusicBrainz for five albums by artists you don't own. When off it does nothing at all — no daily build, no timer, no requests to anybody." aria-label="Info">ⓘ</button></span>
+            <span class="settings-label">Smart Picks <button class="settings-info-btn" data-info="Off by default. Once a day, finds five albums by artists you don&#x27;t own but who are close to ones you play (ListenBrainz and MusicBrainz), matched on Qobuz or TIDAL. When off, nothing runs and nothing is sent anywhere." aria-label="Info">ⓘ</button></span>
             <label class="switch">
               <input type="checkbox" id="picks-enabled" aria-label="Smart Picks">
               <span class="switch-track"><span class="switch-thumb"></span></span>
@@ -1650,11 +1649,6 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
       </div>
     </div>
   </div>
-
-  <!-- Same font MusicD uses, so the rendered card matches exactly. -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700&display=swap">
 
   <script src="/sharecard.js"></script>
   <script src="/app.js"></script>

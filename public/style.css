@@ -4,13 +4,18 @@
 /*  Released under the MIT License. See the LICENSE file for details.  */
 /*  Mobile-first: stacked layout by default, side-by-side on wide.     */
 /* ------------------------------------------------------------------ */
-/* `:root` is the dark+classic palette. The second selector lets a nested
-   element opt into it explicitly — the theme picker's swatches do exactly
-   that, so each one previews its own palette rather than the applied one.
-   The other three palettes already use attribute selectors, which match
-   any element; this one needed the extra selector to behave the same. */
+/* `:root` is Graphite and Brass, the default theme (v1.8.74): a warm charcoal
+   ground, flat, one elevated tone for cards and panels, and brass as the one
+   accent. Its colours came from Mandarin's (v1.8.68) and replaced the
+   original cool grey and cyan here, which went with the Dark, Light and
+   Copper dark themes. The second selector lets a nested element opt into it
+   explicitly — the theme picker's swatches do exactly that, so each one
+   previews its own palette rather than the applied one.
+   --text-faint is the one value lifted from the source: #7a7d83 measured
+   4.27:1 on the ground, so #8d9096 is the smallest lift along the same grey
+   that clears 4.5:1 on every surface (5.50 / 4.99 / 4.51). */
 :root,
-[data-theme="dark"][data-palette="classic"] {
+[data-theme="dark"][data-palette="graphite"] {
   --font-sans: "Helvetica Neue", Helvetica, Arial, system-ui, -apple-system,
                "Segoe UI", Roboto, sans-serif;
 
@@ -22,28 +27,26 @@
      ground alone — bg-elev and bg-elev-2 are what cards, sheets and popovers
      sit on, and leaving them behind would have made every elevated surface
      DARKER than the page it floats on. Relative steps are unchanged. */
-  --bg:           #1d2125;
-  --bg-elev:      #252a2f;
-  --bg-elev-2:    #2c3238;
-  --border:       #353b42;
-  --text:         #e9eaec;
+  --bg:           #17191c;
+  --bg-elev:      #1f2226;
+  --bg-elev-2:    #262a2f;
+  --border:       #30353b;
+  --text:         #ecebe6;
   /* Lifted with the ground (v1.7.87). Secondary text was tuned against a
      #0e1012 page; on the new #1d2125 it measured 3.98:1 and 2.11:1, under this
      theme's 4.5 / 2.6 floors. The suite failed on both — moving a background
      without moving what sits on it is exactly what those floors are for. */
-  --text-dim:     #959aa1;
-  --text-faint:   #6d7279;
-  --accent:       #4cb7e6;
-  /* The accent used as TEXT. Identical to --accent in this palette, so nothing
-     here changes — it exists because a fill colour and a text colour have
-     different contrast requirements, and the copper palette below genuinely
-     needs two values. Declaring it in every palette keeps the CSS uniform. */
-  --accent-text:  #4cb7e6;
-  --accent-soft:  rgba(76,183,230,.15);
+  --text-dim:     #9a9ca1;
+  --text-faint:   #8d9096;
+  --accent:       #c9a45c;
+  /* The accent used as TEXT: a lighter brass than the fill, because a fill
+     colour and a text colour have different contrast requirements. */
+  --accent-text:  #d4b06a;
+  --accent-soft:  rgba(201,164,92,.15);
   /* Text printed ON an accent fill. Was hard-coded at nine sites in three
      different literals (#0b1418, #04121a and a bare #fff), three of which had
      no light-theme override at all and shipped white-on-cyan at 2.28:1. */
-  --on-accent:    #0b1418;
+  --on-accent:    #17191c;
   /* The lit edge that makes a translucent surface read as a pane rather than a
      hole. It is doing more work than it looks: as of v1.7.89 every translucent
      surface in the app is --bg-veil, the ground with alpha, so where nothing
@@ -57,12 +60,12 @@
      underneath and tints it. A lighter translucent colour would show a step
      at the top of every screen the moment nothing was behind it, which is
      what v1.7.86 did. No backdrop-filter, same rule as the pill. */
-  --bg-veil:    rgba(29,33,37,.84);
-  --glass-edge: rgba(255,255,255,.10);
-  --danger:       #e06464;
-  --panel-hairline: rgba(255,255,255,.07);  /* row separators on tinted panels */
-  --shadow-card:  0 2px 6px rgba(0,0,0,.45), 0 10px 24px rgba(0,0,0,.35);
-  --shadow-modal: 0 24px 64px rgba(0,0,0,.6);
+  --bg-veil:    rgba(23,25,28,.88);
+  --glass-edge: rgba(201,164,92,.22);
+  --danger:       #e8836b;
+  --panel-hairline: rgba(236,235,230,.08);  /* row separators on tinted panels */
+  --shadow-card:  0 2px 6px rgba(0,0,0,.45), 0 12px 28px rgba(0,0,0,.4);
+  --shadow-modal: 0 24px 64px rgba(0,0,0,.65);
 
   /*  Control sizing. Until v1.7.50 every height, padding and min-width in this
       file was a hand-written one-off, which is how one shared .action-btn class
@@ -84,97 +87,27 @@
   --topbar-h: calc(56px + env(safe-area-inset-top));
 }
 
-/* THE LIGHT PALETTES GO THE OTHER WAY, and it is a headroom problem, not an
-   inconsistency: the outcome is the same in all four themes — page, top bar
-   and every full-screen panel are one colour. The dark palettes raise the
-   ground to the bar. Here the bar is ALREADY #fffffe, four tenths of a level
-   off pure white, so raising the ground to meet it would leave --bg-elev (the
-   white cards sit on it) nowhere above to go, and every elevated surface in
-   the theme would flatten into the page. The bar comes down to the ground
-   instead — a step that was barely visible in this palette to begin with. */
-[data-theme="light"] {
-  --bg:           #f6f5f2;
-  --bg-elev:      #ffffff;
-  --bg-elev-2:    #fbfaf7;
-  --border:       #e3e0d9;
-  --text:         #1a1c1f;
-  --text-dim:     #5e636a;
-  --text-faint:   #8c919a;
-  --accent:       #1f8fc1;
-  --accent-text:  #1f8fc1;
-  --accent-soft:  rgba(31,143,193,.12);
-  --on-accent:    #ffffff;
-  --bg-veil:    rgba(246,245,242,.84);
-  --glass-edge: rgba(26,39,64,.12);
-  --panel-hairline: rgba(26,39,64,.12);     /* row separators on tinted panels */
-  --danger:       #c0392b;
-  --shadow-card:  0 1px 2px rgba(0,0,0,.06), 0 6px 16px rgba(0,0,0,.08);
-  --shadow-modal: 0 24px 64px rgba(0,0,0,.18);
-}
-
 /* ------------------------------------------------------------------ */
-/*  Palettes                                                           */
+/*  Themes (v1.8.74): two, expressed as two attributes.                */
 /*                                                                     */
-/*  data-theme  = dark | light    — the FAMILY. Drives the thirteen    */
-/*                                  component rules further down this  */
-/*                                  file ([data-theme="light"] .foo).  */
-/*  data-palette = classic | copper — the COLOURS. Tokens only.        */
+/*  data-theme   = dark | light      — the FAMILY. Drives the component */
+/*                                     rules further down this file    */
+/*                                     ([data-theme="light"] .foo).    */
+/*  data-palette = graphite | brass  — the COLOURS.                    */
 /*                                                                     */
-/*  Both palette blocks are qualified by family, because --on-accent   */
-/*  is family-dependent: a dark palette prints near-black on its fill, */
-/*  a light one prints near-white. A palette-only selector would give  */
-/*  the brass theme the copper theme's dark on-accent.                 */
-/*  Specificity (0,2,0) beats the family blocks above (0,1,0).         */
+/*  Graphite and Brass is :root above. Brass light is below, keyed on  */
+/*  the family alone as well, so a light page can never fall back to  */
+/*  the dark tokens. Page, top bar and every full-screen panel are one */
+/*  ground in both.                                                    */
 /* ------------------------------------------------------------------ */
 
-/* Copper dark — the MusicD site's palette. Eight of these are that site's
-   values verbatim; the rest are derived to fit tokens it has no concept of. */
-[data-theme="dark"][data-palette="copper"] {
-  /* Same move as the classic dark palette, delta (+18,+20,+21). #2d3134 is
-     the colour the copper top bar was already showing and the one the app is
-     now built around. */
-  --bg:           #2d3134;
-  --bg-elev:      #353a3d;
-  --bg-elev-2:    #3c4145;
-  --border:       #474d52;
-  --text:         #e8e6e3;
-  /* Lifted with the ground (v1.7.87), and past its own minimum: this theme
-     holds --text-faint to the full 4.5 too, so solving each in isolation
-     closed the gap between the two tiers to a single level. */
-  --text-dim:     #bdb9b3;
-  /* The site has only two text tiers; this third one is derived from --text-dim
-     and darkened until it clears 4.5:1 on the DEEPEST surface (4.61 on
-     --bg-elev-2). The current dark theme's equivalent fails at 2.64. */
-  --text-faint:   #b2aca4;
-  /* Copper for fills, a lighter copper for text. This is not a preference:
-     #c47f4a as text on --bg-elev-2 measures 4.27:1, a real failure, while
-     #d99a66 gives 5.78. The site itself splits them the same way. */
-  --accent:       #c47f4a;
-  --accent-text:  #dfa06c;
-  --accent-soft:  rgba(196,127,74,.15);
-  /* Warm near-black rather than the cool #0b1418, so a copper fill doesn't
-     read blue-shadowed. 5.74:1. */
-  --on-accent:    #17120d;
-  --bg-veil:    rgba(45,49,52,.84);
-  --glass-edge: rgba(255,255,255,.10);
-  /* Hue 3 degrees against copper's 26, and light enough to clear 4.5:1 on
-     every surface including the deepest (4.81). */
-  --danger:       #e8776f;
-  /* Warm white rather than pure white — a neutral hairline reads faintly blue
-     against charcoal. */
-  --panel-hairline: rgba(235,228,220,.08);
-  /* --bg here is 2.4x lighter than the classic dark background, so identical
-     shadows read weaker. Alphas lifted to compensate. */
-  --shadow-card:  0 2px 6px rgba(0,0,0,.50), 0 10px 24px rgba(0,0,0,.40);
-  --shadow-modal: 0 24px 64px rgba(0,0,0,.62);
-}
-
-/* Brass light — designed, because the site has no light mode. The restraint
-   is in the CHROMA, not the hue: the neutrals sit a few points of yellow above
-   grey, which reads as paper rather than as a yellow wash, and all the colour
-   weight lives in the accent. Elevation runs the same direction as the classic
-   light theme (elev lighter than bg), so existing depth cues still work. */
-[data-theme="light"][data-palette="copper"] {
+/* Brass light. The restraint is in the CHROMA, not the hue: the neutrals sit
+   a few points of yellow above grey, which reads as paper rather than as a
+   yellow wash, and all the colour weight lives in the accent. Elevation runs
+   lighter than the ground (elev above bg), so depth cues read as in a light
+   theme should. */
+[data-theme="light"],
+[data-theme="light"][data-palette="brass"] {
   --bg:           #f7f4ed;
   --bg-elev:      #fffdf8;
   --bg-elev-2:    #fbf8f1;
@@ -182,8 +115,8 @@
   --text:         #1e1b16;
   --text-dim:     #5c554a;
   --text-faint:   #756c5e;
-  /* The site's own --copper-dim. One value serves both roles here: 5.32:1 as
-     text and 5.75:1 under --on-accent, so this palette needs no split. */
+  /* One value serves both roles here: 5.32:1 as text and 5.75:1 under
+     --on-accent, so this palette needs no split. */
   --accent:       #8a5a35;
   --accent-text:  #8a5a35;
   --accent-soft:  rgba(138,90,53,.12);
@@ -191,52 +124,12 @@
   --bg-veil:    rgba(247,244,237,.84);
   --glass-edge: rgba(60,45,30,.14);
   --danger:       #b3271d;
-  /* Warm brown rather than the classic light theme's cool blue-grey, which
-     would grey the parchment. */
+  /* Warm brown rather than a cool blue-grey, which would grey the parchment. */
   --panel-hairline: rgba(58,44,26,.13);
   --shadow-card:  0 1px 2px rgba(58,44,26,.07), 0 6px 16px rgba(58,44,26,.10);
   --shadow-modal: 0 24px 64px rgba(58,44,26,.20);
 }
 
-/* Mandarin — the default since v1.8.68. MusicD Server's own palette
-   ("Late-Night Hi-Fi", graphite and brass), its token values verbatim: a warm
-   charcoal ground, flat, one elevated tone for cards and panels, and the brass
-   as the one accent. A dark-family palette, so every [data-theme="dark"] rule
-   applies as it does for the other two dark themes.
-
-   Measured by test/dom/themes.test.js and held to the full AA floor on every
-   tier: text 12.1–14.8:1, --text-dim 5.3–6.4, --text-faint 4.5–5.5, the brass
-   as text 7.0–8.6, and --on-accent on the brass fill 7.5. The colour rules
-   that go with it —
-   the brass discs, glyphs and buttons — are at the end of this file, because
-   several of the rules they override sit at the same specificity further down
-   than here. */
-[data-theme="dark"][data-palette="mandarin"] {
-  --bg:           #17191c;
-  --bg-elev:      #1f2226;
-  --bg-elev-2:    #262a2f;
-  --border:       #30353b;
-  --text:         #ecebe6;
-  --text-dim:     #9a9ca1;
-  /* The one value NOT taken verbatim. MusicD Server's #7a7d83 measures 4.27:1
-     on the ground and 3.50:1 on --bg-elev-2 — below AA everywhere, although
-     that stylesheet's own note claims 5.1–6.3. This is the smallest lift along
-     the same grey that clears 4.5:1 on every surface (5.50 / 4.99 / 4.51), and
-     it stays a tier below --text-dim. */
-  --text-faint:   #8d9096;
-  /* The brass for fills, a lighter brass for text — the same split the copper
-     theme makes, for the same reason. */
-  --accent:       #c9a45c;
-  --accent-text:  #d4b06a;
-  --accent-soft:  rgba(201,164,92,.15);
-  --on-accent:    #17191c;
-  --bg-veil:      rgba(23,25,28,.88);
-  --glass-edge:   rgba(201,164,92,.22);
-  --danger:       #e8836b;
-  --panel-hairline: rgba(236,235,230,.08);
-  --shadow-card:  0 2px 6px rgba(0,0,0,.45), 0 12px 28px rgba(0,0,0,.4);
-  --shadow-modal: 0 24px 64px rgba(0,0,0,.65);
-}
 
 * { box-sizing: border-box; }
 html, body {
@@ -2926,14 +2819,6 @@ input.vol-range::-moz-range-thumb {
 .modal-subtitle-year { color: var(--text-dim); }
 
 /* Artist albums view */
-.artist-view-back {
-  min-height: var(--tap-min);
-  background: none; border: 1px solid var(--border); border-radius: 8px;
-  color: var(--text-dim); font-size: 13px; padding: 5px 12px;
-  cursor: pointer; margin-right: 10px; transition: color .15s, background .15s;
-  flex-shrink: 0;
-}
-.artist-view-back:hover { color: var(--text); background: var(--bg-elev); }
 .count-text { font-size: 13px; color: var(--text-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .artist-section-header {
   grid-column: 1 / -1;
@@ -3164,6 +3049,22 @@ input.vol-range::-moz-range-thumb {
   color: var(--text); font-size: 13px; font-family: inherit;
 }
 .settings-token-input:focus { outline: none; border-color: var(--accent); }
+/* The box and its check (v1.8.74): the input fills the field and the ✓ / ✕
+   sits inside its right end, so "this key works" is said on the box itself. */
+.token-field { position: relative; flex: 1; min-width: 0; display: flex; }
+.token-field .settings-token-input { width: 100%; padding-right: 34px; }
+.settings-token-input.is-ok { border-color: var(--accent); }
+.settings-token-input.is-ok::placeholder { color: var(--accent-text); opacity: 1; }
+.settings-token-input.is-bad { border-color: var(--danger); }
+.token-check {
+  position: absolute; right: 7px; top: 50%; transform: translateY(-50%);
+  width: 20px; height: 20px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 800; line-height: 1; pointer-events: none;
+}
+.token-check.hidden { display: none; }
+.token-check.is-ok  { background: var(--accent); color: var(--on-accent); }
+.token-check.is-bad { background: var(--danger); color: #fff; }
 .settings-token-status { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
 /* Explanatory line under a settings row — the sentence that says why the
    control above it exists, rather than what it is called. */
@@ -4656,7 +4557,7 @@ body.show-quality .album-quality { display: block; }
 .import-save { width: 100%; margin-top: 8px; }
 .sheet-row { display: block; width: 100%; margin-bottom: 8px; text-align: left; }
 
-/* "Play something unheard", as the first tile of the Not-played row. Borrows
+/* "Random Album", as the first tile of the Not-played row. Borrows
    .album wholesale so it sizes with the carousel on every screen; only the
    art square is different. */
 .unheard-art {
@@ -4668,7 +4569,15 @@ body.show-quality .album-quality { display: block; }
 .home-unheard-tile .album-title { color: var(--accent-text); }
 .home-unheard-tile:hover .unheard-art { background: var(--accent); }
 .home-unheard-tile:hover .unheard-glyph { color: var(--on-accent); }
-.home-unheard-tile.spinning .unheard-glyph { animation: unheard-spin 1s linear infinite; }
+/* The disc (Mandarin's): it turns slowly all the time, on its own centre in
+   the middle of the tile. Tapping it speeds THIS animation up rather than
+   swapping in a faster one — playUnheard ramps its playbackRate — so the disc
+   accelerates from where it is instead of jumping to another angle. */
+.unheard-disc { display: block; width: 52%; aspect-ratio: 1; color: var(--accent);
+  transform-origin: 50% 50%; animation: unheard-spin 8s linear infinite; }
+.unheard-disc svg { display: block; width: 100%; height: 100%; }
+.home-unheard-tile:hover .unheard-disc { color: var(--on-accent); }
+@media (prefers-reduced-motion: reduce) { .unheard-disc { animation: none; } }
 @keyframes unheard-spin { to { transform: rotate(360deg); } }
 /* Share sheet — the blob is the payload, so it gets the room and the monospace
    face; everything above it is the honest accounting of what went in. */
@@ -4940,69 +4849,136 @@ body.show-quality .album-quality { display: block; }
 .discover-list .share-similar-act.has-art { align-items: center; padding: 10px; }
 
 /* ================================================================== */
-/*  Mandarin — the colour rules that go with the palette (v1.8.68).    */
-/*  Ported from MusicD Server, COLOURS ONLY: its serif titles, its     */
-/*  card sizes and radii, the Home greeting and the segmented level-   */
-/*  meter progress bar are its typography and layout, not its colour   */
-/*  scheme, and are left out — the meter especially, because the seek  */
-/*  bar under it is pinned to the pixel by the waveform tests. Its     */
-/*  search-focus glow was a leftover purple from that app's retired    */
-/*  plum palette (139,111,176); the brass tint replaces it.            */
+/*  The look (v1.8.74): Mandarin's, both themes.                       */
+/*  v1.8.68 ported Mandarin's COLOURS only. This is the rest of it:    */
+/*  the serif titles, the greeting, the small brass section capitals,  */
+/*  rounder covers, the genre cards and the mini player's kicker and   */
+/*  level meter. Rules keyed [data-palette] (any palette) are drawn    */
+/*  from tokens, so Brass light gets them in its own colours; rules    */
+/*  keyed [data-palette="graphite"] carry Graphite's literal colours.  */
+/*  The Now-playing seek bar is NOT given the meter: it is pinned to   */
+/*  the pixel by the waveform tests and the waveform draws under it.   */
 /*  Last in the file on purpose: several rules overridden here (the    */
 /*  album view's primary button, for one) share these selectors'       */
 /*  specificity and would otherwise win by coming later.               */
 /* ================================================================== */
+@font-face {
+  font-family: "Manrope"; src: url("/fonts/manrope.woff2") format("woff2");
+  font-weight: 200 800; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "Young Serif"; src: url("/fonts/young-serif.woff2") format("woff2");
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+[data-palette] {
+  --font-sans: "Manrope", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Young Serif", Georgia, "Times New Roman", serif;
+}
+/* Titles in the serif; the rest in Manrope. */
+[data-palette] .album-count,
+[data-palette] .home-greeting-text,
+[data-palette] .settings-view h2,
+[data-palette] .settings-head h2 { font-family: var(--font-display); font-weight: 400; letter-spacing: .01em; }
+[data-palette] .menu-brand { font-family: var(--font-display); font-weight: 400; font-size: 20px; }
+
+/* ---- Home: the greeting, and section titles in small brass capitals -- */
+.home-greeting { display: block; margin: 6px 0 26px; }
+.home-greeting-date {
+  font-size: 12px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; color: var(--accent-text);
+}
+.home-greeting-text { margin: 6px 0 0; font-size: 34px; line-height: 1.1; color: var(--text); font-family: var(--font-display); font-weight: 400; }
+[data-palette] .home-section { margin-bottom: 32px; }
+[data-palette] .home-section-title {
+  font-family: var(--font-sans); font-size: 12px; font-weight: 700; letter-spacing: .18em;
+  text-transform: uppercase; color: var(--accent-text);
+  border-bottom: 0; padding-bottom: 0; margin-bottom: 14px;
+}
+[data-palette] .home-section-link::after { color: var(--text); font-size: 20px; }
+[data-palette] .home-section-link:hover { color: var(--accent-text); }
+[data-palette] .home-carousel { gap: 16px; padding-bottom: 18px; }
+
+/* Covers: rounder, flat on the ground with a hairline edge. */
+[data-palette] .album-art-wrap { border-radius: 12px; }
+[data-palette="graphite"] .album-art-wrap { box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); }
+[data-palette] .album-meta { margin-top: 11px; }
+[data-palette] .album-title { font-weight: 600; }
+[data-palette] .pick-art { border-radius: 12px; }
+
+/* ---- The mini player: a small receiver ------------------------------ */
+.mt-kicker { display: none; }
+[data-palette] .mt-kicker:not(:empty) {
+  display: block; font-size: 10.5px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--accent-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 1px;
+}
+[data-palette] .mt-art { border-radius: 10px; }
+/* The pill: rounder, a brass rim, and room under the text for the meter. */
+[data-palette] .mini-transport {
+  border-radius: 22px; padding: 10px 12px 16px;
+  border-color: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+/* Progress as a level meter along the bottom: brass segments over faint ones
+   (Mandarin's), in place of the line along the pill's top edge. */
+[data-palette] .mt-progress {
+  inset: auto 16px 7px 16px; height: 4px; border-radius: 0; overflow: hidden;
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+  -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 7px, transparent 7px 10px);
+          mask-image: repeating-linear-gradient(90deg, #000 0 7px, transparent 7px 10px);
+}
+[data-palette] .mt-progress-fill {
+  height: 100%; border-top: 0; border-radius: 0; background: var(--accent);
+}
+
 /* The top bar's rule, faint and warm. */
-[data-palette="mandarin"] .topbar { border-bottom-color: rgba(201,164,92,.12); }
+[data-palette="graphite"] .topbar { border-bottom-color: rgba(201,164,92,.12); }
 /* Buttons with a disc — the top bar's menu, search and settings, the album
    view's back, home and share: a brass disc, the glyph in the charcoal. */
-[data-palette="mandarin"] .topbar .icon-btn,
-[data-palette="mandarin"] .modal .modal-close,
-[data-palette="mandarin"] .modal .modal-home,
-[data-palette="mandarin"] .modal .modal-share {
+[data-palette] .topbar .icon-btn,
+[data-palette] .modal .modal-close,
+[data-palette] .modal .modal-home,
+[data-palette] .modal .modal-share {
   border-radius: 50%; border-color: var(--accent); background: var(--accent); color: var(--on-accent);
 }
-[data-palette="mandarin"] .topbar .icon-btn:hover,
-[data-palette="mandarin"] .modal .modal-close:hover,
-[data-palette="mandarin"] .modal .modal-home:hover,
-[data-palette="mandarin"] .modal .modal-share:hover {
+[data-palette] .topbar .icon-btn:hover,
+[data-palette] .modal .modal-close:hover,
+[data-palette] .modal .modal-home:hover,
+[data-palette] .modal .modal-share:hover {
   background: var(--accent); color: var(--on-accent); filter: brightness(1.08);
 }
 /* The search box, open: a brass edge, the glass in brass. */
-[data-palette="mandarin"] .search-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-[data-palette="mandarin"] .search-ico { color: var(--accent); }
+[data-palette] .search-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+[data-palette] .search-ico { color: var(--accent); }
 /* The side menu's icons, and Settings' list of panes. */
-[data-palette="mandarin"] .menu-item svg,
-[data-palette="mandarin"] .settings-nav-ico { color: var(--accent); }
+[data-palette] .menu-item svg,
+[data-palette] .settings-nav-ico { color: var(--accent); }
 /* Volume, on Now playing and above the mini player: the speaker, the number,
    the 0 and 100, the − and + and the thumb, in the brass. */
-[data-palette="mandarin"] .vol-readout .vol-icon,
-[data-palette="mandarin"] .vol-readout .vol-value,
-[data-palette="mandarin"] .vol-scale { color: var(--accent); }
-[data-palette="mandarin"] .vol-step { color: var(--accent); border-color: var(--accent); }
-[data-palette="mandarin"] input.vol-range::-webkit-slider-thumb { background: var(--accent); }
-[data-palette="mandarin"] input.vol-range::-moz-range-thumb { background: var(--accent); }
+[data-palette] .vol-readout .vol-icon,
+[data-palette] .vol-readout .vol-value,
+[data-palette] .vol-scale { color: var(--accent); }
+[data-palette] .vol-step { color: var(--accent); border-color: var(--accent); }
+[data-palette] input.vol-range::-webkit-slider-thumb { background: var(--accent); }
+[data-palette] input.vol-range::-moz-range-thumb { background: var(--accent); }
 /* Glyphs on their own — the mini player's zone and volume, Now playing's
    device and volume, previous and next — in the brass. A mode that is on
    (shuffle, repeat, radio) in the lighter brass; one that is off stays dim. */
-[data-palette="mandarin"] .mt-btn,
-[data-palette="mandarin"] .np-mini-btn,
-[data-palette="mandarin"] .np-btn { color: var(--accent); }
-[data-palette="mandarin"] .np-mode-btn { color: var(--text-dim); }
-[data-palette="mandarin"] .np-mode-btn.is-on,
-[data-palette="mandarin"] .np-mini-btn.is-on { color: var(--accent-text); }
-[data-palette="mandarin"] .mt-btn:disabled,
-[data-palette="mandarin"] .np-btn:disabled,
-[data-palette="mandarin"] .np-mini-btn:disabled { color: var(--text-faint); }
+[data-palette] .mt-btn,
+[data-palette] .np-mini-btn,
+[data-palette] .np-btn { color: var(--accent); }
+[data-palette] .np-mode-btn { color: var(--text-dim); }
+[data-palette] .np-mode-btn.is-on,
+[data-palette] .np-mini-btn.is-on { color: var(--accent-text); }
+[data-palette] .mt-btn:disabled,
+[data-palette] .np-btn:disabled,
+[data-palette] .np-mini-btn:disabled { color: var(--text-faint); }
 /* Play/pause, in the mini player and on Now playing: a brass disc, the glyph
    in the charcoal. */
-[data-palette="mandarin"] .mt-playpause,
-[data-palette="mandarin"] .np-playpause {
+[data-palette] .mt-playpause,
+[data-palette] .np-playpause {
   background: var(--accent); color: var(--on-accent); border: 1px solid transparent;
 }
 @media (hover: hover) and (pointer: fine) {
-  [data-palette="mandarin"] .mt-playpause:hover,
-  [data-palette="mandarin"] .np-playpause:hover { background: var(--accent); color: var(--on-accent); filter: brightness(1.1); }
+  [data-palette] .mt-playpause:hover,
+  [data-palette] .np-playpause:hover { background: var(--accent); color: var(--on-accent); filter: brightness(1.1); }
 }
 /* NOT ported: MusicD Server gives its mini player a body of its own,
    rgba(31,34,38,.97). Here every floating piece of chrome — the pill, both
@@ -5011,42 +4987,42 @@ body.show-quality .album-quality { display: block; }
    give the pill Mandarin's colours without breaking that. */
 /* The album view: its text in white rather than the cream, which reads washed
    out over the cover's own colours; Play now and Queue alike in the brass. */
-[data-theme="dark"][data-palette="mandarin"] .modal { --text: #ffffff; }
-[data-theme="dark"][data-palette="mandarin"] .modal .track-list li,
-[data-theme="dark"][data-palette="mandarin"] .modal .t-title { color: #ffffff; }
-[data-palette="mandarin"] .modal-actions .action-btn {
+[data-theme="dark"][data-palette="graphite"] .modal { --text: #ffffff; }
+[data-theme="dark"][data-palette="graphite"] .modal .track-list li,
+[data-theme="dark"][data-palette="graphite"] .modal .t-title { color: #ffffff; }
+[data-palette] .modal-actions .action-btn {
   background: var(--accent); color: var(--on-accent); border-color: transparent; font-weight: 700;
 }
-[data-palette="mandarin"] .modal-actions .action-btn:hover { background: var(--accent); filter: brightness(1.08); }
+[data-palette] .modal-actions .action-btn:hover { background: var(--accent); filter: brightness(1.08); }
 /* "Play something unheard": a dashed brass sleeve. */
-[data-palette="mandarin"] .unheard-art {
+[data-palette] .unheard-art {
   background: var(--bg-elev); border: 1px dashed rgba(201,164,92,.6); box-shadow: none;
 }
 @media (hover: hover) and (pointer: fine) {
-  [data-palette="mandarin"] .home-unheard-tile:hover .unheard-art { background: var(--accent-soft); }
-  [data-palette="mandarin"] .home-unheard-tile:hover .unheard-glyph { color: var(--accent-text); }
+  [data-palette] .home-unheard-tile:hover .unheard-art { background: var(--accent-soft); }
+  [data-palette] .home-unheard-tile:hover .unheard-glyph { color: var(--accent-text); }
 }
 /* Browse by genre: six earthy tones in turn, each with a soft disc in its
    corner, the name in the cream. The card is its own stacking context and the
    disc sits at -1 inside it: above the card's fill, BELOW the name — a
    positioned pseudo-element otherwise paints over in-flow text, and a long
    genre name would run under a half-opaque disc. */
-[data-palette="mandarin"] .home-genre-card {
+[data-palette="graphite"] .home-genre-card {
   position: relative; overflow: hidden; isolation: isolate;
   background: #3b2a22; border-color: rgba(239,230,212,.10); color: #ecebe6;
 }
-[data-palette="mandarin"] .home-genre-card::after {
+[data-palette="graphite"] .home-genre-card::after {
   content: ""; position: absolute; right: -18px; top: -18px; width: 64px; height: 64px;
   border-radius: 50%; background: #c97b5a; opacity: .5; pointer-events: none; z-index: -1;
 }
-[data-palette="mandarin"] .home-genre-card:nth-child(6n+2) { background: #26382f; }
-[data-palette="mandarin"] .home-genre-card:nth-child(6n+2)::after { background: #7fa38a; }
-[data-palette="mandarin"] .home-genre-card:nth-child(6n+3) { background: #3a3324; }
-[data-palette="mandarin"] .home-genre-card:nth-child(6n+3)::after { background: #c9a45c; }
-[data-palette="mandarin"] .home-genre-card:nth-child(6n+4) { background: #2a3140; }
-[data-palette="mandarin"] .home-genre-card:nth-child(6n+4)::after { background: #7d8fb3; }
-[data-palette="mandarin"] .home-genre-card:nth-child(6n+5) { background: #402a2c; }
-[data-palette="mandarin"] .home-genre-card:nth-child(6n+5)::after { background: #b87a86; }
-[data-palette="mandarin"] .home-genre-card:nth-child(6n) { background: #2f3a27; }
-[data-palette="mandarin"] .home-genre-card:nth-child(6n)::after { background: #9fae6b; }
-[data-palette="mandarin"] .home-genre-card:hover { border-color: rgba(201,164,92,.5); filter: brightness(1.08); }
+[data-palette="graphite"] .home-genre-card:nth-child(6n+2) { background: #26382f; }
+[data-palette="graphite"] .home-genre-card:nth-child(6n+2)::after { background: #7fa38a; }
+[data-palette="graphite"] .home-genre-card:nth-child(6n+3) { background: #3a3324; }
+[data-palette="graphite"] .home-genre-card:nth-child(6n+3)::after { background: #c9a45c; }
+[data-palette="graphite"] .home-genre-card:nth-child(6n+4) { background: #2a3140; }
+[data-palette="graphite"] .home-genre-card:nth-child(6n+4)::after { background: #7d8fb3; }
+[data-palette="graphite"] .home-genre-card:nth-child(6n+5) { background: #402a2c; }
+[data-palette="graphite"] .home-genre-card:nth-child(6n+5)::after { background: #b87a86; }
+[data-palette="graphite"] .home-genre-card:nth-child(6n) { background: #2f3a27; }
+[data-palette="graphite"] .home-genre-card:nth-child(6n)::after { background: #9fae6b; }
+[data-palette="graphite"] .home-genre-card:hover { border-color: rgba(201,164,92,.5); filter: brightness(1.08); }

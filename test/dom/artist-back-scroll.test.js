@@ -71,8 +71,8 @@ const DRIVER = `
   await window.__sleep(500);
   T("artist_view_active", !!(window.__artistViewActive && window.__artistViewActive()));
 
-  var back = document.getElementById("artist-back-btn");
-  T("back_present", !!back);
+  var back = document.getElementById("topbar-back");
+  T("back_present", !!back && !back.classList.contains("hidden"));
   back.click();
   await window.__sleep(400);
 

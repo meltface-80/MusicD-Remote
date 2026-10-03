@@ -162,10 +162,12 @@ body.show-ui .controls { opacity: 1; pointer-events: auto; }
   display: flex; align-items: center; gap: 4px;
   padding: 10px 16px 10px 10px;
   border-radius: 999px;
-  border: 1px solid rgba(255,255,255,.1);
-  background: rgba(10,12,14,.72);
-  color: #f2f3f5;
-  font: 600 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  /* Brass, like every other button in the app (v1.8.74): Graphite and
+     Brass's accent fill, the glyph and word in its charcoal ground. */
+  border: 1px solid #c9a45c;
+  background: #c9a45c;
+  color: #17191c;
+  font: 700 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
@@ -186,7 +188,7 @@ body.show-ui .to-remote { opacity: 1; pointer-events: auto; }
   cursor: pointer;
   white-space: nowrap;
 }
-.ctl-btn.active { background: #f2f3f5; color: #0e1012; }
+.ctl-btn.active { background: #c9a45c; color: #17191c; }
 
 /* Tap-to-play panel (library grids) */
 .playpanel {
@@ -213,7 +215,7 @@ body.show-ui .to-remote { opacity: 1; pointer-events: auto; }
   background: rgba(255,255,255,.08); color: #f2f3f5;
   cursor: pointer;
 }
-.pp-primary { background: #f2f3f5; color: #0e1012; border-color: transparent; }
+.pp-primary { background: #c9a45c; color: #17191c; border-color: transparent; }
 .pp-quiet   { background: transparent; color: #9aa0a7; }
 .more-cell { cursor: pointer; }
 

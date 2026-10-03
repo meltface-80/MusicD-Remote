@@ -172,7 +172,7 @@ test("buildShareDoc reports everything it left out", async (t) => {
     assert.ok(built.doc.playlist.date, "a share should say when it was made");
     assert.deepEqual(
       built.doc.playlist.extension[shareNsPlaylist()].additional_metadata,
-      { generator: "MusicD Remote", generator_version: "9.9.9" });
+      { generator: "Rouen", generator_version: "9.9.9" });
   });
 
   await t.test("untitled entries are counted, not silently dropped", () => {

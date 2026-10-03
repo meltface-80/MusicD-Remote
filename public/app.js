@@ -479,37 +479,30 @@
   if (!document.hidden) startLive();
 
   // ----- Themes -----
-  // Five themes, expressed as TWO attributes rather than five values of one:
+  // Two themes since v1.8.74, expressed as TWO attributes rather than two
+  // values of one:
   //
-  //   data-theme   = dark | light              — the FAMILY
-  //   data-palette = mandarin | classic | copper — the COLOURS
+  //   data-theme   = dark | light       — the FAMILY
+  //   data-palette = graphite | brass   — the COLOURS
   //
-  // The split exists because thirteen rules in style.css are keyed on
-  // `[data-theme="light"] .something` — white text on an accent fill, the
-  // light-side hover washes, the translucent top bar. Those describe the
-  // family, not the palette, and a new light theme under a third data-theme
-  // value would silently miss every one of them: white-on-accent labels would
-  // fall back to near-black, and the queue would use dark-theme washes on a
-  // light background. Keying palettes on their own attribute means the
-  // existing themes are untouched and the new ones inherit all thirteen.
+  // The family is kept separate because a number of rules in style.css are
+  // keyed on `[data-theme="light"] .something` — white text on an accent fill,
+  // the light-side hover washes — and those describe the family, not the
+  // palette.
   const THEMES = [
-    // The default since v1.8.68: MusicD Server's own colours. First, so the
-    // picker leads with what a new device starts on.
-    { id: "mandarin",     label: "Mandarin",     note: "Graphite and brass, from MusicD Server",
-      theme: "dark",  palette: "mandarin" },
-    { id: "dark",         label: "Dark",         note: "The original — cool grey and cyan",
-      theme: "dark",  palette: "classic" },
-    { id: "light",        label: "Light",        note: "The original — bright and neutral",
-      theme: "light", palette: "classic" },
-    { id: "copper-dark",  label: "Copper dark",  note: "Charcoal and copper, from the MusicD site",
-      theme: "dark",  palette: "copper" },
-    { id: "brass-light",  label: "Brass light",  note: "Warm parchment with a brass accent",
-      theme: "light", palette: "copper" },
+    // The default: graphite and brass. First, so the picker leads with what a
+    // new device starts on.
+    { id: "graphite-brass", label: "Graphite and Brass", note: "Warm charcoal with a brass accent",
+      theme: "dark",  palette: "graphite" },
+    { id: "brass-light",    label: "Brass light",        note: "Warm parchment with a brass accent",
+      theme: "light", palette: "brass" },
   ];
   const THEME_KEY = "rra-theme-v2";
-  // What a device that has never chosen gets. index.html starts <html> on the
-  // same palette, so the first paint before this file runs is already it.
-  const DEFAULT_THEME = "mandarin";
+  // What a device that has never chosen gets — and what a device that chose a
+  // theme which no longer exists (Mandarin, Dark, Light, Copper dark; removed
+  // in v1.8.74) is moved to. index.html starts <html> on the same palette, so
+  // the first paint before this file runs is already it.
+  const DEFAULT_THEME = "graphite-brass";
   const themeById = (id) => THEMES.find(t => t.id === id) || null;
 
   function applyTheme(id) {
@@ -546,20 +539,8 @@
     let id = null;
     try { id = localStorage.getItem(THEME_KEY); } catch (e) { /* private browsing */ }
     if (themeById(id)) return id;
-    // Migrate the v1 key, which only ever held "light" or "dark" — those are
-    // still valid theme ids, so the user's choice carries over untouched.
-    try {
-      const old = localStorage.getItem("rra-theme");
-      if (old === "light" || old === "dark") {
-        localStorage.setItem(THEME_KEY, old);
-        return old;
-      }
-    } catch (e) { /* private browsing */ }
-    // No stored choice: the default. This used to follow the OS (Light on a
-    // device set to light mode), but the default is now a palette with no
-    // light counterpart, and "the default" means the same thing on every
-    // device. A stored choice — the picker's Apply, or a v1 key above — is
-    // never overridden.
+    // Anything else — no choice yet, or one of the themes removed in v1.8.74 —
+    // is the default. "mandarin" was the same colours under its old name.
     return DEFAULT_THEME;
   }
 
@@ -657,7 +638,7 @@
   function homeRowDeps(id) {
     switch (id) {
       // Album of the day turns over at midnight, and is withheld once played.
-      case "unplayed": return ["library", "plays", "day"];
+      case "unplayed": return ["library", "plays", "day", "aotd"];
       case "history":  return ["library", "plays"];
       case "picks":    return ["picks", "library", "day"];
       // An album put aside or taken off, and the library — an entry Roon has
@@ -804,6 +785,21 @@
   function rowHasAnyContent(sectionEl) {
     return !!(sectionEl && sectionEl.querySelector(".album, .pick-card, .home-genre-tile"));
   }
+
+  // The greeting above Home: the part of the day, and the date.
+  function paintGreeting() {
+    const d = new Date(), h = d.getHours();
+    const t = document.getElementById("home-greeting-text");
+    const dt = document.getElementById("home-greeting-date");
+    if (t) t.textContent = h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
+    if (dt) {
+      try { dt.textContent = d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" }); }
+      catch (e) { dt.textContent = ""; }   // an engine without Intl options: no date rather than a wrong one
+    }
+  }
+  paintGreeting();
+  setInterval(paintGreeting, 60 * 1000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) paintGreeting(); });
 
   function applyHomeLayout() {
     if (!homeSections) return;
@@ -988,7 +984,14 @@
     return (sel && sel.value) || selectedZoneId || null;
   };
 
-  if (topbarBack)    topbarBack.addEventListener("click", showHome);
+  // While the artist view is up, Back steps out of it instead (the artist
+  // view's own listener). Checked here as well rather than relying on that
+  // listener running first: older WebKit (the kiosk iPads) runs listeners on
+  // the clicked element in the order they were added, capture or not.
+  if (topbarBack)    topbarBack.addEventListener("click", () => {
+    if (window.__artistViewActive && window.__artistViewActive()) return;
+    showHome();
+  });
   if (topbarRefresh) topbarRefresh.addEventListener("click", () => loadRandom());
 
   // (The Home rows' TTL, HOME_ROWS_TTL_MS, is declared with their seeds above.)
@@ -1038,14 +1041,19 @@
     btn.type = "button";
     btn.className = "album home-unheard-tile";
     btn.id = "home-unheard-tile";
-    btn.setAttribute("aria-label", "Play something you haven't heard");
+    btn.setAttribute("aria-label", "Random Album");
+    btn.title = "Play a random album you haven’t heard in 12 months";
 
     const art = document.createElement("div");
     art.className = "album-art-wrap unheard-art";
     const glyph = document.createElement("span");
-    glyph.className = "unheard-glyph";
+    // A disc turning slowly on its own centre all the time, faster while the
+    // album is being chosen (the .spinning state playUnheard sets).
+    glyph.className = "unheard-glyph unheard-disc";
     glyph.setAttribute("aria-hidden", "true");
-    glyph.textContent = "✧";
+    glyph.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">' +
+      '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3.2"/><circle cx="12" cy="12" r="0.9" fill="currentColor" stroke="none"/>' +
+      '<path d="M6.6 8.4A6.6 6.6 0 0 1 9.4 5.9"/><path d="M17.4 15.6A6.6 6.6 0 0 1 14.6 18.1"/></svg>';
     art.appendChild(glyph);
     btn.appendChild(art);
 
@@ -1053,11 +1061,8 @@
     meta.className = "album-meta";
     const t = document.createElement("div");
     t.className = "album-title";
-    t.textContent = "Play something unheard";
-    const s = document.createElement("div");
-    s.className = "album-artist";
-    s.textContent = "Surprise me";
-    meta.appendChild(t); meta.appendChild(s);
+    t.textContent = "Random Album";
+    meta.appendChild(t);
     btn.appendChild(meta);
 
     // One implementation, two triggers: the request, the zone check and the
@@ -1066,6 +1071,15 @@
       if (window.__playUnheard) window.__playUnheard(btn);
     });
     return btn;
+  }
+
+  // Album of the day's day on THIS device's clock, in the server's format
+  // (aotdDayKey in index.js): the date a minute ago, so it turns at 00:01.
+  // Used only to refuse a saved copy from another day; the server decides.
+  function aotdDayKeyLocal() {
+    const d = new Date(Date.now() - 60 * 1000);
+    const p = (n) => (n < 10 ? "0" + n : String(n));
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
   }
 
   // Album of the day, as a tile with its "★ Today" badge.
@@ -1087,10 +1101,8 @@
   function renderHomeUnplayed(aotd, albums) {
     albums = albums || [];
     if (!homeUnplayed) return;
-    if (!albums.length && !aotd) {
-      homeUnplayed.innerHTML = '<div class="home-carousel-empty">Nothing here yet — play some music and check back.</div>';
-      return;
-    }
+    // Nothing to offer (the first six months, or Album of the day played):
+    // the row still leads with Random Album, which always has something.
     // "Play something unheard" leads the row it belongs to: this carousel IS
     // the unheard albums, so the action and the row mean the same thing, and
     // it sits at the top of Home without needing a place of its own. Built as
@@ -1113,12 +1125,13 @@
     // Album of the day (completely random; hidden once played today) sits
     // first. Fetched in PARALLEL with the unplayed list — they're independent,
     // and awaiting them in sequence added a full round-trip to every reload.
-    const aotdPromise = fetch("/api/home/album-of-the-day")
+    const aotdPromise = fetch("/api/home/album-of-the-day", { cache: "no-store" })
       .then(ar => ar.json()).catch(() => null);
     const unplayedPromise = fetch("/api/home/unplayed?months=6&count=30&seed=" + seed);
     unplayedPromise.catch(() => {});   // handled at the await below — this just silences the pre-await rejection warning
     const aj = await aotdPromise;
     const aotd = (aj && aj.album) ? aj.album : null;   // non-fatal — just no album-of-the-day
+    const aotdDay = (aj && aj.day) || null;
     try {
       const r = await unplayedPromise;
       if (!isCurrent()) return false;
@@ -1141,7 +1154,11 @@
       // open. The draw's seed and time go with it, so a reopen within the TTL
       // re-reads the same albums (see hydrateHomeFromCache).
       if (albums.length || aotd) {
-        saveHomeCache({ unplayed: { aotd, albums }, unplayedAt: homeRowsRolledAt, unplayedSeed: seed });
+        saveHomeCache({ unplayed: { aotd, albums, day: aotdDay }, unplayedAt: homeRowsRolledAt, unplayedSeed: seed });
+      } else {
+        // An empty row must not leave yesterday's Album of the day in the
+        // saved copy, or the next cold open paints an album already played.
+        saveHomeCache({ unplayed: null });
       }
       return true;
     } catch (e) {
@@ -2282,6 +2299,11 @@
   // list tracks, and offering a grid/list switch over those would be a control
   // that does nothing.
   function enterFullWall(title, albumWall) {
+    // Every menu screen comes through here, and the artist view must not
+    // outlive one: left open, the shared Back would act on it from the new
+    // screen — putting the screen behind the artist page back over this one
+    // and reopening the album it came from. Discarded, as showHome does.
+    if (window.__exitArtistView) window.__exitArtistView({ restore: false });
     unplayedWallActive = false;
     libraryWallActive = false;
     // Cleared here as well as by the caller: every other wall's entry point must
@@ -2353,7 +2375,10 @@
       unplayedWallStamp = stamp;
       if (!albums.length) {
         grid.innerHTML = "";
-        setBanner("Nothing here yet — play some music and check back.", false);
+        setBanner(j && j.no_history
+          ? "This fills in once there are six months of listening behind it" +
+            (j.ready_at ? " — from " + new Date(j.ready_at).toLocaleDateString() : "") + "."
+          : "Nothing here yet — play some music and check back.", false);
         return;
       }
       setBanner(null);
@@ -2410,13 +2435,13 @@
       // Deliberately not "when you added it": Roon publishes no import date,
       // so this is the extension's own evidence — file timestamps, and albums
       // turning up between library scans.
-      note: "from dates MusicD Remote could work out" },
+      note: "from dates Rouen could work out" },
     { id: "plays",      label: "Most played",  dir: "desc",
       asc: "Least played first", desc: "Most played first",
-      note: "from plays MusicD Remote has seen" },
+      note: "from plays Rouen has seen" },
     { id: "lastplayed", label: "Last played",  dir: "desc",
       asc: "Longest ago first", desc: "Most recent first",
-      note: "from plays MusicD Remote has seen" },
+      note: "from plays Rouen has seen" },
     { id: "random",     label: "Random",       dir: "asc" }   // no direction
   ];
   const LIB_PLAYED_OPTIONS = [
@@ -4256,7 +4281,7 @@
                 "and fills in over time.",
         format: "Read from your own files, and — for albums you have no file for — from " +
                 "the Qobuz or TIDAL account you've connected. Anything from neither has none.",
-        added:  "Roon publishes no date-added, so this is what MusicD Remote could work " +
+        added:  "Roon publishes no date-added, so this is what Rouen could work " +
                 "out for itself — file timestamps, and albums appearing between scans."
       };
       // Format, Sample rate, Bit depth and Channels all come from the same file
@@ -4311,7 +4336,7 @@
                  () => { libView.played = p.id; });
           }
           if (!f.hasPlays) {
-            note(ls.section, "MusicD Remote hasn't seen anything play yet, so these use an " +
+            note(ls.section, "Rouen hasn't seen anything play yet, so these use an " +
                              "empty history — everything counts as never played.");
           }
         }
@@ -5656,7 +5681,14 @@
     }
     rerollHomeRandomRowsIfDue();
     let painted = false;
-    if (c.unplayed && homeUnplayed) { renderHomeUnplayed(c.unplayed.aotd, c.unplayed.albums); painted = rowHasContent(homeUnplayed) || painted; }
+    if (c.unplayed && homeUnplayed) {
+      // A saved Album of the day is only painted on the day it was chosen for
+      // (00:01 to 00:01) — never yesterday's on a cold open. The live re-read
+      // that follows brings today's, or none if it has been played.
+      const aotd = c.unplayed.day && c.unplayed.day === aotdDayKeyLocal() ? c.unplayed.aotd : null;
+      renderHomeUnplayed(aotd, c.unplayed.albums);
+      painted = rowHasContent(homeUnplayed) || painted;
+    }
     if (c.random   && homeRandom)   { renderHomeRandom(c.random);                              painted = rowHasContent(homeRandom)   || painted; }
     // Only when it was cached in the order that is current NOW. For this row a
     // copy in another order is not "slightly old", it is the WRONG ORDER, and
@@ -5684,6 +5716,7 @@
   // 2.4s of "queued 400 of 1179" is the same as never having said it.
   function showToast(msg, kind, ms) {
     toast.textContent = msg;
+    toast.style.bottom = toastBottomAbovePill();
     toast.classList.remove("hidden", "error");
     if (kind === "error") toast.classList.add("error");
     requestAnimationFrame(() => toast.classList.add("show"));
@@ -5848,7 +5881,8 @@
     return el;
   }
 
-  const SOURCE_LABEL = { local: "Local albums", qobuz: "Qobuz", tidal: "TIDAL" };
+  // What the badge on a tile MEANS, said on hover: where this album comes from.
+  const SOURCE_LABEL = { local: "Local files", qobuz: "In your Qobuz library", tidal: "In your TIDAL library" };
   function sourceBadge(a) {
     const kind = a.source || (a.local ? "local" : null);
     if (!kind || !SOURCE_LABEL[kind]) return null;
@@ -6526,11 +6560,17 @@
         // Close FIRST. showArtistAlbums parks the grid/topbar/labels but knows
         // nothing about the album modal, so with the modal still open the
         // artist grid renders behind it and body scroll stays locked.
+        // The album it was opened from goes with it, so Back on the artist
+        // page comes back to that album rather than to Home (Mandarin's
+        // rule). Not from Now playing: that screen is not an album view.
+        const fromAlbum = (currentAlbum && currentSource !== "now-playing")
+          ? { album: currentAlbum, opts: { source: currentSource, zoneId: currentSourceZoneId, filter: currentDetailFilter } }
+          : null;
         closeModal();
         // The artist view PARKS the labels browser itself (see showArtistAlbums)
         // so its Back can restore it — tearing it down here would lose the open
         // label and leave the restored grid without its labels bar.
-        window.__showArtistAlbums && window.__showArtistAlbums(part.name);
+        window.__showArtistAlbums && window.__showArtistAlbums(part.name, { fromAlbum });
       });
       box.appendChild(btn);
     });
@@ -8759,7 +8799,7 @@
           const btn = document.createElement("button");
           btn.type = "button";
           btn.className = "logo-candidate-btn";
-          btn.title = c.title || "";
+          btn.title = c.title ? "Use this logo — " + c.title : "Use this logo";
           const img = document.createElement("img");
           img.src = c.img;
           img.alt = c.title || "";
@@ -8972,7 +9012,7 @@
           const mergedEl = document.createElement("div");
           mergedEl.className = "album-merged-info";
           mergedEl.textContent = lb.mergedFrom.length + " merged";
-          mergedEl.title = "Tap to manage merged labels";
+          mergedEl.title = "Manage merged labels";
           mergedEl.addEventListener("click", (e) => {
             e.stopPropagation();
             if (!labelsSelectMode) showUnmergeSheet(lb.title, lb.mergedFrom);
@@ -9493,7 +9533,7 @@
           return;
         }
       } catch (e) {} // /api/status fetch failed — server not ready yet, fall through to "Waiting" banner
-      setBanner("Waiting for Roon Core. Open Roon → Settings → Extensions and click Enable on “Random Albums”.");
+      setBanner("Waiting for Roon Core. Open Roon → Settings → Extensions and click Enable on “Rouen”.");
       await new Promise(r => setTimeout(r, 2000));
     }
     setBanner("Still not paired with Roon. Check that this extension is enabled in Roon → Settings → Extensions.", true);
@@ -9507,6 +9547,7 @@
 (() => {
   const bar       = document.getElementById("mini-transport");
   const titleEl   = document.getElementById("mt-title");
+  const kickerEl  = document.getElementById("mt-kicker");
   const artistEl  = document.getElementById("mt-artist");
   const artEl     = document.getElementById("mt-art");
   const btnPP     = document.getElementById("mt-playpause");
@@ -9864,9 +9905,11 @@
     const volOutput = (zone.outputs || []).find(o => o.volume);
     const muted = (zone.outputs || []).some(o => o.is_muted);
     const playing = zone.state === "playing" || zone.state === "loading";
-    const barSig = [np.line1, np.line2, np.line3, np.image_key, zone.state, muted].join("|");
+    const kicker = zone.display_name || "";
+    const barSig = [np.line1, np.line2, np.line3, np.image_key, zone.state, muted, kicker].join("|");
     if (barSig !== lastBarSig) {
       lastBarSig = barSig;
+      if (kickerEl) kickerEl.textContent = kicker;
 
       // Title = track, subtitle = artist · album
       titleEl.textContent  = np.line1 || "—";
@@ -10158,6 +10201,22 @@
   let npWavePeaks = null;     // Uint8Array for the current track, or null
   let npWaveKey = "";         // which track those peaks are for
   let npWaveReq = 0;          // generation, so a slow answer cannot land late
+
+  // Redraw when the canvas changes size. drawWave sizes its bars from the
+  // canvas's width AT THE TIME IT DRAWS, and while a track is paused nothing
+  // else redraws it — so a reflow after the draw (the theme's web font
+  // arriving and moving the time labels, a rotation, a resize) left the
+  // shape stretched to the old width, its silences a couple of pixels off
+  // the playhead (v1.8.74, found when the fonts were added).
+  if (npWave && typeof ResizeObserver === "function") {
+    let lastW = -1, lastH = -1;
+    new ResizeObserver(() => {
+      const w = npWave.clientWidth, h = npWave.clientHeight;
+      if (w === lastW && h === lastH) return;
+      lastW = w; lastH = h;
+      if (npWavePeaks && npWavePeaks.length) drawWave();
+    }).observe(npWave);
+  }
 
   function npWaveIdentity() {
     const np = (currentZone && currentZone.now_playing) || null;
@@ -10973,6 +11032,23 @@
 })();
 
 /* ------------------------------------------------------------------ */
+/*  Where a toast sits: ABOVE the now-playing pill, never over it.     */
+/* ------------------------------------------------------------------ */
+// The pill floats at the bottom of every screen, and both toasts used to be
+// fixed at a bottom offset smaller than its height — so a message sat on top
+// of the transport, covering the very controls it was often reporting on.
+// Measured rather than guessed: the pill's height follows its artwork, the
+// home-indicator inset and the Now-playing screen (which hides it). Returns
+// a CSS length for `bottom`, or "" to leave the stylesheet's own value.
+function toastBottomAbovePill() {
+  const pill = document.getElementById("mini-transport");
+  if (!pill || pill.classList.contains("hidden")) return "";
+  const r = pill.getBoundingClientRect();
+  if (!r.height || r.top >= window.innerHeight) return "";
+  return Math.round(window.innerHeight - r.top + 12) + "px";
+}
+
+/* ------------------------------------------------------------------ */
 /*  Settings info-icon toasts                                         */
 /* ------------------------------------------------------------------ */
 (() => {
@@ -10998,9 +11074,23 @@
   function showToast(text) {
     const t = getToast();
     t.textContent = text;
+    t.style.bottom = toastBottomAbovePill();
     t.classList.add("visible");
     clearTimeout(dismissTimer);
-    dismissTimer = setTimeout(hideToast, 5000);
+    // Long enough to READ: 5s was gone halfway through the longer notes.
+    // About a fifth of a second a word on top of four seconds, at most 25s;
+    // any tap elsewhere still closes it at once.
+    const words = String(text || "").split(/\s+/).length;
+    dismissTimer = setTimeout(hideToast, Math.min(25000, 4000 + words * 220));
+  }
+
+  // Every ⓘ was announced as just "Info". Name each after the setting it
+  // explains, read from the label it sits in.
+  for (const btn of document.querySelectorAll(".settings-info-btn")) {
+    if (btn.getAttribute("aria-label") && btn.getAttribute("aria-label") !== "Info") continue;
+    const host = btn.closest(".settings-label, .settings-block-title");
+    const name = host ? host.textContent.replace(/[ⓘ\u24D8]/g, "").trim() : "";
+    btn.setAttribute("aria-label", name ? "About " + name : "More information");
   }
 
   document.addEventListener("click", (e) => {
@@ -11028,9 +11118,14 @@
   const errEl     = document.getElementById("share-err");
   const modalBtn  = document.getElementById("modal-share-btn");
 
+  // The card is drawn in Manrope, which ships with the app (public/fonts,
+  // v1.8.74 — it used to come from Google Fonts). Waited for so the card's
+  // text is measured in the face it is drawn in, but never for more than two
+  // seconds: a font that has not arrived by then draws in the fallback rather
+  // than holding the card up.
   async function ensureFont() {
     if (!document.fonts || !document.fonts.load) return;
-    try {
+    const loaded = (async () => {
       await Promise.all([
         document.fonts.load('700 42px Manrope'),
         document.fonts.load('400 28px Manrope'),
@@ -11038,7 +11133,8 @@
         document.fonts.load('400 22px Manrope')
       ]);
       await document.fonts.ready;
-    } catch { /* fall back */ }
+    })().catch(() => { /* fall back to the system face */ });
+    await Promise.race([loaded, new Promise(r => setTimeout(r, 2000))]);
   }
 
   function close() {
@@ -12094,8 +12190,8 @@
         if (s && s.current) {
           const parts = (s.current || "").split(".");
           versionEl.textContent = parts.length >= 3
-            ? "MusicD Remote v" + parts[0] + "." + parts[1] + " (Build " + parts[2] + ")"
-            : "MusicD Remote v" + s.current;
+            ? "Rouen v" + parts[0] + "." + parts[1] + " (Build " + parts[2] + ")"
+            : "Rouen v" + s.current;
           versionLoaded = true;
         }
       }
@@ -12128,7 +12224,40 @@
     });
   }
 
+  // The key boxes say whether the key that is set WORKS (v1.8.74): the server
+  // tries it against its service (see keyCheck in index.js). A key that works
+  // shows a ✓ in its box and "Working" in the placeholder; one the service
+  // refused shows ✗; no answer from the service shows nothing either way.
+  function paintKeyCheck(input, badge, j, emptyHint) {
+    const state = j && j.set ? j.check : null;
+    if (badge) {
+      badge.classList.toggle("hidden", state !== "ok" && state !== "invalid");
+      badge.classList.toggle("is-ok", state === "ok");
+      badge.classList.toggle("is-bad", state === "invalid");
+      badge.textContent = state === "ok" ? "✓" : state === "invalid" ? "✕" : "";
+      badge.setAttribute("aria-label", state === "ok" ? "Key checked and working"
+        : state === "invalid" ? "Key refused by the service" : "");
+      badge.title = badge.getAttribute("aria-label");
+    }
+    if (input) {
+      input.classList.toggle("is-ok", state === "ok");
+      input.classList.toggle("is-bad", state === "invalid");
+      input.placeholder = !(j && j.set) ? emptyHint
+        : state === "ok" ? "Checked and working — " + j.masked
+        : state === "invalid" ? "Not accepted — paste a new one"
+        : "Saved — " + j.masked;
+    }
+  }
+  function keyStatusText(j, envName) {
+    if (!j.set) return "Not set";
+    const where = j.source === "env" ? " — from the install command (" + envName + "). Saving here overrides it." : "";
+    if (j.check === "ok") return "✓ Checked and working: " + j.masked + where;
+    if (j.check === "invalid") return "The service refused this key (" + j.masked + "). Check it was copied in full." + where;
+    return "Current: " + j.masked + " — couldn’t reach the service to check it." + where;
+  }
+
   const discogsTokenInput  = document.getElementById("discogs-token-input");
+  const discogsTokenCheck  = document.getElementById("discogs-token-check");
   const discogsTokenSave   = document.getElementById("discogs-token-save");
   const discogsTokenStatus = document.getElementById("discogs-token-status");
 
@@ -12136,15 +12265,12 @@
     try {
       const r = await fetch("/api/settings/discogs-token");
       const j = await r.json();
-      if (discogsTokenStatus) {
-        // Naming where an env-seeded key came from is the whole point of
-        // reporting the source: without it a key set by the install command
-        // looks identical to a saved one, and editing settings.json to change
-        // it appears to do nothing.
-        discogsTokenStatus.textContent = j.set
-          ? ("Current: " + j.masked + (j.source === "env" ? " — from the install command (RRA_DISCOGS_KEY). Saving here overrides it." : ""))
-          : "Not set";
-      }
+      // Naming where an env-seeded key came from is the whole point of
+      // reporting the source: without it a key set by the install command
+      // looks identical to a saved one, and editing settings.json to change
+      // it appears to do nothing.
+      if (discogsTokenStatus) discogsTokenStatus.textContent = keyStatusText(j, "RRA_DISCOGS_KEY");
+      paintKeyCheck(discogsTokenInput, discogsTokenCheck, j, "Paste personal access token…");
     } catch (_) { /* display-only status — if the fetch fails, silence is fine; status just stays stale */ }
   }
 
@@ -12162,7 +12288,10 @@
         const j = await r.json();
         if (j.ok) {
           if (discogsTokenInput) discogsTokenInput.value = "";
-          showToast(j.saved === false ? "Token set but file write failed — won't persist after restart" : "Discogs token saved", j.saved === false ? "error" : "ok");
+          showToast(j.saved === false ? "Token set but file write failed — won't persist after restart"
+            : j.check === "ok" ? "Discogs token saved — checked and working"
+            : j.check === "invalid" ? "Saved, but Discogs refused this token" : "Discogs token saved",
+            (j.saved === false || j.check === "invalid") ? "error" : "ok");
           loadDiscogsToken();
         } else {
           showToast(j.error || "Failed to save token", "error");
@@ -12176,6 +12305,7 @@
   }
 
   const fanartKeyInput  = document.getElementById("fanart-key-input");
+  const fanartKeyCheck  = document.getElementById("fanart-key-check");
   const fanartKeySave   = document.getElementById("fanart-key-save");
   const fanartKeyStatus = document.getElementById("fanart-key-status");
 
@@ -12183,12 +12313,9 @@
     try {
       const r = await fetch("/api/settings/fanart-key");
       const j = await r.json();
-      if (fanartKeyStatus) {
-        // Same reasoning as the Discogs status above: say where it came from.
-        fanartKeyStatus.textContent = j.set
-          ? ("Current: " + j.masked + (j.source === "env" ? " — from the install command (RRA_FANART_KEY). Saving here overrides it." : ""))
-          : "Not set";
-      }
+      // Same reasoning as the Discogs status above: say where it came from.
+      if (fanartKeyStatus) fanartKeyStatus.textContent = keyStatusText(j, "RRA_FANART_KEY");
+      paintKeyCheck(fanartKeyInput, fanartKeyCheck, j, "Paste FanArt.tv API key…");
     } catch (_) { /* display-only status — if the fetch fails, silence is fine; status just stays stale */ }
   }
 
@@ -12206,7 +12333,10 @@
         const j = await r.json();
         if (j.ok) {
           if (fanartKeyInput) fanartKeyInput.value = "";
-          showToast(j.saved === false ? "Key set but file write failed — won't persist after restart" : "FanArt.tv key saved", j.saved === false ? "error" : "ok");
+          showToast(j.saved === false ? "Key set but file write failed — won't persist after restart"
+            : j.check === "ok" ? "FanArt.tv key saved — checked and working"
+            : j.check === "invalid" ? "Saved, but FanArt.tv refused this key" : "FanArt.tv key saved",
+            (j.saved === false || j.check === "invalid") ? "error" : "ok");
           loadFanartKey();
         } else {
           showToast(j.error || "Failed to save key", "error");
@@ -13060,8 +13190,7 @@
       showQobuzSecretState(j);
       if (waveEnabledNote) {
         waveEnabledNote.textContent = j.enabled
-          ? "On. Local files only \u2014 Roon streams Qobuz and TIDAL to the endpoint, " +
-            "so those tracks keep the plain bar."
+          ? "On. Local files, and Qobuz and TIDAL tracks when that service is connected."
           : "Off. The progress bar stays a plain line.";
       }
     } catch (e) { /* keep the last shown value */ }
@@ -13101,7 +13230,7 @@
         const j = await r.json().catch(() => ({}));
         if (!r.ok || j.error) throw new Error(j.error || "Couldn't save");
         window.__waveformOn = on;
-        showToast(on ? "Waveform on \u2014 local files show the track's shape"
+        showToast(on ? "Waveform on \u2014 tracks show their shape as they play"
                      : "Waveform off");
         loadWaveformEnabled();
         // Repaint now rather than at the next track change, so the switch is
@@ -14546,8 +14675,11 @@ initServiceBrowser({
     if (!zone) { if (window.__showToast) window.__showToast("Select a zone first"); return; }
     if (el.classList.contains("spinning")) return;
 
-    // Spin the compass for 2 seconds, then fetch
+    // Spin the compass for 2 seconds, then fetch. The Home tile's disc is
+    // always turning; it is sped up rather than restarted (rampDisc).
     el.classList.add("spinning");
+    const disc = el.querySelector && el.querySelector(".unheard-disc");
+    rampDisc(disc, 10);
     await new Promise(r => setTimeout(r, 2000));
 
     try {
@@ -14566,7 +14698,31 @@ initServiceBrowser({
       if (window.__showToast) window.__showToast("Request failed", "error");
     } finally {
       el.classList.remove("spinning");
+      rampDisc(disc, 1);
     }
+  }
+  // Ease the disc's running animation to `rate` times its resting speed over
+  // ~600ms. playbackRate keeps the current angle, so there is no jump; with
+  // reduced motion there is no animation and nothing to do.
+  function rampDisc(disc, rate) {
+    if (!disc || typeof disc.getAnimations !== "function") return;
+    const anim = disc.getAnimations()[0];
+    if (!anim) return;
+    clearTimeout(disc.__rampTimer);
+    const from = anim.playbackRate || 1;
+    const t0 = Date.now();
+    // Timed steps (~60 a second) rather than requestAnimationFrame: the same
+    // smoothness on screen, and a ramp that still finishes if no frame is
+    // drawn meanwhile (a backgrounded tab), so the disc never stays fast.
+    const step = () => {
+      const k = Math.min(1, (Date.now() - t0) / 600);
+      // Set directly: like updatePlaybackRate() it keeps the current angle,
+      // and it is in effect at once rather than at the animation's next
+      // "ready", which a ramp of quick steps would outrun.
+      anim.playbackRate = from + (rate - from) * (1 - Math.pow(1 - k, 3));
+      if (k < 1) disc.__rampTimer = setTimeout(step, 16);
+    };
+    step();
   }
   btn.addEventListener("click", () => playUnheard(btn));
   window.__playUnheard = playUnheard;
@@ -14617,14 +14773,13 @@ initServiceBrowser({
     }
     return out;
   }
+  // The count line only. Back is the shared brass < beside the menu, as on
+  // every other screen (it used to be a "← Back" button of its own here).
   function artistCountBar(total, artistName) {
     if (!countBar) return;
-    countBar.innerHTML = `
-      <button class="artist-view-back" id="artist-back-btn">← Back</button>
-      <span class="count-text"></span>`;
+    countBar.innerHTML = `<span class="count-text"></span>`;
     countBar.querySelector(".count-text").textContent =
       `${total} album${total !== 1 ? "s" : ""} · ${artistName}`;
-    document.getElementById("artist-back-btn").addEventListener("click", exitArtistView);
   }
   async function refreshArtistView() {
     const L = liveApi();
@@ -14669,6 +14824,10 @@ initServiceBrowser({
     artistViewActive = false;
     bioSeq++;   // any in-flight bio must not prepend into the restored screen
     if (saved && opts && opts.restore === false) {
+      if (topbarBack) {
+        if (saved.topbarBackLabel) topbarBack.setAttribute("aria-label", saved.topbarBackLabel);
+        topbarBack.title = saved.topbarBackTitle || "";
+      }
       saved = null;
       grid.innerHTML = "";
       // The artist view owns this bar; without clearing it, its "← Back"
@@ -14696,7 +14855,11 @@ initServiceBrowser({
         countBar.appendChild(saved.countNodes);
         countBar.classList.toggle("hidden", saved.countHidden);
       }
-      if (topbarBack)    topbarBack.classList.toggle("hidden", saved.topbarBackHidden);
+      if (topbarBack) {
+        topbarBack.classList.toggle("hidden", saved.topbarBackHidden);
+        if (saved.topbarBackLabel) topbarBack.setAttribute("aria-label", saved.topbarBackLabel);
+        topbarBack.title = saved.topbarBackTitle || "";
+      }
       if (topbarRefresh) topbarRefresh.classList.toggle("hidden", saved.topbarRefreshHidden);
       if (topbarSearch)  topbarSearch.classList.toggle("hidden", saved.topbarSearchHidden);
       // Re-arm the screens whose behaviour lives OUTSIDE the restored nodes:
@@ -14716,10 +14879,24 @@ initServiceBrowser({
       // to date where it stands (v1.8.65 — see liveCatchUp).
       if (window.__liveCatchUp) window.__liveCatchUp();
     }
+    const back = saved && saved.fromAlbum;
     saved = null;
+    // Opened from an album: back to that album, over the screen it was on.
+    if (back && !(opts && opts.reopen === false) && window.__openAlbum) {
+      window.__openAlbum(back.album, back.opts);
+    }
   }
+  // The shared Back beside the menu: while the artist view is up it steps out
+  // of it (to the album it came from), ahead of its usual "go Home". Capture
+  // phase, so it runs before — and stops — the Home listener.
+  if (topbarBack) topbarBack.addEventListener("click", (e) => {
+    if (!artistViewActive) return;
+    e.stopImmediatePropagation();
+    exitArtistView();
+  }, true);
 
-  async function showArtistAlbums(artistName) {
+  async function showArtistAlbums(artistName, how) {
+    const fromAlbum = (how && how.fromAlbum) || null;
     if (window.__leavePlaylistScreens) window.__leavePlaylistScreens();
     if (!artistName) return;
     // Drop any active/pending search (incl. the delayed external-sources fetch)
@@ -14730,7 +14907,7 @@ initServiceBrowser({
     // Artist → album → artist chaining: put the FIRST screen back before
     // capturing, so what we snapshot below is the real originating screen (and
     // its live view flags), not a half-torn-down artist view.
-    if (artistViewActive) exitArtistView();
+    if (artistViewActive) exitArtistView({ reopen: false });
     // The artist view takes over the shared grid (and snapshot-restores it on
     // Back) — park the library wall's infinite scroll so it can't append into
     // this view, remembering whether it was live so Back can re-arm it.
@@ -14778,6 +14955,9 @@ initServiceBrowser({
       topbarBackHidden:    topbarBack    ? topbarBack.classList.contains("hidden")    : true,
       topbarRefreshHidden: topbarRefresh ? topbarRefresh.classList.contains("hidden") : true,
       topbarSearchHidden:  topbarSearch  ? topbarSearch.classList.contains("hidden")  : true,
+      topbarBackLabel:     topbarBack ? topbarBack.getAttribute("aria-label") : null,
+      topbarBackTitle:     topbarBack ? topbarBack.title : "",
+      fromAlbum,
     };
     artistViewActive = true;
     // Reveal the shared album grid and leave the Home landing / search results.
@@ -14787,20 +14967,21 @@ initServiceBrowser({
     if (homeView)     homeView.classList.add("hidden");
     if (homeSections) homeSections.classList.add("hidden");
     grid.classList.remove("hidden");
-    // Hide the shared topbar nav — this view has its own "← Back" button in
-    // countBar, so leaving the shared Back/Refresh/Search visible (whatever the
-    // previous screen set them to) would show a second, redundant back control.
-    if (topbarBack)    topbarBack.classList.add("hidden");
+    // The shared Back — the < beside the menu, as on every other screen —
+    // takes this view back (see the capture listener above); Refresh and
+    // Search don't belong here.
+    if (topbarBack) {
+      topbarBack.classList.remove("hidden");
+      topbarBack.setAttribute("aria-label", fromAlbum ? "Back to the album" : "Back");
+      topbarBack.title = fromAlbum ? "Back to the album" : "Back";
+    }
     if (topbarRefresh) topbarRefresh.classList.add("hidden");
     if (topbarSearch)  topbarSearch.classList.add("hidden");
 
     // Show loading state
     if (countBar) {
       countBar.classList.remove("hidden");
-      countBar.innerHTML = `
-        <button class="artist-view-back" id="artist-back-btn">← Back</button>
-        <span class="count-text">Loading…</span>`;
-      document.getElementById("artist-back-btn").addEventListener("click", exitArtistView);
+      countBar.innerHTML = `<span class="count-text">Loading…</span>`;
     }
     grid.innerHTML = "";
 
@@ -14847,10 +15028,8 @@ initServiceBrowser({
     } catch (e) {
       if (!artistViewActive || mySeq !== artistReadSeq) return;   // another page owns the bar now
       if (countBar) {
-        countBar.innerHTML = `
-          <button class="artist-view-back" id="artist-back-btn">← Back</button>
-          <span class="count-text" style="color:var(--danger)">Error: ${e.message}</span>`;
-        document.getElementById("artist-back-btn").addEventListener("click", exitArtistView);
+        countBar.innerHTML = `<span class="count-text" style="color:var(--danger)"></span>`;
+        countBar.querySelector(".count-text").textContent = "Error: " + e.message;
       }
     }
   }

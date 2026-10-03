@@ -338,6 +338,6 @@ test("the Settings list is one column of rows, like Mandarin's — not large but
     assert.equal(r.rows_with_caret, 0, "a row carries a caret");
     assert.equal(r.panels_with_desc, r.count, "only " + r.panels_with_desc + " of " + r.count + " panels have one");
     const playback = r.panes.find(p => p.pane === "playback");
-    assert.equal(playback.desc, "Output zone & random album radio");
+    assert.equal(playback.desc, "Zone, waveform & radio");
   });
 });
