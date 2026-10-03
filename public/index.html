@@ -431,6 +431,13 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
           <span>Wall display</span>
         </button>
+        <!-- HQPlayer's filters, modulator and volume (v1.8.74). Hidden unless
+             switched on in Settings → HQPlayer: with it off, the screen could
+             only say so. -->
+        <button class="menu-item hidden" type="button" data-action="hqplayer" id="menu-item-hqplayer">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+          <span>HQPlayer</span>
+        </button>
         <div class="menu-sep"></div>
         <button class="menu-item" type="button" data-target="labels-toggle" id="menu-item-labels">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
@@ -1074,6 +1081,15 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
             </span>
           </button>
 
+          <button class="settings-nav-item" type="button" data-pane="hqplayer">
+            <span class="settings-nav-ico" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+            </span>
+            <span class="settings-nav-txt">
+              <span class="settings-nav-title">HQPlayer</span>
+            </span>
+          </button>
+
           <button class="settings-nav-item" type="button" data-pane="appearance">
             <span class="settings-nav-ico" aria-hidden="true">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
@@ -1423,6 +1439,68 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
             a sheet or a selection is open, so nothing you are in the middle of
             is thrown away.
           </p>
+        </div>
+      </div>
+
+      <!-- HQPlayer (v1.8.74) -->
+      <div class="settings-view settings-pane hidden" data-view="pane" data-pane="hqplayer">
+        <div class="settings-pane-head">
+          <button class="settings-back" type="button" data-settings-back aria-label="Back to settings">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+          </button>
+          <h2>HQPlayer</h2>
+        </div>
+        <p class="settings-pane-desc">Filters, modulator, volume &amp; presets</p>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">HQPlayer control <button class="settings-info-btn" data-info="Off by default. For a Roon that plays through HQPlayer: a screen in the side menu that changes HQPlayer's filters, its modulator or dither, and its volume, with presets and undo. Every change is checked by reading HQPlayer's settings back, and one that stops playback, or that HQPlayer cannot keep up with, is undone by itself. When off, nothing connects to anything." aria-label="Info">&#9432;</button></span>
+            <label class="switch">
+              <input type="checkbox" id="hqp-enabled" aria-label="HQPlayer control">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+          <div class="settings-note">Off by default. While it is off the side menu has no HQPlayer entry and nothing below is used.</div>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-block-title">HQPlayer's address</div>
+          <div class="settings-token-row">
+            <input id="hqp-host" class="settings-token-input" type="text" inputmode="url" placeholder="e.g. 192.168.1.20 or hqplayer.local" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="HQPlayer address">
+            <input id="hqp-port" class="settings-token-input hqp-port-input" type="number" inputmode="numeric" min="1" max="65535" placeholder="4321" aria-label="HQPlayer control port">
+          </div>
+          <div class="settings-row settings-row-top hqp-conn-actions">
+            <button id="hqp-test" class="settings-update-btn" type="button">Test</button>
+            <button id="hqp-save" class="settings-update-btn" type="button">Save</button>
+          </div>
+          <div class="settings-note" id="hqp-conn-note">The computer HQPlayer runs on. Its control port is 4321 unless you have changed it.</div>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Demo HQPlayer <button class="settings-info-btn" data-info="A simulated HQPlayer that runs inside this extension, so the HQPlayer screen can be tried with no HQPlayer at all. It answers the way a real one was measured to — including the combinations that stop playback, so you can watch one being undone. It makes no sound, and nothing on your network is touched." aria-label="Info">&#9432;</button></span>
+            <label class="switch">
+              <input type="checkbox" id="hqp-demo" aria-label="Demo HQPlayer">
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+          <div class="settings-note">Try the screen without HQPlayer. While this is on the address above is not used.</div>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-row">
+            <span class="settings-label">Settings that didn't work</span>
+            <button id="hqp-forget" class="settings-update-btn" type="button">Forget</button>
+          </div>
+          <div class="settings-note" id="hqp-learned-note">When a change stops playback or HQPlayer can't keep up, it is undone and remembered, and the screen warns about it next time.</div>
+        </div>
+
+        <div class="settings-block">
+          <div class="settings-note">
+            HQPlayer control is ported from hqpweb by statelycurmudgeon (MIT licence).
+            Not affiliated with, endorsed by, or supported by Signalyst. HQPlayer is a
+            trademark of its owner, used here only to identify compatible software.
+          </div>
         </div>
       </div>
 

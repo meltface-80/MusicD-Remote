@@ -23,6 +23,11 @@ const wikiMatch  = require("./lib/wiki-match");
 const similar    = require("./lib/similar");
 const newRel     = require("./lib/newreleases");
 const qobuzDeep  = require("./lib/qobuz-deeplink");
+// HQPlayer control (v1.8.74), ported from hqpweb by statelycurmudgeon (MIT —
+// lib/hqp/LICENSE). Everything it does lives under lib/hqp/; this file only
+// mounts its routes. Off, and doing nothing at all, until switched on in
+// Settings → HQPlayer.
+const { createHqpService } = require("./lib/hqp/service");
 // Title-only album matching, for the albums Roon supplies no artist for. Pure —
 // see lib/albumkeys.js. Required up here rather than beside the waveform code
 // because albumSource reads it, and that runs from every list endpoint.
@@ -8493,7 +8498,8 @@ app.use(express.json({ limit: "1mb" }));
 // under a line every 1.5s (zone-state) and per art tile (image).
 // live$: the app asks it every 3 s while it is on screen (v1.8.65), which is
 // exactly the kind of poll this list exists to keep out of the trace.
-const TRACE_SKIP = /^\/api\/(live$|zone-state|zones$|image\/|update\/status|settings\/tidal\/status|settings\/display|labels-scan-status|search-status)/;
+// hqp/now: asked every 1.5 s while the HQPlayer screen is open (v1.8.74).
+const TRACE_SKIP = /^\/api\/(live$|zone-state|zones$|image\/|update\/status|settings\/tidal\/status|settings\/display|labels-scan-status|search-status|hqp\/now$)/;
 app.use((req, res, next) => {
   if (!DEBUG || !req.path.startsWith("/api/") || TRACE_SKIP.test(req.path)) return next();
   const t0 = Date.now();
@@ -15248,6 +15254,20 @@ app.post("/api/settings/discover", (req, res) => {
   savePersistedSettings({ discoverEnabled, discoverHour });
   res.json({ ok: true, enabled: discoverEnabled, hour: discoverHour });
 });
+
+// ---------------------------------------------------------------------------
+// HQPlayer (v1.8.74) — the side-menu screen's server: /api/hqp/*. Everything
+// is in lib/hqp/service.js, including why writes there must be JSON. Presets
+// and the combinations learned not to work are kept beside the rest of the
+// app's data, on the data volume, so they survive an update.
+// ---------------------------------------------------------------------------
+const hqp = createHqpService({
+  dataDir: path.join(__dirname, "data"),
+  getSettings: () => loadPersistedSettings(),
+  saveSettings: (patch) => savePersistedSettings(patch),
+  zones: () => zones,
+});
+hqp.mount(app);
 
 // ---------------------------------------------------------------------------
 // Home screen rows — which appear, and in what order.

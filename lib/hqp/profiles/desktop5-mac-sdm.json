@@ -1,0 +1,1210 @@
+{
+ "id": "desktop5-mac-sdm",
+ "info": {
+  "engine": "5.32.5",
+  "name": "fake-mac",
+  "platform": "Mac",
+  "product": "Signalyst HQPlayer Desktop",
+  "version": "5"
+ },
+ "discover": {
+  "version": "Signalyst HQPlayer Desktop 5"
+ },
+ "volumeFormat": "short",
+ "volumeRange": {
+  "adaptive": 0.0,
+  "enabled": 1.0,
+  "max": -3.0,
+  "min": -60.0
+ },
+ "configurations": [
+  "Example configuration 1",
+  "Example configuration 2"
+ ],
+ "configurationListError": null,
+ "modes": [
+  {
+   "index": 0,
+   "name": "[source]",
+   "value": -1
+  },
+  {
+   "index": 1,
+   "name": "PCM",
+   "value": 0
+  },
+  {
+   "index": 2,
+   "name": "SDM (DSD)",
+   "value": 1
+  }
+ ],
+ "lists": {
+  "1": {
+   "filters": [
+    {
+     "arg": 1,
+     "index": 0,
+     "name": "IIR",
+     "value": 64
+    },
+    {
+     "arg": 1,
+     "index": 1,
+     "name": "IIR2",
+     "value": 65
+    },
+    {
+     "arg": 1,
+     "index": 2,
+     "name": "FIR",
+     "value": 61
+    },
+    {
+     "arg": 1,
+     "index": 3,
+     "name": "asymFIR",
+     "value": 62
+    },
+    {
+     "arg": 1,
+     "index": 4,
+     "name": "minphaseFIR",
+     "value": 63
+    },
+    {
+     "arg": 1,
+     "index": 5,
+     "name": "FFT",
+     "value": 60
+    },
+    {
+     "arg": 2,
+     "index": 6,
+     "name": "poly-sinc-lp",
+     "value": 0
+    },
+    {
+     "arg": 2,
+     "index": 7,
+     "name": "poly-sinc-mp",
+     "value": 1
+    },
+    {
+     "arg": 2,
+     "index": 8,
+     "name": "poly-sinc-short-lp",
+     "value": 2
+    },
+    {
+     "arg": 2,
+     "index": 9,
+     "name": "poly-sinc-short-mp",
+     "value": 3
+    },
+    {
+     "arg": 1,
+     "index": 10,
+     "name": "poly-sinc-long-lp",
+     "value": 24
+    },
+    {
+     "arg": 1,
+     "index": 11,
+     "name": "poly-sinc-long-ip",
+     "value": 25
+    },
+    {
+     "arg": 1,
+     "index": 12,
+     "name": "poly-sinc-long-mp",
+     "value": 26
+    },
+    {
+     "arg": 0,
+     "index": 13,
+     "name": "poly-sinc-hb",
+     "value": 5
+    },
+    {
+     "arg": 0,
+     "index": 14,
+     "name": "poly-sinc-hb-xs-2s",
+     "value": 56
+    },
+    {
+     "arg": 0,
+     "index": 15,
+     "name": "poly-sinc-hb-s-2s",
+     "value": 57
+    },
+    {
+     "arg": 0,
+     "index": 16,
+     "name": "poly-sinc-hb-m-2s",
+     "value": 58
+    },
+    {
+     "arg": 0,
+     "index": 17,
+     "name": "poly-sinc-hb-l-2s",
+     "value": 59
+    },
+    {
+     "arg": 2,
+     "index": 18,
+     "name": "poly-sinc-ext",
+     "value": 11
+    },
+    {
+     "arg": 1,
+     "index": 19,
+     "name": "poly-sinc-ext2",
+     "value": 22
+    },
+    {
+     "arg": 2,
+     "index": 20,
+     "name": "poly-sinc-ext2-short",
+     "value": 70
+    },
+    {
+     "arg": 1,
+     "index": 21,
+     "name": "poly-sinc-ext2-medium",
+     "value": 71
+    },
+    {
+     "arg": 1,
+     "index": 22,
+     "name": "poly-sinc-ext2-long",
+     "value": 72
+    },
+    {
+     "arg": 1,
+     "index": 23,
+     "name": "poly-sinc-ext2-xla",
+     "value": 32
+    },
+    {
+     "arg": 0,
+     "index": 24,
+     "name": "poly-sinc-ext2-xl",
+     "value": 73
+    },
+    {
+     "arg": 1,
+     "index": 25,
+     "name": "poly-sinc-ext2-hires-lp",
+     "value": 74
+    },
+    {
+     "arg": 1,
+     "index": 26,
+     "name": "poly-sinc-ext2-hires-ip",
+     "value": 75
+    },
+    {
+     "arg": 1,
+     "index": 27,
+     "name": "poly-sinc-ext2-hires-mp",
+     "value": 76
+    },
+    {
+     "arg": 1,
+     "index": 28,
+     "name": "poly-sinc-mqa/mp3-lp",
+     "value": 14
+    },
+    {
+     "arg": 1,
+     "index": 29,
+     "name": "poly-sinc-mqa/mp3-mp",
+     "value": 15
+    },
+    {
+     "arg": 2,
+     "index": 30,
+     "name": "poly-sinc-xtr-lp",
+     "value": 17
+    },
+    {
+     "arg": 2,
+     "index": 31,
+     "name": "poly-sinc-xtr-mp",
+     "value": 18
+    },
+    {
+     "arg": 1,
+     "index": 32,
+     "name": "poly-sinc-xtr-short-lp",
+     "value": 34
+    },
+    {
+     "arg": 1,
+     "index": 33,
+     "name": "poly-sinc-xtr-short-mp",
+     "value": 35
+    },
+    {
+     "arg": 2,
+     "index": 34,
+     "name": "poly-sinc-lp-2s",
+     "value": 6
+    },
+    {
+     "arg": 2,
+     "index": 35,
+     "name": "poly-sinc-mp-2s",
+     "value": 7
+    },
+    {
+     "arg": 2,
+     "index": 36,
+     "name": "poly-sinc-short-lp-2s",
+     "value": 8
+    },
+    {
+     "arg": 2,
+     "index": 37,
+     "name": "poly-sinc-short-mp-2s",
+     "value": 9
+    },
+    {
+     "arg": 1,
+     "index": 38,
+     "name": "poly-sinc-long-lp-2s",
+     "value": 27
+    },
+    {
+     "arg": 1,
+     "index": 39,
+     "name": "poly-sinc-long-ip-2s",
+     "value": 28
+    },
+    {
+     "arg": 1,
+     "index": 40,
+     "name": "poly-sinc-long-mp-2s",
+     "value": 29
+    },
+    {
+     "arg": 0,
+     "index": 41,
+     "name": "poly-sinc-hb-2s",
+     "value": 10
+    },
+    {
+     "arg": 2,
+     "index": 42,
+     "name": "poly-sinc-xtr-lp-2s",
+     "value": 19
+    },
+    {
+     "arg": 2,
+     "index": 43,
+     "name": "poly-sinc-xtr-mp-2s",
+     "value": 20
+    },
+    {
+     "arg": 1,
+     "index": 44,
+     "name": "poly-sinc-xtr-short-lp-2s",
+     "value": 36
+    },
+    {
+     "arg": 1,
+     "index": 45,
+     "name": "poly-sinc-xtr-short-mp-2s",
+     "value": 37
+    },
+    {
+     "arg": 2,
+     "index": 46,
+     "name": "poly-sinc-gauss-short",
+     "value": 38
+    },
+    {
+     "arg": 1,
+     "index": 47,
+     "name": "poly-sinc-gauss-medium",
+     "value": 39
+    },
+    {
+     "arg": 1,
+     "index": 48,
+     "name": "poly-sinc-gauss-long",
+     "value": 40
+    },
+    {
+     "arg": 1,
+     "index": 49,
+     "name": "poly-sinc-gauss-xla",
+     "value": 42
+    },
+    {
+     "arg": 0,
+     "index": 50,
+     "name": "poly-sinc-gauss-xl",
+     "value": 41
+    },
+    {
+     "arg": 1,
+     "index": 51,
+     "name": "poly-sinc-gauss-hires-lp",
+     "value": 43
+    },
+    {
+     "arg": 1,
+     "index": 52,
+     "name": "poly-sinc-gauss-hires-ip",
+     "value": 44
+    },
+    {
+     "arg": 1,
+     "index": 53,
+     "name": "poly-sinc-gauss-hires-mp",
+     "value": 45
+    },
+    {
+     "arg": 0,
+     "index": 54,
+     "name": "poly-sinc-gauss-halfband",
+     "value": 54
+    },
+    {
+     "arg": 0,
+     "index": 55,
+     "name": "poly-sinc-gauss-halfband-s",
+     "value": 55
+    },
+    {
+     "arg": 0,
+     "index": 56,
+     "name": "polynomial-1",
+     "value": 66
+    },
+    {
+     "arg": 0,
+     "index": 57,
+     "name": "polynomial-2",
+     "value": 67
+    },
+    {
+     "arg": 0,
+     "index": 58,
+     "name": "minringFIR-lp",
+     "value": 4
+    },
+    {
+     "arg": 0,
+     "index": 59,
+     "name": "minringFIR-mp",
+     "value": 16
+    },
+    {
+     "arg": 0,
+     "index": 60,
+     "name": "closed-form",
+     "value": 12
+    },
+    {
+     "arg": 0,
+     "index": 61,
+     "name": "closed-form-fast",
+     "value": 13
+    },
+    {
+     "arg": 0,
+     "index": 62,
+     "name": "closed-form-16M",
+     "value": 21
+    },
+    {
+     "arg": 1,
+     "index": 63,
+     "name": "sinc-S",
+     "value": 30
+    },
+    {
+     "arg": 1,
+     "index": 64,
+     "name": "sinc-M",
+     "value": 23
+    },
+    {
+     "arg": 1,
+     "index": 65,
+     "name": "sinc-Mx",
+     "value": 33
+    },
+    {
+     "arg": 0,
+     "index": 66,
+     "name": "sinc-MG",
+     "value": 49
+    },
+    {
+     "arg": 1,
+     "index": 67,
+     "name": "sinc-MGa",
+     "value": 50
+    },
+    {
+     "arg": 0,
+     "index": 68,
+     "name": "sinc-L",
+     "value": 31
+    },
+    {
+     "arg": 0,
+     "index": 69,
+     "name": "sinc-Ls",
+     "value": 46
+    },
+    {
+     "arg": 0,
+     "index": 70,
+     "name": "sinc-Lm",
+     "value": 47
+    },
+    {
+     "arg": 0,
+     "index": 71,
+     "name": "sinc-Ll",
+     "value": 48
+    },
+    {
+     "arg": 0,
+     "index": 72,
+     "name": "sinc-Lh",
+     "value": 68
+    },
+    {
+     "arg": 0,
+     "index": 73,
+     "name": "sinc-short",
+     "value": 51
+    },
+    {
+     "arg": 0,
+     "index": 74,
+     "name": "sinc-medium",
+     "value": 52
+    },
+    {
+     "arg": 0,
+     "index": 75,
+     "name": "sinc-long",
+     "value": 53
+    },
+    {
+     "arg": 0,
+     "index": 76,
+     "name": "sinc-long-h",
+     "value": 69
+    }
+   ],
+   "shapers": [
+    {
+     "index": 0,
+     "name": "DSD5",
+     "value": 0
+    },
+    {
+     "index": 1,
+     "name": "DSD5v2",
+     "value": 1
+    },
+    {
+     "index": 2,
+     "name": "DSD5v2 256+fs",
+     "value": 3
+    },
+    {
+     "index": 3,
+     "name": "DSD5EC",
+     "value": 9
+    },
+    {
+     "index": 4,
+     "name": "ASDM5",
+     "value": 5
+    },
+    {
+     "index": 5,
+     "name": "ASDM5EC",
+     "value": 10
+    },
+    {
+     "index": 6,
+     "name": "ASDM5ECv2",
+     "value": 13
+    },
+    {
+     "index": 7,
+     "name": "ASDM5ECv3",
+     "value": 15
+    },
+    {
+     "index": 8,
+     "name": "ASDM5EC-ul",
+     "value": 28
+    },
+    {
+     "index": 9,
+     "name": "ASDM5EC-light",
+     "value": 17
+    },
+    {
+     "index": 10,
+     "name": "ASDM5EC-fast",
+     "value": 32
+    },
+    {
+     "index": 11,
+     "name": "ASDM5EC-super",
+     "value": 19
+    },
+    {
+     "index": 12,
+     "name": "ASDM5EC-ul 512+fs",
+     "value": 30
+    },
+    {
+     "index": 13,
+     "name": "ASDM5EC-light 512+fs",
+     "value": 21
+    },
+    {
+     "index": 14,
+     "name": "ASDM5EC-fast 512+fs",
+     "value": 34
+    },
+    {
+     "index": 15,
+     "name": "ASDM5EC-super 512+fs",
+     "value": 23
+    },
+    {
+     "index": 16,
+     "name": "DSD7",
+     "value": 2
+    },
+    {
+     "index": 17,
+     "name": "DSD7 256+fs",
+     "value": 4
+    },
+    {
+     "index": 18,
+     "name": "ASDM7",
+     "value": 6
+    },
+    {
+     "index": 19,
+     "name": "ASDM7EC",
+     "value": 11
+    },
+    {
+     "index": 20,
+     "name": "ASDM7ECv2",
+     "value": 14
+    },
+    {
+     "index": 21,
+     "name": "ASDM7ECv3",
+     "value": 16
+    },
+    {
+     "index": 22,
+     "name": "ASDM7EC-ul",
+     "value": 29
+    },
+    {
+     "index": 23,
+     "name": "ASDM7EC-light",
+     "value": 18
+    },
+    {
+     "index": 24,
+     "name": "ASDM7EC-fast",
+     "value": 33
+    },
+    {
+     "index": 25,
+     "name": "ASDM7EC-super",
+     "value": 20
+    },
+    {
+     "index": 26,
+     "name": "ASDM7EC-ul 512+fs",
+     "value": 31
+    },
+    {
+     "index": 27,
+     "name": "ASDM7EC-light 512+fs",
+     "value": 22
+    },
+    {
+     "index": 28,
+     "name": "ASDM7EC-fast 512+fs",
+     "value": 35
+    },
+    {
+     "index": 29,
+     "name": "ASDM7EC-super 512+fs",
+     "value": 24
+    },
+    {
+     "index": 30,
+     "name": "AMSDM7 512+fs",
+     "value": 7
+    },
+    {
+     "index": 31,
+     "name": "AMSDM7EC 512+fs",
+     "value": 12
+    },
+    {
+     "index": 32,
+     "name": "AHM5EC5L",
+     "value": 26
+    },
+    {
+     "index": 33,
+     "name": "AHM7EC5L",
+     "value": 8
+    },
+    {
+     "index": 34,
+     "name": "AHM5EC8B",
+     "value": 27
+    },
+    {
+     "index": 35,
+     "name": "AHM7EC8B",
+     "value": 25
+    }
+   ],
+   "rates": [
+    0,
+    2822400,
+    5644800,
+    11289600,
+    22579200,
+    45158400
+   ],
+   "provenance": "measured"
+  },
+  "0": {
+   "filters": [
+    {
+     "arg": 0,
+     "index": 0,
+     "name": "none",
+     "value": 0
+    },
+    {
+     "arg": 1,
+     "index": 1,
+     "name": "IIR",
+     "value": 1
+    },
+    {
+     "arg": 1,
+     "index": 2,
+     "name": "IIR2",
+     "value": 57
+    },
+    {
+     "arg": 1,
+     "index": 3,
+     "name": "FIR",
+     "value": 2
+    },
+    {
+     "arg": 1,
+     "index": 4,
+     "name": "asymFIR",
+     "value": 3
+    },
+    {
+     "arg": 1,
+     "index": 5,
+     "name": "minphaseFIR",
+     "value": 4
+    },
+    {
+     "arg": 1,
+     "index": 6,
+     "name": "FFT",
+     "value": 5
+    },
+    {
+     "arg": 2,
+     "index": 7,
+     "name": "poly-sinc-lp",
+     "value": 6
+    },
+    {
+     "arg": 2,
+     "index": 8,
+     "name": "poly-sinc-mp",
+     "value": 7
+    },
+    {
+     "arg": 2,
+     "index": 9,
+     "name": "poly-sinc-short-lp",
+     "value": 8
+    },
+    {
+     "arg": 2,
+     "index": 10,
+     "name": "poly-sinc-short-mp",
+     "value": 9
+    },
+    {
+     "arg": 1,
+     "index": 11,
+     "name": "poly-sinc-long-lp",
+     "value": 26
+    },
+    {
+     "arg": 1,
+     "index": 12,
+     "name": "poly-sinc-long-ip",
+     "value": 27
+    },
+    {
+     "arg": 1,
+     "index": 13,
+     "name": "poly-sinc-long-mp",
+     "value": 28
+    },
+    {
+     "arg": 0,
+     "index": 14,
+     "name": "poly-sinc-hb",
+     "value": 14
+    },
+    {
+     "arg": 0,
+     "index": 15,
+     "name": "poly-sinc-hb-xs",
+     "value": 53
+    },
+    {
+     "arg": 0,
+     "index": 16,
+     "name": "poly-sinc-hb-s",
+     "value": 54
+    },
+    {
+     "arg": 0,
+     "index": 17,
+     "name": "poly-sinc-hb-m",
+     "value": 55
+    },
+    {
+     "arg": 0,
+     "index": 18,
+     "name": "poly-sinc-hb-l",
+     "value": 56
+    },
+    {
+     "arg": 2,
+     "index": 19,
+     "name": "poly-sinc-ext",
+     "value": 15
+    },
+    {
+     "arg": 1,
+     "index": 20,
+     "name": "poly-sinc-ext2",
+     "value": 24
+    },
+    {
+     "arg": 2,
+     "index": 21,
+     "name": "poly-sinc-ext2-short",
+     "value": 60
+    },
+    {
+     "arg": 1,
+     "index": 22,
+     "name": "poly-sinc-ext2-medium",
+     "value": 61
+    },
+    {
+     "arg": 1,
+     "index": 23,
+     "name": "poly-sinc-ext2-long",
+     "value": 62
+    },
+    {
+     "arg": 1,
+     "index": 24,
+     "name": "poly-sinc-ext2-xla",
+     "value": 32
+    },
+    {
+     "arg": 0,
+     "index": 25,
+     "name": "poly-sinc-ext2-xl",
+     "value": 63
+    },
+    {
+     "arg": 1,
+     "index": 26,
+     "name": "poly-sinc-ext2-hires-lp",
+     "value": 64
+    },
+    {
+     "arg": 1,
+     "index": 27,
+     "name": "poly-sinc-ext2-hires-ip",
+     "value": 65
+    },
+    {
+     "arg": 1,
+     "index": 28,
+     "name": "poly-sinc-ext2-hires-mp",
+     "value": 66
+    },
+    {
+     "arg": 1,
+     "index": 29,
+     "name": "poly-sinc-mqa/mp3-lp",
+     "value": 18
+    },
+    {
+     "arg": 1,
+     "index": 30,
+     "name": "poly-sinc-mqa/mp3-mp",
+     "value": 19
+    },
+    {
+     "arg": 2,
+     "index": 31,
+     "name": "poly-sinc-xtr-lp",
+     "value": 21
+    },
+    {
+     "arg": 2,
+     "index": 32,
+     "name": "poly-sinc-xtr-mp",
+     "value": 22
+    },
+    {
+     "arg": 1,
+     "index": 33,
+     "name": "poly-sinc-xtr-short-lp",
+     "value": 33
+    },
+    {
+     "arg": 1,
+     "index": 34,
+     "name": "poly-sinc-xtr-short-mp",
+     "value": 34
+    },
+    {
+     "arg": 2,
+     "index": 35,
+     "name": "poly-sinc-gauss-short",
+     "value": 35
+    },
+    {
+     "arg": 1,
+     "index": 36,
+     "name": "poly-sinc-gauss-medium",
+     "value": 36
+    },
+    {
+     "arg": 1,
+     "index": 37,
+     "name": "poly-sinc-gauss-long",
+     "value": 37
+    },
+    {
+     "arg": 1,
+     "index": 38,
+     "name": "poly-sinc-gauss-xla",
+     "value": 39
+    },
+    {
+     "arg": 0,
+     "index": 39,
+     "name": "poly-sinc-gauss-xl",
+     "value": 38
+    },
+    {
+     "arg": 1,
+     "index": 40,
+     "name": "poly-sinc-gauss-hires-lp",
+     "value": 40
+    },
+    {
+     "arg": 1,
+     "index": 41,
+     "name": "poly-sinc-gauss-hires-ip",
+     "value": 41
+    },
+    {
+     "arg": 1,
+     "index": 42,
+     "name": "poly-sinc-gauss-hires-mp",
+     "value": 42
+    },
+    {
+     "arg": 0,
+     "index": 43,
+     "name": "poly-sinc-gauss-halfband",
+     "value": 51
+    },
+    {
+     "arg": 0,
+     "index": 44,
+     "name": "poly-sinc-gauss-halfband-s",
+     "value": 52
+    },
+    {
+     "arg": 0,
+     "index": 45,
+     "name": "ASRC",
+     "value": 10
+    },
+    {
+     "arg": 0,
+     "index": 46,
+     "name": "polynomial-1",
+     "value": 11
+    },
+    {
+     "arg": 0,
+     "index": 47,
+     "name": "polynomial-2",
+     "value": 12
+    },
+    {
+     "arg": 0,
+     "index": 48,
+     "name": "minringFIR-lp",
+     "value": 13
+    },
+    {
+     "arg": 0,
+     "index": 49,
+     "name": "minringFIR-mp",
+     "value": 20
+    },
+    {
+     "arg": 0,
+     "index": 50,
+     "name": "closed-form",
+     "value": 16
+    },
+    {
+     "arg": 0,
+     "index": 51,
+     "name": "closed-form-fast",
+     "value": 17
+    },
+    {
+     "arg": 0,
+     "index": 52,
+     "name": "closed-form-M",
+     "value": 23
+    },
+    {
+     "arg": 1,
+     "index": 53,
+     "name": "sinc-S",
+     "value": 29
+    },
+    {
+     "arg": 1,
+     "index": 54,
+     "name": "sinc-M",
+     "value": 25
+    },
+    {
+     "arg": 1,
+     "index": 55,
+     "name": "sinc-Mx",
+     "value": 31
+    },
+    {
+     "arg": 0,
+     "index": 56,
+     "name": "sinc-MG",
+     "value": 46
+    },
+    {
+     "arg": 1,
+     "index": 57,
+     "name": "sinc-MGa",
+     "value": 47
+    },
+    {
+     "arg": 0,
+     "index": 58,
+     "name": "sinc-L",
+     "value": 30
+    },
+    {
+     "arg": 0,
+     "index": 59,
+     "name": "sinc-Ls",
+     "value": 43
+    },
+    {
+     "arg": 0,
+     "index": 60,
+     "name": "sinc-Lm",
+     "value": 44
+    },
+    {
+     "arg": 0,
+     "index": 61,
+     "name": "sinc-Ll",
+     "value": 45
+    },
+    {
+     "arg": 0,
+     "index": 62,
+     "name": "sinc-Lh",
+     "value": 58
+    },
+    {
+     "arg": 0,
+     "index": 63,
+     "name": "sinc-short",
+     "value": 48
+    },
+    {
+     "arg": 0,
+     "index": 64,
+     "name": "sinc-medium",
+     "value": 49
+    },
+    {
+     "arg": 0,
+     "index": 65,
+     "name": "sinc-long",
+     "value": 50
+    },
+    {
+     "arg": 0,
+     "index": 66,
+     "name": "sinc-long-h",
+     "value": 59
+    }
+   ],
+   "shapers": [
+    {
+     "index": 0,
+     "name": "none",
+     "value": 0
+    },
+    {
+     "index": 1,
+     "name": "NS1",
+     "value": 1
+    },
+    {
+     "index": 2,
+     "name": "NS4",
+     "value": 2
+    },
+    {
+     "index": 3,
+     "name": "NS5",
+     "value": 7
+    },
+    {
+     "index": 4,
+     "name": "NS9",
+     "value": 3
+    },
+    {
+     "index": 5,
+     "name": "LNS15",
+     "value": 9
+    },
+    {
+     "index": 6,
+     "name": "RPDF",
+     "value": 4
+    },
+    {
+     "index": 7,
+     "name": "TPDF",
+     "value": 5
+    },
+    {
+     "index": 8,
+     "name": "Gauss1",
+     "value": 8
+    },
+    {
+     "index": 9,
+     "name": "shaped",
+     "value": 6
+    }
+   ],
+   "rates": [
+    0,
+    44100,
+    48000,
+    88200,
+    96000,
+    176400,
+    192000,
+    352800,
+    384000,
+    705600,
+    768000,
+    1411200,
+    1536000
+   ],
+   "provenance": "filters/dithers borrowed from the Linux 5.35.10 PCM capture (Mac PCM lists not recorded); rates as reported by the 2026-10-02 live harness on the Mac"
+  }
+ },
+ "initial": {
+  "mode": "2",
+  "rate": "0",
+  "filter1x": "49",
+  "filterNx": "51",
+  "shaper": "35",
+  "volume": "-22",
+  "invert": "0",
+  "filter_20k": "0",
+  "adaptive": "0",
+  "state": "2"
+ },
+ "activeRateWhenAuto": {
+  "1": 45158400,
+  "0": 1536000
+ },
+ "remembered": {
+  "1": {
+   "filterNx": 51,
+   "filter1x": 49,
+   "shaper": 35
+  },
+  "0": {
+   "filterNx": 40,
+   "filter1x": 37,
+   "shaper": 3
+  }
+ },
+ "provenance": {
+  "measured": "Desktop 5.32.5 macOS, SDM mode, read-only capture 2026-10-02",
+  "inferred": [
+   "PCM remembered settings and PCM auto rate (1536000) are placeholders",
+   "[source] mode reuses PCM lists"
+  ]
+ }
+}

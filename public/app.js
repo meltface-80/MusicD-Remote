@@ -175,6 +175,9 @@
   let discoverSeq = 0;              // orphans in-flight Discover fetches
   let laterActive = false;          // viewing the Listen later screen?
   let laterSeq = 0;                 // orphans in-flight Listen later fetches
+  let hqpActive = false;            // viewing the HQPlayer screen? (v1.8.74)
+  let hqpSeq = 0;                   // orphans its in-flight polls and reads
+  let hqpTimer = null;              // its next status poll
   // How long a report about a long-running queue fill stays up (vs showToast's
   // 2.4s default). Declared here rather than beside showToast() for the same
   // reason as the flags above — a `const` further down the file is a TDZ
@@ -2273,6 +2276,814 @@
   }
 
 
+  // ===========================================================================
+  // HQPLAYER (v1.8.74)
+  //
+  // A screen for HQPlayer's DSP — the 1x and Nx filters, the modulator (SDM)
+  // or dither (PCM), the volume, presets and undo — for a Roon that plays
+  // through HQPlayer. The control logic is hqpweb's, by statelycurmudgeon
+  // (MIT), ported to the server in lib/hqp/. This is the page, and it is kept
+  // thin on purpose: the SERVER resolves names to HQPlayer's list indices,
+  // applies, reads HQPlayer's settings back (an OK from HQPlayer proves
+  // nothing), watches playback, rolls a change back if it stops or cannot
+  // keep up, and works out the warning each picker shows beside each choice.
+  // The page asks, shows what came back, and says what happened.
+  //
+  // Live by polling /api/hqp/now every 1.5 s while the screen is open — and
+  // that poll is also what keeps the server polling HQPlayer, so leaving the
+  // screen (leavePlaylistScreens) stops both.
+  // ===========================================================================
+  const HQP_POLL_MS = 1500;
+  const HQP_VOL_STEP_DB = 1;
+  // HQPlayer's own advice: −3 dB or lower when resampling or in SDM, to keep
+  // clear of inter-sample overs (manual §2.15, as hqpweb cites it).
+  const HQP_RECOMMENDED_MAX_DB = -3;
+  const HQP_PLAYBACK = ["Stopped", "Paused", "Playing", "Stopping"];
+  const HQP_RISKY = ["mode", "rate", "filterNx", "filter1x", "shaper"];
+  const HQP_FIELD = {
+    mode: "Mode", rate: "Output rate", filterNx: "Nx filter", filter1x: "1x filter", volume: "Volume",
+    invert: "Invert", filter20k: "20 kHz filter", adaptive: "Adaptive volume", convolution: "Convolution",
+    matrixProfile: "Matrix profile",
+  };
+  let hqpNow = null;           // the last /api/hqp/now answer
+  let hqpLost = false;         // this app's own server stopped answering
+  let hqpCaps = null;          // the lists and their warnings (/api/hqp/capabilities)
+  let hqpCapsLoading = false;
+  let hqpCapsError = null;     // why the lists could not be read, while they cannot
+  let hqpCapsWait = 0;         // ms before asking again after a failure: 3 s, doubling to 30 s
+  let hqpCapsRetryAt = 0;      // not before then — a failure is not asked again on every poll
+  let hqpWrites = 0;           // changes answered so far: a poll sent before one is not trusted after it
+  let hqpBusy = false;         // a change is running
+  let hqpVolDraft = null;      // the slider's value while it is being dragged
+  let hqpMsg = null;           // { kind: ok|warn|error|info, text }
+  let hqpMsgTimer = null;
+  let hqpSlowSince = null;     // when playback first dipped below 0.97× real time
+  let hqpPresetLine = "";      // what the Presets row says
+  let hqpEls = null;           // the screen's live nodes
+
+  const hqpNameAt = (list, i) => {
+    const hit = (list || []).find((x) => x.index === i);
+    return hit ? hit.name : "";
+  };
+  const hqpIsSdm = () => !!(hqpCaps && hqpCaps.mode && String(hqpCaps.mode.name).startsWith("SDM"));
+  const hqpFieldLabel = (f) => (f === "shaper" ? (hqpIsSdm() ? "Modulator" : "Dither") : (HQP_FIELD[f] || f));
+  /** "DSD256", "384 kHz", "1.536 MHz"; 0 is "Auto". */
+  function hqpFmtRate(hz, modeName) {
+    if (!hz) return "Auto";
+    if (String(modeName || "").startsWith("SDM") && hz % 44100 === 0) return "DSD" + hz / 44100;
+    if (hz >= 1000000) return +(hz / 1000000).toFixed(4) + " MHz";
+    return +(hz / 1000).toFixed(1) + " kHz";
+  }
+  function hqpShow(field, v) {
+    if (field === "rate") return hqpFmtRate(Number(v), hqpCaps && hqpCaps.mode ? hqpCaps.mode.name : "");
+    if (field === "volume") return Number(v).toFixed(1) + " dB";
+    if (typeof v === "boolean") return v ? "on" : "off";
+    return v === "" ? "none" : String(v);
+  }
+
+  // What a change did, in one line. Ported from hqpweb's describe().
+  function hqpDescribe(r) {
+    const base = hqpDescribeCore(r);
+    if (!r.skipped || !r.skipped.length) return base;
+    const sk = r.skipped.map((x) => hqpFieldLabel(x.field) + " (" + x.reason + ")").join("; ");
+    return { kind: "warn", text: base.text + " · Skipped: " + sk };
+  }
+  function hqpDescribeCore(r) {
+    if (r.rolledBack) {
+      const rb = r.rolledBack;
+      const back = rb.results.map((x) => hqpFieldLabel(x.field) + " back to " + hqpShow(x.field, x.actual)).join(", ");
+      // The rollback puts back what it can; anything it could not is said.
+      const missed = rb.skipped && rb.skipped.length
+        ? "Couldn't put back: " + rb.skipped.map((x) => hqpFieldLabel(x.field) + " (" + x.reason + ")").join("; ") + "."
+        : "";
+      const rec = rb.playback || {};
+      const tail = rec.kind === "playing" ? "Playback resumed."
+        : rec.kind === "not-checked" ? ""
+        : "Playback did not recover (" + rec.detail + "): HQPlayer may need a restart.";
+      const why = r.incompatible
+        ? [r.incompatible.text + ".", back ? back + "." : "", missed, tail, "That is one of HQPlayer's own rules, not a limit of this machine."]
+        : [r.playback.detail + ".", back ? back + "." : "", missed, tail, "Remembered as not working on this HQPlayer."];
+      return { kind: "warn", text: "Undone: " + why.filter(Boolean).join(" ") };
+    }
+    const failed = r.results.filter((x) => !x.applied);
+    const notes = r.results.filter((x) => x.note).map((x) => hqpFieldLabel(x.field) + " " + x.note);
+    if (failed.length) {
+      return {
+        kind: "warn",
+        text: failed.map((x) => hqpFieldLabel(x.field) + ": asked for " + hqpShow(x.field, x.requested) +
+                                ", HQPlayer reports " + hqpShow(x.field, x.actual)).concat(notes).join(" · "),
+      };
+    }
+    if (!r.results.length) return { kind: "warn", text: "Nothing was applied" };
+    const done = r.results.map((x) => hqpFieldLabel(x.field) + " → " + hqpShow(x.field, x.actual)).join(", ");
+    const pb = r.playback.kind === "playing" ? "playback OK"
+      : r.playback.kind === "not-checked" && /^nothing/.test(r.playback.detail || "") ? "not playing, so not checked"
+      : r.playback.kind === "inconclusive" ? "playback not checked (" + r.playback.detail + ")" : "";
+    return { kind: "ok", text: ["✓ " + done, pb].concat(notes).filter(Boolean).join(" · ") };
+  }
+
+  function hqpSetMsg(m, sticky) {
+    hqpMsg = m;
+    clearTimeout(hqpMsgTimer);
+    // A result fades after 30 s, as hqpweb's footer does; an Undo button that
+    // is still valid stays. "Applying…" stays until it is answered.
+    if (m && !sticky) hqpMsgTimer = setTimeout(() => { hqpMsg = null; hqpRender(); }, 30000);
+  }
+
+  function hqpEl(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  // Write a node only when what it shows has changed. Each poll rewrote some
+  // thirty nodes and attributes on a screen where nothing had moved — and the
+  // result line is role="status", which a screen reader announces again
+  // whenever its text is replaced, even by the same text.
+  function hqpSetText(el, s) { if (el.textContent !== s) el.textContent = s; }
+  function hqpSetProp(el, k, v) { if (el[k] !== v) el[k] = v; }
+  function hqpSetData(el, k, v) { if (el.dataset[k] !== v) el.dataset[k] = v; }
+
+  // The screen, built once per visit as live nodes; hqpRender() only updates them.
+  function hqpBuild() {
+    const root = hqpEl("div", "hqp-screen");
+    const els = { root };
+    els.notice = hqpEl("div", "hqp-notice hidden");
+    els.noticeText = hqpEl("p", "hqp-notice-text");
+    els.noticeBtn = hqpEl("button", "settings-update-btn hqp-notice-btn hidden", "Open Settings → HQPlayer");
+    els.noticeBtn.type = "button";
+    els.noticeBtn.addEventListener("click", () => {
+      if (window.__openSettingsPane) window.__openSettingsPane("hqplayer");
+    });
+    els.notice.appendChild(els.noticeText);
+    els.notice.appendChild(els.noticeBtn);
+    root.appendChild(els.notice);
+
+    els.panel = hqpEl("div", "hqp-panel hidden");
+    root.appendChild(els.panel);
+
+    // ---- what is playing, and how ----
+    const head = hqpEl("div", "hqp-head");
+    els.dot = hqpEl("span", "hqp-dot");
+    els.dot.setAttribute("aria-hidden", "true");
+    els.name = hqpEl("span", "hqp-name");
+    els.engine = hqpEl("span", "hqp-engine");
+    head.appendChild(els.dot); head.appendChild(els.name); head.appendChild(els.engine);
+    els.panel.appendChild(head);
+
+    els.alert = hqpEl("p", "hqp-alert hidden");
+    els.panel.appendChild(els.alert);
+
+    els.track = hqpEl("div", "hqp-track hidden");
+    els.trackArt = hqpEl("img", "hqp-track-art");
+    els.trackArt.alt = "";
+    els.trackArt.addEventListener("error", () => { els.trackArt.classList.add("hidden"); });
+    const tt = hqpEl("div", "hqp-track-text");
+    els.trackTitle = hqpEl("span", "hqp-track-title");
+    els.trackSub = hqpEl("span", "hqp-track-sub");
+    tt.appendChild(els.trackTitle); tt.appendChild(els.trackSub);
+    els.track.appendChild(els.trackArt); els.track.appendChild(tt);
+    els.panel.appendChild(els.track);
+
+    const headline = hqpEl("div", "hqp-headline");
+    els.rate = hqpEl("span", "hqp-rate");
+    els.state = hqpEl("span", "hqp-state");
+    headline.appendChild(els.rate); headline.appendChild(els.state);
+    els.panel.appendChild(headline);
+    els.sub = hqpEl("div", "hqp-sub");
+    els.panel.appendChild(els.sub);
+    els.health = hqpEl("div", "hqp-health");
+    els.panel.appendChild(els.health);
+
+    // ---- volume ----
+    const vol = hqpEl("div", "hqp-vol");
+    els.volDown = hqpEl("button", "hqp-vol-btn", "−");
+    els.volDown.type = "button";
+    els.volDown.setAttribute("aria-label", "Volume down " + HQP_VOL_STEP_DB + " dB");
+    els.volSlider = hqpEl("input", "hqp-vol-slider");
+    els.volSlider.type = "range";
+    els.volSlider.step = "0.5";
+    els.volSlider.setAttribute("aria-label", "HQPlayer volume");
+    els.volUp = hqpEl("button", "hqp-vol-btn", "+");
+    els.volUp.type = "button";
+    els.volUp.setAttribute("aria-label", "Volume up " + HQP_VOL_STEP_DB + " dB");
+    els.volOut = hqpEl("output", "hqp-vol-out");
+    vol.appendChild(els.volDown); vol.appendChild(els.volSlider); vol.appendChild(els.volUp); vol.appendChild(els.volOut);
+    els.panel.appendChild(vol);
+    els.volNote = hqpEl("p", "hqp-vol-note hidden",
+      "Above −3 dB. HQPlayer recommends −3 dB or lower when resampling, to avoid inter-sample overs.");
+    els.panel.appendChild(els.volNote);
+    // While the thumb is held, the polls leave it alone (hqpVolDraft); it
+    // follows HQPlayer again once the change is answered — or straight away
+    // if the drag ended where it began, which sends nothing.
+    els.volSlider.addEventListener("input", () => {
+      hqpVolDraft = Number(els.volSlider.value);
+      els.volOut.textContent = hqpVolDraft.toFixed(1) + " dB";
+    });
+    els.volSlider.addEventListener("change", () => {
+      const v = Number(els.volSlider.value);
+      const cur = hqpNow && hqpNow.snapshot ? hqpNow.snapshot.state.volume : null;
+      if (!Number.isFinite(v) || cur === null || Math.abs(v - cur) < 0.01) {
+        hqpVolDraft = null;
+        hqpRender();
+        return;
+      }
+      hqpApply({ volume: v });
+    });
+    const letGo = () => setTimeout(() => {
+      if (hqpBusy || hqpVolDraft === null) return;
+      hqpVolDraft = null;
+      hqpRender();
+    }, 400);
+    els.volSlider.addEventListener("pointerup", letGo);
+    els.volSlider.addEventListener("pointercancel", letGo);
+    els.volSlider.addEventListener("blur", letGo);
+    const step = (d) => {
+      if (!hqpCaps || !hqpNow || !hqpNow.snapshot) return;
+      const vr = hqpCaps.volumeRange;
+      const cur = hqpNow.snapshot.state.volume;
+      const v = Math.min(vr.max, Math.max(vr.min, Math.round((cur + d) * 2) / 2));
+      if (v !== cur) hqpApply({ volume: v });
+    };
+    els.volDown.addEventListener("click", () => step(-HQP_VOL_STEP_DB));
+    els.volUp.addEventListener("click", () => step(HQP_VOL_STEP_DB));
+
+    // ---- the quick controls ----
+    const row = (field, label) => {
+      const b = hqpEl("button", "hqp-row");
+      b.type = "button";
+      b.dataset.field = field;
+      const l = hqpEl("span", "hqp-row-label", label);
+      const hint = hqpEl("span", "hqp-row-hint hidden", "in use");
+      l.appendChild(hint);
+      const v = hqpEl("span", "hqp-row-value");
+      const chev = hqpEl("span", "hqp-row-chev", "›");
+      chev.setAttribute("aria-hidden", "true");
+      b.appendChild(l); b.appendChild(v); b.appendChild(chev);
+      return { b, l, hint, v };
+    };
+    els.panel.appendChild(hqpEl("h3", "hqp-section-title", "DSP"));
+    els.rows = {};
+    for (const [f, label] of [["filter1x", "1x filter"], ["filterNx", "Nx filter"], ["shaper", "Modulator"]]) {
+      const r = row(f, label);
+      r.b.addEventListener("click", () => hqpOpenPicker(f));
+      els.rows[f] = r;
+      els.panel.appendChild(r.b);
+    }
+    const pr = row("presets", "Presets");
+    pr.b.addEventListener("click", hqpOpenPresets);
+    els.rows.presets = pr;
+    els.panel.appendChild(pr.b);
+    els.panel.appendChild(hqpEl("p", "hqp-help",
+      "1x is used for sources below 50 kHz (44.1 and 48k), Nx for higher rates. A preset is a saved set of " +
+      "these, by name, so it works across modes and HQPlayers."));
+
+    // ---- what the last change did, and the way back ----
+    els.result = hqpEl("div", "hqp-result hidden");
+    els.msg = hqpEl("p", "hqp-msg");
+    els.msg.setAttribute("role", "status");
+    els.undo = hqpEl("button", "settings-update-btn hqp-undo hidden", "Undo last change");
+    els.undo.type = "button";
+    els.undo.addEventListener("click", () => hqpRun("Undoing", "/api/hqp/undo", {}));
+    els.result.appendChild(els.msg); els.result.appendChild(els.undo);
+    els.panel.appendChild(els.result);
+
+    root.appendChild(hqpEl("p", "hqp-foot",
+      "Ported from hqpweb by statelycurmudgeon (MIT). Not affiliated with, endorsed by, or supported by " +
+      "Signalyst. HQPlayer is a trademark of its owner, used here only to identify compatible software."));
+    return els;
+  }
+
+  function hqpNotice(text, withSettings, isError) {
+    const e = hqpEls;
+    hqpSetText(e.noticeText, text);
+    e.noticeBtn.classList.toggle("hidden", !withSettings);
+    e.notice.classList.toggle("is-error", !!isError);
+    e.notice.classList.toggle("hidden", false);
+    e.panel.classList.toggle("hidden", true);
+  }
+
+  // The Roon zone to name over HQPlayer's status: the selected one if it plays
+  // through HQPlayer, otherwise one that is playing, otherwise the first.
+  function hqpZoneLine(list) {
+    if (!list || !list.length) return null;
+    return list.find((z) => z.zone_id === selectedZoneId) ||
+           list.find((z) => z.state === "playing") || list[0];
+  }
+
+  function hqpRender() {
+    const e = hqpEls;
+    if (!e || !hqpActive) return;
+    const n = hqpNow;
+    if (!n) { hqpNotice("Connecting…", false); return; }
+    if (n.enabled === false) {
+      hqpNotice("HQPlayer control is switched off. Turn it on in Settings → HQPlayer.", true);
+      return;
+    }
+    if (!n.configured) {
+      hqpNotice("Add your HQPlayer's address in Settings → HQPlayer — or switch on the Demo HQPlayer " +
+                "there to try this screen without one.", true);
+      return;
+    }
+    if (n.reachable === false) {
+      hqpNotice((n.address ? "HQPlayer at " + n.address : "HQPlayer") + " isn't answering" +
+                (n.error ? " (" + n.error + ")" : "") + ". Check that it is running, and the address in Settings → HQPlayer.",
+                true, true);
+      return;
+    }
+    if (!n.snapshot) { hqpNotice("Connecting to HQPlayer…", false); return; }
+    // toggle(, force), not add/remove: those rewrite the class attribute even
+    // when it already says so (see hqpSetText).
+    e.notice.classList.toggle("hidden", true);
+    e.panel.classList.toggle("hidden", false);
+
+    const st = n.snapshot.status;
+    const state = n.snapshot.state;
+    const latency = n.health ? n.health.latencyMs : null;
+    const slow = latency !== null && latency > 1500;
+    hqpSetData(e.dot, "state", hqpLost ? "lost" : slow ? "slow" : "live");
+    hqpSetProp(e.dot, "title", hqpLost ? "Lost touch with MusicD Remote's server; retrying…"
+      : "Answering in " + (latency === null ? "?" : latency) + " ms" + (slow ? " (slow)" : ""));
+    hqpSetText(e.name, n.name || "HQPlayer");
+    hqpSetText(e.engine, n.demo ? "simulated · no sound" : (n.engine ? "v" + n.engine : ""));
+
+    // Keeping up? Shown as a state, not a number: hqpweb's thresholds — red
+    // below 0.90× real time, amber after 15 s below 0.97×. The number is in the title.
+    const speed = n.health && n.health.speed != null ? n.health.speed : null;
+    const cls = speed == null ? "" : speed < 0.9 ? "bad"
+      : (hqpSlowSince !== null && Date.now() - hqpSlowSince >= 15000) ? "warn" : "ok";
+    hqpSetData(e.health, "state", cls);
+    hqpSetText(e.health, speed == null ? "" : cls === "bad" ? "Falling behind real time"
+      : cls === "warn" ? "Struggling to keep up" : "Keeping up with real time ✓");
+    hqpSetProp(e.health, "title", speed == null ? "" : "Processing at " + speed.toFixed(3) + "× real time over the last 30 s. " +
+      "Below 1.0 HQPlayer can't keep up and the audio will drop out.");
+    const alerts = [];
+    if (hqpLost) alerts.push("Lost touch with MusicD Remote's server; retrying…");
+    if (cls === "bad") alerts.push("HQPlayer is falling behind real time (" + speed.toFixed(2) + "×): it may be overloaded. " +
+      (n.undoAvailable ? "Undo the last change below, or pick a lighter filter or modulator." : "Try a lighter filter or modulator."));
+    if (slow) alerts.push("HQPlayer is answering slowly (" + latency + " ms): it may be overloaded.");
+    if (hqpCapsError) alerts.push("Couldn't read HQPlayer's lists of filters and modulators (" + hqpCapsError + "); trying again.");
+    hqpSetText(e.alert, alerts.join(" "));
+    e.alert.classList.toggle("hidden", !alerts.length);
+
+    const z = hqpZoneLine(n.roon);
+    e.track.classList.toggle("hidden", !(z && z.track));
+    if (z && z.track) {
+      hqpSetText(e.trackTitle, z.track);
+      hqpSetText(e.trackSub, [z.artist, z.album].filter(Boolean).join(" · "));
+      const src = z.image_key ? "/api/image/" + encodeURIComponent(z.image_key) + "?size=120" : "";
+      if (e.trackArt.dataset.src !== src) {
+        e.trackArt.dataset.src = src;
+        e.trackArt.classList.toggle("hidden", !src);
+        if (src) e.trackArt.src = src; else e.trackArt.removeAttribute("src");
+      }
+    }
+
+    hqpSetText(e.rate, hqpFmtRate(st.activeRate, st.activeMode));
+    hqpSetText(e.state, HQP_PLAYBACK[st.state] || "");
+    hqpSetData(e.state, "state", String(st.state));
+    const src = st.source;
+    hqpSetText(e.sub, [st.activeMode,
+      src ? "from " + hqpFmtRate(src.sampleRate, "PCM") + (src.bits ? " / " + src.bits + "-bit" : "") : "",
+      src && src.song === "Roon" ? "fed by Roon" : ""].filter(Boolean).join(" · "));
+
+    // ---- volume ----
+    const vr = hqpCaps ? hqpCaps.volumeRange : null;
+    const vol = hqpVolDraft !== null ? hqpVolDraft : state.volume;
+    if (vr) {
+      hqpSetProp(e.volSlider, "min", String(vr.min));
+      hqpSetProp(e.volSlider, "max", String(vr.max));
+      hqpSetProp(e.volSlider, "title", vr.min + " to " + vr.max + " dB");
+    }
+    // Never write the slider under a finger: a poll would yank the thumb back.
+    if (hqpVolDraft === null) hqpSetProp(e.volSlider, "value", String(state.volume));
+    hqpSetText(e.volOut, vol.toFixed(1) + " dB");
+    const volOff = !vr || !vr.enabled;
+    hqpSetProp(e.volSlider, "disabled", hqpBusy || volOff);
+    hqpSetProp(e.volDown, "disabled", hqpBusy || volOff);
+    hqpSetProp(e.volUp, "disabled", hqpBusy || volOff);
+    e.volNote.classList.toggle("hidden", !(vol > HQP_RECOMMENDED_MAX_DB));
+
+    // ---- the pickers' rows ----
+    hqpSetProp(e.rows.shaper.l.firstChild, "data", hqpIsSdm() ? "Modulator" : "Dither");
+    const inUse = n.inUse;
+    for (const f of ["filter1x", "filterNx", "shaper"]) {
+      const r = e.rows[f];
+      const list = hqpCaps ? (f === "shaper" ? hqpCaps.shapers : hqpCaps.filters) : null;
+      const name = list ? hqpNameAt(list, state[f]) : "";
+      hqpSetText(r.v, name || "—");
+      // ✓ when HQPlayer reports this choice is the one running; ⚠ when it reports another.
+      let taken = null;
+      if (st.state === 2 && list) {
+        if (f === "shaper") taken = st.activeShaper === name;
+        else if (inUse === (f === "filter1x" ? "1x" : "Nx")) taken = st.activeFilter === name;
+      }
+      hqpSetData(r.v, "taken", taken === null ? "" : taken ? "yes" : "no");
+      hqpSetProp(r.v, "title", taken === false ? "HQPlayer reports a different one running" : taken ? "Running in HQPlayer" : "");
+      if (f !== "shaper") r.hint.classList.toggle("hidden", inUse !== (f === "filter1x" ? "1x" : "Nx"));
+      hqpSetProp(r.b, "disabled", hqpBusy || !hqpCaps);
+    }
+    hqpSetText(e.rows.presets.v, hqpPresetLine || "—");
+    hqpSetProp(e.rows.presets.b, "disabled", hqpBusy || !hqpCaps);
+
+    // ---- the last change ----
+    const undo = !!n.undoAvailable;
+    hqpSetText(e.msg, hqpMsg ? hqpMsg.text : "");
+    hqpSetData(e.msg, "kind", hqpMsg ? hqpMsg.kind : "");
+    e.msg.classList.toggle("hidden", !hqpMsg);
+    e.undo.classList.toggle("hidden", !undo);
+    hqpSetProp(e.undo, "disabled", hqpBusy);
+    e.result.classList.toggle("hidden", !hqpMsg && !undo);
+  }
+
+  async function hqpPoll(seq) {
+    if (seq !== hqpSeq || !hqpActive) return;
+    // Only while the screen is on the page. A view chained from another
+    // artist view puts this screen back (and its poll with it) and then takes
+    // its nodes away again without leaving it.
+    if (!hqpEls || !grid.contains(hqpEls.root)) { hqpActive = false; return; }
+    // Put away (an iOS app in the background): ask nothing, so the server's
+    // lease runs out and it stops asking HQPlayer too. Back in view, the next
+    // tick picks up.
+    if (document.hidden) { hqpTimer = setTimeout(() => hqpPoll(seq), HQP_POLL_MS); return; }
+    const writes = hqpWrites;
+    let j = null;
+    let lost = false;
+    try {
+      const r = await fetch("/api/hqp/now", { cache: "no-store" });
+      j = await r.json().catch(() => null);
+      if (!r.ok || !j) lost = true;
+    } catch (e) {
+      lost = true;
+    }
+    if (seq !== hqpSeq || !hqpActive) return;
+    // A change was answered while this was out: what it says may be from
+    // before the change, which is already on screen. Ask again, now.
+    const crossed = writes !== hqpWrites;
+    if (!crossed) hqpLost = lost;
+    if (!lost && !crossed) {
+      hqpNow = j;
+      const speed = j.health && j.health.speed != null ? j.health.speed : null;
+      if (speed == null || speed >= 0.97) hqpSlowSince = null;
+      else if (hqpSlowSince === null) hqpSlowSince = Date.now();
+      // The lists and their warnings belong to a mode, a track and the
+      // settings in effect: read them again whenever those move — but not on
+      // every poll while they cannot be read (hqpCapsRetryAt).
+      if (j.enabled && j.configured && j.snapshot && (!hqpCaps || hqpCaps.hintsKey !== j.hintsKey) &&
+          Date.now() >= hqpCapsRetryAt) hqpLoadCaps();
+    }
+    hqpRender();
+    hqpTimer = setTimeout(() => hqpPoll(seq), crossed ? 0 : HQP_POLL_MS);
+  }
+
+  async function hqpLoadCaps() {
+    if (hqpCapsLoading) return;
+    hqpCapsLoading = true;
+    const seq = hqpSeq;
+    try {
+      const r = await fetch("/api/hqp/capabilities", { cache: "no-store" });
+      const j = await r.json().catch(() => ({}));
+      if (seq !== hqpSeq || !hqpActive) return;
+      if (r.ok && j && j.mode) {
+        hqpCaps = j;
+        hqpCapsError = null;
+        hqpCapsWait = 0;
+        hqpCapsRetryAt = 0;
+      } else {
+        hqpCapsFailed((j && j.error) || ("HTTP " + r.status));
+      }
+    } catch (e) {
+      if (seq === hqpSeq) hqpCapsFailed(e.message);
+    } finally {
+      hqpCapsLoading = false;
+    }
+    if (seq !== hqpSeq || !hqpActive) return;
+    hqpRender();
+    // The presets' previews are read against the same lists: no use asking
+    // for them while the lists cannot be read.
+    if (!hqpCapsError) hqpLoadPresetLine();
+  }
+
+  // A failure is asked again by a later status — after 3 s, then 6, 12, up to
+  // 30. Asked on every poll, an HQPlayer that keeps failing one of the eight
+  // reads behind the lists got all eight again every 1.5 s: about thirteen
+  // requests a second, for as long as the screen stayed open.
+  function hqpCapsFailed(why) {
+    hqpCapsError = why;
+    hqpCapsWait = Math.min(30000, hqpCapsWait ? hqpCapsWait * 2 : 3000);
+    hqpCapsRetryAt = Date.now() + hqpCapsWait;
+  }
+
+  // What the Presets row says: the presets in effect now, or how many there are.
+  async function hqpLoadPresetLine() {
+    const seq = hqpSeq;
+    try {
+      const r = await fetch("/api/hqp/presets", { cache: "no-store" });
+      const j = await r.json().catch(() => null);
+      if (seq !== hqpSeq || !hqpActive || !r.ok || !Array.isArray(j)) return;
+      const active = j.filter((p) => p.preview && p.preview.kind === "active").map((p) => p.name);
+      hqpPresetLine = active.length ? "✓ " + active.join(", ") : j.length ? j.length + " saved" : "none yet";
+      hqpRender();
+    } catch (e) {
+      // The row keeps what it said; the next change asks again.
+    }
+  }
+
+  async function hqpRun(label, url, body) {
+    if (hqpBusy) return null;
+    hqpBusy = true;
+    hqpSetMsg({ kind: "info", text: label + "…" }, true);
+    hqpRender();
+    const seq = hqpSeq;
+    let out = null;
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+      out = j;
+      if (seq === hqpSeq) {
+        if (hqpNow && hqpNow.snapshot && j.state) hqpNow.snapshot.state = j.state;
+        if (hqpNow && typeof j.undoAvailable === "boolean") hqpNow.undoAvailable = j.undoAvailable;
+        if (j.results) hqpSetMsg(hqpDescribe(j));
+      }
+    } catch (e) {
+      if (seq === hqpSeq) hqpSetMsg({ kind: "error", text: e.message });
+    } finally {
+      hqpWrites++;
+      hqpBusy = false;
+      hqpVolDraft = null;
+      if (seq === hqpSeq) {
+        hqpRender();
+        // A rollback taught the server a combination that fails, and any
+        // change can move which preset is in effect: read both again.
+        if (out && out.rolledBack) hqpLoadCaps();
+        else hqpLoadPresetLine();
+      }
+    }
+    return out;
+  }
+
+  function hqpApply(change) {
+    const risky = Object.keys(change).some((k) => HQP_RISKY.indexOf(k) > -1);
+    const playing = !!(hqpNow && hqpNow.snapshot && hqpNow.snapshot.status.state === 2);
+    return hqpRun(risky && playing ? "Applying, and checking playback" : "Applying", "/api/hqp/change", change);
+  }
+
+  // A searchable list for 36–77 choices, with HQPlayer's rules beside each:
+  // "won't play" where they predict a stop, "failed here before" where this
+  // machine learned one, and a quieter note where a choice works but is
+  // outside what the manual recommends. It warns; it never blocks.
+  function hqpOpenPicker(field) {
+    if (!hqpCaps || !hqpNow || !hqpNow.snapshot || hqpBusy) return;
+    const list = field === "shaper" ? hqpCaps.shapers : hqpCaps.filters;
+    const current = hqpNameAt(list, hqpNow.snapshot.state[field]);
+    const hints = (hqpCaps.hints && hqpCaps.hints[field]) || {};
+    const label = hqpFieldLabel(field);
+    openLibSheet(label, (body, close) => {
+      body.classList.add("hqp-pick-body");
+      const q = hqpEl("input", "settings-token-input hqp-pick-search");
+      q.type = "search";
+      q.placeholder = "Search " + list.length + "…";
+      q.autocomplete = "off";
+      q.setAttribute("aria-label", "Search " + label);
+      const ul = hqpEl("div", "hqp-pick-list");
+      ul.setAttribute("role", "listbox");
+      ul.setAttribute("aria-label", label);
+      const empty = hqpEl("p", "hqp-pick-empty hidden", "No match");
+      const items = [];
+      for (const it of list) {
+        const b = hqpEl("button", "hqp-pick-item");
+        b.type = "button";
+        b.setAttribute("role", "option");
+        b.dataset.name = it.name;
+        const h = Object.prototype.hasOwnProperty.call(hints, it.name) ? hints[it.name] : null;
+        const isCur = it.name === current;
+        b.classList.toggle("is-current", isCur);
+        b.classList.toggle("is-warn", !!(h && h.warn));
+        b.setAttribute("aria-selected", isCur ? "true" : "false");
+        const txt = hqpEl("span", "hqp-pick-text");
+        txt.appendChild(hqpEl("span", "hqp-pick-name", it.name));
+        if (h && (h.warn || h.note)) txt.appendChild(hqpEl("small", "hqp-pick-why", h.warn ? "⚠ " + h.warn : h.note));
+        b.appendChild(txt);
+        if (isCur) b.appendChild(hqpEl("span", "hqp-pick-tick", "✓"));
+        b.addEventListener("click", () => {
+          close();
+          if (it.name !== current) hqpApply({ [field]: it.name });
+        });
+        items.push(b);
+        ul.appendChild(b);
+      }
+      q.addEventListener("input", () => {
+        const s = q.value.trim().toLowerCase();
+        let shown = 0;
+        for (const b of items) {
+          const hit = !s || b.dataset.name.toLowerCase().indexOf(s) > -1;
+          b.classList.toggle("hidden", !hit);
+          if (hit) shown++;
+        }
+        empty.classList.toggle("hidden", shown > 0);
+      });
+      body.appendChild(q);
+      body.appendChild(ul);
+      body.appendChild(empty);
+      // The current choice in view. No focus on the search: on a phone that
+      // would raise the keyboard over the list being looked at.
+      const cur = items.find((b) => b.classList.contains("is-current"));
+      if (cur && cur.scrollIntoView) setTimeout(() => cur.scrollIntoView({ block: "center" }), 0);
+    });
+  }
+
+  function hqpPresetSummary(s) {
+    const mode = s.mode || "";
+    return [
+      s.mode,
+      s.rate !== undefined ? hqpFmtRate(s.rate, mode) : "",
+      s.filter1x ? "1x " + s.filter1x : "",
+      s.filterNx ? "Nx " + s.filterNx : "",
+      s.shaper || "",
+      s.volume !== undefined ? s.volume + " dB" : "",
+    ].filter(Boolean).join(" · ");
+  }
+
+  // Presets: one tap applies (and Undo still works); a badge says what that
+  // means here — already in effect, a quick change, or a major one (mode or
+  // rate) — and anything this HQPlayer cannot take is listed and skipped.
+  async function hqpOpenPresets() {
+    if (!hqpCaps || hqpBusy) return;
+    let list = null;
+    let editing = false;
+    let listEl = null;
+    let errEl = null;
+    let closeSheet = null;
+    const load = async () => {
+      try {
+        const r = await fetch("/api/hqp/presets", { cache: "no-store" });
+        const j = await r.json().catch(() => null);
+        if (!r.ok || !Array.isArray(j)) throw new Error((j && j.error) || ("HTTP " + r.status));
+        list = j;
+        errEl.textContent = "";
+      } catch (e) {
+        errEl.textContent = "Couldn't read the presets: " + e.message;
+      }
+      draw();
+    };
+    const send = async (url, method, body) => {
+      try {
+        const r = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+        return true;
+      } catch (e) {
+        errEl.textContent = e.message;
+        return false;
+      }
+    };
+    const draw = () => {
+      if (!listEl) return;
+      listEl.textContent = "";
+      if (list === null) { listEl.appendChild(hqpEl("p", "hqp-pick-empty", "Loading…")); return; }
+      if (!list.length) {
+        listEl.appendChild(hqpEl("p", "hqp-pick-empty", "No presets yet. Save the current settings below."));
+        return;
+      }
+      for (const p of list) {
+        const pv = p.preview || { kind: "quick", missing: [] };
+        const row = hqpEl("div", "hqp-preset");
+        const main = hqpEl("button", "hqp-preset-main");
+        main.type = "button";
+        main.disabled = pv.kind === "active";
+        const nm = hqpEl("span", "hqp-preset-name", p.name);
+        nm.appendChild(hqpEl("span", "hqp-badge", pv.kind === "active" ? "✓ in effect" : pv.kind));
+        nm.lastChild.dataset.kind = pv.kind;
+        main.appendChild(nm);
+        main.appendChild(hqpEl("small", "hqp-preset-sum", hqpPresetSummary(p.settings || {})));
+        if (pv.predicted) main.appendChild(hqpEl("small", "hqp-preset-warn", "⚠ won't play here: " + pv.predicted.text));
+        if (pv.missing && pv.missing.length) {
+          main.appendChild(hqpEl("small", "hqp-preset-warn", "⚠ " +
+            pv.missing.map((m) => hqpFieldLabel(m.field) + " " + m.reason).join("; ") + " (skipped)"));
+        } else if (pv.unchecked) {
+          main.appendChild(hqpEl("small", "hqp-preset-sum", "Switches mode; its names are checked when it is applied"));
+        }
+        main.addEventListener("click", async () => {
+          if (pv.kind === "active") return;
+          if (pv.predicted &&
+              !(await confirmDialog(p.name + ": " + pv.predicted.text + ".\n\nApply it anyway? It is undone by itself if playback stops."))) return;
+          if (pv.kind === "major" && !pv.predicted &&
+              !(await confirmDialog("Apply “" + p.name + "”?\n\nThis changes the mode or the output rate: playback may pause " +
+                                    "for a few seconds, and it is undone by itself if it does not recover."))) return;
+          if (closeSheet) closeSheet();
+          hqpRun("Applying " + p.name, "/api/hqp/presets/" + encodeURIComponent(p.id) + "/apply", {});
+        });
+        row.appendChild(main);
+        if (editing) {
+          const acts = hqpEl("span", "hqp-preset-acts");
+          const act = (text, fn, danger) => {
+            const b = hqpEl("button", "settings-update-btn" + (danger ? " hqp-danger" : ""), text);
+            b.type = "button";
+            b.addEventListener("click", fn);
+            acts.appendChild(b);
+          };
+          act("Rename", async () => {
+            const name = window.prompt("Rename preset", p.name);
+            if (name === null || !name.trim() || name.trim() === p.name) return;
+            if (await send("/api/hqp/presets/" + encodeURIComponent(p.id), "PATCH", { name: name.trim() })) load();
+          });
+          act("Update", async () => {
+            const vol = p.settings && p.settings.volume !== undefined ? " (including the volume, as before)" : "";
+            if (!(await confirmDialog("Replace “" + p.name + "” with HQPlayer's current settings" + vol + "?"))) return;
+            if (await send("/api/hqp/presets/" + encodeURIComponent(p.id), "PATCH", { fromCurrent: true })) load();
+          });
+          act("Delete", async () => {
+            if (!(await confirmDialog("Delete the preset “" + p.name + "”?"))) return;
+            if (await send("/api/hqp/presets/" + encodeURIComponent(p.id), "DELETE", {})) load();
+          }, true);
+          row.appendChild(acts);
+        }
+        listEl.appendChild(row);
+      }
+    };
+    openLibSheet("Presets", (body, close) => {
+      closeSheet = close;
+      listEl = hqpEl("div", "hqp-preset-list");
+      errEl = hqpEl("p", "hqp-err");
+      errEl.setAttribute("role", "alert");
+      body.appendChild(listEl);
+      body.appendChild(errEl);
+      draw();
+    }, (foot) => {
+      foot.classList.add("hqp-preset-foot");
+      const name = hqpEl("input", "settings-token-input hqp-preset-input");
+      name.type = "text";
+      name.maxLength = 64;
+      name.placeholder = "Save the current settings as…";
+      name.setAttribute("aria-label", "Preset name");
+      const volLab = hqpEl("label", "hqp-preset-vol");
+      const vol = hqpEl("input");
+      vol.type = "checkbox";
+      volLab.appendChild(vol);
+      volLab.appendChild(document.createTextNode(" with the volume"));
+      const save = hqpEl("button", "settings-update-btn", "Save");
+      save.type = "button";
+      save.addEventListener("click", async () => {
+        const n = name.value.trim();
+        if (!n) { errEl.textContent = "Give the preset a name."; return; }
+        save.disabled = true;
+        const ok = await send("/api/hqp/presets", "POST", { name: n, fromCurrent: true, includeVolume: vol.checked });
+        save.disabled = false;
+        if (ok) { name.value = ""; vol.checked = false; load(); hqpLoadPresetLine(); }
+      });
+      const edit = hqpEl("button", "settings-update-btn", "Edit");
+      edit.type = "button";
+      edit.addEventListener("click", () => {
+        editing = !editing;
+        edit.textContent = editing ? "Done" : "Edit";
+        draw();
+      });
+      foot.appendChild(name); foot.appendChild(volLab); foot.appendChild(save); foot.appendChild(edit);
+    }, () => { hqpLoadPresetLine(); });
+    load();
+  }
+
+  async function showHQPlayer() {
+    enterFullWall("HQPlayer");
+    hqpActive = true;
+    const seq = ++hqpSeq;
+    setBanner(null);
+    grid.innerHTML = "";
+    hqpNow = null;
+    hqpCaps = null;
+    hqpCapsError = null;
+    hqpCapsWait = 0;
+    hqpCapsRetryAt = 0;
+    hqpLost = false;
+    hqpBusy = false;
+    hqpVolDraft = null;
+    hqpSlowSince = null;
+    hqpPresetLine = "";
+    hqpSetMsg(null);
+    hqpEls = hqpBuild();
+    grid.appendChild(hqpEls.root);
+    hqpRender();
+    await hqpPoll(seq);
+  }
+  window.__showHQPlayer = showHQPlayer;
+
+  // Back from a view that borrowed the grid (the artist view, opened from Now
+  // playing) puts this screen's nodes back — but leaving it stopped the poll,
+  // and the screen would go on showing what HQPlayer was doing when it was
+  // left, for good. Start it again.
+  window.__resumeHQPlayer = () => {
+    if (!hqpEls || !grid.contains(hqpEls.root)) return;
+    if (hqpTimer) { clearTimeout(hqpTimer); hqpTimer = null; }
+    hqpActive = true;
+    hqpPoll(++hqpSeq);
+  };
+
   // Shared entry ritual for the full-screen Home walls (Not played / Library):
   // leave other views, clear the filter, take over the shared grid, set the
   // topbar chrome + title, scroll to the top, paint skeletons. Both walls'
@@ -2906,6 +3717,11 @@
     discoverActive = false;
     // Listen later too: its screen shares the grid like the two above.
     laterActive = false;
+    // HQPlayer too, and its poll stops here: that poll is also what keeps the
+    // server asking HQPlayer for its status, so leaving the screen must end it.
+    hqpActive = false;
+    hqpSeq++;
+    if (hqpTimer) { clearTimeout(hqpTimer); hqpTimer = null; }
     playlistSeq++;
     smartSeq++;
     userPlSeq++;
@@ -9406,6 +10222,10 @@
     if (discoverItem && typeof state.discover === "boolean") {
       discoverItem.classList.toggle("hidden", !state.discover);
     }
+    const hqpItem = document.getElementById("menu-item-hqplayer");
+    if (hqpItem && typeof state.hqp === "boolean") {
+      hqpItem.classList.toggle("hidden", !state.hqp);
+    }
     // The wall display: its menu entry, and whether the idle timer may open it.
     if (typeof state.display === "boolean") {
       wallDisplayOn = state.display;
@@ -9440,6 +10260,13 @@
     } catch (e) {
       // Hidden, as the markup has it, and the idle timer stays put: with the
       // switch unknown, /display may only say "turned off".
+    }
+    try {
+      const r = await fetch("/api/hqp/settings");
+      if (r.ok) state.hqp = !!(await r.json()).enabled;
+    } catch (e) {
+      // Hidden, as the markup has it: HQPlayer control is off for everyone
+      // until switched on, like Discover.
     }
     window.__applyFeatureMenu(state);
   }
@@ -13046,6 +13873,150 @@
     });
   }
 
+  // ----- HQPlayer (v1.8.74) -------------------------------------------------
+  // The switch, HQPlayer's address, the Demo HQPlayer, and forgetting the
+  // combinations learned not to work. Every write here is JSON — the server
+  // refuses anything else from any page (see lib/hqp/service.js).
+  const hqpEnabledEl = document.getElementById("hqp-enabled");
+  const hqpHostEl    = document.getElementById("hqp-host");
+  const hqpPortEl    = document.getElementById("hqp-port");
+  const hqpDemoEl    = document.getElementById("hqp-demo");
+  const hqpTestBtn   = document.getElementById("hqp-test");
+  const hqpSaveBtn   = document.getElementById("hqp-save");
+  const hqpConnNote  = document.getElementById("hqp-conn-note");
+  const hqpForgetBtn = document.getElementById("hqp-forget");
+  const hqpLearnNote = document.getElementById("hqp-learned-note");
+  const HQP_CONN_NOTE = hqpConnNote ? hqpConnNote.textContent : "";
+  const HQP_LEARN_NOTE = hqpLearnNote ? hqpLearnNote.textContent : "";
+
+  function paintHqpSettings(j) {
+    if (!j) return;
+    if (hqpEnabledEl) hqpEnabledEl.checked = !!j.enabled;
+    if (hqpDemoEl) hqpDemoEl.checked = !!j.demo;
+    // Never overwrite what is being typed: a reply landing mid-edit would
+    // take the address out from under the cursor.
+    if (hqpHostEl && document.activeElement !== hqpHostEl) hqpHostEl.value = j.host || "";
+    if (hqpPortEl && document.activeElement !== hqpPortEl) hqpPortEl.value = String(j.port || 4321);
+    if (hqpForgetBtn) hqpForgetBtn.disabled = !j.learned_count;
+    if (hqpLearnNote) {
+      hqpLearnNote.textContent = j.learned_count
+        ? HQP_LEARN_NOTE + " Remembered now: " + j.learned_count + "."
+        : HQP_LEARN_NOTE;
+    }
+    // A device that was not the one that flipped the switch catches up here.
+    if (window.__applyFeatureMenu) window.__applyFeatureMenu({ hqp: !!j.enabled });
+  }
+
+  async function loadHqpSettings() {
+    if (!hqpEnabledEl) return;
+    try {
+      const r = await fetch("/api/hqp/settings", { cache: "no-store" });
+      if (r.ok) paintHqpSettings(await r.json());
+    } catch (e) { /* the pane keeps what it shows; reopening Settings asks again */ }
+  }
+
+  async function hqpPostJson(url, body, method) {
+    try {
+      const r = await fetch(url, {
+        method: method || "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || (j && j.error)) return { error: (j && j.error) || ("HTTP " + r.status) };
+      return j;
+    } catch (e) {
+      return { error: e.message };
+    }
+  }
+
+  async function saveHqpSettings(patch) {
+    const j = await hqpPostJson("/api/hqp/settings", patch);
+    if (j.error) {
+      showToast("Couldn't save: " + j.error, "error");
+      loadHqpSettings();          // put the switches back to what is actually saved
+      return null;
+    }
+    paintHqpSettings(j);
+    return j;
+  }
+
+  // The address as typed, or null with the reason shown.
+  function hqpTyped() {
+    const host = hqpHostEl ? hqpHostEl.value.trim() : "";
+    const portText = hqpPortEl ? hqpPortEl.value.trim() : "";
+    const port = portText === "" ? 4321 : Number(portText);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      if (hqpConnNote) hqpConnNote.textContent = "The port is a whole number from 1 to 65535 — 4321 unless you changed it in HQPlayer.";
+      return null;
+    }
+    return { host, port };
+  }
+
+  if (hqpEnabledEl) {
+    hqpEnabledEl.addEventListener("change", async () => {
+      const on = hqpEnabledEl.checked;
+      if (await saveHqpSettings({ enabled: on })) {
+        showToast(on ? "HQPlayer is in the side menu" : "HQPlayer control is off");
+      }
+    });
+  }
+  if (hqpDemoEl) {
+    hqpDemoEl.addEventListener("change", async () => {
+      const on = hqpDemoEl.checked;
+      // The demo is for trying the screen, so switching it on also switches
+      // the feature on — a demo nobody can reach would be a switch that does nothing.
+      const patch = on ? { demo: true, enabled: true } : { demo: false };
+      if (await saveHqpSettings(patch)) {
+        showToast(on ? "Demo HQPlayer on — open HQPlayer from the side menu" : "Demo HQPlayer off");
+      }
+    });
+  }
+  if (hqpSaveBtn) {
+    hqpSaveBtn.addEventListener("click", async () => {
+      const a = hqpTyped();
+      if (!a) return;
+      hqpSaveBtn.disabled = true;
+      const j = await saveHqpSettings({ host: a.host, port: a.port });
+      hqpSaveBtn.disabled = false;
+      if (j && hqpConnNote) {
+        hqpConnNote.textContent = a.host
+          ? "Saved." + (j.demo ? " The Demo HQPlayer is on, so this address is used once it is switched off." : "")
+          : "Cleared.";
+      }
+    });
+  }
+  if (hqpTestBtn) {
+    hqpTestBtn.addEventListener("click", async () => {
+      const a = hqpTyped();
+      if (!a) return;
+      if (!a.host) { if (hqpConnNote) hqpConnNote.textContent = "Enter HQPlayer's address first."; return; }
+      hqpTestBtn.disabled = true;
+      if (hqpConnNote) hqpConnNote.textContent = "Asking " + a.host + "…";
+      const j = await hqpPostJson("/api/hqp/test", { host: a.host, port: a.port });
+      hqpTestBtn.disabled = false;
+      if (!hqpConnNote) return;
+      if (j.ok) {
+        hqpConnNote.textContent = "Found " + (j.name ? "“" + j.name + "” — " : "") +
+          (j.product || "HQPlayer") + (j.engine ? " " + j.engine : "") + ". Save to use it.";
+      } else {
+        hqpConnNote.textContent = "Nothing answered as HQPlayer at " + a.host + ":" + a.port +
+          (j.error ? " (" + j.error + ")" : "") + ". Is HQPlayer running, and do its own " +
+          "settings allow control from the network?";
+      }
+    });
+  }
+  if (hqpHostEl) hqpHostEl.addEventListener("input", () => { if (hqpConnNote) hqpConnNote.textContent = HQP_CONN_NOTE; });
+  if (hqpForgetBtn) {
+    hqpForgetBtn.addEventListener("click", async () => {
+      hqpForgetBtn.disabled = true;
+      const j = await hqpPostJson("/api/hqp/learned", {}, "DELETE");
+      if (j.error) showToast("Couldn't forget them: " + j.error, "error");
+      else showToast("Forgot " + j.forgotten + " combination" + (j.forgotten === 1 ? "" : "s"));
+      loadHqpSettings();
+    });
+  }
+
   // ----- Waveform on/off -----
   const waveEnabledEl = document.getElementById("waveform-enabled");
   const waveEnabledNote = document.getElementById("waveform-enabled-note");
@@ -13302,7 +14273,7 @@
     renderHomeRowsList();
   }
 
-  const open = () => { showView("home"); pendingThemeId = null; renderThemeList(); loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); loadDisplaySettings(); loadLabelFolderDepth(); loadQobuzStatus(); loadTidalStatus(); loadSmartPicksSettings(); loadDiscoverSettings(); loadLabelsEnabled(); loadWaveformEnabled(); loadHomeRowsSettings(); overlay.classList.remove("hidden"); };
+  const open = () => { showView("home"); pendingThemeId = null; renderThemeList(); loadRadio(); loadVersion(); loadDiscogsToken(); loadFanartKey(); loadDisplaySettings(); loadLabelFolderDepth(); loadQobuzStatus(); loadTidalStatus(); loadSmartPicksSettings(); loadDiscoverSettings(); loadHqpSettings(); loadLabelsEnabled(); loadWaveformEnabled(); loadHomeRowsSettings(); overlay.classList.remove("hidden"); };
   const close = () => {
     overlay.classList.add("hidden");
     // Closing Settings ends the client side of any pending Tidal device flow
@@ -13311,6 +14282,8 @@
   };
 
   openBtn.addEventListener("click", open);
+  // Straight to one page — the HQPlayer screen's "Open Settings → HQPlayer".
+  window.__openSettingsPane = (name) => { open(); showView(name); };
   // closest(), not the target itself: the close button (v1.8.69) holds an
   // icon, and a tap lands on the icon's path rather than on the button.
   overlay.addEventListener("click", (e) => {
@@ -14709,6 +15682,8 @@ initServiceBrowser({
         window.__restoreLibraryWall(saved.libraryWallWasActive);
       }
       if (window.__unparkLabels) window.__unparkLabels(saved.labels);
+      // ...and the HQPlayer screen's poll, which lives outside its nodes too.
+      if (window.__resumeHQPlayer) window.__resumeHQPlayer();
       // Land back where the user was, not at the top of the wall.
       const mainEl = document.querySelector("main");
       if (mainEl && typeof saved.scrollTop === "number") mainEl.scrollTop = saved.scrollTop;
@@ -15088,6 +16063,10 @@ initServiceBrowser({
       }
       if (action === "discover") {
         if (window.__showDiscover) window.__showDiscover();
+        return;
+      }
+      if (action === "hqplayer") {
+        if (window.__showHQPlayer) window.__showHQPlayer();
         return;
       }
       if (action === "smart-playlists") {

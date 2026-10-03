@@ -2,6 +2,117 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.74] — 2026-10-03
+
+"He has asked to incorporate it into my extension … Accessed from the side
+menu would be my best thoughts … build it in."
+
+### Added — HQPlayer, in the side menu
+
+For a Roon that plays through HQPlayer: a screen that changes HQPlayer's
+filters, its modulator or dither, and its volume, with presets and undo.
+It is **hqpweb**, by statelycurmudgeon, built into this app — its HQPlayer
+logic ported, its look replaced with this app's own.
+
+- **Off by default.** Switch it on in **Settings → HQPlayer** and enter the
+  address of the computer HQPlayer runs on (the control port is 4321). Then
+  **HQPlayer** appears in the side menu, after Wall display. While it is off,
+  nothing connects to anything.
+- **What the screen shows:** the output rate (DSD1024, 384 kHz…), the mode,
+  the source rate and bit depth, whether HQPlayer is playing, whether it is
+  **keeping up with real time**, and which Roon zone is playing through it.
+  Below that: the volume, the **1x filter**, the **Nx filter**, the
+  **modulator** (in SDM) or **dither** (in PCM), and **presets**. A tick
+  beside a setting means HQPlayer reports that choice is the one running.
+- **Every change is checked.** HQPlayer answers "OK" to settings it then
+  ignores, so the extension reads HQPlayer's settings back after each change
+  and reports what actually happened. If a change stops playback, or
+  HQPlayer can no longer keep up, the change is **undone by itself** and the
+  combination is remembered, so the screen can warn about it next time. The
+  undo puts back everything it can: a setting that can no longer go back
+  (a matrix profile deleted in HQPlayer meanwhile, say) is named, and the
+  rest still goes back, rather than playback being left stopped over it.
+- **Warnings before you pick.** Each list marks the choices HQPlayer's own
+  rules say won't play here ("won't play: AHM7EC8B needs DSD1024…"), the ones
+  that failed on this machine before, and the ones outside what the manual
+  recommends. It warns; it never blocks.
+- **The volume is guarded.** A change never raises it by more than 6 dB in
+  one step, and nothing raises it past what HQPlayer reports as its maximum.
+  Lowering it is never limited.
+- **Undo** puts back exactly what the last change touched. That can raise
+  the volume by more than 6 dB, but only back to the level it was just at,
+  and only if nobody has moved it since: if someone has, a volume Undo would
+  raise by more than 6 dB is left where it is, and Undo says so.
+- **Presets** save the current settings by name (with the volume only if
+  asked), so they work across modes and across HQPlayers. Each one says what
+  applying it means here: already in effect, a quick change, or a major one
+  (mode or rate), which asks first. Settings this HQPlayer can't take are
+  listed and skipped.
+- **Demo HQPlayer.** No HQPlayer? Switch on **Settings → HQPlayer → Demo
+  HQPlayer**: a simulated HQPlayer inside the extension, built from
+  measurements of two real ones, so the screen can be tried — including a
+  change that stops playback and is undone. It makes no sound and touches
+  nothing on your network.
+- Not in this release: the output rate and mode, convolution, the matrix and
+  the other switches (the next release adds them, with more than one HQPlayer
+  and finding HQPlayer on the network by itself). Transport stays with Roon:
+  HQPlayer's own Play and Next do not reach Roon.
+
+### Credit, and the notice HQPlayer's name needs
+
+- HQPlayer control is ported from **hqpweb** by **statelycurmudgeon**, under
+  the MIT licence; its licence is kept beside the port in `lib/hqp/LICENSE`.
+- Not affiliated with, endorsed by, or supported by Signalyst. HQPlayer is a
+  trademark of its owner, used here only to identify compatible software.
+  The screen and its Settings page both say so.
+
+### How it is built
+
+- `lib/hqp/` holds the port: the protocol client (one kept-open connection,
+  requests one at a time), the reply parsers, HQPlayer's compatibility rules,
+  the change engine with its read-back, rollback and undo, the presets and
+  learned failures (kept on the data volume, in `data/hqp-presets.json` and
+  `data/hqp-learned.json`), and the fake HQPlayer. Converted from TypeScript
+  to plain JavaScript for Node 20, with **no new dependency**: hqpweb's XML
+  library is replaced by a small reader for the part of XML HQPlayer uses, so
+  the one-tap update needs no `npm install`.
+- The extension asks HQPlayer for its status only while the HQPlayer screen
+  is open somewhere: each look renews a 15-second lease, and leaving the
+  screen stops it.
+- If HQPlayer restarts while the screen is open — a new version, or another
+  output device with other rates — the screen reads its lists again rather
+  than naming filters from lists that no longer apply. If they can't be read,
+  the screen says so and asks again after 3 seconds, then 6, up to every
+  30, rather than on every poll.
+- After a change the screen shows HQPlayer as the change left it: the
+  status is read again the moment a change finishes, and a status that was
+  already on its way, describing HQPlayer before the change, is not shown.
+- Saving Settings → HQPlayer — on any device — while a change is being
+  checked never cuts that change off before it can be undone. The same
+  HQPlayer keeps its connection; switching to another, or switching control
+  off, lets the change finish (and be undone, if it stopped playback) first.
+- Back from an artist page (Now playing's artist link) brings the HQPlayer
+  screen back live, not frozen at the moment it was left.
+- Learned failures can be forgotten with control switched off.
+- In `[source]` mode HQPlayer has no output rate of its own, so none is
+  recorded: Undo, the automatic undo and a preset saved there all go back
+  to `[source]` mode cleanly.
+- Every change to HQPlayer must be sent as JSON. HQPlayer has no login, and
+  this rule is what stops a web page on some other site from changing the
+  volume through your browser.
+
+### Tests
+
+- hqpweb's tests ported to the project's own runner, against the fake
+  HQPlayer: the protocol, the fake itself, the playback check, the change
+  engine, presets, and the service (settings, the demo, the lease, the
+  JSON-only rule). The DOM tests drive the real page with answers recorded
+  from the real handlers against the fake. No test can connect to port 4321:
+  a guard makes any attempt throw.
+- Every safeguard is mutation-checked: each one, removed, fails a test.
+
+1544 unit / 857 DOM / 132 static.
+
 ## [1.8.73] — 2026-10-02
 
 "No, keep the 7 day interval check. I manually installed v1.8.69 and it can

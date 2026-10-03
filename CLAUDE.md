@@ -357,20 +357,26 @@ Add a new section at the top, above the previous version:
 ## After each build — docker install command template
 
 Once the test image's run is green, give this command with the version filled in. It pulls
-FIRST, so a failed pull leaves the running container untouched. Drop the `/music` mount line
-when the user is testing a Qobuz/Tidal streaming-only scenario.
+FIRST, and everything after the pull sits inside `&& { … }`, so a failed pull leaves the
+running container untouched. **Lines pasted one after another do not do that**: a shell runs
+each one whatever the last one did. That is how the template stood until 2026-10-03, when the
+user ran it for v1.8.74 before the image was built — the pull failed, and the stop and the
+remove ran anyway. Use the music path the user actually runs with (that day it was
+`/mnt/dietpi_userdata/MyMusic`). Drop the `/music` mount line when the user is testing a
+Qobuz/Tidal streaming-only scenario.
 
 ```bash
-sudo docker pull ghcr.io/meltface-80/musicd-remote:NEW-test
-sudo docker stop musicd-remote
-sudo docker rm musicd-remote
-sudo docker run -d \
-  --name musicd-remote \
-  --restart unless-stopped \
-  --network host \
-  -v musicd-remote-data:/app/data \
-  -v /mnt/dietpi_userdata/4tb/Music:/music:ro \
-  ghcr.io/meltface-80/musicd-remote:NEW-test
+sudo docker pull ghcr.io/meltface-80/musicd-remote:NEW-test && {
+  sudo docker stop musicd-remote
+  sudo docker rm musicd-remote
+  sudo docker run -d \
+    --name musicd-remote \
+    --restart unless-stopped \
+    --network host \
+    -v musicd-remote-data:/app/data \
+    -v /mnt/dietpi_userdata/4tb/Music:/music:ro \
+    ghcr.io/meltface-80/musicd-remote:NEW-test
+}
 # NOTE: the volume holds the Roon pairing + history. New installs (and the
 # user's box, after the one-time v1.6.32 copy migration) use
 # musicd-remote-data; pre-v1.6.32 installs must copy roon-random-albums-data
