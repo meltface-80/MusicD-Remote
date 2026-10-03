@@ -244,7 +244,7 @@ test("the share card links to services and reviews", { concurrency: 1 }, async (
     // hollow — background: transparent — which on the dark palettes read as a
     // quieter variant and on the light ones left five labels floating with no
     // button under them, because --bg-elev-2 is barely off the panel there.
-    for (const theme of ["light", "brass-light", "dark", "copper-dark", "mandarin"]) {
+    for (const theme of ["brass-light", "graphite-brass"]) {
       const r = render("390x844", theme);
       const services = r.fills.filter(f => !f.review);
       const reviews  = r.fills.filter(f => f.review);

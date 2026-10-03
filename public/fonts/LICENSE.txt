@@ -1,0 +1,9 @@
+Fonts bundled with Rouen for its themes.
+
+manrope.woff2      Manrope — Copyright 2018 The Manrope Project Authors
+                   (https://github.com/sharanda/manrope)
+young-serif.woff2  Young Serif — Copyright 2023 The Young Serif Project Authors
+                   (https://github.com/noirblancrouge/YoungSerif)
+
+Both are licensed under the SIL Open Font License, Version 1.1:
+https://openfontlicense.org

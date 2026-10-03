@@ -1,6 +1,8 @@
 "use strict";
 // ---------------------------------------------------------------------------
-// v1.6.63 — four themes, and the picker that chooses between them.
+// Two themes since v1.8.74 (Graphite and Brass, Brass light), and the picker
+// that chooses between them. Four were added in v1.6.63 and a fifth in v1.8.68;
+// Dark, Light and Copper dark were removed and Mandarin renamed in v1.8.74.
 //
 // Two independent things are checked here.
 //
@@ -22,7 +24,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const harness = require("./harness");
 
-const THEMES = ["mandarin", "dark", "light", "copper-dark", "brass-light"];
+const THEMES = ["graphite-brass", "brass-light"];
 
 const STUB = `
 window.__installFetch(function (url) {
@@ -117,17 +119,11 @@ function tokensFor(themeId) {
   return harness.renderPage({ stub, driver, name: "tokens-" + themeId, windowSize: "390x844" });
 }
 
-// The two original themes ship a --text-faint that fails AA. They are asserted
-// at the level they actually meet so the suite stays honest; the NEW palettes
-// are held to the real bar. If someone ever fixes the originals, these floors
-// are what tells them the fix worked.
+// Both themes are held to the full AA bar on every tier. (The grandfathered
+// floors below AA went with the Dark and Light themes in v1.8.74.)
 const FLOORS = {
-  // v1.8.68, the default: MusicD Server's palette, held to the full bar.
-  "mandarin":    { text: 4.5, dim: 4.5, faint: 4.5, accentText: 4.5, onAccent: 4.5, danger: 4.5 },
-  "dark":        { text: 4.5, dim: 4.5, faint: 2.6, accentText: 4.5, onAccent: 4.5, danger: 4.5 },
-  "light":       { text: 4.5, dim: 4.5, faint: 2.8, accentText: 3.0, onAccent: 3.0, danger: 4.5 },
-  "copper-dark": { text: 4.5, dim: 4.5, faint: 4.5, accentText: 4.5, onAccent: 4.5, danger: 4.5 },
-  "brass-light": { text: 4.5, dim: 4.5, faint: 4.5, accentText: 4.5, onAccent: 4.5, danger: 4.5 },
+  "graphite-brass": { text: 4.5, dim: 4.5, faint: 4.5, accentText: 4.5, onAccent: 4.5, danger: 4.5 },
+  "brass-light":    { text: 4.5, dim: 4.5, faint: 4.5, accentText: 4.5, onAccent: 4.5, danger: 4.5 },
 };
 
 for (const id of THEMES) {
@@ -143,7 +139,7 @@ for (const id of THEMES) {
 
     await t.test("the stored id resolves to a family and a palette", () => {
       assert.ok(["dark", "light"].includes(r.theme_attr), `data-theme=${r.theme_attr}`);
-      assert.ok(["classic", "copper", "mandarin"].includes(r.palette_attr), `data-palette=${r.palette_attr}`);
+      assert.ok(["graphite", "brass"].includes(r.palette_attr), `data-palette=${r.palette_attr}`);
     });
 
     await t.test("every token this theme needs is defined", () => {
@@ -216,8 +212,8 @@ for (const id of THEMES) {
         const c = contrast(k["--accent-text"], k[surf]);
         assert.ok(c >= floor.accentText,
           `--accent-text on ${surf} is ${r2(c)}:1, need ${floor.accentText}. ` +
-          "This is why --accent and --accent-text are separate tokens: the copper " +
-          "fill colour measures 4.27:1 as text on the deepest surface.");
+          "This is why --accent and --accent-text are separate tokens: a fill colour " +
+          "and a text colour have different contrast requirements.");
       }
     });
 
@@ -273,10 +269,10 @@ const PICKER_DRIVER = `
   T("swatch_bgs", Array.prototype.map.call(document.querySelectorAll(".theme-swatch"),
     function (s) { return getComputedStyle(s).backgroundColor; }));
 
-  // Select the copper row — this must NOT apply anything.
-  var copper = Array.prototype.filter.call(rows(), function (r) {
-    return /Copper dark/.test(r.textContent); })[0];
-  copper.click();
+  // Select the Brass light row — this must NOT apply anything.
+  var other = Array.prototype.filter.call(rows(), function (r) {
+    return /Brass light/.test(r.textContent); })[0];
+  other.click();
   await window.__sleep(200);
   T("palette_after_select", document.documentElement.getAttribute("data-palette"));
   T("apply_enabled_after_select", !apply.disabled);
@@ -302,19 +298,19 @@ test("the theme picker selects, then applies (v1.6.63)", { concurrency: 1 }, asy
   });
   harness.assertNoPageError(assert, r);
 
-  await t.test("all five themes are offered, with the current one marked", () => {
-    assert.equal(r.row_count, 5);
+  await t.test("both themes are offered, with the current one marked", () => {
+    assert.equal(r.row_count, 2);
     assert.match(r.selected_at_open, /in use/);
     assert.equal(r.apply_disabled_at_open, true,
       "Apply is live before anything has been chosen — it should mean something");
   });
 
   await t.test("each swatch previews its own palette", () => {
-    // Five themes, five different backgrounds. If the swatches inherited the
-    // applied theme they would all be identical, and the picker would give the
+    // Two themes, two different backgrounds. If the swatches inherited the
+    // applied theme they would be identical, and the picker would give the
     // user nothing to choose by.
-    assert.equal(new Set(r.swatch_bgs).size, 5,
-      `swatches rendered ${new Set(r.swatch_bgs).size} distinct backgrounds, expected 5 — ` +
+    assert.equal(new Set(r.swatch_bgs).size, 2,
+      `swatches rendered ${new Set(r.swatch_bgs).size} distinct backgrounds, expected 2 — ` +
       "they are inheriting the applied theme instead of declaring their own");
   });
 
@@ -324,48 +320,47 @@ test("the theme picker selects, then applies (v1.6.63)", { concurrency: 1 }, asy
       "so Apply is decoration and there is no way to back out of a choice");
     assert.equal(r.apply_enabled_after_select, true, "Apply stayed disabled after a change");
     assert.match(r.hint_after_select, /not applied/i);
-    assert.match(r.selected_after_select, /Copper dark/);
+    assert.match(r.selected_after_select, /Brass light/);
   });
 
   await t.test("Apply commits the choice and persists it", () => {
-    assert.equal(r.theme_after_apply, "dark");
-    assert.equal(r.palette_after_apply, "copper");
-    assert.equal(r.stored, "copper-dark");
+    assert.equal(r.theme_after_apply, "light");
+    assert.equal(r.palette_after_apply, "brass");
+    assert.equal(r.stored, "brass-light");
     assert.equal(r.apply_disabled_after_apply, true,
       "Apply stayed enabled after applying — there is nothing left to apply");
   });
 });
 
-// A user upgrading has "dark" or "light" under the OLD key and no new key.
-// Those are still valid theme ids, so the choice must carry over silently.
-test("a v1 saved theme migrates to the new key", { concurrency: 1 }, async (t) => {
+// A device that chose a theme removed in v1.8.74 — or "mandarin", the default's
+// old name — lands on Graphite and Brass, silently, and nothing is written:
+// the stored value is left to be replaced by the next real choice.
+test("a removed theme falls back to Graphite and Brass (v1.8.74)", { concurrency: 1 }, async (t) => {
   if (!harness.available) {
     t.skip("no chromium binary found — set CHROMIUM_BIN to run DOM tests");
     return;
   }
-  for (const old of ["light", "dark"]) {
-    const stub = STUB +
-      `try { localStorage.removeItem("rra-theme-v2"); localStorage.setItem("rra-theme", ${JSON.stringify(old)}); } catch (e) {}\n`;
+  for (const old of ["mandarin", "dark", "light", "copper-dark"]) {
+    const stub = STUB + `try { localStorage.setItem("rra-theme-v2", ${JSON.stringify(old)}); } catch (e) {}\n`;
     const r = harness.renderPage({
       stub,
       driver: `await window.__sleep(500);
         T("theme", document.documentElement.getAttribute("data-theme"));
         T("palette", document.documentElement.getAttribute("data-palette"));
-        T("migrated", (function(){ try { return localStorage.getItem("rra-theme-v2"); } catch(e){ return null; } })());`,
-      name: "theme-migrate-" + old, windowSize: "390x844",
+        T("bg", getComputedStyle(document.documentElement).getPropertyValue("--bg").trim());`,
+      name: "theme-removed-" + old, windowSize: "390x844",
     });
     harness.assertNoPageError(assert, r);
-    await t.test(`"${old}" carries over`, () => {
-      assert.equal(r.theme, old, "the upgraded user's theme changed under them");
-      assert.equal(r.palette, "classic",
-        "an upgrading user was moved onto a palette they never chose");
-      assert.equal(r.migrated, old, "the migrated value was not written to the new key");
+    await t.test(`"${old}" becomes Graphite and Brass`, () => {
+      assert.equal(r.theme, "dark");
+      assert.equal(r.palette, "graphite");
+      assert.equal(r.bg, "#17191c");
     });
   }
 });
 
 // ---------------------------------------------------------------------------
-// v1.8.68: Mandarin is the default.
+// v1.8.68: graphite and brass is the default (named Mandarin until v1.8.74).
 //
 // "The default" is what a device that has never chosen starts on — and only
 // that. A choice made in the picker, or carried over from the v1 key, is the
@@ -375,7 +370,7 @@ test("a v1 saved theme migrates to the new key", { concurrency: 1 }, async (t) =
 // now a palette with no light counterpart, so a device in light mode gets it
 // too: that case is the one the stub below forces.
 // ---------------------------------------------------------------------------
-test("a device that has never chosen starts on Mandarin (v1.8.68)", { concurrency: 1 }, async (t) => {
+test("a device that has never chosen starts on Graphite and Brass (v1.8.68)", { concurrency: 1 }, async (t) => {
   if (!harness.available) {
     t.skip("no chromium binary found — set CHROMIUM_BIN to run DOM tests");
     return;
@@ -406,24 +401,24 @@ test("a device that has never chosen starts on Mandarin (v1.8.68)", { concurrenc
   harness.assertNoPageError(assert, fresh);
 
   const chose = harness.renderPage({
-    stub: lightOS + STUB + `try { localStorage.setItem("rra-theme-v2", "copper-dark"); } catch (e) {}\n`,
+    stub: lightOS + STUB + `try { localStorage.setItem("rra-theme-v2", "brass-light"); } catch (e) {}\n`,
     driver, name: "theme-default-chosen", windowSize: "390x844",
   });
   harness.assertNoPageError(assert, chose);
 
-  await t.test("no stored choice — even on a device in light mode — is Mandarin", () => {
+  await t.test("no stored choice — even on a device in light mode — is Graphite and Brass", () => {
     assert.equal(fresh.theme, "dark");
-    assert.equal(fresh.palette, "mandarin");
-    assert.equal(fresh.bg, "#17191c", "the Mandarin ground did not apply");
+    assert.equal(fresh.palette, "graphite");
+    assert.equal(fresh.bg, "#17191c", "the Graphite ground did not apply");
     assert.equal(fresh.meta.toLowerCase(), "#17191c", "the status bar colour did not follow the default");
     assert.equal(fresh.stored, null,
       "the default was WRITTEN as a choice — a later change of default would then never reach this device");
   });
   await t.test("the page starts on it before the script runs, so nothing flashes", () => {
-    assert.equal(fresh.before_app, "mandarin",
+    assert.equal(fresh.before_app, "graphite",
       "<html> starts on another palette, so the first paint is that one until app.js runs");
   });
   await t.test("a choice already made is kept", () => {
-    assert.equal(chose.palette, "copper", "a stored theme was overridden by the new default");
+    assert.equal(chose.palette, "brass", "a stored theme was overridden by the new default");
   });
 });

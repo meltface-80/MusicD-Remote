@@ -97,8 +97,10 @@ const DRIVER = `
   await window.__showArtistAlbums("Artist One");
   await window.__sleep(300);
   T("artist_view_entered", window.__artistViewActive());
-  var backBtn = document.getElementById("artist-back-btn");
-  T("back_button_present", !!backBtn);
+  // Back is the shared < beside the menu now, shown while the view is up.
+  var backBtn = document.getElementById("topbar-back");
+  T("back_button_present", !!backBtn && !backBtn.classList.contains("hidden"));
+  T("old_back_gone", !document.getElementById("artist-back-btn"));
 
   backBtn.click();
   await window.__sleep(300);
@@ -127,7 +129,7 @@ const DRIVER = `
   await window.__sleep(250);
   await window.__showArtistAlbums("Artist Two");
   await window.__sleep(250);
-  document.getElementById("artist-back-btn").click();
+  document.getElementById("topbar-back").click();
   await window.__sleep(300);
   var chained = grid.querySelectorAll(".album");
   T("chained_tiles_after", chained.length);
@@ -135,6 +137,31 @@ const DRIVER = `
     return t.__liveNodeTag === undefined ? null : t.__liveNodeTag;
   }));
   T("chained_clickable", chained.length ? await clickReachesOpenAlbum(chained[0]) : false);
+  closeModal();
+  await window.__sleep(120);
+
+  // ---- album view -> tap the artist -> Back lands on THAT ALBUM ----------
+  paintWall();
+  var modal = document.getElementById("album-modal");
+  window.__openAlbum(${JSON.stringify(ALBUMS)}[1], { source: "random", filter: null });
+  await window.__sleep(300);
+  T("album_open", !modal.classList.contains("hidden"));
+  var link = modal.querySelector(".modal-artist-link");
+  T("artist_link_present", !!link);
+  if (link) link.click();
+  await window.__sleep(300);
+  T("from_album_artist_active", window.__artistViewActive());
+  T("from_album_modal_closed", modal.classList.contains("hidden"));
+  T("from_album_back_shown", !document.getElementById("topbar-back").classList.contains("hidden"));
+  var albumCalls = window.__callsMatching("/api/album?");
+  document.getElementById("topbar-back").click();
+  await window.__sleep(400);
+  T("from_album_exited", !window.__artistViewActive());
+  T("from_album_modal_reopened", !modal.classList.contains("hidden"));
+  T("from_album_refetched", window.__callsMatching("/api/album?") > albumCalls);
+  var mt = modal.querySelector(".modal-title, #modal-title");
+  T("from_album_title", mt ? mt.textContent : null);
+  T("from_album_wall_back", grid.querySelectorAll(".album").length);
 `;
 
 test("artist view Back leaves the album wall fully alive (v1.6.52)", { concurrency: 1 }, async (t) => {
@@ -177,6 +204,23 @@ test("artist view Back leaves the album wall fully alive (v1.6.52)", { concurren
     assert.equal(r.clickable_after, true,
       "THE REPORTED BUG: after Back the tiles render but no longer open " +
       "their album — their click listener and offset closure were dropped");
+  });
+
+  await t.test("the old in-page '← Back' button is gone", () => {
+    assert.equal(r.old_back_gone, true);
+  });
+
+  await t.test("album view -> artist -> Back returns to that album", () => {
+    assert.equal(r.album_open, true);
+    assert.equal(r.artist_link_present, true, "the album view has no artist link to tap");
+    assert.equal(r.from_album_artist_active, true);
+    assert.equal(r.from_album_modal_closed, true);
+    assert.equal(r.from_album_back_shown, true, "the < beside the menu is not shown on the artist page");
+    assert.equal(r.from_album_exited, true);
+    assert.equal(r.from_album_modal_reopened, true,
+      "THE REPORTED BUG: Back from the artist page went to Home instead of the album");
+    assert.equal(r.from_album_refetched, true);
+    assert.equal(r.from_album_wall_back, 2, "the screen under the album was not restored");
   });
 
   await t.test("artist -> artist -> Back also restores a live wall", () => {

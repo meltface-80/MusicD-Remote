@@ -266,10 +266,11 @@ try {
 
 const roon = new RoonApi({
   extension_id:        "com.musicd.roon.random-albums",
-  // The rename to "MusicD Remote" is display-only: extension_id stays
-  // unchanged on purpose — changing it would make Roon treat this as a brand
-  // new extension and force every user to re-authorize it.
-  display_name:        "MusicD Remote v" + DISPLAY_SHORTVER,
+  // The renames ("MusicD Remote", then "Rouen" in v1.8.74) are display-only:
+  // extension_id stays unchanged on purpose — changing it would make Roon
+  // treat this as a brand new extension and force every user to re-authorize
+  // it. Roon keys the authorisation on extension_id, never on display_name.
+  display_name:        "Rouen v" + DISPLAY_SHORTVER,
   display_version:     "Build " + DISPLAY_BUILD,
   publisher:           "MusicD",
   email:               "hello@musicd.app",
@@ -1055,6 +1056,20 @@ function getPlayedTitlesSince(cutoffMs) {
     );
   } catch (e) {
     return new Set(); // DB unavailable — degrade gracefully
+  }
+}
+
+// When the extension recorded its first play (ms), or null. The plays table is
+// pruned at playsRetentionDays() (400), wider than the longest window the
+// unplayed route accepts (12 months), so the oldest surviving row is a sound
+// answer for every window it is compared against.
+function firstPlayTs() {
+  if (!labelsDb) return null;
+  try {
+    const r = labelsDb.prepare("SELECT MIN(ts) AS ts FROM plays").get();
+    return r && r.ts ? r.ts : null;
+  } catch (e) {
+    return null;   // DB unavailable — reads as "no history yet"
   }
 }
 
@@ -8573,8 +8588,9 @@ app.get("/api/status", (req, res) => {
 //   picks / discover   those features' daily builds, and their edits.
 //   later     the Listen later list: an album put aside, taken off by hand,
 //             or played through.
-//   day       the server's date: Album of the day and the daily builds turn
-//             over at midnight whether or not anything else moved.
+//   day       the server's date: the daily builds turn over at midnight
+//             whether or not anything else moved.
+//   aotd      Album of the day's date, which turns over at 00:01.
 //
 // Nothing here costs a Core call, a query or an allocation beyond the reply.
 // ---------------------------------------------------------------------------
@@ -8590,6 +8606,8 @@ function liveRevisions() {
     discover: String(discoverVersion),
     later:    String(laterVersion),
     day:      smartDayKey(),
+    // Album of the day turns over at 00:01, a minute after `day` does.
+    aotd:     aotdDayKey(),
   };
 }
 app.get("/api/live", (req, res) => {
@@ -9487,12 +9505,25 @@ app.get("/api/library/albums", async (req, res) => {
 app.get("/api/home/unplayed", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
   let months = parseInt(req.query.months, 10);
-  if (!Number.isFinite(months) || months <= 0 || months > 60) months = 6;
+  // At most 12: plays are kept for playsRetentionDays() (400), so a window
+  // longer than that could never have enough history to fill — the gate
+  // below would answer no_history for ever.
+  if (!Number.isFinite(months) || months <= 0 || months > 12) months = 6;
   let count = parseInt(req.query.count, 10);
   if (!Number.isFinite(count) || count <= 0 || count > 96) count = 12;
   try {
     await ensureAlbumIndex();   // build the album index if it isn't ready yet
     const cutoff = Date.now() - months * 30 * 24 * 60 * 60 * 1000;
+    // "Not played in 6 months" only means something once the extension has
+    // six months of listening behind it. Before that, every album it has not
+    // seen played reads as "not played in 6 months" — including the ones
+    // played every week before it was installed — so the row offers nothing
+    // until the first recorded play is at least that old. (Mandarin's rule.)
+    const first = firstPlayTs();
+    if (!first || first > cutoff) {
+      return res.json({ albums: [], total: 0, months, no_history: true,
+                        ready_at: first ? first + months * 30 * 24 * 60 * 60 * 1000 : null });
+    }
     const heard = getPlayedTitlesSince(cutoff);
     const pool = [];
     for (const al of albumIndex.albums) {
@@ -9625,29 +9656,79 @@ app.get("/api/home/history", async (req, res) => {
   }
 });
 
+// Album of the day's day ("2026-10-03"), on the server's clock. It turns over
+// at 00:01, not midnight, so a minute is taken off before the date is read.
+// Every device asks the SERVER, so every device has the same day and the same
+// album; there is no per-device clock in it anywhere.
+function aotdDayKey(now) {
+  return smartDayKey(new Date((now ? now.getTime() : Date.now()) - 60 * 1000));
+}
+// When that day began: today's 00:01 (yesterday's, in the minute after midnight).
+function aotdDayStart(now) {
+  const d = new Date((now ? now.getTime() : Date.now()) - 60 * 1000);
+  d.setHours(0, 1, 0, 0);
+  return d.getTime();
+}
+
+// The day's album. Chosen ONCE, at the first ask after 00:01, and kept on the
+// data volume (smart_cache, key "aotd") as an album IDENTITY. It used to be
+// worked out afresh on every ask as hash(date) % albums.length — so a scan
+// that added or removed one album put a different album there mid-day, and
+// one already played came back as a "new" one. Now only a new day, or the
+// album leaving the library, chooses again. (Mandarin's rule, v0.6.0-RC8.)
+// Memo of the resolved album for this snapshot and day, so the route (read on
+// every Home visit and every live re-read) does not canonicalise the whole
+// library each time.
+let aotdMemo = { builtAt: -1, day: "", al: null };
+function albumOfTheDay(now) {
+  const albums = albumIndex.albums;
+  if (!albums.length) return null;
+  const day = aotdDayKey(now);
+  if (aotdMemo.al && aotdMemo.day === day && aotdMemo.builtAt === albumIndex.builtAt) return aotdMemo.al;
+  const al = albumOfTheDayResolve(albums, day);
+  aotdMemo = { builtAt: albumIndex.builtAt, day, al };
+  return al;
+}
+function albumOfTheDayResolve(albums, day) {
+  const kept = smartCacheGet("aotd", 3 * 24 * 60 * 60 * 1000);
+  if (kept && kept.day === day && kept.key) {
+    const al = albums.find(a => albumKey(a.title, a.subtitle) === kept.key);
+    if (al) return al;
+  }
+  // Ordered by identity, not by snapshot position, so the pick for a given
+  // day does not depend on the order Roon happened to list the library in.
+  const keyed = albums.map(a => ({ a, k: albumKey(a.title, a.subtitle) || "" }))
+    .sort((x, y) => (x.k < y.k ? -1 : x.k > y.k ? 1 : 0));
+  const pick = keyed[fnv1aHash(day) % keyed.length];
+  smartCacheSet("aotd", { day, key: pick.k, title: pick.a.title || "", subtitle: pick.a.subtitle || "" });
+  return pick.a;
+}
+
+// Home section: "album of the day" — the same album on every device from
+// 00:01 (server time) until it is played, from any device, any zone or any
+// Roon app; then it is gone everywhere until the next 00:01. The app re-reads
+// the row when the `plays` or `aotd` live revision moves, so a play on one
+// device takes it off every other one within a poll.
 app.get("/api/home/album-of-the-day", async (req, res) => {
   if (!core) return res.status(503).json({ error: "Not paired with Roon Core yet" });
+  res.set("Cache-Control", "no-store");
   try {
     await ensureAlbumIndex();
-    const albums = albumIndex.albums;
-    if (!albums.length) return res.json({ album: null });
-    // Deterministic index from the local date (YYYY-MM-DD).
-    const now = new Date();
-    const dstr = now.getFullYear() + "-" + (now.getMonth() + 1) + "-" + now.getDate();
-    const al = albums[fnv1aHash(dstr) % albums.length];
-    // Played today? (plays table records the album title.)
+    const day = aotdDayKey();
+    const al = albumOfTheDay();
+    if (!al) return res.json({ album: null, day });
+    // Played since today's 00:01? (plays table records the album title.)
     let played = false;
     if (labelsDb) {
-      const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
       try {
         const row = labelsDb.prepare(
           "SELECT 1 FROM plays WHERE lower(trim(album)) = ? AND ts >= ? LIMIT 1"
-        ).get((al.title || "").toLowerCase().trim(), midnight.getTime());
+        ).get((al.title || "").toLowerCase().trim(), aotdDayStart());
         played = !!row;
       } catch (e) { played = false; /* DB unavailable — show it */ }
     }
-    if (played) return res.json({ album: null, played: true });
-    res.json({ album: withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }) });
+    if (played) return res.json({ album: null, played: true, day });
+    res.json({ album: withSource({ offset: al.offset, title: al.title || "", subtitle: al.subtitle || "", image_key: al.image_key || null }, al), played: false, day });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -10965,7 +11046,7 @@ function buildShareDoc(meta, entries) {
     extension: {
       [shareNsPlaylist()]: {
         additional_metadata: {
-          generator: "MusicD Remote",
+          generator: "Rouen",
           generator_version: pkg.version,
         },
       },
@@ -11128,7 +11209,7 @@ function decodeSharePayload(blob) {
   const at = compact.toUpperCase().indexOf(shareMagic().toUpperCase() + ":");
   if (at < 0) {
     throw new Error(
-      `That doesn't look like a MusicD Remote playlist — it should contain "${shareMagic()}:"`);
+      `That doesn't look like a Rouen playlist — it should contain "${shareMagic()}:"`);
   }
   const payload = compact.slice(at + shareMagic().length + 1).replace(/[^A-Za-z0-9_-]/g, "");
   if (!payload) throw new Error("That playlist is empty — nothing followed the marker");
@@ -12315,11 +12396,87 @@ app.get("/api/music-mount", (req, res) => {
 });
 
 // Discogs personal access token — get status (masked) or save.
-app.get("/api/settings/discogs-token", (req, res) => {
+// ---------------------------------------------------------------------------
+// API key checks (v1.8.74): does the key that is set actually WORK?
+//
+// The Settings boxes used to say only "Current: ••••abcd" — the same for a key
+// pasted with a character missing as for a good one, and a bad key fails
+// silently in the background (no logos, no label lookups) with nothing on the
+// screen to say why. Each key is now tried against its service once, with the
+// lightest call that service offers, and the answer is shown on the box:
+//
+//   ok        the service accepted it
+//   invalid   the service refused it (401/403)
+//   unknown   no answer (offline, timeout, the service erring) — NOT reported
+//             as bad, because a key is not wrong just because a network was
+//
+// Remembered per key VALUE, so a new key is always checked afresh, a good one
+// is re-checked twice a day and an unanswered one after ten minutes.
+// ---------------------------------------------------------------------------
+const keyChecks = new Map();   // "discogs:<key>" | "fanart:<key>" -> { state, at, pending }
+const KEY_CHECK_OK_MS      = 12 * 60 * 60 * 1000;
+const KEY_CHECK_UNKNOWN_MS = 10 * 60 * 1000;
+const KEY_CHECK_INVALID_MS = 60 * 60 * 1000;
+
+async function probeKey(kind, key) {
+  // Discogs: the token's own identity — 200 with the account, 401 without.
+  // FanArt.tv: one well-known artist (Radiohead's MBID). A good key gets 200,
+  // or 404 if the artist had no art; a bad one gets 401.
+  const url = kind === "discogs"
+    ? "https://api.discogs.com/oauth/identity"
+    : "https://webservice.fanart.tv/v3/music/a74b1b7f-71a5-4011-9441-d0b5e4122711?api_key=" + encodeURIComponent(key);
+  const headers = kind === "discogs"
+    ? { "Authorization": "Discogs token=" + key, "User-Agent": MB_USER_AGENT }
+    : { "User-Agent": MB_USER_AGENT };
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 8000);
+  try {
+    const r = await fetch(url, { headers, signal: ctl.signal });
+    // 401 is the key. A 403 is only taken as one when Discogs says so in its
+    // own JSON; a bare 403 (a CDN page) is no evidence about the key at all.
+    if (r.status === 401) return "invalid";
+    if (r.status === 403) {
+      const body = await r.text().catch(() => "");
+      return /invalid|unauthori[sz]ed|not authori[sz]ed|api key/i.test(body) ? "invalid" : "unknown";
+    }
+    if (r.ok || (kind === "fanart" && r.status === 404)) return "ok";
+    return "unknown";
+  } catch (e) {
+    return "unknown";   // offline or timed out — not evidence the key is wrong
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// The key's state, checking it first when the remembered answer is missing or
+// stale. `fresh` forces a check (a key just saved).
+async function keyCheck(kind, key, fresh) {
+  if (!key) return null;
+  const id = kind + ":" + key;
+  const hit = keyChecks.get(id);
+  const age = hit ? Date.now() - hit.at : Infinity;
+  // A refusal is re-asked too, an hour on: a 403 can come from a CDN
+  // challenge or a rate limit as well as from a bad key, and a good key must
+  // not wear a red ✕ until the container restarts.
+  const stale = !hit || (hit.state === "ok" ? age > KEY_CHECK_OK_MS
+                       : hit.state === "invalid" ? age > KEY_CHECK_INVALID_MS : age > KEY_CHECK_UNKNOWN_MS);
+  if (!fresh && !stale) return hit.state;
+  if (hit && hit.pending) return hit.pending;
+  const pending = probeKey(kind, key).then((state) => {
+    keyChecks.set(id, { state, at: Date.now() });
+    if (state !== "ok") console.log("[settings] " + kind + " key check: " + state);
+    return state;
+  });
+  keyChecks.set(id, Object.assign({}, hit || { state: null, at: 0 }, { pending }));
+  return pending;
+}
+
+app.get("/api/settings/discogs-token", async (req, res) => {
   res.json({
     set: !!discogsToken,
     masked: discogsToken ? "••••••••" + discogsToken.slice(-4) : "",
-    source: discogsSource   // "env" means the install command supplied it
+    source: discogsSource,   // "env" means the install command supplied it
+    check: await keyCheck("discogs", discogsToken, false),
   });
 });
 app.post("/api/settings/discogs-token", (req, res) => {
@@ -12329,15 +12486,16 @@ app.post("/api/settings/discogs-token", (req, res) => {
   discogsSource = "settings";   // a saved key outranks the env seed from here on
   const saved = savePersistedSettings({ discogsToken: token });
   console.log("[settings] discogs token set (" + token.length + " chars), persisted=" + saved);
-  res.json({ ok: true, saved });
+  keyCheck("discogs", token, true).then((check) => res.json({ ok: true, saved, check }));
 });
 
 // FanArt.tv API key — get status (masked) or save.
-app.get("/api/settings/fanart-key", (req, res) => {
+app.get("/api/settings/fanart-key", async (req, res) => {
   res.json({
     set: !!fanartKey,
     masked: fanartKey ? "••••••••" + fanartKey.slice(-4) : "",
-    source: fanartSource    // "env" means the install command supplied it
+    source: fanartSource,    // "env" means the install command supplied it
+    check: await keyCheck("fanart", fanartKey, false),
   });
 });
 app.post("/api/settings/fanart-key", (req, res) => {
@@ -12357,7 +12515,7 @@ app.post("/api/settings/fanart-key", (req, res) => {
   kickFanArtFetches().then(() => kickDiscogsLogoFetches()).catch(e => {
     if (DEBUG) console.error("[labels:fanart] post-save kick:", e.message);
   });
-  res.json({ ok: true, saved, cleared: purged });
+  keyCheck("fanart", key, true).then((check) => res.json({ ok: true, saved, cleared: purged, check }));
 });
 
 // Label-folder depth — for libraries organised in label folders. 0 = off (use
@@ -16362,7 +16520,7 @@ app.get("/api/qobuz/oauth/callback", async (req, res) => {
     console.log("[waveform] qobuz: signed in for waveforms (user " + got.userId + ")");
     res.send(page("Connected",
       "<h2>Qobuz connected.</h2><p>Waveforms will now be drawn for Qobuz tracks. " +
-      "You can close this tab and go back to MusicD Remote.</p>"));
+      "You can close this tab and go back to Rouen.</p>"));
   } catch (e) {
     console.log("[waveform] qobuz: sign-in failed — " + (e && e.message));
     res.status(400).send(page("Sign-in failed",
@@ -19303,8 +19461,8 @@ app.get("/api/shortcut/play-unheard", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log("Roon Random Albums UI listening on http://0.0.0.0:" + PORT);
-  console.log("MusicD Remote v" + pkg.version +
+  console.log("Rouen UI listening on http://0.0.0.0:" + PORT);
+  console.log("Rouen v" + pkg.version +
               " — debug logging " + (DEBUG ? "ON" : "off") +
               (process.env.DOCKER === "1" ? " (Docker default; RRA_DEBUG=0 to quiet)" : ""));
   console.log("Log files: " + LOG_FILE + " (rotates at 8 MB, keeps " + LOG_MAX_FILES + " numbered files)" +

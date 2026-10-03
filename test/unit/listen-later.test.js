@@ -69,7 +69,7 @@ function harness(library) {
     albumIndex: { builtAt: 1, albums: lib }, libraryMetaVersion: 0, libraryDateVersion: 0,
     playsVersion: 0, settingsVersion: 0, picksVersion: 0, discoverVersion: 0,
     labelsEnabled: false, labelsIndex: { builtAt: 0, map: new Map() },
-    smartDayKey: () => "2026-10-02",
+    smartDayKey: () => "2026-10-02", aotdDayKey: () => "2026-10-02",
     console: { log() {}, error() {} },
     qobuzDeep: { deepLink: (id) => "https://open.qobuz.com/album/" + id },
     smartLibraryRecord: (title, artist) => {

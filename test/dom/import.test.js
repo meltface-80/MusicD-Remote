@@ -46,7 +46,7 @@ window.__installFetch(function (url, opts) {
     window.__imports.push(JSON.parse((opts && opts.body) || "{}"));
     if ("${mode}" === "bad") {
       return { ok: false, status: 400, json: function () {
-        return Promise.resolve({ error: "That doesn't look like a MusicD Remote playlist" }); } };
+        return Promise.resolve({ error: "That doesn't look like a Rouen playlist" }); } };
     }
     if ("${mode}" === "none") {
       return window.__json({ ok: true, name: "Nothing", total: 2, truncated: false,
@@ -194,7 +194,7 @@ test("importing a shared playlist reports what it could and couldn't match (v1.7
   harness.assertNoPageError(assert, bad);
 
   await t.test("a blob that isn't ours shows the server's own refusal", () => {
-    assert.match(String(bad.result_text), /doesn't look like a MusicD Remote playlist/,
+    assert.match(String(bad.result_text), /doesn't look like a Rouen playlist/,
       "a generic failure would leave the user guessing what they pasted");
     assert.equal(bad.save_present, false);
   });

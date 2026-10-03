@@ -58,10 +58,11 @@ const NP_DETAIL = {
   tracks: [{ title: "Sunday", subtitle: "David Bowie" }],
 };
 
-// The classic look this file describes — outlined Play Now and Queue — is the
-// "dark" theme's. Since v1.8.68 a device with no choice starts on Mandarin,
-// whose pills are FILLED in brass by design, so the theme is named here rather
-// than left to the default; Mandarin's row has its own test at the end.
+// Since v1.8.74 both themes (Graphite and Brass, Brass light) draw Play Now
+// and Queue FILLED in the accent, and the overflow button stays outlined
+// beside them. The outlined-pill look this file was first written for went
+// with the Dark and Light themes. The theme is named rather than left to the
+// default so each run says which one it measured.
 const STUB_FOR = (theme) => `
 window.__zone = ${JSON.stringify(ZONE)};
 try { localStorage.setItem("rra-zone", "z1"); localStorage.setItem("rra-theme-v2", "${theme}"); }
@@ -83,7 +84,7 @@ window.__installFetch(function (u) {
   return undefined;
 });
 `;
-const STUB = STUB_FOR("dark");
+const STUB = STUB_FOR("graphite-brass");
 
 const DRIVER = `
   function boxOf(el) {
@@ -143,6 +144,10 @@ const DRIVER = `
     var mc = getComputedStyle(more), qc = getComputedStyle(pills[1]);
     T("finish", { border: mc.borderTopColor, queue_border: qc.borderTopColor,
                   bg: mc.backgroundColor, queue_bg: qc.backgroundColor });
+    T("accent_fill", (function () {
+      var p = document.createElement("span"); p.style.color = "var(--accent)";
+      document.body.appendChild(p); var c = getComputedStyle(p).color; p.remove(); return c;
+    })());
     // The ring glyph must not be drawn INSIDE an outline — two circles, one in
     // the other, is the old small ring with a frame round it.
     var svg = more.querySelector("svg");
@@ -173,19 +178,21 @@ const DRIVER = `
   T("modal_badges_in_dom", modal.querySelectorAll(".album-source").length);
 `;
 
-for (const size of ["390x844", "360x780", "1280x900"]) {
-  test("album view at " + size + ": the overflow button matches Play Now and Queue", async (t) => {
+for (const [size, theme] of [["390x844", "graphite-brass"], ["360x780", "graphite-brass"],
+                             ["1280x900", "graphite-brass"], ["390x844", "brass-light"]]) {
+  test("album view at " + size + " (" + theme + "): the overflow button matches Play Now and Queue", async (t) => {
     if (!harness.available) { t.skip("no chromium binary available"); return; }
-    const r = harness.renderPage({ name: "album-actions-" + size.split("x")[0],
-                                   windowSize: size, stub: STUB, driver: DRIVER });
+    const r = harness.renderPage({ name: "album-actions-" + size.split("x")[0] + "-" + theme,
+                                   windowSize: size, stub: STUB_FOR(theme), driver: DRIVER });
     harness.assertNoPageError(assert, r);
 
     // Controls.
     assert.equal(r.np_mode, false, "the album view did not open — the Now playing screen did");
     assert.equal(r.pill_count, 2, "expected Play Now and Queue on the row");
     assert.equal(r.has_more, true, "no overflow button — three actions had nowhere to go");
-    assert.equal(r.pill_outlined, true,
-      "Queue is not outlined — the row's own look has changed under this test");
+    assert.equal(r.pill_outlined, false,
+      "Queue is outlined — Play Now and Queue are filled in the accent in both themes");
+    assert.equal(r.finish.queue_bg, r.accent_fill, "Queue is not the accent fill");
 
     const [h0, h1] = r.pill_h;
     assert.ok(Math.abs(h0 - h1) < 0.5, "Play Now and Queue differ in height: " + r.pill_h);
@@ -199,10 +206,6 @@ for (const size of ["390x844", "360x780", "1280x900"]) {
       "transparent box round a small ring measures right and looks wrong");
     assert.ok(Math.abs(r.more_w - r.more_h) < 0.5,
       "the overflow button is not round (" + r.more_w + " x " + r.more_h + ")");
-    assert.equal(r.finish.border, r.finish.queue_border,
-      "the overflow button's outline is not Queue's");
-    assert.equal(r.finish.bg, r.finish.queue_bg,
-      "the overflow button's fill is not Queue's — on the album view both are outlined");
     assert.equal(r.inner_rings, 0,
       "a ring is still drawn inside the outlined button — a circle within a circle");
     assert.equal(r.glyph_inside, true, "the dots spill outside the button");
@@ -222,30 +225,4 @@ for (const size of ["390x844", "360x780", "1280x900"]) {
   });
 }
 
-// ---------------------------------------------------------------------------
-// v1.8.68: the same row in Mandarin, the default. Play Now and Queue are both
-// brass — MusicD Server's "Play now and Queue alike in the gold; the rest of
-// the row stays outlined" — so the overflow button keeps its outline beside
-// them. What every theme shares is what the v1.8.60 report was about: one
-// height, one centre line, a round button.
-// ---------------------------------------------------------------------------
-test("album view in Mandarin: brass pills, the overflow button still matches them", async (t) => {
-  if (!harness.available) { t.skip("no chromium binary available"); return; }
-  const r = harness.renderPage({ name: "album-actions-mandarin", windowSize: "390x844",
-                                 stub: STUB_FOR("mandarin"), driver: DRIVER });
-  harness.assertNoPageError(assert, r);
-  await t.test("the row's geometry is the same in every theme", () => {
-    assert.equal(r.pill_count, 2);
-    assert.equal(r.has_more, true);
-    const [h0, h1] = r.pill_h;
-    assert.ok(Math.abs(h0 - h1) < 0.5, "Play Now and Queue differ in height: " + r.pill_h);
-    assert.ok(Math.abs(r.more_h - h0) < 0.5, "the overflow button is " + r.more_h + "px against " + h0);
-    assert.ok(Math.abs(r.more_mid - r.pill_mid) < 0.5, "the overflow button is off the row's centre line");
-    assert.ok(Math.abs(r.more_w - r.more_h) < 0.5, "the overflow button is not round");
-  });
-  await t.test("Play Now and Queue are filled brass; the overflow button stays outlined", () => {
-    assert.equal(r.finish.queue_bg, "rgb(201, 164, 92)", "Queue is not the brass fill");
-    assert.equal(r.pill_outlined, false);
-    assert.equal(r.more_outlined, true, "the overflow button lost its outline beside the brass pills");
-  });
-});
+

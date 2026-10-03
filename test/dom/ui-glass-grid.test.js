@@ -547,20 +547,17 @@ test("nothing is left under the floating transport", async (t) => {
   });
 });
 
-test("the progress line follows the pill's curve", async (t) => {
+test("the mini player's progress is a level meter inside the pill (v1.8.74)", async (t) => {
   if (!harness.available) { t.skip("no chromium binary available"); return; }
 
-  // v1.7.83. The line used to be a 2px strip stretched across the top with
-  // `border-radius: 18px 18px 0 0` on it. That radius never existed: CSS scales
-  // every corner down until the two on a side fit that side's length, and the
-  // strip's left side is 2px long — so an 18px corner became a 2px one and the
-  // blue line ran on straight past the pill's glass at both ends.
-  //
-  // The clip is a real geometric constraint, and the harness cannot sample
-  // pixels — so what is asserted is the thing that made the radius unusable:
-  // a corner has to FIT the box it is on.
+  // v1.8.74 replaced v1.7.83's line along the pill's top edge with Mandarin's
+  // level meter: brass segments over faint ones, along the BOTTOM of the pill,
+  // under the text. What matters is that it sits wholly inside the pill (a
+  // meter hanging off the glass is the v1.7.83 chord again), that it is drawn
+  // as segments, that it takes no taps, and that the popovers — which open
+  // upwards out of the transport — are still not clipped by it.
   const r = harness.renderPage({
-    name: "ui-progress-curve", windowSize: "390x844", stub: STUB,
+    name: "ui-progress-meter", windowSize: "390x844", stub: STUB,
     driver: `
       ${HELPERS}
       await window.__sleep(600);
@@ -570,29 +567,25 @@ test("the progress line follows the pill's curve", async (t) => {
 
       var prog = document.querySelector(".mt-progress");
       var fill = document.getElementById("mt-progress-fill");
+      var text = document.querySelector(".mt-text");
       var pb = bar.getBoundingClientRect(), gb = prog.getBoundingClientRect();
+      var tb = text.getBoundingClientRect();
       var gs = getComputedStyle(prog), fs = getComputedStyle(fill);
-      T("clip", {
-        h: Math.round(gb.height), pill_h: Math.round(pb.height),
-        w: Math.round(gb.width),  pill_w: Math.round(pb.width),
-        radius: parseFloat(gs.borderTopLeftRadius) || 0,
-        pill_radius: parseFloat(getComputedStyle(bar).borderTopLeftRadius) || 0,
+      T("meter", {
+        top: gb.top, bottom: gb.bottom, left: gb.left, right: gb.right, h: gb.height,
+        pill: { top: pb.top, bottom: pb.bottom, left: pb.left, right: pb.right },
+        text_bottom: tb.bottom,
+        mask: gs.webkitMaskImage || gs.maskImage || "none",
         overflow: gs.overflowX,
         pointer: gs.pointerEvents,
       });
-      T("line", {
-        border_top: parseFloat(fs.borderTopWidth) || 0,
-        bg: fs.backgroundColor,
-        radius: parseFloat(fs.borderTopLeftRadius) || 0,
-        box: fs.boxSizing,
-      });
-      // The painter still drives it through style.width — unchanged, and three
-      // seek tests in volume-row.test.js read that property.
+      T("fill_bg", fs.backgroundColor);
+      T("accent", (function () {
+        var p = document.createElement("span"); p.style.color = "var(--accent)";
+        document.body.appendChild(p); var c = getComputedStyle(p).color; p.remove(); return c;
+      })());
       T("painted_width", fill.style.width);
 
-      // The popovers open UPWARDS out of the transport. A clip on the wrong
-      // element would swallow them, and the clip added here is one element away
-      // from doing exactly that.
       document.getElementById("mt-vol-btn").click();
       await window.__sleep(300);
       var pop = document.getElementById("mt-vol-popover").getBoundingClientRect();
@@ -602,44 +595,22 @@ test("the progress line follows the pill's curve", async (t) => {
   });
   harness.assertNoPageError(assert, r);
 
-  await t.test("the clip is the shape of the pill, not a strip across its top", () => {
-    const c = r.clip;
-    assert.ok(c.h >= c.pill_h - 4,
-      `the progress clip is ${c.h}px tall inside a ${c.pill_h}px pill — it is still ` +
-      `a strip, and a strip cannot carry the pill's corner`);
-    assert.ok(c.w >= c.pill_w - 4, `the clip is ${c.w}px wide in a ${c.pill_w}px pill`);
-    assert.equal(c.overflow, "hidden", "nothing clips the line to the pill's outline");
-    assert.equal(c.pointer, "none", "the progress overlay is eating taps on the pill");
+  await t.test("the meter sits wholly inside the pill, along its bottom", () => {
+    const m = r.meter;
+    assert.ok(m.left > m.pill.left && m.right < m.pill.right,
+      `the meter runs ${m.left}–${m.right}, past the pill's ${m.pill.left}–${m.pill.right}`);
+    assert.ok(m.top > m.pill.top && m.bottom < m.pill.bottom,
+      `the meter runs ${m.top}–${m.bottom} vertically, outside the pill's ${m.pill.top}–${m.pill.bottom}`);
+    assert.ok(m.top >= m.text_bottom - 1,
+      `the meter starts at y=${m.top}, over the track text (which ends at ${m.text_bottom})`);
+    assert.ok(m.h >= 3 && m.h <= 6, `the meter is ${m.h}px tall`);
   });
 
-  await t.test("...and its corner actually fits the box it is on", () => {
-    // THE root cause, stated directly. 18px of radius on a 2px-tall box is not
-    // an 18px corner, it is a 2px one — the browser scales it to fit and the
-    // declaration silently means something else.
-    const c = r.clip;
-    assert.ok(c.radius >= 12,
-      `the clip's corner radius is ${c.radius}px — too small to follow an ` +
-      `${c.pill_radius}px pill`);
-    assert.ok(c.radius * 2 <= c.h,
-      `a ${c.radius}px radius does not fit a ${c.h}px-tall box: CSS will scale it ` +
-      `down to ${(c.h / 2).toFixed(1)}px and the line will cut a straight chord ` +
-      `across the corner instead of following it`);
-    assert.ok(Math.abs(c.radius - c.pill_radius) <= 2,
-      `the clip curves at ${c.radius}px and the pill at ${c.pill_radius}px — the ` +
-      `line will not sit on the edge`);
-  });
-
-  await t.test("the line is a drawn edge, not a block filling the pill", () => {
-    // The clip is full-height now, so a fill that still painted a background
-    // would paint the WHOLE pill accent-coloured.
-    const l = r.line;
-    assert.ok(l.border_top >= 1.5,
-      `the fill has no top border (${l.border_top}px) — nothing draws the line`);
-    assert.match(String(l.bg), /rgba\(0, 0, 0, 0\)|transparent/,
-      `the fill has background ${l.bg} in a full-height clip — that floods the ` +
-      `entire pill with accent colour`);
-    assert.equal(l.box, "border-box",
-      "height:100% plus a top border on content-box makes the fill overflow the clip");
+  await t.test("drawn as segments, in the brass, and it takes no taps", () => {
+    assert.match(String(r.meter.mask), /repeating-linear-gradient/, "the meter is not segmented");
+    assert.equal(r.meter.overflow, "hidden", "the fill can run past the meter");
+    assert.equal(r.meter.pointer, "none", "the progress overlay is eating taps on the pill");
+    assert.equal(r.fill_bg, r.accent, "the lit segments are not the accent");
     assert.ok(String(r.painted_width).endsWith("%"),
       `app.js paints style.width and it reads ${JSON.stringify(r.painted_width)} — ` +
       `the seek tests in volume-row.test.js read the same property`);

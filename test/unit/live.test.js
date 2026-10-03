@@ -35,6 +35,7 @@ function revisions(over) {
     discoverVersion: 8,
     laterVersion: 10,
     smartDayKey: () => "2026-09-27",
+    aotdDayKey: () => "2026-09-27",
   }, over || {});
   return loadIndexFunctions(["liveRevisions"], inj).liveRevisions();
 }
@@ -44,7 +45,7 @@ test("liveRevisions: one revision per kind of data, moving with it and nothing e
 
   await t.test("every key the app follows is there, as a string", () => {
     assert.deepEqual(Object.keys(base).sort(),
-      ["dates", "day", "discover", "labels", "later", "library", "picks", "plays", "settings", "snapshot"]);
+      ["aotd", "dates", "day", "discover", "labels", "later", "library", "picks", "plays", "settings", "snapshot"]);
     for (const [k, v] of Object.entries(base)) assert.equal(typeof v, "string", k + " is not a string");
   });
 
@@ -72,6 +73,8 @@ test("liveRevisions: one revision per kind of data, moving with it and nothing e
       discover: { discoverVersion: 9 },
       later:    { laterVersion: 11 },
       day:      { smartDayKey: () => "2026-09-28" },
+      // Album of the day's date, which turns at 00:01 rather than midnight.
+      aotd:     { aotdDayKey: () => "2026-09-28" },
     };
     for (const [key, over] of Object.entries(cases)) {
       const moved = revisions(over);
@@ -254,7 +257,7 @@ function withRevisions(names, inj) {
     albumIndex: { builtAt: 1 }, libraryMetaVersion: 0, libraryDateVersion: 0,
     playsVersion: 0, settingsVersion: 0, picksVersion: 0, discoverVersion: 0,
     laterVersion: 0, labelsEnabled: false, labelsIndex: { builtAt: 0, map: new Map() },
-    smartDayKey: () => "2026-09-27",
+    smartDayKey: () => "2026-09-27", aotdDayKey: () => "2026-09-27",
   }, inj));
 }
 

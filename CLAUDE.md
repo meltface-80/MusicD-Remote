@@ -337,7 +337,7 @@ The user manually publishes releases on GitHub when they are satisfied with test
 - **Do not change any version number in README.md** unless the user explicitly says
   "promote to latest" or "update the README".
 - Current stable version in the README: **v1.8.73** (until the user says otherwise).
-- The extension is being renamed **MusicD Remote** ("for Roon" is descriptive, not part of the name). The Roon `extension_id` must NEVER change — it would force every user to re-authorize.
+- The extension is named **Rouen** since v1.8.74 (it was MusicD Remote; "for Roon" is descriptive, not part of the name). The rename is display-only: the Docker image/container/volume (`musicd-remote`, `musicd-remote-data`), log file names and the repository keep their names until the user says to rename the repo. The Roon `extension_id` must NEVER change — it would force every user to re-authorize.
 
 ---
 

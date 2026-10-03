@@ -82,14 +82,24 @@ const DRIVER = `
   T("first_tile_id", first ? first.id : null);
   T("first_tile_label", first ? (first.querySelector(".album-title") || {}).textContent || "" : "");
   T("row_tiles", row ? row.querySelectorAll(".album").length : 0);
+  T("tile_subtitle", first ? !!first.querySelector(".album-artist") : null);
+  // The disc turns all the time (v1.8.74), and a tap speeds THAT animation up.
+  var disc = first ? first.querySelector(".unheard-disc") : null;
+  var anim = disc && disc.getAnimations ? disc.getAnimations()[0] : null;
+  T("disc_anim", anim ? anim.animationName : null);
+  T("disc_running", anim ? anim.playState : null);
+  T("disc_rate_rest", anim ? anim.playbackRate : null);
 
   // Pressing it must spin THAT tile, not something off-screen.
   first.click();
-  await window.__sleep(200);
+  await window.__sleep(900);
   T("tile_spinning", first.classList.contains("spinning"));
+  T("disc_rate_fast", anim ? anim.playbackRate : null);
   await window.__sleep(2600);
   T("unheard_calls", window.__unheardCalls);
   T("tile_spinning_after", first.classList.contains("spinning"));
+  await window.__sleep(900);
+  T("disc_rate_after", anim ? anim.playbackRate : null);
 
   // --- The side menu ---
   document.getElementById("menu-toggle").click();
@@ -116,10 +126,11 @@ test("one playlist screen, a shorter menu, unheard on Home (v1.7.25)",
   });
   harness.assertNoPageError(assert, r);
 
-  await t.test("Play something unheard leads the Not-played row", () => {
+  await t.test("Random Album leads the Not-played row (v1.8.74)", () => {
     assert.equal(r.first_tile_id, "home-unheard-tile",
       "the action must be the FIRST thing in the row, not buried after the albums");
-    assert.equal(r.first_tile_label, "Play something unheard");
+    assert.equal(r.first_tile_label, "Random Album");
+    assert.equal(r.tile_subtitle, false, "the 'Surprise me' line is still under it");
     assert.equal(r.row_tiles, 2, "the row still shows its albums alongside the action");
   });
 
@@ -128,6 +139,15 @@ test("one playlist screen, a shorter menu, unheard on Home (v1.7.25)",
       "forwarding the click elsewhere left the pressed tile inert for two seconds");
     assert.equal(r.unheard_calls, 1);
     assert.equal(r.tile_spinning_after, false, "the spin must stop when the request finishes");
+  });
+
+  await t.test("its disc turns slowly all the time, and faster while choosing", () => {
+    assert.equal(r.disc_anim, "unheard-spin", "the disc is not turning at rest");
+    assert.equal(r.disc_running, "running");
+    assert.equal(r.disc_rate_rest, 1);
+    assert.ok(r.disc_rate_fast > 4, `a tap only took the disc to ${r.disc_rate_fast}x`);
+    assert.ok(Math.abs(r.disc_rate_after - 1) < 0.05,
+      `the disc stayed at ${r.disc_rate_after}x after the album was chosen`);
   });
 
   await t.test("the side menu drops Filter and the unheard action", () => {
