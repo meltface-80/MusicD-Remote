@@ -268,6 +268,8 @@ const PICKER_DRIVER = `
   T("applied_at_open", document.documentElement.getAttribute("data-palette"));
   T("apply_disabled_at_open", apply.disabled);
   T("selected_at_open", document.querySelector("#theme-list .theme-row.is-on .theme-row-label").textContent);
+  T("notes", Array.prototype.map.call(document.querySelectorAll("#theme-list .theme-row-note"),
+    function (n) { return n.textContent; }));
 
   // Each swatch must preview its OWN palette, not the applied one.
   T("swatch_bgs", Array.prototype.map.call(document.querySelectorAll(".theme-swatch"),
@@ -307,6 +309,11 @@ test("the theme picker selects, then applies (v1.6.63)", { concurrency: 1 }, asy
     assert.match(r.selected_at_open, /in use/);
     assert.equal(r.apply_disabled_at_open, true,
       "Apply is live before anything has been chosen — it should mean something");
+  });
+
+  await t.test("Mandarin is credited to the Mandarin project, in the user's own words (v1.8.75)", () => {
+    // It said "from MusicD Server", which stopped being true.
+    assert.equal(r.notes[0], "Graphite and Brass - from the Mandarin project");
   });
 
   await t.test("each swatch previews its own palette", () => {

@@ -2,6 +2,17 @@
 
 All notable changes to MusicD Remote (formerly Roon Random Albums) are documented here.
 
+## [1.8.75] — 2026-10-03
+
+### Changed
+
+- **The Mandarin theme says where it is from.** Settings → Appearance
+  described it as "Graphite and brass, from MusicD Server", which is no
+  longer right. It now reads, in the words asked for: "Graphite and Brass -
+  from the Mandarin project". The theme picker's test pins the line.
+
+1544 unit / 858 DOM / 132 static.
+
 ## [1.8.74] — 2026-10-03
 
 "He has asked to incorporate it into my extension … Accessed from the side

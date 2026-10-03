@@ -496,9 +496,10 @@
   // light background. Keying palettes on their own attribute means the
   // existing themes are untouched and the new ones inherit all thirteen.
   const THEMES = [
-    // The default since v1.8.68: MusicD Server's own colours. First, so the
-    // picker leads with what a new device starts on.
-    { id: "mandarin",     label: "Mandarin",     note: "Graphite and brass, from MusicD Server",
+    // The default since v1.8.68: the Mandarin project's own colours. First, so
+    // the picker leads with what a new device starts on. The note is the
+    // user's own wording (v1.8.75).
+    { id: "mandarin",     label: "Mandarin",     note: "Graphite and Brass - from the Mandarin project",
       theme: "dark",  palette: "mandarin" },
     { id: "dark",         label: "Dark",         note: "The original — cool grey and cyan",
       theme: "dark",  palette: "classic" },
