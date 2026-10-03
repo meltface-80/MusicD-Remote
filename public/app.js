@@ -1108,6 +1108,10 @@
     // it sits at the top of Home without needing a place of its own. Built as
     // a tile so it inherits the carousel's sizing on every screen rather than
     // carrying breakpoints of its own.
+    // One row until there are albums in it (v1.8.75). For its first six months
+    // the row holds only Random Album and Album of the day, and the two-row
+    // layout larger screens use stacked those two on top of each other.
+    homeUnplayed.classList.toggle("home-carousel-1row", !albums.length);
     const entries = [{ key: "unheard", build: buildUnheardTile }];
     if (aotd) entries.push({ key: "aotd:" + albumTileKey(aotd), build: () => buildAotdTile(aotd) });
     for (const a of albums) entries.push({ key: albumTileKey(a), build: () => homeTile(a) });
@@ -7526,6 +7530,24 @@
     if (card) {
       if (card.addEventListener) card.addEventListener("change", label);
       else if (card.addListener) card.addListener(label);   // older Safari
+    }
+    // Now playing's corner button: on a desktop — a large screen driven by a
+    // mouse — it CLOSES the screen (×), full size or reduced; on a phone or a
+    // tablet it goes BACK (‹). The same test as the CSS that swaps the glyph,
+    // and the same action either way (leaveNowPlaying).
+    const npBtn = document.getElementById("modal-home-btn");
+    const desktop = window.matchMedia
+      ? window.matchMedia("(min-width: 1024px) and (hover: hover) and (pointer: fine)") : null;
+    const npLabel = () => {
+      if (!npBtn) return;
+      const word = desktop && desktop.matches ? "Close" : "Back";
+      npBtn.setAttribute("aria-label", word);
+      npBtn.title = word;
+    };
+    npLabel();
+    if (desktop) {
+      if (desktop.addEventListener) desktop.addEventListener("change", npLabel);
+      else if (desktop.addListener) desktop.addListener(npLabel);
     }
   }
 

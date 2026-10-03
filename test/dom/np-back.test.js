@@ -78,6 +78,10 @@ const DRIVER = `
     document.body.appendChild(p); var c = getComputedStyle(p).color; p.remove(); return c;
   }
   await window.__sleep(700);
+  // No unplayed albums yet: the row is Random Album (and Album of the day)
+  // alone, and it stays ONE row rather than stacking them.
+  T("unplayed_1row", document.getElementById("home-unplayed").classList.contains("home-carousel-1row"));
+  T("unplayed_rows", getComputedStyle(document.getElementById("home-unplayed")).gridTemplateRows.split(" ").length);
   document.getElementById("menu-toggle").click();
   await window.__sleep(250);
   document.querySelector('.menu-item[data-action="shuffle"]').click();
@@ -104,6 +108,9 @@ const DRIVER = `
   T("np_open", modal.classList.contains("np-mode"));
   var home = document.getElementById("modal-home-btn");
   T("np_back_label", home.getAttribute("aria-label"));
+  T("np_x_shown", box(home.querySelector(".ico-close")).shown);
+  T("np_chevron_shown", box(home.querySelector(".ico-back")).shown);
+  T("desktop_pointer", matchMedia("(hover: hover) and (pointer: fine)").matches);
   var size = document.getElementById("modal-np-size-btn");
   T("size_shown", box(size).shown);
   T("np_panel_full", box(".modal-panel"));
@@ -157,7 +164,7 @@ const DRIVER = `
 test("album card ×, Now playing's Back and the reduced card (v1.8.75) — desktop", { concurrency: 1 }, async (t) => {
   if (!harness.available) { t.skip("no chromium binary available"); return; }
   const r = harness.renderPage({ name: "np-back-desktop", windowSize: "1440x900", stub: STUB, driver: DRIVER,
-                                 budgetMs: 30000 });
+                                 budgetMs: 30000, chromeArgs: harness.MOUSE });
   harness.assertNoPageError(assert, r);
 
   await t.test("the album card closes with an ×", () => {
@@ -179,9 +186,17 @@ test("album card ×, Now playing's Back and the reduced card (v1.8.75) — deskt
     }
   });
 
-  await t.test("Now playing has a Back, and a size button on a large screen", () => {
+  await t.test("Not played in 6 months is one row while it has no albums", () => {
+    assert.equal(r.unplayed_1row, true);
+    assert.equal(r.unplayed_rows, 1, "the row still lays out in " + r.unplayed_rows + " rows");
+  });
+
+  await t.test("on a desktop Now playing closes with an ×, and has a size button", () => {
     assert.equal(r.np_open, true);
-    assert.equal(r.np_back_label, "Back");
+    assert.equal(r.desktop_pointer, true, "the page saw no mouse (harness.MOUSE), so this measures nothing");
+    assert.equal(r.np_back_label, "Close");
+    assert.equal(r.np_x_shown, true);
+    assert.equal(r.np_chevron_shown, false);
     assert.equal(r.size_shown, true);
   });
 
@@ -232,5 +247,21 @@ test("on a phone held upright the album view keeps its back chevron, and no size
   assert.equal(r.x_shown, false);
   assert.equal(r.close_label, "Back");
   assert.equal(r.size_shown, false, "the size button showed on a phone");
+  assert.equal(r.np_back_label, "Back", "Now playing on a phone goes back, not closes");
+  assert.equal(r.np_chevron_shown, true);
+  assert.equal(r.np_x_shown, false);
   assert.equal(r.after_back.title, r.title_before, "Back on a phone did not return to the album either");
+});
+
+test("a tablet in landscape — as wide as a laptop, but touch — goes back with ‹", { concurrency: 1 }, async (t) => {
+  if (!harness.available) { t.skip("no chromium binary available"); return; }
+  const r = harness.renderPage({ name: "np-back-tablet", windowSize: "1180x820", stub: STUB, driver: DRIVER,
+                                 budgetMs: 30000 });
+  harness.assertNoPageError(assert, r);
+  assert.equal(r.desktop_pointer, false, "the page saw a mouse, so this is not the tablet case");
+  assert.equal(r.np_back_label, "Back");
+  assert.equal(r.np_chevron_shown, true);
+  assert.equal(r.np_x_shown, false, "a tablet's Now playing showed the desktop's ×");
+  // The album card is still a card at this width, and closes with an ×.
+  assert.equal(r.close_label, "Close");
 });

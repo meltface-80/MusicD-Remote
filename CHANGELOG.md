@@ -20,9 +20,13 @@ UI stragglers from testing v1.8.74 on a TV and a tablet.
 
 - Now playing is the same panel as the album view, so tapping the mini player
   with an album open REPLACED that album — and the only way out was the Home
-  button, which went Home. That button is a **‹ Back** now, on every screen
-  size: it returns to the album that was open, or simply closes Now playing
-  when nothing was. Escape, and a click outside the reduced card, do the
+  button, which went Home. It now returns to the album that was open, or
+  simply closes Now playing when nothing was. Different screens, different
+  mind sets: on a **desktop** (a large screen driven by a mouse) the button
+  is an **×**, full size or reduced, because you are closing the screen; on
+  **phones and tablets**, landscape iPads included, it is a **‹**, because
+  you are going back. Width alone cannot tell a landscape tablet from a
+  laptop, so the pointer decides. Escape, and a click outside the reduced card, do the
   same. The album comes back as it was: scrolled where it was, and still
   stepping to its neighbours with the chevrons, a swipe or the arrow keys.
   Class of error: one panel serving two screens, with nothing remembering
@@ -35,6 +39,12 @@ UI stragglers from testing v1.8.74 on a TV and a tablet.
   button. The reduced card is dragged by its top strip (marked with a grip)
   and kept wholly on screen. The choice is remembered on the device; each
   opening starts centred.
+
+### Changed — "Not played in 6 months" is one row until it has albums
+
+- For its first six months the row holds only Random Album and Album of the
+  day, and the two-row layout of larger screens stacked those two on top of
+  each other. It stays a single row until unplayed albums start appearing.
 
 ### Changed — the share card's ×
 

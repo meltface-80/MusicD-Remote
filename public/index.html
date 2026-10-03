@@ -564,9 +564,15 @@ sudo docker run -d --pull always --name musicd-remote --restart unless-stopped -
            returns to the screen before the mini player was tapped: the album
            that was open, or the screen underneath. -->
       <button class="modal-home icon-btn" id="modal-home-btn" aria-label="Back" title="Back">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        <svg class="ico-back" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <polyline points="15 18 9 12 15 6"/>
+        </svg>
+        <!-- A desktop (a mouse, a large screen) CLOSES Now playing; a phone or
+             tablet goes back. Same action — only the glyph and label differ. -->
+        <svg class="ico-close" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M18 6 6 18M6 6l12 12"/>
         </svg>
       </button>
       <!-- Now-playing mode, large screens only (CSS-gated): shrink the screen to

@@ -5091,3 +5091,13 @@ body.show-quality .album-quality { display: block; }
   border-radius: 50%; border-color: var(--accent); background: var(--accent); color: var(--on-accent);
 }
 [data-palette] .modal .modal-np-size:hover { background: var(--accent); color: var(--on-accent); filter: brightness(1.08); }
+
+/* Now playing's corner button: ‹ on phones and tablets (going back), × on a
+   desktop — a large screen with a mouse — where it closes the screen. A
+   tablet in landscape is as wide as a laptop, so width alone cannot tell
+   them apart; the pointer can (app.js reads the same query for the label). */
+.modal-home .ico-close { display: none; }
+@media (min-width: 1024px) and (hover: hover) and (pointer: fine) {
+  .modal.np-mode .modal-home .ico-back  { display: none; }
+  .modal.np-mode .modal-home .ico-close { display: block; }
+}
